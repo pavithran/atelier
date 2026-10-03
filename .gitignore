@@ -1,0 +1,21 @@
+# Operating-system and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Rebuildable dependencies and outputs
+node_modules/
+dist/
+build/
+.build/
+DerivedData/
+
+# Local project data and caches
+.ai-project-data/
+.cache/
+cache/
