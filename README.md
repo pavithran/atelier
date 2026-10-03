@@ -179,6 +179,15 @@ repositories. Pass a throwaway token with
 `npx wrangler dev --var ATELIER_TOKEN:localtest`; do not write `.dev.vars`
 into an iCloud project.
 
+`npm test` runs two pools. The pure functions in `src/rules.ts` and
+`src/diff.ts` are tested by `node --test` (`test/*.test.ts`). The
+`test/*.spec.ts` files run inside the Workers runtime through the Workers
+test pool, against the Ledger Durable Object with its real SQLite storage
+and no network access; `tsc -p test` typechecks them against the types
+`wrangler types` generates. Workerd logs each refusal those tests assert as
+an uncaught promise rejection (`uncaught exception … 409|owned|…`); those
+lines are the refusals under test, not failures.
+
 ## Cost
 
 Artifacts bills operations and storage from 14 October 2026: the first
