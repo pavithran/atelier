@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "atelier",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-03",
+  "observability": { "enabled": true },
+  "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
+  "durable_objects": {
+    "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger"] }]
+}

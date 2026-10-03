@@ -19,3 +19,8 @@ DerivedData/
 .ai-project-data/
 .cache/
 cache/
+
+# Wrangler
+.wrangler/
+.dev.vars
+worker-configuration.d.ts
