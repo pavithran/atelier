@@ -171,6 +171,27 @@ Run `init` inside the project checkout. `atelier guide` prints the
 instructions an agent needs; paste them into the project's `AGENTS.md` or
 `CLAUDE.md`.
 
+## Local cache cleanup
+
+`atelier gc --project NAME` previews local directories eligible for removal.
+Add `--apply` to remove them. `--dry-run` explicitly requests the preview.
+The command uses the configured cache (`ATELIER_CACHE` when set) and never
+deletes Artifacts repositories or changes the project's checkout.
+
+A workspace is eligible only when the server confirms that its item merged,
+its HEAD equals the accepted head, and it has no changed, untracked or ignored
+files, extra commits in refs or reflogs, linked worktrees, initialized
+submodules, or a Git operation in progress. Cleanup checks
+its recorded project and item identity and refreshes the item's state before
+removal. The current directory and its ancestors are preserved. Symlinked
+directories are not followed. Stop editing a candidate before applying cleanup.
+
+Check and diff clones carry a local record of their project, creation time,
+and process. A recorded clone is eligible after 24 hours only when its process
+and any recorded check child have exited. Runs for other projects, records
+that cannot be verified, and older clones without records are preserved.
+Normal completion removes both the clone and its record.
+
 ## Local development
 
 `npm run dev` serves the Worker on localhost. The Artifacts binding always

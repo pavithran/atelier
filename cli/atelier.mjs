@@ -6,11 +6,13 @@
 // sees in Artifacts. Only `atelier merge`, run by the project owner, touches
 // the checkout.
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { collectCache, markerPath } from "./gc.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = join(HOME, ".config", "atelier");
@@ -131,9 +133,10 @@ function workspacePath(name, id) {
 
 // ── clean-room checks ──────────────────────────────────────────────────────
 
-function cleanClone(remote, token, head, baseline) {
+function cleanClone(remote, token, head, baseline, name) {
   mkdirSync(join(CACHE, "checks"), { recursive: true });
   const dir = mkdtempSync(join(CACHE, "checks", "run-"));
+  writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git([...auth(token), "clone", "--quiet", remote, dir]);
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
   let changed = [];
@@ -147,11 +150,32 @@ function cleanClone(remote, token, head, baseline) {
   return { dir, changed };
 }
 
-function runCheck(cmd, dir) {
+async function runCheck(cmd, dir) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
-  const r = spawnSync("/bin/sh", ["-c", cmd], { cwd: dir, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
-  const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`;
-  return { passed: r.status === 0, output, sha: createHash("sha256").update(output).digest("hex") };
+  const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
+  const r = await new Promise((done) => {
+    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, timeout: CHECK_TIMEOUT_MS });
+    writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: child.pid }));
+    let stdout = "", stderr = "", error, bytes = 0;
+    const append = (key, chunk) => {
+      if (error) return;
+      bytes += Buffer.byteLength(chunk);
+      if (key === "stdout") stdout += chunk; else stderr += chunk;
+      if (bytes > 64 * 1024 * 1024) {
+        error = new Error("check output exceeds 64 MiB");
+        child.kill();
+        stdout = stdout.slice(-32 * 1024 * 1024);
+        stderr = stderr.slice(-32 * 1024 * 1024);
+      }
+    };
+    child.stdout.setEncoding("utf8").on("data", (s) => append("stdout", s));
+    child.stderr.setEncoding("utf8").on("data", (s) => append("stderr", s));
+    child.on("error", (e) => { error = e; });
+    child.on("close", (status, signal) => done({ status, stdout, stderr, error: error ?? (signal ? new Error(`check terminated by ${signal}`) : undefined) }));
+  });
+  writeFileSync(markerPath(dir), JSON.stringify(record));
+  const output = `${r.stdout}${r.stderr}${r.error ? `\n[atelier] ${r.error.message}` : ""}`;
+  return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
 // ── ControlPlane ───────────────────────────────────────────────────────────
@@ -368,11 +392,11 @@ const commands = {
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     if (!ws.head) die("nothing pushed yet");
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const { dir, changed } = cleanClone(ws.remote, ws.token, ws.head, base);
+    const { dir, changed } = cleanClone(ws.remote, ws.token, ws.head, base, name);
     let failed = 0;
     try {
       for (const cmd of cmds) {
-        const r = runCheck(cmd, dir);
+        const r = await runCheck(cmd, dir);
         await call("POST", `${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
@@ -382,9 +406,22 @@ const commands = {
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      rmSync(markerPath(dir), { force: true });
     }
     console.log(`changed: ${changed.join(", ") || "nothing"}`);
     if (failed) process.exit(2);
+  },
+
+  async gc() {
+    if (args._.length !== 1 || args.rest || (args["dry-run"] !== undefined && args["dry-run"] !== true) || Object.keys(args.multi).some((k) => !["apply", "dry-run", "project", "as"].includes(k)) ||
+        (args.apply && args["dry-run"]) || (args.apply !== undefined && args.apply !== true)) {
+      die("usage: atelier gc [--project NAME] [--dry-run | --apply]");
+    }
+    const name = project(), as = actor(OWNER);
+    const { items } = await call("GET", P(name), undefined, as);
+    if (!existsSync(CACHE)) { console.log("No local cache to collect."); return; }
+    await collectCache({ cache: CACHE, name, items, apply: args.apply === true,
+      getItem: async (id) => (await call("GET", I(name, id), undefined, as)).item });
   },
 
   async report() {
@@ -408,7 +445,7 @@ const commands = {
     const name = project(), id = itemArg(), as = actor(OWNER);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const { dir } = cleanClone(ws.remote, ws.token, ws.head, null);
+    const { dir } = cleanClone(ws.remote, ws.token, ws.head, null, name);
     try {
       git([...auth(base.token), "fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir });
       const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir });
@@ -417,6 +454,7 @@ const commands = {
       process.stdout.write(git(["diff", mb, "HEAD"], { cwd: dir }) + "\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      rmSync(markerPath(dir), { force: true });
     }
   },
 
@@ -579,6 +617,7 @@ Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--j
 Agents     claim ID --as H/M · push · update · check [-- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID · abandon ID
+Local      gc [--project NAME] [--dry-run | --apply]
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
