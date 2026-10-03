@@ -15,40 +15,42 @@ It rests on three rules.
    of exactly the head it reads from Artifacts, is *Observed*. Anything an
    agent says it did is *Reported*. A required check with no observed result
    at the current head is *Pending*. Only Observed passes count.
-3. **PAVI decides.** Work reaches the project only when PAVI accepts it and
-   merges it. Changes to protected paths also need approval from a model other
-   than the owner's, or from PAVI.
+3. **The project owner decides.** The project owner is the person the
+   project belongs to; in the API they act as the reserved actor `pavi`.
+   Work reaches the project only when the project owner accepts it and
+   merges it. Changes to protected paths also need approval from a model
+   other than the item owner's, or from the project owner.
 
-The web inbox answers one question, *what needs PAVI now?*, and ranks the
+The web inbox answers one question, *what needs the project owner now?*, and ranks the
 things a person must decide above the things an agent must fix.
 
 ## How it works
 
 In outline: a project's main branch is copied into an Artifacts repository,
 the *baseline*. Each item is a fork of the baseline, its *workspace*. Agents
-work in their workspace, push to it, and run checks against it. PAVI merges
+work in their workspace, push to it, and run checks against it. The project owner merges
 accepted work into the real checkout, and the baseline follows.
 
 In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init` | PAVI, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths. |
+| `atelier init` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths. |
 | `atelier new "title" --scope 'src/**'` | anyone | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/`. |
-| `atelier push` | the owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
+| `atelier push` | the item's owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
 | `atelier check` | anyone | Clones the workspace afresh at that head, runs each required check, measures which paths changed since the baseline, and records the results as Observed. A result for a head that has since moved is refused. |
 | `atelier report "…"` | anyone | Records a Reported claim. It is shown and never counted. |
-| `atelier submit` | the owner | Marks the item ready. The gate states what still blocks it. |
-| `atelier handoff t3 --to codex/gpt-5.5` | the owner or PAVI | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
-| `atelier review t3 --approve` | a different agent, or PAVI | Required when the item changes a protected path. A reviewer of the same model as the owner does not count. |
-| `atelier accept t3` | PAVI, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. |
-| `atelier merge t3` | PAVI, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing to GitHub stays a separate, deliberate step. |
+| `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
+| `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
+| `atelier review t3 --approve` | a different agent, or the project owner | Required when the item changes a protected path. A reviewer of the same model as the owner does not count. |
+| `atelier accept t3` | the project owner, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. |
+| `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing to GitHub stays a separate, deliberate step. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
 observed; no rejection at that head; and, if a protected path changed, an
-approval at that head from a different model or from PAVI. What a check
+approval at that head from a different model or from the project owner. What a check
 executes is protected automatically: a script it runs (`./check.sh`,
 `node scripts/verify.mjs`), and `package.json` when it goes through a package
 manager, whose scripts an item could otherwise rewrite. An item therefore
@@ -70,7 +72,7 @@ merged.
   adapter's protected surfaces, the maintenance paths, and the agent and
   ControlPlane files themselves. Atelier never writes these files.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
-  a ControlPlane project until PAVI's approval is recorded with
+  a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
   every merge receipt.
 - `atelier merge` writes a `control-plane.landing-receipt` into
@@ -98,7 +100,7 @@ Trusted, and stated here so nobody assumes otherwise:
 
 - **Identity is declared.** Every caller shares one API token, and the actor
   name (`harness/model`) is what the caller says it is. The token proves only
-  that the caller is one of PAVI's own tools. The write token is what stops
+  that the caller is one of the project owner's own tools. The write token is what stops
   a non-owner from pushing.
 - **Checks run on the caller's machine.** "Observed" means Atelier's own
   runner ran the check in a clean clone at the verified head. That defeats
@@ -121,7 +123,7 @@ npm install && npm run types && npm test
 Write the server token into the Keychain once, by hand:
 
 ```bash
-security add-generic-password -s atelier.API_TOKEN -a pavi -w
+security add-generic-password -s atelier.API_TOKEN -a "$USER" -w
 ```
 
 Deploy, then make the Worker's secret match the Keychain:
