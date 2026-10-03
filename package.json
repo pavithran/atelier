@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "A Git platform for agents on Cloudflare Workers and Artifacts: one owner per item, observed evidence, a human inbox.",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p .",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

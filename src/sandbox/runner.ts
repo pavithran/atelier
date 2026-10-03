@@ -20,6 +20,17 @@ const STEP_SECONDS = 600;
 const OUTPUT_TAIL = 4000;
 export const EGRESS_HOSTS = ["registry.npmjs.org"];
 
+// Passed to every exec(): variables given to start() reach only the entrypoint.
+// The CA lets Node and npm trust the gateway that answers for the registry.
+const ENV: Record<string, string> = {
+  PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  HOME: "/root",
+  CI: "1",
+  NODE_EXTRA_CA_CERTS: CA,
+  npm_config_cafile: CA,
+  npm_config_update_notifier: "false",
+};
+
 export interface RunRequest {
   runId: string;
   project: string;
@@ -121,21 +132,14 @@ export class CheckRunner extends DurableObject<Env> {
       entrypoint: ["sleep", "infinity"],
       enableInternet: false,
       instance: "standard-1",
-      env: {
-        PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        HOME: "/root",
-        CI: "1",
-        NODE_EXTRA_CA_CERTS: CA,
-        npm_config_cafile: CA,
-        npm_config_update_notifier: "false",
-      },
+      env: ENV,
     });
 
-    const mkdir = await (await container.exec(["mkdir", "-p", WORKDIR])).output();
+    const mkdir = await (await container.exec(["mkdir", "-p", WORKDIR], { env: ENV })).output();
     if (mkdir.exitCode !== 0) throw new Error("could not create the workspace directory");
     const pipe = new IdentityTransformStream();
     const writer = pipe.writable.getWriter();
-    const unpack = await container.exec(["tar", "-x", "-f", "-", "-C", WORKDIR], { stdin: pipe.readable, stdout: "ignore", stderr: "pipe" });
+    const unpack = await container.exec(["tar", "-x", "-f", "-", "-C", WORKDIR], { stdin: pipe.readable, stdout: "ignore", stderr: "pipe", env: ENV });
     const written = (async () => {
       try {
         await writeTree(reader, fp.headTree, (b) => writer.write(b));
@@ -153,7 +157,7 @@ export class CheckRunner extends DurableObject<Env> {
     state.results = [];
     for (const claim of req.checks) {
       const t0 = Date.now();
-      const proc = await container.exec(["timeout", "--kill-after=5", String(STEP_SECONDS), "sh", "-c", claim], { cwd: WORKDIR, stderr: "combined" });
+      const proc = await container.exec(["timeout", "--kill-after=5", String(STEP_SECONDS), "sh", "-c", claim], { cwd: WORKDIR, stderr: "combined", env: ENV });
       const out = await proc.output();
       const timedOut = out.exitCode === 124 ? `\n[atelier] stopped after ${STEP_SECONDS}s` : "";
       state.results.push({
