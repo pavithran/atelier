@@ -1,7 +1,7 @@
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "landed" | "abandoned";
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned";
 
 export interface Item {
   id: string;
@@ -123,7 +123,7 @@ export function parseRuleError(err: unknown): { status: number; code: string; de
 
 export function assertClaimable(item: Item, actor: string): void {
   if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
-  if (item.state === "landed" || item.state === "abandoned" || item.state === "accepted") {
+  if (item.state === "merged" || item.state === "abandoned" || item.state === "accepted") {
     throw new RuleError("closed", `${item.id} is ${item.state}`);
   }
   if (item.owner && item.owner !== actor) {
@@ -219,7 +219,7 @@ export interface InboxEntry {
   project: string;
   itemId: string;
   title: string;
-  kind: "accept" | "assess" | "land" | "stale" | "overlap" | "scope" | "failing";
+  kind: "accept" | "assess" | "merge" | "stale" | "overlap" | "scope" | "failing";
   reason: string;
   weight: number;
 }
@@ -241,7 +241,7 @@ export function inboxFor(
     const rv = reviews.filter((r) => r.itemId === item.id);
     const base = { project, itemId: item.id, title: item.title };
     if (item.state === "accepted") {
-      out.push({ ...base, kind: "land", reason: "accepted; run `atelier land` in the project checkout", weight: 90 });
+      out.push({ ...base, kind: "merge", reason: "accepted; run `atelier merge` in the project checkout", weight: 90 });
       continue;
     }
     if (item.state === "submitted") {

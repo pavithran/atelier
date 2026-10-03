@@ -16,7 +16,7 @@ It rests on three rules.
    agent says it did is *Reported*. A required check with no observed result
    at the current head is *Pending*. Only Observed passes count.
 3. **PAVI decides.** Work reaches the project only when PAVI accepts it and
-   lands it. Changes to protected paths also need approval from a model other
+   merges it. Changes to protected paths also need approval from a model other
    than the owner's, or from PAVI.
 
 The web inbox answers one question, *what needs PAVI now?*, and ranks the
@@ -43,7 +43,7 @@ In detail:
 | `atelier handoff t3 --to codex/gpt-5.5` | the owner or PAVI | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
 | `atelier review t3 --approve` | a different agent, or PAVI | Required when the item changes a protected path. A reviewer of the same model as the owner does not count. |
 | `atelier accept t3` | PAVI, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. |
-| `atelier land t3` | PAVI, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing to GitHub stays a separate, deliberate step. |
+| `atelier merge t3` | PAVI, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing to GitHub stays a separate, deliberate step. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
@@ -62,7 +62,7 @@ Enforced by construction:
   handoff, release or abandonment;
 - observed evidence tied to the head Atelier reads from Artifacts, not the
   head an agent reports;
-- acceptance only through the gate, and landing only of the accepted head.
+- acceptance only through the gate, and merging only of the accepted head.
 
 Trusted, and stated here so nobody assumes otherwise:
 
@@ -76,7 +76,7 @@ Trusted, and stated here so nobody assumes otherwise:
   run) but not an agent that forges API calls. Running checks inside
   Cloudflare Sandbox or Containers would close that gap and is not built.
 - **Merging happens locally.** The Artifacts binding has no merge operation,
-  and the iCloud checkout is the source of truth, so `atelier land` merges
+  and the iCloud checkout is the source of truth, so `atelier merge` merges
   with the local git.
 
 ## Setup

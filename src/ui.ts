@@ -54,7 +54,7 @@ function page(title: string, body: string): string {
 
 const KIND: Record<InboxEntry["kind"], [string, string]> = {
   accept: ["Accept", "go"],
-  land: ["Land", "signal"],
+  merge: ["Merge", "signal"],
   assess: ["Assess", "ask"],
   scope: ["Scope", "ask"],
   stale: ["Stale", "ask"],
@@ -90,7 +90,7 @@ ${groups.size ? `<ul class="rows">${rows}</ul>` : ""}
 ${projects.length ? `<ul class="rows">${list}</ul>` : `<p class="empty">No projects yet. In a project checkout, run <code>atelier init</code>.</p>`}`);
 }
 
-const STATE_TONE: Record<string, string> = { open: "", claimed: "signal", submitted: "ask", accepted: "go", landed: "go", abandoned: "bad" };
+const STATE_TONE: Record<string, string> = { open: "", claimed: "signal", submitted: "ask", accepted: "go", merged: "go", abandoned: "bad" };
 
 export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[]): string {
   const rows = items.map((i) => `<li><span class="tag ${STATE_TONE[i.state]}">${i.state}</span>
@@ -145,7 +145,7 @@ export function renderItem(
 <h2>Gate</h2>
 ${gate.ready ? `<p class="ready">Ready to accept: every required check observed passing at this head.</p>` : `<ul class="blockers">${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul>`}
 ${item.state === "submitted" ? `<form class="act" method="post" action="${action("accept")}"><button class="primary"${gate.ready ? "" : " disabled"}>Accept ${short(item.head)}</button></form>` : ""}
-${item.state === "accepted" ? `<p>Accepted at <span class="mono">${short(item.acceptedHead)}</span>. In the project checkout, run <code>atelier land ${e(item.id)}</code>.</p>` : ""}
+${item.state === "accepted" ? `<p>Accepted at <span class="mono">${short(item.acceptedHead)}</span>. In the project checkout, run <code>atelier merge ${e(item.id)}</code>.</p>` : ""}
 
 <h2>Evidence at this head</h2>
 ${checks || reports ? `<table><tr><th>Grade</th><th>Claim</th><th>By</th></tr>${checks}${reports}</table>` : `<p class="empty">No required checks for this project and nothing reported.</p>`}
@@ -157,7 +157,7 @@ ${live && item.head ? `<form class="act" method="post" action="${action("approve
 ${live ? `<h2>Ownership</h2>
 <form class="act" method="post" action="${action("handoff")}"><input type="text" name="to" placeholder="harness/model, e.g. codex/gpt-5.5" required><input type="text" name="note" placeholder="Why"><button>Hand off</button></form>
 <form class="act" method="post" action="${action("release")}"><input type="text" name="note" placeholder="Why"><button>Release to unowned</button></form>` : ""}
-${item.state !== "landed" && item.state !== "abandoned" ? `<form class="act" method="post" action="${action("abandon")}"><input type="text" name="note" placeholder="Why abandon"><button class="danger">Abandon</button></form>` : ""}
+${item.state !== "merged" && item.state !== "abandoned" ? `<form class="act" method="post" action="${action("abandon")}"><input type="text" name="note" placeholder="Why abandon"><button class="danger">Abandon</button></form>` : ""}
 
 <h2>Provenance</h2>${eventTable(d.events)}`);
 }

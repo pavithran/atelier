@@ -200,12 +200,12 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  landed(id: string, actor: string, mergeCommit: string, observed: boolean): Item {
-    if (actor !== PAVI) throw new RuleError("not_pavi", "only PAVI lands", 403);
+  merged(id: string, actor: string, mergeCommit: string, observed: boolean): Item {
+    if (actor !== PAVI) throw new RuleError("not_pavi", "only PAVI merges", 403);
     const item = this.item(id);
     if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}`);
-    this.update(id, { state: "landed", owner: null });
-    this.log(id, actor, "item.landed", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed });
+    this.update(id, { state: "merged", owner: null });
+    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed });
     return this.item(id);
   }
 

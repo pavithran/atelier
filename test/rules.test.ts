@@ -42,7 +42,7 @@ test("one owner: a second actor cannot claim an owned item", () => {
   assert.throws(() => assertClaimable(item({ state: "claimed" }), "codex/gpt-5.5"), /owned by claude-code/);
   assert.doesNotThrow(() => assertClaimable(item({ state: "claimed" }), "claude-code/opus-5.5"));
   assert.doesNotThrow(() => assertClaimable(item({ state: "open", owner: null }), "codex/gpt-5.5"));
-  assert.throws(() => assertClaimable(item({ state: "landed", owner: null }), "codex/gpt-5.5"), /landed/);
+  assert.throws(() => assertClaimable(item({ state: "merged", owner: null }), "codex/gpt-5.5"), /merged/);
 });
 
 test("rule errors survive a trip through a plain message", () => {
@@ -114,7 +114,7 @@ test("inbox: decisions outrank the owner's problems", () => {
   ];
   const ev = [pass({ itemId: "t1" }), pass({ itemId: "t2", passed: false, changedPaths: ["lib/a.ts"] })];
   const kinds = inboxFor("proj", items, policy, ev, [], now).map((x) => `${x.itemId}:${x.kind}`);
-  assert.deepEqual(kinds, ["t1:accept", "t4:land", "t3:stale", "t2:failing"]);
+  assert.deepEqual(kinds, ["t1:accept", "t4:merge", "t3:stale", "t2:failing"]);
 });
 
 test("inbox flags live items whose scopes overlap", () => {

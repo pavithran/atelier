@@ -3,7 +3,7 @@
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
-// sees in Artifacts. Only `atelier land`, run by PAVI, touches the checkout.
+// sees in Artifacts. Only `atelier merge`, run by PAVI, touches the checkout.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -198,7 +198,7 @@ const commands = {
     const name = project();
     const { items } = await call("GET", P(name), undefined, actor("pavi"));
     for (const i of items) {
-      if (!args.all && (i.state === "landed" || i.state === "abandoned")) continue;
+      if (!args.all && (i.state === "merged" || i.state === "abandoned")) continue;
       console.log(`${i.id.padEnd(5)} ${i.state.padEnd(10)} ${(i.owner ?? "—").padEnd(26)} ${short(i.head)}  ${i.title}`);
     }
   },
@@ -248,7 +248,7 @@ const commands = {
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
   },
 
-  // Agents: bring the workspace up to date with what has landed since the fork.
+  // Agents: bring the workspace up to date with what has merged since the fork.
   async update() {
     const name = project(), id = itemArg(), as = actor();
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
@@ -344,7 +344,7 @@ const commands = {
   async accept() {
     const name = project(), id = itemArg();
     const item = await call("POST", `${I(name, id)}/accept`, {}, "pavi");
-    console.log(`${id} accepted at ${short(item.acceptedHead)}. Land it with: atelier land ${id}`);
+    console.log(`${id} accepted at ${short(item.acceptedHead)}. Merge it with: atelier merge ${id}`);
   },
 
   async abandon() {
@@ -355,14 +355,14 @@ const commands = {
 
   // PAVI, in the iCloud checkout: merge exactly the accepted head, record the
   // provenance as a git note, and publish the new baseline.
-  async land() {
+  async merge() {
     const name = project(), id = itemArg();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
     const cwd = p.path;
     const d = await call("GET", I(name, id), undefined, "pavi");
     const { item } = d;
     if (item.state !== "accepted") die(`${id} is ${item.state}; accept it first`);
-    if (git(["status", "--porcelain"], { cwd })) die(`${cwd} has uncommitted changes; land into a clean checkout`);
+    if (git(["status", "--porcelain"], { cwd })) die(`${cwd} has uncommitted changes; merge into a clean checkout`);
     if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
 
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, "pavi");
@@ -376,7 +376,7 @@ const commands = {
     if (git(["rev-parse", "FETCH_HEAD"], { cwd }) !== item.acceptedHead) die("fetched head does not match the accepted head");
 
     const owners = [...new Set(d.events.filter((e) => e.kind === "item.claimed" || e.kind === "item.handoff").map((e) => e.data.to ?? e.actor))];
-    const msg = `Land ${id}: ${item.title}\n\nAtelier: ${name}/${id} accepted at ${item.acceptedHead}\nWorked by: ${owners.join(" → ") || item.owner}`;
+    const msg = `Merge ${id}: ${item.title}\n\nAtelier: ${name}/${id} accepted at ${item.acceptedHead}\nWorked by: ${owners.join(" → ") || item.owner}`;
     const m = git(["merge", "--no-ff", "-m", msg, item.acceptedHead], { cwd, allowFail: true });
     if (m.status !== 0) {
       git(["merge", "--abort"], { cwd, allowFail: true });
@@ -393,8 +393,8 @@ const commands = {
     ].join("\n");
     git(["notes", "--ref=atelier", "add", "-f", "-m", note, mergeCommit], { cwd });
     git([...auth(base.token), "push", "--quiet", base.remote, `${p.branch}:${p.branch}`, "refs/notes/atelier:refs/notes/atelier"], { cwd });
-    const r = await call("POST", `${I(name, id)}/landed`, { mergeCommit }, "pavi");
-    console.log(`${id} landed as ${short(mergeCommit)} in ${cwd}; baseline updated${r ? "" : ""}.`);
+    const r = await call("POST", `${I(name, id)}/merged`, { mergeCommit }, "pavi");
+    console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline updated${r ? "" : ""}.`);
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
     if (git(["remote"], { cwd }).split("\n").includes("origin")) console.log(`Push to GitHub when you're ready: git push origin ${p.branch}`);
   },
@@ -422,13 +422,13 @@ item with exactly one owner. Never edit the project checkout directly.
 4. \`atelier check\` — runs the project's required checks in a clean clone of
    exactly that head. Only these count as Observed. \`atelier report "…"\`
    records anything else you verified; it shows as Reported, never as passing.
-5. \`atelier submit\` when the gate is clear. PAVI accepts and lands.
+5. \`atelier submit\` when the gate is clear. PAVI accepts and merges.
 6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
    or \`atelier release ID\`. Your write token is revoked either way.
 7. Reviewing someone else's item: \`atelier diff ID\`, then
    \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
    paths need approval from a different model than the owner's.
-8. \`atelier update\` rebases your workspace onto whatever has landed since.
+8. \`atelier update\` rebases your workspace onto whatever has merged since.
 `);
   },
 
@@ -439,7 +439,7 @@ Setup      login --server URL · init [--check CMD]... [--protect GLOB]... · pu
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · inbox · open
 Agents     claim ID --as H/M · push · update · check [-- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-PAVI       accept ID · land ID · abandon ID
+PAVI       accept ID · merge ID · abandon ID
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);

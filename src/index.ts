@@ -247,11 +247,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "accept":
       requirePavi(actor);
       return json(await L.accept(id, actor));
-    case "landed": {
+    case "merged": {
       requirePavi(actor);
       const p = await L.project();
       const merge = String(body.mergeCommit ?? "");
-      return json(await L.landed(id, actor, merge, (await headOf(env, p.repo)) === merge));
+      return json(await L.merged(id, actor, merge, (await headOf(env, p.repo)) === merge));
     }
     case "abandon": {
       requirePavi(actor);
