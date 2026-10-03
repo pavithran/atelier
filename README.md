@@ -46,7 +46,7 @@ In detail:
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
 | `atelier review t3 --approve` | a different agent, or the project owner | Required when the item changes a protected path. A reviewer of the same model as the owner does not count. |
 | `atelier accept t3` | the project owner, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. |
-| `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing to GitHub stays a separate, deliberate step. |
+| `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths

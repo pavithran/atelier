@@ -189,7 +189,7 @@ function readControlPlane(top) {
   return { sources, protected: [...protectedPaths], eligible, refuseOverlap };
 }
 
-function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy }) {
+function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote }) {
   const dir = join(cwd, "docs", "control-plane", "landing-receipts");
   if (!existsSync(dir)) return null;
   const template = readJson(join(cwd, "docs", "control-plane", "landing-receipt.v1.json")) ?? {};
@@ -210,7 +210,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy }) {
         `Atelier item ${id}, "${item.title}", worked by ${owners.join(" then ") || "nobody recorded"}, accepted by ${OWNER_NAME} at ${item.acceptedHead} and merged with --no-ff.`,
         policy.approval ? `The Atelier baseline copy in Artifacts was approved as: ${policy.approval.replace(/[.\s]*$/, "")}.` : null,
         reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : "No review was required at the accepted head.",
-        "Provenance is on refs/notes/atelier for the merge commit.",
+        `Provenance is on refs/notes/atelier for the merge commit${notesRemote ? `, and that ref alone is pushed to ${notesRemote}` : ""}.`,
       ].filter(Boolean).join(" "),
     },
     tests: view.map((e) =>
@@ -218,7 +218,13 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy }) {
         ? `Observed by Atelier in a clean clone at ${short(e.head)}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
         : `Reported, not verified: ${e.claim} (${e.by}, ${e.at})`),
     next_gate: `${OWNER_NAME} chooses the next work. The merge is not deployed and not pushed to the project's own remotes.`,
-    protected_actions_not_taken: ["deploy", "push to the project's own remotes", "migration", "credential change", "Observatory publication"],
+    protected_actions_not_taken: [
+      "deploy",
+      notesRemote ? `push of ${branch} to the project's own remotes (only refs/notes/atelier went to ${notesRemote})` : "push to the project's own remotes",
+      "migration",
+      "credential change",
+      "Observatory publication",
+    ],
     unrelated_dirty: [],
     session_continuing: true,
   };
@@ -260,7 +266,7 @@ const commands = {
     }, OWNER);
     git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
     cfg.projects ??= {};
-    cfg.projects[name] = { path: top, branch };
+    cfg.projects[name] = { ...cfg.projects[name], path: top, branch };
     saveConfig(cfg);
     const pol = r.project.policy;
     console.log(`${name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
@@ -480,7 +486,7 @@ const commands = {
     const reviews = d.reviews.filter((r) => r.head === item.acceptedHead);
     // The receipt rides in the merge commit itself, in the project's own
     // ControlPlane receipt format, so the merge and its record are one change.
-    const receipt = writeReceipt(cwd, { name, id, item, owners, view, reviews, policy: d.policy });
+    const receipt = writeReceipt(cwd, { name, id, item, owners, view, reviews, policy: d.policy, branch: p.branch, notesRemote: p.notesRemote });
     if (receipt) git(["add", receipt], { cwd });
     git(["commit", "--quiet", "-m", msg], { cwd });
     const mergeCommit = git(["rev-parse", "HEAD"], { cwd });
@@ -493,14 +499,37 @@ const commands = {
     ].join("\n");
     git(["notes", "--ref=atelier", "add", "-f", "-m", note, mergeCommit], { cwd });
     git([...auth(base.token), "push", "--quiet", base.remote, `${p.branch}:${p.branch}`, "refs/notes/atelier:refs/notes/atelier"], { cwd });
+    // Provenance can travel to the project's own remote on its own; the merged
+    // branch never does, so publishing the code stays a separate decision.
+    const notesPush = p.notesRemote ? git(["push", "--quiet", p.notesRemote, "refs/notes/atelier:refs/notes/atelier"], { cwd, allowFail: true }) : null;
     await call("POST", `${I(name, id)}/merged`, { mergeCommit }, OWNER);
     console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline updated.`);
     if (receipt) console.log(`Receipt: ${receipt}`);
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
-    console.log(`Nothing was deployed or pushed to the project's own remotes.`);
+    if (notesPush?.status === 0) console.log(`Provenance notes pushed to ${p.notesRemote}. ${p.branch} itself was not pushed, and nothing was deployed.`);
+    else if (notesPush) console.log(`Provenance notes did NOT reach ${p.notesRemote}: ${(notesPush.stderr || notesPush.stdout).trim()}\nRetry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
+    else console.log(`Nothing was deployed or pushed to the project's own remotes.`);
   },
 
   // One line per live item, for a wrap to copy into STATE.md's Owner section.
+  // The project owner: choose a remote that receives refs/notes/atelier on every
+  // merge, or --off. Kept per Mac, beside the checkout path, never on the server.
+  async "notes-remote"() {
+    const name = project();
+    const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
+    if (args.off) {
+      delete p.notesRemote;
+      saveConfig(cfg);
+      return console.log(`${name}: provenance notes stay local and in Artifacts.`);
+    }
+    const remote = args._[1];
+    if (!remote) return console.log(p.notesRemote ? `${name}: notes go to ${p.notesRemote} on each merge.` : `${name}: notes stay local and in Artifacts. Set one with: atelier notes-remote REMOTE`);
+    if (!git(["remote"], { cwd: p.path }).split("\n").includes(remote)) die(`${p.path} has no remote called ${remote}`);
+    p.notesRemote = remote;
+    saveConfig(cfg);
+    console.log(`${name}: each merge now pushes refs/notes/atelier to ${remote}. The merged branch is never pushed.`);
+  },
+
   async owners() {
     const name = project();
     const live = await call("GET", `${P(name)}/owners`, undefined, actor(OWNER));
@@ -545,7 +574,7 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--approval TEXT] · publish
+Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
 Agents     claim ID --as H/M · push · update · check [-- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
