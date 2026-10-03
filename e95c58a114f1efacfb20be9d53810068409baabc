@@ -1,0 +1,14 @@
+atelier cloudflare-git/t7 "Push provenance notes to a chosen remote as part of each merge"
+accepted head 99f66a3194204b55046702df3635320fabf5d68e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-03T22:37:27.638Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-03T22:37:29.437Z
+REPORTED Ran under wrangler dev against real Artifacts with a bare-repo remote: notes-remote refused a missing remote, a merge pushed refs/notes/atelier while the remote's main stayed at the initial commit, the setting survived a re-init, and --off cleared it. — claude-code/opus-5.5 2026-10-03T22:37:30.025Z
+2026-10-03T22:36:08.826Z pavi item.created
+2026-10-03T22:36:09.095Z claude-code/opus-5.5 item.claimed
+2026-10-03T22:36:11.062Z claude-code/opus-5.5 fork.created
+2026-10-03T22:37:23.595Z claude-code/opus-5.5 push.observed
+2026-10-03T22:37:27.697Z claude-code/opus-5.5 evidence.observed
+2026-10-03T22:37:29.503Z claude-code/opus-5.5 evidence.observed
+2026-10-03T22:37:30.027Z claude-code/opus-5.5 evidence.reported
+2026-10-03T22:37:30.313Z claude-code/opus-5.5 item.submitted
+2026-10-03T22:38:31.699Z pavi item.accepted
