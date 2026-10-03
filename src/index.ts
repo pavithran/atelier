@@ -83,6 +83,11 @@ function codeOf(err: unknown): string {
   return `${e?.code ?? ""} ${e?.message ?? ""}`;
 }
 
+// Across the binding an ArtifactsError can arrive with its code missing and
+// only its message ("repo already exists: name"), so both are matched.
+const ALREADY_EXISTS = /ALREADY_EXISTS|already exists/i;
+const IN_PROGRESS = /IN_PROGRESS|in progress|not ready/i;
+
 async function headOf(env: Env, repo: string): Promise<string | null> {
   // A fresh fork can briefly report FORK_IN_PROGRESS; wait it out rather than fail the claim.
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -91,7 +96,7 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
       const [top] = await r.log({ limit: 1 });
       return top?.hash ?? null;
     } catch (err) {
-      if (!/IN_PROGRESS|not ready/i.test(codeOf(err))) throw err;
+      if (!IN_PROGRESS.test(codeOf(err))) throw err;
       await new Promise((ok) => setTimeout(ok, 500 * (attempt + 1)));
     }
   }
@@ -150,7 +155,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     try {
       await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: body.defaultBranch ?? "main" });
     } catch (err) {
-      if (!/ALREADY_EXISTS/.test(codeOf(err))) throw err;
+      if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
     await L.setProject(record, actor);
     await index(env).registerProject(record);
