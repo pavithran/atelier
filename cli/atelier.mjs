@@ -232,6 +232,29 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
   return file.slice(cwd.length + 1);
 }
 
+// Run the project's required checks in a Cloudflare container instead of
+// here. The Worker records the results itself; this only starts and waits.
+async function checkInSandbox() {
+  const name = project(), id = itemArg(), as = actor();
+  const { runId } = await call("POST", `${I(name, id)}/sandbox`, {}, as);
+  process.stderr.write(`atelier: running the checks for ${id} in a Cloudflare container (run ${runId})…\n`);
+  let state;
+  for (let waited = 0; ; waited += 5) {
+    state = await call("GET", `${I(name, id)}/sandbox/${encodeURIComponent(runId)}`, undefined, as);
+    if (state.status === "done" || state.status === "failed") break;
+    if (waited > 20 * 60) die(`still ${state.status} after 20 minutes; check later with atelier show ${id}`);
+    await new Promise((ok) => setTimeout(ok, 5000));
+  }
+  for (const r of state.results ?? []) {
+    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}  (${r.seconds}s, in Cloudflare)`);
+    if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
+  }
+  if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
+  if (state.status === "failed") die(`the run failed: ${state.error}`);
+  if (!state.recorded) die("the checks ran but the ledger did not record them");
+  if (state.results.some((r) => !r.passed)) process.exit(2);
+}
+
 // ── commands ───────────────────────────────────────────────────────────────
 
 const commands = {
@@ -261,6 +284,7 @@ const commands = {
       protected: protect,
       eligible: cp?.eligible ?? [],
       refuseOverlap: cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]),
+      sandboxOnly: Boolean(args["sandbox-only"]),
       approval: args.approval === true ? undefined : args.approval,
       defaultBranch: branch,
     }, OWNER);
@@ -361,6 +385,7 @@ const commands = {
   // Observed evidence: run each required check (or the given command) in a
   // clean clone of exactly the head Artifacts holds, and record the result.
   async check() {
+    if (args.sandbox) return checkInSandbox();
     const name = project(), id = itemArg(), as = actor();
     const d = await call("GET", I(name, id), undefined, as);
     const cmds = args.rest?.length ? [args.rest.join(" ")] : d.policy.checks;
@@ -574,9 +599,9 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
-Agents     claim ID --as H/M · push · update · check [-- CMD] · report "…" · submit
+Agents     claim ID --as H/M · push · update · check [--sandbox | -- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID · abandon ID
 Docs       guide   (paste into a project's AGENTS.md)

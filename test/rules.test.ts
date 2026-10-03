@@ -171,3 +171,16 @@ test("overlapping claims are refused when the project says so, and only then", (
   const unscoped = item({ id: "t4", state: "open", owner: null, scope: [] });
   assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
+
+test("under sandboxOnly, only checks the Worker observed in a sandbox count", () => {
+  const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
+  const local = pass();                                   // posted by the CLI: where is absent, so "runner"
+  const cloud = pass({ where: "sandbox", by: "atelier/sandbox" });
+  assert.equal(gate(item(), policy, [local], []).ready, true);
+  const g = gate(item(), strict, [local], []);
+  assert.equal(g.ready, false);
+  assert.match(g.blockers.join(), /not yet observed/);
+  assert.equal(gate(item(), strict, [local, cloud], []).ready, true);
+  assert.deepEqual(evidenceAt(strict, [cloud], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "sandbox" }]);
+  assert.equal(evidenceAt(policy, [local], H1).checks[0].where, "runner");
+});
