@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// atelier — the command agents and PAVI run. No dependencies: Node and git.
+// atelier — the command agents and the project owner run. No dependencies: Node and git.
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
-// sees in Artifacts. Only `atelier merge`, run by PAVI, touches the checkout.
+// sees in Artifacts. Only `atelier merge`, run by the project owner, touches
+// the checkout.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -67,6 +68,10 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 const cfg = loadConfig();
+
+// The server says which actor stands for the project owner; `login` records it.
+const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";
+const OWNER_NAME = cfg.ownerName ?? "the project owner";
 
 function server() {
   const s = process.env.ATELIER_SERVER ?? cfg.server;
@@ -202,7 +207,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy }) {
       kind: "atelier-merge",
       target: `${name}/${id}`,
       evidence: [
-        `Atelier item ${id}, "${item.title}", worked by ${owners.join(" then ") || "nobody recorded"}, accepted by PAVI at ${item.acceptedHead} and merged with --no-ff.`,
+        `Atelier item ${id}, "${item.title}", worked by ${owners.join(" then ") || "nobody recorded"}, accepted by ${OWNER_NAME} at ${item.acceptedHead} and merged with --no-ff.`,
         policy.approval ? `The Atelier baseline copy in Artifacts was approved as: ${policy.approval.replace(/[.\s]*$/, "")}.` : null,
         reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : "No review was required at the accepted head.",
         "Provenance is on refs/notes/atelier for the merge commit.",
@@ -212,7 +217,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy }) {
       e.grade === "observed"
         ? `Observed by Atelier in a clean clone at ${short(e.head)}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
         : `Reported, not verified: ${e.claim} (${e.by}, ${e.at})`),
-    next_gate: "PAVI chooses the next work. The merge is not deployed and not pushed to the project's own remotes.",
+    next_gate: `${OWNER_NAME} chooses the next work. The merge is not deployed and not pushed to the project's own remotes.`,
     protected_actions_not_taken: ["deploy", "push to the project's own remotes", "migration", "credential change", "Observatory publication"],
     unrelated_dirty: [],
     session_continuing: true,
@@ -228,18 +233,21 @@ const commands = {
     if (!args.server) die("usage: atelier login --server https://atelier.example.com");
     cfg.server = String(args.server).replace(/\/$/, "");
     saveConfig(cfg);
-    await call("GET", "/projects", undefined, "pavi");
-    console.log(`Signed in to ${cfg.server}. The token is read from Keychain atelier.API_TOKEN.`);
+    const conf = await call("GET", "/config", undefined, "owner");
+    cfg.owner = conf.ownerActor;
+    cfg.ownerName = conf.ownerName ?? undefined;
+    saveConfig(cfg);
+    console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". The token is read from Keychain atelier.API_TOKEN.`);
   },
 
-  // PAVI, in the project's iCloud checkout.
+  // The project owner, in the project's checkout.
   async init() {
     const top = git(["rev-parse", "--show-toplevel"]);
     const name = args.name ?? top.split("/").pop();
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
     const cp = readControlPlane(top);
     if (cp && (!args.approval || args.approval === true)) {
-      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord PAVI's approval: atelier init --approval "PAVI, ${new Date().toISOString().slice(0, 10)}: …"`);
+      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
     }
     const protect = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
     const r = await call("PUT", P(name), {
@@ -249,7 +257,7 @@ const commands = {
       refuseOverlap: cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]),
       approval: args.approval === true ? undefined : args.approval,
       defaultBranch: branch,
-    }, "pavi");
+    }, OWNER);
     git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
     cfg.projects ??= {};
     cfg.projects[name] = { path: top, branch };
@@ -264,11 +272,11 @@ const commands = {
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   },
 
-  // PAVI: push commits made directly in the checkout so new forks start from them.
+  // The project owner: push commits made directly in the checkout so new forks start from them.
   async publish() {
     const name = project();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
-    const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, "pavi");
+    const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
     git([...auth(t.token), "push", "--quiet", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
   },
@@ -276,13 +284,13 @@ const commands = {
   async new() {
     const title = args._.slice(1).join(" ");
     if (!title) die('usage: atelier new "title" [--scope GLOB]...');
-    const item = await call("POST", `${P(project())}/items`, { title, scope: args.multi.scope ?? [] }, actor("pavi"));
+    const item = await call("POST", `${P(project())}/items`, { title, scope: args.multi.scope ?? [] }, actor(OWNER));
     console.log(`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`);
   },
 
   async ls() {
     const name = project();
-    const { items } = await call("GET", P(name), undefined, actor("pavi"));
+    const { items } = await call("GET", P(name), undefined, actor(OWNER));
     for (const i of items) {
       if (!args.all && (i.state === "merged" || i.state === "abandoned")) continue;
       console.log(`${i.id.padEnd(5)} ${i.state.padEnd(10)} ${(i.owner ?? "—").padEnd(26)} ${short(i.head)}  ${i.title}`);
@@ -290,7 +298,7 @@ const commands = {
   },
 
   async show() {
-    const d = await call("GET", I(project(), itemArg()), undefined, actor("pavi"));
+    const d = await call("GET", I(project(), itemArg()), undefined, actor(OWNER));
     const { item, gate } = d;
     console.log(`${item.id}  ${item.title}\n  state ${item.state}   owner ${item.owner ?? "—"}   head ${short(item.head)}   workspace ${item.fork ?? "—"}`);
     console.log(gate.ready ? "  gate: READY" : `  gate:\n${gate.blockers.map((b) => `    - ${b}`).join("\n")}`);
@@ -386,12 +394,12 @@ const commands = {
     const name = project(), id = itemArg(), as = actor();
     await call("POST", `${I(name, id)}/submit`, {}, as);
     const d = await call("GET", I(name, id), undefined, as);
-    console.log(d.gate.ready ? `${id} submitted and ready for PAVI.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
+    console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
 
   // Reviewers: read another agent's work without being able to change it.
   async diff() {
-    const name = project(), id = itemArg(), as = actor("pavi");
+    const name = project(), id = itemArg(), as = actor(OWNER);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     const { dir } = cleanClone(ws.remote, ws.token, ws.head, null);
@@ -429,35 +437,35 @@ const commands = {
 
   async accept() {
     const name = project(), id = itemArg();
-    const item = await call("POST", `${I(name, id)}/accept`, {}, "pavi");
+    const item = await call("POST", `${I(name, id)}/accept`, {}, OWNER);
     console.log(`${id} accepted at ${short(item.acceptedHead)}. Merge it with: atelier merge ${id}`);
   },
 
   async abandon() {
     const name = project(), id = itemArg();
-    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, "pavi");
+    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
     console.log(`${id} abandoned.`);
   },
 
-  // PAVI, in the iCloud checkout: merge exactly the accepted head, record the
+  // The project owner, in the checkout: merge exactly the accepted head, record the
   // provenance as a git note, and publish the new baseline.
   async merge() {
     const name = project(), id = itemArg();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
     const cwd = p.path;
-    const d = await call("GET", I(name, id), undefined, "pavi");
+    const d = await call("GET", I(name, id), undefined, OWNER);
     const { item } = d;
     if (item.state !== "accepted") die(`${id} is ${item.state}; accept it first`);
     if (git(["status", "--porcelain"], { cwd })) die(`${cwd} has uncommitted changes; merge into a clean checkout`);
     if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
 
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, "pavi");
+    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
     git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
     const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
     const ahead = git(["merge-base", "--is-ancestor", baselineHead, "HEAD"], { cwd, allowFail: true });
     if (ahead.status !== 0) die(`the baseline has commits this checkout lacks (${short(baselineHead)}); pull them in first`);
 
-    const ws = await call("POST", `${I(name, id)}/read-token`, {}, "pavi");
+    const ws = await call("POST", `${I(name, id)}/read-token`, {}, OWNER);
     git([...auth(ws.token), "fetch", "--quiet", ws.remote, item.acceptedHead], { cwd });
     if (git(["rev-parse", "FETCH_HEAD"], { cwd }) !== item.acceptedHead) die("fetched head does not match the accepted head");
 
@@ -485,7 +493,7 @@ const commands = {
     ].join("\n");
     git(["notes", "--ref=atelier", "add", "-f", "-m", note, mergeCommit], { cwd });
     git([...auth(base.token), "push", "--quiet", base.remote, `${p.branch}:${p.branch}`, "refs/notes/atelier:refs/notes/atelier"], { cwd });
-    await call("POST", `${I(name, id)}/merged`, { mergeCommit }, "pavi");
+    await call("POST", `${I(name, id)}/merged`, { mergeCommit }, OWNER);
     console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline updated.`);
     if (receipt) console.log(`Receipt: ${receipt}`);
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
@@ -495,14 +503,14 @@ const commands = {
   // One line per live item, for a wrap to copy into STATE.md's Owner section.
   async owners() {
     const name = project();
-    const live = await call("GET", `${P(name)}/owners`, undefined, actor("pavi"));
+    const live = await call("GET", `${P(name)}/owners`, undefined, actor(OWNER));
     if (args.json) return console.log(JSON.stringify({ project: name, source: server(), owners: live }, null, 2));
     if (!live.length) return console.log(`Atelier: no ${name} item is owned.`);
     for (const o of live) console.log(`Atelier: ${o.item} ${o.state}, owned by ${o.owner ?? "nobody"} since ${o.since.slice(0, 16)}Z (${server()}/p/${name}/${o.item}).`);
   },
 
   async inbox() {
-    const entries = await call("GET", "/inbox", undefined, "pavi");
+    const entries = await call("GET", "/inbox", undefined, OWNER);
     if (!entries.length) return console.log("Nothing needs you.");
     for (const x of entries) console.log(`${x.kind.toUpperCase().padEnd(8)} ${x.project}/${x.itemId}  ${x.title}\n         ${x.reason}`);
   },
@@ -517,14 +525,14 @@ const commands = {
 Several agents may work on this project at once. Each piece of work is an
 item with exactly one owner. Never edit the project checkout directly.
 
-1. \`atelier ls --project NAME\` — find an open item, or ask PAVI to create one.
+1. \`atelier ls --project NAME\` — find an open item, or ask the project owner to create one.
 2. \`atelier claim ID --project NAME --as HARNESS/MODEL\` — you get a private
    workspace (a fork of the project). Work only there.
 3. Commit, then \`atelier push\`. Atelier records the head it sees in Artifacts.
 4. \`atelier check\` — runs the project's required checks in a clean clone of
    exactly that head. Only these count as Observed. \`atelier report "…"\`
    records anything else you verified; it shows as Reported, never as passing.
-5. \`atelier submit\` when the gate is clear. PAVI accepts and merges.
+5. \`atelier submit\` when the gate is clear. The project owner accepts and merges.
 6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
    or \`atelier release ID\`. Your write token is revoked either way.
 7. Reviewing someone else's item: \`atelier diff ID\`, then
@@ -535,13 +543,13 @@ item with exactly one owner. Never edit the project checkout directly.
   },
 
   help() {
-    console.log(`atelier — one owner per item, observed evidence, PAVI decides.
+    console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
 Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--approval TEXT] · publish
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
 Agents     claim ID --as H/M · push · update · check [-- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-PAVI       accept ID · merge ID · abandon ID
+Owner      accept ID · merge ID · abandon ID
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);

@@ -1,5 +1,5 @@
 import { Ledger, type ProjectRecord } from "./ledger";
-import { parseRuleError, PAVI, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { DEFAULT_OWNER, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { escapeText, renderInbox, renderItem, renderLogin, renderProject } from "./ui";
 
 export { Ledger };
@@ -12,7 +12,7 @@ type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any };
 // ── auth ───────────────────────────────────────────────────────────────────
 // One bearer token, held in the Keychain as atelier.API_TOKEN. Identity is
 // declared by the caller (X-Atelier-Actor); the token proves only that the
-// caller is one of PAVI's own tools. What makes ownership real is that a
+// caller is one of the project owner's own tools. What makes ownership real is that a
 // fork's write token is minted for its owner alone and revoked on handoff.
 
 async function sha256(s: string): Promise<string> {
@@ -25,6 +25,16 @@ function sameString(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string };
+
+// The actor that stands for the project owner, and the name the pages use.
+function ownerActor(env: Env): string {
+  return (env as unknown as Settings).OWNER_ACTOR || DEFAULT_OWNER;
+}
+function ownerName(env: Env): string | null {
+  return (env as unknown as Settings).OWNER_NAME || null;
 }
 
 function serverToken(env: Env): string | undefined {
@@ -63,8 +73,8 @@ function index(env: Env) {
   return env.LEDGER.get(env.LEDGER.idFromName("__index"));
 }
 
-function requirePavi(actor: string) {
-  if (actor !== PAVI) throw new RuleError("not_pavi", "only PAVI can do this", 403);
+function requireOwner(env: Env, actor: string) {
+  if (actor !== ownerActor(env)) throw new RuleError("not_project_owner", "only the project owner can do this", 403);
 }
 
 function codeOf(err: unknown): string {
@@ -122,7 +132,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const L = ledger(env, project);
 
   if (parts.length === 2 && m === "PUT") {
-    requirePavi(actor);
+    requireOwner(env, actor);
     const repo = repoName(project);
     const record: ProjectRecord = {
       name: project,
@@ -151,7 +161,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
-    if (scope === "write") requirePavi(actor);
+    if (scope === "write") requireOwner(env, actor);
     return json(await mint(env, (await L.project()).repo, scope));
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
@@ -252,16 +262,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(item);
     }
     case "accept":
-      requirePavi(actor);
+      requireOwner(env, actor);
       return json(await L.accept(id, actor));
     case "merged": {
-      requirePavi(actor);
+      requireOwner(env, actor);
       const p = await L.project();
       const merge = String(body.mergeCommit ?? "");
       return json(await L.merged(id, actor, merge, (await headOf(env, p.repo)) === merge));
     }
     case "abandon": {
-      requirePavi(actor);
+      requireOwner(env, actor);
       const before = await L.item(id);
       const oldToken = await L.tokenId(id);
       const item = await L.abandon(id, actor, String(body.note ?? ""));
@@ -291,14 +301,15 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const [, project, id, verb] = parts; // /ui/<project>/<id>/<verb>
     const L = ledger(env, project);
     const note = String(form.get("note") ?? "");
+    const owner = ownerActor(env);
     const before = await L.item(id);
     const oldToken = await L.tokenId(id);
-    if (verb === "accept") await L.accept(id, PAVI);
-    else if (verb === "abandon") await L.abandon(id, PAVI, note);
-    else if (verb === "release") await L.release(id, PAVI, note);
-    else if (verb === "handoff") await L.handoff(id, PAVI, String(form.get("to") ?? ""), note);
+    if (verb === "accept") await L.accept(id, owner);
+    else if (verb === "abandon") await L.abandon(id, owner, note);
+    else if (verb === "release") await L.release(id, owner, note);
+    else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note);
     else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: PAVI, head: before.head ?? "", approve: verb === "approve", note, at: new Date().toISOString() });
+      await L.addReview({ itemId: id, by: owner, head: before.head ?? "", approve: verb === "approve", note, at: new Date().toISOString() });
     } else return html("Unknown action.", 400);
     if (verb === "abandon" || verb === "release" || verb === "handoff") {
       await revoke(env, before.fork, oldToken);
@@ -307,14 +318,14 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0) return html(renderInbox(await inbox(env), await index(env).projects()));
+  if (parts.length === 0) return html(renderInbox(await inbox(env), await index(env).projects(), ownerName(env)));
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
     return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40)));
   }
   if (parts[0] === "p" && parts.length === 3) {
     const L = ledger(env, parts[1]);
-    return html(renderItem(await L.project(), await L.detail(parts[2])));
+    return html(renderItem(await L.project(), await L.detail(parts[2]), ownerName(env)));
   }
   return html("Not found.", 404);
 }
@@ -344,13 +355,14 @@ export default {
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       if (parts[0] === "api") {
         if (how !== "api") return json({ error: "unauthorised" }, 401);
+        if (parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env) });
         const actor = req.headers.get("x-atelier-actor") ?? "";
-        if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or pavi" }, 400);
+        if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         return await api({ env, req, url, actor, body }, parts.slice(1));
       }
       if (!how) return Response.redirect(new URL("/login", url).toString(), 303);
-      return await ui({ env, req, url, actor: PAVI, body: null }, parts);
+      return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
       if (rule) {

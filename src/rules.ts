@@ -49,10 +49,12 @@ export interface ProjectPolicy {
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
-  approval?: string;        // PAVI's recorded approval for copying the project into Artifacts
+  approval?: string;        // the project owner's recorded approval for copying the project into Artifacts
 }
 
-export const PAVI = "pavi";
+// The actor that stands for the project owner. A deployment names its own with
+// OWNER_ACTOR; "owner" is the default.
+export const DEFAULT_OWNER = "owner";
 
 const ACTOR = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i;
 
@@ -134,9 +136,9 @@ export function assertClaimable(item: Item, actor: string): void {
   }
 }
 
-// "claude-code/opus-5.5" is eligible under "claude"; PAVI always is.
-export function assertEligible(actor: string, policy: ProjectPolicy): void {
-  if (actor === PAVI || !policy.eligible?.length) return;
+// "claude-code/opus-5.5" is eligible under "claude"; the project owner always is.
+export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER): void {
+  if (actor === owner || !policy.eligible?.length) return;
   const harness = actor.split("/")[0];
   if (!policy.eligible.some((k) => harness === k || harness.startsWith(`${k}-`))) {
     throw new RuleError("ineligible", `${harness} is not an eligible agent here (eligible: ${policy.eligible.join(", ")})`, 403);
@@ -150,9 +152,9 @@ export function overlappingLive(item: Item, items: Item[], actor: string): Item[
   );
 }
 
-export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string): void {
+export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER): void {
   assertClaimable(item, actor);
-  assertEligible(actor, policy);
+  assertEligible(actor, policy, owner);
   if (policy.refuseOverlap && item.owner !== actor) {
     const clash = overlappingLive(item, items, actor);
     if (clash.length) {
@@ -223,7 +225,7 @@ export interface Gate {
   outOfScope: string[];
 }
 
-export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[]): Gate {
+export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Gate {
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
   if (!item.head) blockers.push("no verified push");
@@ -240,11 +242,11 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (touchesProtected) {
     const ownerModel = item.owner ? modelOf(item.owner) : "";
     const independent = reviews.some(
-      (r) => r.head === item.head && r.approve && (r.by === PAVI || modelOf(r.by) !== ownerModel),
+      (r) => r.head === item.head && r.approve && (r.by === owner || (r.by.includes("/") && modelOf(r.by) !== ownerModel)),
     );
     if (!independent) {
       needsAssessor = true;
-      blockers.push("touches a protected path; needs approval from a different model or PAVI");
+      blockers.push("touches a protected path; needs approval from a different model or the project owner");
     }
   }
   const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
@@ -253,8 +255,9 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   return { ready: blockers.length === 0, blockers, needsAssessor, outOfScope };
 }
 
-// "What needs PAVI now?" Only things a person must decide or unblock rank high;
-// failing checks are the owner's problem and rank below anything awaiting PAVI.
+// "What needs the project owner now?" Only things a person must decide or
+// unblock rank high; failing checks are the item owner's problem and rank
+// below anything awaiting the project owner.
 export interface InboxEntry {
   project: string;
   itemId: string;
@@ -273,6 +276,7 @@ export function inboxFor(
   evidence: Evidence[],
   reviews: Review[],
   now: Date,
+  owner = DEFAULT_OWNER,
 ): InboxEntry[] {
   const out: InboxEntry[] = [];
   const live = items.filter((i) => i.state === "claimed" || i.state === "submitted");
@@ -285,7 +289,7 @@ export function inboxFor(
       continue;
     }
     if (item.state === "submitted") {
-      const g = gate(item, policy, ev, rv);
+      const g = gate(item, policy, ev, rv, owner);
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: "all checks observed passing at this head", weight: 100 });
       } else if (g.needsAssessor) {

@@ -68,7 +68,7 @@ ${error ? `<p class="tag bad">${e(error)}</p>` : ""}
 <form class="act" method="post" action="/login"><input type="password" name="token" autocomplete="current-password" required><button class="primary">Sign in</button></form>`);
 }
 
-export function renderInbox(entries: InboxEntry[], projects: ProjectRecord[]): string {
+export function renderInbox(entries: InboxEntry[], projects: ProjectRecord[], ownerName: string | null = null): string {
   // One row per item: the most urgent reason leads, the others follow it.
   const groups = new Map<string, InboxEntry[]>();
   for (const x of entries) {
@@ -83,7 +83,7 @@ export function renderInbox(entries: InboxEntry[], projects: ProjectRecord[]): s
   }).join("");
   const list = projects.map((p) => `<li><span class="tag">Project</span><span><a href="${href("p", p.name)}">${e(p.name)}</a><br>
 <span class="meta">checks: ${p.policy.checks.map((c) => `<code>${e(c)}</code>`).join(", ") || "none"} · protected: ${p.policy.protected.map((c) => `<code>${e(c)}</code>`).join(", ") || "none"}</span></span><span></span></li>`).join("");
-  return page("Atelier", `<h1>What needs PAVI now?</h1>
+  return page("Atelier", `<h1>What needs ${ownerName ? e(ownerName) : "you"} now?</h1>
 <p class="sub">${groups.size ? `${groups.size} item${groups.size === 1 ? "" : "s"}, most urgent first.` : "Nothing. Agents are working or idle; nothing is waiting on you."}</p>
 ${groups.size ? `<ul class="rows">${rows}</ul>` : ""}
 <h2>Projects</h2>
@@ -126,6 +126,7 @@ function summarise(d: Record<string, unknown>): string {
 export function renderItem(
   p: ProjectRecord,
   d: { item: Item; policy: ProjectPolicy; evidence: Evidence[]; reviews: Review[]; gate: Gate; events: LedgerEvent[] },
+  ownerName: string | null = null,
 ): string {
   const { item, gate } = d;
   const view = evidenceAt(d.policy, d.evidence, item.head);
@@ -159,7 +160,7 @@ ${checks || reports ? `<table><tr><th>Grade</th><th>Claim</th><th>By</th></tr>${
 
 <h2>Reviews at this head</h2>
 ${reviews ? `<table><tr><th>Verdict</th><th>Note</th><th>By</th></tr>${reviews}</table>` : `<p class="empty">No reviews of this head.</p>`}
-${live && item.head ? `<form class="act" method="post" action="${action("approve")}"><input type="text" name="note" placeholder="Note (optional)"><button>Approve as PAVI</button><button formaction="${action("reject")}" class="danger">Reject</button></form>` : ""}
+${live && item.head ? `<form class="act" method="post" action="${action("approve")}"><input type="text" name="note" placeholder="Note (optional)"><button>Approve as ${ownerName ? e(ownerName) : "project owner"}</button><button formaction="${action("reject")}" class="danger">Reject</button></form>` : ""}
 
 ${live ? `<h2>Ownership</h2>
 <form class="act" method="post" action="${action("handoff")}"><input type="text" name="to" placeholder="harness/model, e.g. codex/gpt-5.5" required><input type="text" name="note" placeholder="Why"><button>Hand off</button></form>

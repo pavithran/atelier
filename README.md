@@ -16,7 +16,8 @@ It rests on three rules.
    agent says it did is *Reported*. A required check with no observed result
    at the current head is *Pending*. Only Observed passes count.
 3. **The project owner decides.** The project owner is the person the
-   project belongs to; in the API they act as the reserved actor `pavi`.
+   project belongs to; in the API they act as a reserved actor, `owner`
+   unless the deployment names another (see Setup).
    Work reaches the project only when the project owner accepts it and
    merges it. Changes to protected paths also need approval from a model
    other than the item owner's, or from the project owner.
@@ -135,6 +136,22 @@ npx wrangler deploy
 ```bash
 security find-generic-password -s atelier.API_TOKEN -w | tr -d '\n' | npx wrangler secret put ATELIER_TOKEN
 ```
+
+The project owner acts as the actor `owner`, and the inbox asks "What needs
+you now?". To use your own actor and name, set `OWNER_ACTOR` and
+`OWNER_NAME`, either as `vars` in `wrangler.jsonc` or as secrets, which keeps
+them out of the configuration:
+
+```bash
+printf jo | npx wrangler secret put OWNER_ACTOR
+```
+
+```bash
+printf Jo | npx wrangler secret put OWNER_NAME
+```
+
+`atelier login` asks the server for the owner's actor, so the CLI follows
+whatever the Worker is set to.
 
 Point the CLI at the Worker and register a project:
 

@@ -35,7 +35,7 @@ test("globs: ** crosses directories, * does not", () => {
 
 test("model is what makes a reviewer independent", () => {
   assert.equal(modelOf("claude-code/opus-5.5"), "opus-5.5");
-  assert.equal(modelOf("pavi"), "pavi");
+  assert.equal(modelOf("owner"), "owner");
 });
 
 test("one owner: a second actor cannot claim an owned item", () => {
@@ -74,17 +74,21 @@ test("the latest observation at a head wins", () => {
   assert.match(g.blockers.join(), /failed when observed/);
 });
 
-test("protected paths need a different model or PAVI", () => {
+test("protected paths need a different model or the project owner", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
   const sameModel: Review = { itemId: "t1", by: "other-harness/opus-5.5", head: H1, approve: true, note: "", at: T };
   const otherModel: Review = { ...sameModel, by: "codex/gpt-5.5" };
-  const pavi: Review = { ...sameModel, by: "pavi" };
+  const owner: Review = { ...sameModel, by: "owner" };
+  const renamed: Review = { ...sameModel, by: "pavi" };
   const stale: Review = { ...otherModel, head: H2 };
   assert.equal(gate(item(), policy, [touching], []).needsAssessor, true);
   assert.equal(gate(item(), policy, [touching], [sameModel]).ready, false);
   assert.equal(gate(item(), policy, [touching], [stale]).ready, false);
   assert.equal(gate(item(), policy, [touching], [otherModel]).ready, true);
-  assert.equal(gate(item(), policy, [touching], [pavi]).ready, true);
+  assert.equal(gate(item(), policy, [touching], [owner]).ready, true);
+  // A deployment that names its owner "pavi" accepts that actor, and only that one.
+  assert.equal(gate(item(), policy, [touching], [renamed]).ready, false);
+  assert.equal(gate(item(), policy, [touching], [renamed], "pavi").ready, true);
 });
 
 test("a rejection at the head blocks", () => {
@@ -140,11 +144,13 @@ test("files named by a check are protected: an item cannot weaken its own grader
   assert.equal(g.ready, false);
 });
 
-test("eligibility follows ControlPlane's agent families; PAVI always qualifies", () => {
+test("eligibility follows ControlPlane's agent families; the project owner always qualifies", () => {
   const p: ProjectPolicy = { checks: [], protected: [], eligible: ["claude", "codex", "glm"] };
   assert.doesNotThrow(() => assertEligible("claude-code/opus-5.5", p));
   assert.doesNotThrow(() => assertEligible("codex/gpt-5.5", p));
-  assert.doesNotThrow(() => assertEligible("pavi", p));
+  assert.doesNotThrow(() => assertEligible("owner", p));
+  assert.doesNotThrow(() => assertEligible("pavi", p, "pavi"));
+  assert.throws(() => assertEligible("pavi", p), /not an eligible agent/);
   assert.throws(() => assertEligible("antigravity/gemini-3", p), /not an eligible agent/);
   assert.throws(() => assertEligible("claudette/x", p), /not an eligible agent/);
   assert.doesNotThrow(() => assertEligible("anything/x", { checks: [], protected: [] }));
