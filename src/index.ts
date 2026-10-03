@@ -127,7 +127,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const record: ProjectRecord = {
       name: project,
       repo,
-      policy: { checks: asStrings(body.checks), protected: asStrings(body.protected) },
+      policy: {
+        checks: asStrings(body.checks),
+        protected: asStrings(body.protected),
+        eligible: asStrings(body.eligible),
+        refuseOverlap: Boolean(body.refuseOverlap),
+        ...(body.approval ? { approval: String(body.approval).slice(0, 500) } : {}),
+      },
       createdAt: new Date().toISOString(),
     };
     try {
@@ -142,6 +148,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "GET") {
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
   }
+  if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requirePavi(actor);

@@ -149,6 +149,78 @@ function runCheck(cmd, dir) {
   return { passed: r.status === 0, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
+// ── ControlPlane ───────────────────────────────────────────────────────────
+// Where a project is governed by ControlPlane, its policy files say who may act
+// and what is protected. Atelier reads them and never writes them.
+
+function readJson(path) {
+  try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
+}
+
+function readControlPlane(top) {
+  const dir = join(top, "docs", "control-plane");
+  const agent = readJson(join(dir, "agent-policy.v1.json"));
+  const exec = readJson(join(dir, "execution-policy.v1.json"));
+  const adapter = readJson(join(dir, "project-adapter.v1.json"));
+  if (!agent && !exec) return null;
+  const sources = [];
+  const protectedPaths = new Set(["AGENTS.md", "CLAUDE.md", "GLM.md", "docs/control-plane/**", "tools/control-plane/**"]);
+  let eligible = null;
+  let refuseOverlap = null;
+  if (agent) {
+    sources.push("agent-policy.v1.json");
+    eligible = Object.entries(agent.agents ?? {}).filter(([, a]) => a.available).map(([k]) => k);
+    refuseOverlap = agent.authority?.overlapping_claims === "refuse";
+  }
+  if (exec) {
+    sources.push("execution-policy.v1.json");
+    for (const p of exec.protected_path_patterns ?? []) protectedPaths.add(p);
+    for (const rule of exec.maintenance_path_rules ?? []) for (const p of rule.paths ?? []) protectedPaths.add(p);
+  }
+  if (adapter) {
+    sources.push("project-adapter.v1.json");
+    for (const s of adapter.protected_surfaces ?? []) if (s.pattern) protectedPaths.add(s.pattern);
+  }
+  return { sources, protected: [...protectedPaths], eligible, refuseOverlap };
+}
+
+function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy }) {
+  const dir = join(cwd, "docs", "control-plane", "landing-receipts");
+  if (!existsSync(dir)) return null;
+  const template = readJson(join(cwd, "docs", "control-plane", "landing-receipt.v1.json")) ?? {};
+  const date = new Date().toISOString().slice(0, 10);
+  const file = join(dir, `${date}-atelier-${id}-${short(item.acceptedHead)}.json`);
+  const receipt = {
+    schema_version: 1,
+    kind: "control-plane.landing-receipt",
+    receipt_id: `atelier-${name}-${id}-${date}`,
+    project_id: template.project_id ?? name,
+    execution_class: "coordinated",
+    closure: "compact",
+    implementation_commit: item.acceptedHead,
+    delivery: {
+      kind: "atelier-merge",
+      target: `${name}/${id}`,
+      evidence: [
+        `Atelier item ${id}, "${item.title}", worked by ${owners.join(" then ") || "nobody recorded"}, accepted by PAVI at ${item.acceptedHead} and merged with --no-ff.`,
+        policy.approval ? `The Atelier baseline copy in Artifacts was approved as: ${policy.approval.replace(/[.\s]*$/, "")}.` : null,
+        reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : "No review was required at the accepted head.",
+        "Provenance is on refs/notes/atelier for the merge commit.",
+      ].filter(Boolean).join(" "),
+    },
+    tests: view.map((e) =>
+      e.grade === "observed"
+        ? `Observed by Atelier in a clean clone at ${short(e.head)}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
+        : `Reported, not verified: ${e.claim} (${e.by}, ${e.at})`),
+    next_gate: "PAVI chooses the next work. The merge is not deployed and not pushed to the project's own remotes.",
+    protected_actions_not_taken: ["deploy", "push to the project's own remotes", "migration", "credential change", "Observatory publication"],
+    unrelated_dirty: [],
+    session_continuing: true,
+  };
+  writeFileSync(file, JSON.stringify(receipt, null, 2) + "\n");
+  return file.slice(cwd.length + 1);
+}
+
 // ── commands ───────────────────────────────────────────────────────────────
 
 const commands = {
@@ -165,17 +237,31 @@ const commands = {
     const top = git(["rev-parse", "--show-toplevel"]);
     const name = args.name ?? top.split("/").pop();
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
+    const cp = readControlPlane(top);
+    if (cp && (!args.approval || args.approval === true)) {
+      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord PAVI's approval: atelier init --approval "PAVI, ${new Date().toISOString().slice(0, 10)}: …"`);
+    }
+    const protect = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
     const r = await call("PUT", P(name), {
       checks: args.multi.check ?? [],
-      protected: args.multi.protect ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*", "docs/control-plane/**"],
+      protected: protect,
+      eligible: cp?.eligible ?? [],
+      refuseOverlap: cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]),
+      approval: args.approval === true ? undefined : args.approval,
       defaultBranch: branch,
     }, "pavi");
     git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
     cfg.projects ??= {};
     cfg.projects[name] = { path: top, branch };
     saveConfig(cfg);
+    const pol = r.project.policy;
     console.log(`${name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
-    console.log(`Checks: ${r.project.policy.checks.join(", ") || "none"}   Protected: ${r.project.policy.protected.join(", ")}`);
+    if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
+    console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
+    console.log(`Protected:  ${pol.protected.join(", ")}`);
+    console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
+    console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
+    if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   },
 
   // PAVI: push commits made directly in the checkout so new forks start from them.
@@ -377,26 +463,42 @@ const commands = {
 
     const owners = [...new Set(d.events.filter((e) => e.kind === "item.claimed" || e.kind === "item.handoff").map((e) => e.data.to ?? e.actor))];
     const msg = `Merge ${id}: ${item.title}\n\nAtelier: ${name}/${id} accepted at ${item.acceptedHead}\nWorked by: ${owners.join(" → ") || item.owner}`;
-    const m = git(["merge", "--no-ff", "-m", msg, item.acceptedHead], { cwd, allowFail: true });
+    const m = git(["merge", "--no-ff", "--no-commit", item.acceptedHead], { cwd, allowFail: true });
     if (m.status !== 0) {
       git(["merge", "--abort"], { cwd, allowFail: true });
       die(`merge conflicts. Hand it back: the owner runs \`atelier update\`, pushes, re-checks; you re-accept.\n${m.stdout}`);
     }
-    const mergeCommit = git(["rev-parse", "HEAD"], { cwd });
     const view = d.evidence.filter((e) => e.head === item.acceptedHead);
+    const reviews = d.reviews.filter((r) => r.head === item.acceptedHead);
+    // The receipt rides in the merge commit itself, in the project's own
+    // ControlPlane receipt format, so the merge and its record are one change.
+    const receipt = writeReceipt(cwd, { name, id, item, owners, view, reviews, policy: d.policy });
+    if (receipt) git(["add", receipt], { cwd });
+    git(["commit", "--quiet", "-m", msg], { cwd });
+    const mergeCommit = git(["rev-parse", "HEAD"], { cwd });
     const note = [
       `atelier ${name}/${id} "${item.title}"`,
       `accepted head ${item.acceptedHead}`,
       ...view.map((e) => `${e.grade.toUpperCase()} ${e.passed === null ? "" : e.passed ? "pass " : "FAIL "}${e.claim} — ${e.by} ${e.at}`),
-      ...d.reviews.filter((r) => r.head === item.acceptedHead).map((r) => `REVIEW ${r.approve ? "approve" : "reject"} — ${r.by}: ${r.note}`),
+      ...reviews.map((r) => `REVIEW ${r.approve ? "approve" : "reject"} — ${r.by}: ${r.note}`),
       ...d.events.slice().reverse().map((e) => `${e.at} ${e.actor} ${e.kind}`),
     ].join("\n");
     git(["notes", "--ref=atelier", "add", "-f", "-m", note, mergeCommit], { cwd });
     git([...auth(base.token), "push", "--quiet", base.remote, `${p.branch}:${p.branch}`, "refs/notes/atelier:refs/notes/atelier"], { cwd });
-    const r = await call("POST", `${I(name, id)}/merged`, { mergeCommit }, "pavi");
-    console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline updated${r ? "" : ""}.`);
+    await call("POST", `${I(name, id)}/merged`, { mergeCommit }, "pavi");
+    console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline updated.`);
+    if (receipt) console.log(`Receipt: ${receipt}`);
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
-    if (git(["remote"], { cwd }).split("\n").includes("origin")) console.log(`Push to GitHub when you're ready: git push origin ${p.branch}`);
+    console.log(`Nothing was deployed or pushed to the project's own remotes.`);
+  },
+
+  // One line per live item, for a wrap to copy into STATE.md's Owner section.
+  async owners() {
+    const name = project();
+    const live = await call("GET", `${P(name)}/owners`, undefined, actor("pavi"));
+    if (args.json) return console.log(JSON.stringify({ project: name, source: server(), owners: live }, null, 2));
+    if (!live.length) return console.log(`Atelier: no ${name} item is owned.`);
+    for (const o of live) console.log(`Atelier: ${o.item} ${o.state}, owned by ${o.owner ?? "nobody"} since ${o.since.slice(0, 16)}Z (${server()}/p/${name}/${o.item}).`);
   },
 
   async inbox() {
@@ -435,8 +537,8 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, PAVI decides.
 
-Setup      login --server URL · init [--check CMD]... [--protect GLOB]... · publish
-Items      new "title" [--scope GLOB]... · ls [--all] · show ID · inbox · open
+Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--approval TEXT] · publish
+Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
 Agents     claim ID --as H/M · push · update · check [-- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 PAVI       accept ID · merge ID · abandon ID

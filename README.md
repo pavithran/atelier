@@ -48,9 +48,39 @@ In detail:
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
 observed; no rejection at that head; and, if a protected path changed, an
-approval at that head from a different model or from PAVI. Files named by a
-check command (`./check.sh`, `scripts/verify.mjs`) are protected
-automatically, so an item cannot weaken the check that grades it.
+approval at that head from a different model or from PAVI. What a check
+executes is protected automatically: a script it runs (`./check.sh`,
+`node scripts/verify.mjs`), and `package.json` when it goes through a package
+manager, whose scripts an item could otherwise rewrite. An item therefore
+cannot quietly weaken the check that grades it. Files a check only reads, such
+as the code under test, are not protected, and nor is test configuration such
+as `vitest.config.ts` unless the project protects it.
+
+## Projects governed by ControlPlane
+
+Atelier and ControlPlane each own different facts. ControlPlane owns policy:
+who may act and what is protected. Atelier owns live state: who holds which
+item now, the evidence at its head and its handoff chain. Git owns what
+merged.
+
+- `atelier init` reads `docs/control-plane/agent-policy.v1.json`,
+  `execution-policy.v1.json` and `project-adapter.v1.json` when they exist.
+  Eligible agents are the available ones; overlapping claims are refused when
+  the policy says `overlapping_claims: refuse`; protected paths are the
+  adapter's protected surfaces, the maintenance paths, and the agent and
+  ControlPlane files themselves. Atelier never writes these files.
+- Copying a project into Artifacts is an off-machine copy, so `init` refuses
+  a ControlPlane project until PAVI's approval is recorded with
+  `--approval "…"`. The approval is kept in the project's policy and quoted in
+  every merge receipt.
+- `atelier merge` writes a `control-plane.landing-receipt` into
+  `docs/control-plane/landing-receipts/` as part of the merge commit, so the
+  merge and its record are one change.
+- `atelier owners` prints one line per live item for a wrap to copy into the
+  project's state record; `atelier owners --json` and
+  `GET /api/projects/NAME/owners` give the same view without titles, scopes
+  or paths. Publishing it to Observatory is ControlPlane's to do, because
+  Observatory reads only what ControlPlane publishes.
 
 ## What is enforced and what is trusted
 

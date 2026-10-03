@@ -47,6 +47,9 @@ export interface Review {
 export interface ProjectPolicy {
   checks: string[];         // commands that must pass, observed, before acceptance
   protected: string[];      // globs whose changes need an independent assessor
+  eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
+  refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
+  approval?: string;        // PAVI's recorded approval for copying the project into Artifacts
 }
 
 export const PAVI = "pavi";
@@ -131,6 +134,34 @@ export function assertClaimable(item: Item, actor: string): void {
   }
 }
 
+// "claude-code/opus-5.5" is eligible under "claude"; PAVI always is.
+export function assertEligible(actor: string, policy: ProjectPolicy): void {
+  if (actor === PAVI || !policy.eligible?.length) return;
+  const harness = actor.split("/")[0];
+  if (!policy.eligible.some((k) => harness === k || harness.startsWith(`${k}-`))) {
+    throw new RuleError("ineligible", `${harness} is not an eligible agent here (eligible: ${policy.eligible.join(", ")})`, 403);
+  }
+}
+
+// Live items held by someone else whose scope overlaps this one.
+export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
+  return items.filter(
+    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && scopesOverlap(item.scope, o.scope),
+  );
+}
+
+export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string): void {
+  assertClaimable(item, actor);
+  assertEligible(actor, policy);
+  if (policy.refuseOverlap && item.owner !== actor) {
+    const clash = overlappingLive(item, items, actor);
+    if (clash.length) {
+      const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
+      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}`);
+    }
+  }
+}
+
 export function assertOwner(item: Item, actor: string): void {
   if (item.owner !== actor) {
     throw new RuleError("not_owner", `${actor} does not own ${item.id} (owner: ${item.owner ?? "nobody"})`, 403);
@@ -162,18 +193,27 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
 }
 
 // A check runs from the item's own head, so an item could weaken the check it
-// is graded by. Any file a check command names is therefore protected too.
+// is graded by. What a check executes is therefore protected: a script it runs
+// directly or through an interpreter, and package.json when it goes through a
+// package manager, whose scripts an item could otherwise rewrite. Files a check
+// merely reads, such as the code under test, are not.
+const INTERPRETERS = new Set(["node", "sh", "bash", "zsh", "python", "python3", "deno", "bun", "tsx", "ruby", "perl"]);
+const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
+
 export function checkFiles(checks: string[]): string[] {
   const files = new Set<string>();
   for (const cmd of checks) {
-    for (const word of cmd.split(/[\s;&|()<>"'`=]+/)) {
-      const w = word.replace(/^\.\//, "");
-      if (w && (word.startsWith("./") || /\//.test(w) || /\.(sh|js|mjs|ts|py|rb|json|toml|ya?ml)$/.test(w)) && !w.startsWith("-")) {
-        files.add(w);
+    const words = cmd.split(/[\s;&|()<>"'`]+/).filter(Boolean);
+    words.forEach((word, i) => {
+      const prev = words[i - 1];
+      if (word.startsWith("-")) return;
+      if (word.startsWith("./") || /\.sh$/.test(word) || (prev && INTERPRETERS.has(prev) && /[./]/.test(word))) {
+        files.add(word.replace(/^\.\//, ""));
       }
-    }
+      if (PACKAGE_MANAGERS.has(word)) files.add("package.json");
+    });
   }
-  return [...files];
+  return [...files].sort();
 }
 
 export interface Gate {

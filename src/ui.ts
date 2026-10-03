@@ -98,6 +98,13 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
 <span class="meta">${when(i.updatedAt)}</span></li>`).join("");
   return page(`${p.name} · Atelier`, `<nav><a href="/">Inbox</a> / ${e(p.name)}</nav>
 <h1>${e(p.name)}</h1><p class="sub">Baseline repo <code>${e(p.repo)}</code></p>
+<dl>
+<dt>Checks</dt><dd>${p.policy.checks.map((c) => `<code>${e(c)}</code>`).join("<br>") || "none"}</dd>
+<dt>Protected</dt><dd>${p.policy.protected.map((c) => `<code>${e(c)}</code>`).join(" ") || "none"}</dd>
+<dt>Eligible</dt><dd>${p.policy.eligible?.length ? p.policy.eligible.map((c) => e(c)).join(", ") : "any agent"}</dd>
+<dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "overlapping claims are refused" : "overlapping claims are flagged"}</dd>
+${p.policy.approval ? `<dt>Approval</dt><dd>${e(p.policy.approval)}</dd>` : ""}
+</dl>
 <h2>Items</h2>${items.length ? `<ul class="rows">${rows}</ul>` : `<p class="empty">No items. Create one with <code>atelier new "title" --scope 'src/**'</code>.</p>`}
 <h2>Ledger</h2>${eventTable(events, true)}`);
 }

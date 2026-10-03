@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertClaimable, assertOwner, gate, inboxFor, PAVI, RuleError, validActor,
+  assertClaimAllowed, assertEligible, assertOwner, gate, inboxFor, PAVI, RuleError, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -68,7 +68,7 @@ export class Ledger extends DurableObject<Env> {
 
   setProject(record: ProjectRecord, actor: string): void {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
-    this.log(null, actor, "project.set", { policy: record.policy });
+    this.log(null, actor, "project.set", { policy: record.policy, ...(record.policy.approval ? { approval: record.policy.approval } : {}) });
   }
 
   project(): ProjectRecord {
@@ -107,7 +107,7 @@ export class Ledger extends DurableObject<Env> {
 
   claim(id: string, actor: string): { item: Item; needsFork: boolean } {
     const item = this.item(id);
-    assertClaimable(item, actor);
+    assertClaimAllowed(item, this.items(), this.project().policy, actor);
     if (item.owner === actor) return { item, needsFork: !item.fork };
     this.update(id, { owner: actor, state: "claimed" });
     this.log(id, actor, "item.claimed", {});
@@ -154,6 +154,7 @@ export class Ledger extends DurableObject<Env> {
 
   addReview(r: Review): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
+    assertEligible(r.by, this.project().policy);
     const item = this.item(r.itemId);
     if (item.owner === r.by) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
@@ -176,6 +177,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     if (from !== PAVI) assertOwner(item, from);
     if (!validActor(to)) throw new RuleError("bad_actor", `"${to}" is not harness/model`, 400);
+    assertEligible(to, this.project().policy);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     this.update(id, { owner: to, state: "claimed" });
     this.log(id, from, "item.handoff", { from: item.owner, to, note });
@@ -232,6 +234,14 @@ export class Ledger extends DurableObject<Env> {
       seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
       actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
     }));
+  }
+
+  // Who holds what, without titles, scopes or paths: safe to hand to a
+  // metadata consumer such as ControlPlane's Observatory publication.
+  owners() {
+    return this.items()
+      .filter((i) => i.state === "claimed" || i.state === "submitted" || i.state === "accepted")
+      .map((i) => ({ item: i.id, state: i.state, owner: i.owner, head: i.head, since: i.updatedAt }));
   }
 
   detail(id: string) {

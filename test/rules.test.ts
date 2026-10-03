@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
-  checkFiles, parseRuleError, repoName, RuleError, scopesOverlap,
+  assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
 
@@ -131,9 +131,37 @@ test("repo names are safe and stable", () => {
 });
 
 test("files named by a check are protected: an item cannot weaken its own grader", () => {
-  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), ["check.sh", "scripts/verify.mjs", "tests/"]);
+  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), ["check.sh", "package.json", "scripts/verify.mjs"]);
+  assert.deepEqual(checkFiles(["grep -q export src/a.ts"]), []);
+  assert.deepEqual(checkFiles(["npm ci --prefer-offline && npm test", "npm run check && npm run build"]), ["package.json"]);
   const p: ProjectPolicy = { checks: ["./check.sh"], protected: [] };
   const g = gate(item({ scope: [] }), p, [pass({ claim: "./check.sh", changedPaths: ["check.sh"] })], []);
   assert.equal(g.needsAssessor, true);
   assert.equal(g.ready, false);
+});
+
+test("eligibility follows ControlPlane's agent families; PAVI always qualifies", () => {
+  const p: ProjectPolicy = { checks: [], protected: [], eligible: ["claude", "codex", "glm"] };
+  assert.doesNotThrow(() => assertEligible("claude-code/opus-5.5", p));
+  assert.doesNotThrow(() => assertEligible("codex/gpt-5.5", p));
+  assert.doesNotThrow(() => assertEligible("pavi", p));
+  assert.throws(() => assertEligible("antigravity/gemini-3", p), /not an eligible agent/);
+  assert.throws(() => assertEligible("claudette/x", p), /not an eligible agent/);
+  assert.doesNotThrow(() => assertEligible("anything/x", { checks: [], protected: [] }));
+});
+
+test("overlapping claims are refused when the project says so, and only then", () => {
+  const held = item({ id: "t1", state: "claimed", owner: "codex/gpt-5.5", scope: ["src/**"] });
+  const want = item({ id: "t2", state: "open", owner: null, scope: ["src/ui/**"] });
+  const apart = item({ id: "t3", state: "open", owner: null, scope: ["docs/**"] });
+  const all = [held, want, apart];
+  const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
+  assert.deepEqual(overlappingLive(want, all, "claude-code/opus-5.5").map((i) => i.id), ["t1"]);
+  assert.throws(() => assertClaimAllowed(want, all, strict, "claude-code/opus-5.5"), /overlaps live t1 \(codex\/gpt-5.5\)/);
+  assert.doesNotThrow(() => assertClaimAllowed(apart, all, strict, "claude-code/opus-5.5"));
+  assert.doesNotThrow(() => assertClaimAllowed(want, all, { checks: [], protected: [] }, "claude-code/opus-5.5"));
+  // The holder of the overlapping item may take a second overlapping item.
+  assert.doesNotThrow(() => assertClaimAllowed(want, all, strict, "codex/gpt-5.5"));
+  const unscoped = item({ id: "t4", state: "open", owner: null, scope: [] });
+  assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
