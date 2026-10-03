@@ -1,3 +1,4 @@
+import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type ProjectRecord } from "./ledger";
 import { DEFAULT_OWNER, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { escapeText, renderInbox, renderItem, renderLogin, renderProject } from "./ui";
@@ -171,6 +172,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const id = parts[3];
   const verb = parts[4];
   if (!verb && m === "GET") return json(await L.detail(id));
+  if (verb === "diff" && m === "GET") {
+    const item = await L.item(id);
+    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+    return json(await itemDiff(env.ARTIFACTS, (await L.project()).repo, item.fork));
+  }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
@@ -283,6 +289,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   throw new RuleError("not_found", "no such route", 404);
 }
 
+// A diff is shown when Artifacts can produce one; the page still renders when it cannot.
+async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
+  if (!fork) return null;
+  try {
+    return await itemDiff(env.ARTIFACTS, baselineRepo, fork);
+  } catch (err) {
+    console.error("diff unavailable", err);
+    return "unavailable";
+  }
+}
+
 async function inbox(env: Env) {
   const projects = await index(env).projects();
   const now = new Date().toISOString();
@@ -325,7 +342,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts[0] === "p" && parts.length === 3) {
     const L = ledger(env, parts[1]);
-    return html(renderItem(await L.project(), await L.detail(parts[2]), ownerName(env)));
+    const p = await L.project();
+    const item = await L.item(parts[2]);
+    return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork)));
   }
   return html("Not found.", 404);
 }

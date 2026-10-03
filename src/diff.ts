@@ -1,0 +1,234 @@
+// An item's diff against the baseline, computed from Artifacts objects. The
+// binding reads trees, blobs and commit logs but has no diff operation, so the
+// line diff (Myers) and the tree walk live here. The algorithms are pure and
+// take a reader, so they are tested without Cloudflare.
+
+export type Op = { op: " " | "+" | "-"; text: string };
+
+export interface Hunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: Op[];
+}
+
+export type FileStatus = "added" | "deleted" | "modified" | "mode" | "binary" | "too-large";
+
+export interface FileChange {
+  path: string;
+  status: FileStatus;
+  added: number;
+  removed: number;
+  hunks: Hunk[];
+}
+
+export interface ItemDiff {
+  base: string;          // the commit the workspace and the baseline share
+  head: string;
+  files: FileChange[];
+  truncated: boolean;    // more changed files than the limit; the rest are not listed
+}
+
+export const LIMITS = {
+  files: 60,             // changed files listed
+  blobBytes: 256 * 1024, // larger blobs are listed but not diffed
+  diffLines: 20_000,     // old + new lines beyond which a file is not diffed
+  context: 3,
+};
+
+// ── line diff ──────────────────────────────────────────────────────────────
+
+// Myers' O(ND) shortest edit script, returned as a full sequence of kept,
+// added and removed lines.
+export function diffLines(a: string[], b: string[]): Op[] {
+  const n = a.length, m = b.length, max = n + m;
+  const offset = max;
+  const v = new Int32Array(2 * max + 2);
+  const trace: Int32Array[] = [];
+  let found = false;
+  for (let d = 0; d <= max && !found; d++) {
+    trace.push(v.slice());
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) { x++; y++; }
+      v[offset + k] = x;
+      if (x >= n && y >= m) { found = true; break; }
+    }
+  }
+  // Walk the trace backwards to recover the edit script.
+  const ops: Op[] = [];
+  let x = n, y = m;
+  for (let d = trace.length - 1; d >= 0; d--) {
+    const vd = trace[d];
+    const k = x - y;
+    const prevK = k === -d || (k !== d && vd[offset + k - 1] < vd[offset + k + 1]) ? k + 1 : k - 1;
+    const prevX = d === 0 ? 0 : vd[offset + prevK];
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) ops.push({ op: " ", text: a[--x] }), y--;
+    if (d > 0) {
+      if (x === prevX) ops.push({ op: "+", text: b[--y] });
+      else ops.push({ op: "-", text: a[--x] });
+    }
+  }
+  return ops.reverse();
+}
+
+// Group an edit script into unified-diff hunks with `context` lines around changes.
+export function toHunks(ops: Op[], context = LIMITS.context): Hunk[] {
+  const hunks: Hunk[] = [];
+  let oldLine = 1, newLine = 1;
+  let current: Hunk | null = null;
+  let trailing = 0; // unchanged lines since the last change in `current`
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i];
+    if (o.op === " ") {
+      if (current) {
+        if (trailing < context) {
+          current.lines.push(o);
+          current.oldLines++;
+          current.newLines++;
+          trailing++;
+        } else {
+          // Close the hunk unless another change follows within the context window.
+          const nextChange = ops.slice(i, i + context + 1).findIndex((p) => p.op !== " ");
+          if (nextChange === -1) { hunks.push(current); current = null; }
+          else { current.lines.push(o); current.oldLines++; current.newLines++; }
+        }
+      }
+      oldLine++; newLine++;
+      continue;
+    }
+    if (!current) {
+      const lead = [];
+      for (let j = i - 1; j >= 0 && lead.length < context && ops[j].op === " "; j--) lead.unshift(ops[j]);
+      current = {
+        oldStart: oldLine - lead.length,
+        newStart: newLine - lead.length,
+        oldLines: lead.length,
+        newLines: lead.length,
+        lines: [...lead],
+      };
+    }
+    current.lines.push(o);
+    trailing = 0;
+    if (o.op === "-") { current.oldLines++; oldLine++; }
+    else { current.newLines++; newLine++; }
+  }
+  if (current) hunks.push(current);
+  // Git numbers an empty side from zero: "@@ -0,0 +1,2 @@" for a new file.
+  for (const h of hunks) {
+    if (h.oldLines === 0) h.oldStart--;
+    if (h.newLines === 0) h.newStart--;
+  }
+  return hunks;
+}
+
+export function splitLines(text: string): string[] {
+  if (text === "") return [];
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+function isBinary(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, 8000);
+  for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
+  return false;
+}
+
+// ── tree diff ──────────────────────────────────────────────────────────────
+
+export interface Entry { name: string; mode: string; hash: string; type: string }
+
+export interface Reader {
+  tree(hash: string): Promise<Entry[] | null>;
+  blob(hash: string): Promise<Uint8Array | null>;
+}
+
+type Leaf = { path: string; hash: string; mode: string };
+
+// Paths whose entry differs between two trees, descending only into subtrees
+// whose hashes differ.
+async function changedLeaves(r: Reader, base: string | null, head: string | null, prefix: string, out: [Leaf | null, Leaf | null][], cap: number) {
+  if (out.length > cap) return;
+  const [a, b] = await Promise.all([base ? r.tree(base) : [], head ? r.tree(head) : []]);
+  const left = new Map((a ?? []).map((e) => [e.name, e]));
+  const right = new Map((b ?? []).map((e) => [e.name, e]));
+  const names = [...new Set([...left.keys(), ...right.keys()])].sort();
+  for (const name of names) {
+    if (out.length > cap) return;
+    const l = left.get(name), rt = right.get(name);
+    if (l && rt && l.hash === rt.hash && l.mode === rt.mode) continue;
+    const path = prefix + name;
+    const lTree = l?.type === "tree", rTree = rt?.type === "tree";
+    if (lTree || rTree) {
+      await changedLeaves(r, lTree ? l!.hash : null, rTree ? rt!.hash : null, path + "/", out, cap);
+      if (l && !lTree) out.push([{ path, hash: l.hash, mode: l.mode }, null]);
+      if (rt && !rTree) out.push([null, { path, hash: rt.hash, mode: rt.mode }]);
+      continue;
+    }
+    if (l?.type === "gitlink" || rt?.type === "gitlink") continue;
+    out.push([l ? { path, hash: l.hash, mode: l.mode } : null, rt ? { path, hash: rt.hash, mode: rt.mode } : null]);
+  }
+}
+
+const decoder = new TextDecoder();
+
+export async function treeDiff(r: Reader, baseTree: string, headTree: string, limits = LIMITS): Promise<{ files: FileChange[]; truncated: boolean }> {
+  const pairs: [Leaf | null, Leaf | null][] = [];
+  await changedLeaves(r, baseTree, headTree, "", pairs, limits.files);
+  const truncated = pairs.length > limits.files;
+  const files = await Promise.all(pairs.slice(0, limits.files).map(async ([l, rt]) => {
+    const path = (rt ?? l)!.path;
+    const status: FileStatus = !l ? "added" : !rt ? "deleted" : l.hash === rt.hash ? "mode" : "modified";
+    if (status === "mode") return { path, status, added: 0, removed: 0, hunks: [] };
+    const [before, after] = await Promise.all([l ? r.blob(l.hash) : null, rt ? r.blob(rt.hash) : null]);
+    const size = Math.max(before?.length ?? 0, after?.length ?? 0);
+    if (size > limits.blobBytes) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    if ((before && isBinary(before)) || (after && isBinary(after))) return { path, status: "binary" as FileStatus, added: 0, removed: 0, hunks: [] };
+    const a = before ? splitLines(decoder.decode(before)) : [];
+    const b = after ? splitLines(decoder.decode(after)) : [];
+    if (a.length + b.length > limits.diffLines) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    const ops = diffLines(a, b);
+    return {
+      path, status,
+      added: ops.filter((o) => o.op === "+").length,
+      removed: ops.filter((o) => o.op === "-").length,
+      hunks: toHunks(ops, limits.context),
+    };
+  }));
+  return { files, truncated };
+}
+
+// ── Artifacts ──────────────────────────────────────────────────────────────
+
+// The fork point is the newest commit on the workspace's first-parent history
+// that the baseline also has, so a workspace rebased with `atelier update`
+// diffs against what it was rebased onto, not against where it was forked.
+export function mergeBase(workspaceLog: string[], baselineLog: string[]): string | null {
+  const shared = new Set(baselineLog);
+  return workspaceLog.find((h) => shared.has(h)) ?? null;
+}
+
+export async function itemDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
+  using fork = await artifacts.get(workspaceRepo);
+  using baseline = await artifacts.get(baselineRepo);
+  const [forkLog, baseLog] = await Promise.all([fork.log({ limit: 500 }), baseline.log({ limit: 1000 })]);
+  const head = forkLog[0];
+  const base = mergeBase(forkLog.map((c) => c.hash), baseLog.map((c) => c.hash));
+  if (!head || !base) return null;
+  const baseCommit = forkLog.find((c) => c.hash === base) ?? (await fork.readCommit(base));
+  if (!baseCommit) return null;
+  if (base === head.hash) return { base, head: head.hash, files: [], truncated: false };
+  const reader: Reader = {
+    tree: (h) => fork.readTree(h),
+    blob: async (h) => {
+      const b = await fork.readBlob(h);
+      return b ? new Uint8Array(await b.arrayBuffer()) : null;
+    },
+  };
+  const { files, truncated } = await treeDiff(reader, baseCommit.treeHash, head.treeHash);
+  return { base, head: head.hash, files, truncated };
+}

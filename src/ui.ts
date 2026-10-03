@@ -2,6 +2,7 @@
 // page works the same in any browser and the CSP can forbid script entirely.
 import theme from "./theme.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
+import type { FileChange, ItemDiff } from "./diff";
 import { evidenceAt, type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review } from "./rules";
 
 export function escapeText(s: string): string {
@@ -44,6 +45,15 @@ button{font:inherit;padding:6px 12px;border-radius:4px;border:1px solid var(--li
 button.primary{background:var(--signal);border-color:var(--signal);color:var(--on-accent);font-weight:600}
 button.danger{color:var(--fault)}
 .empty{color:var(--text-muted);padding:16px 0}
+details.file{border:1px solid var(--line);border-radius:4px;margin:8px 0;background:var(--surface)}
+details.file>summary{cursor:pointer;padding:8px 10px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+details.file>summary code{color:var(--text-bright)}
+.counts{font:12px ui-monospace,"SF Mono",monospace;color:var(--text-dim)}
+pre.diff{margin:0;max-height:none;border:0;border-top:1px solid var(--line);border-radius:0 0 4px 4px;padding:6px 0;overflow-x:auto}
+pre.diff span{display:block;padding:0 10px;white-space:pre}
+pre.diff .add{background:rgba(var(--observed-rgb),.14);color:var(--text-bright)}
+pre.diff .del{background:rgba(var(--fault-rgb),.14);color:var(--text-bright)}
+pre.diff .hunk{color:var(--text-dim);background:var(--inset)}
 @media (max-width:600px){ul.rows li{grid-template-columns:1fr}dl{grid-template-columns:1fr}}
 `;
 
@@ -127,6 +137,7 @@ export function renderItem(
   p: ProjectRecord,
   d: { item: Item; policy: ProjectPolicy; evidence: Evidence[]; reviews: Review[]; gate: Gate; events: LedgerEvent[] },
   ownerName: string | null = null,
+  diff: ItemDiff | "unavailable" | null = null,
 ): string {
   const { item, gate } = d;
   const view = evidenceAt(d.policy, d.evidence, item.head);
@@ -158,6 +169,9 @@ ${item.state === "accepted" ? `<p>Accepted at <span class="mono">${short(item.ac
 <h2>Evidence at this head</h2>
 ${checks || reports ? `<table><tr><th>Grade</th><th>Claim</th><th>By</th></tr>${checks}${reports}</table>` : `<p class="empty">No required checks for this project and nothing reported.</p>`}
 
+<h2>Changes against the baseline</h2>
+${renderDiff(diff, item.head)}
+
 <h2>Reviews at this head</h2>
 ${reviews ? `<table><tr><th>Verdict</th><th>Note</th><th>By</th></tr>${reviews}</table>` : `<p class="empty">No reviews of this head.</p>`}
 ${live && item.head ? `<form class="act" method="post" action="${action("approve")}"><input type="text" name="note" placeholder="Note (optional)"><button>Approve as ${ownerName ? e(ownerName) : "project owner"}</button><button formaction="${action("reject")}" class="danger">Reject</button></form>` : ""}
@@ -168,4 +182,38 @@ ${live ? `<h2>Ownership</h2>
 ${item.state !== "merged" && item.state !== "abandoned" ? `<form class="act" method="post" action="${action("abandon")}"><input type="text" name="note" placeholder="Why abandon"><button class="danger">Abandon</button></form>` : ""}
 
 <h2>Provenance</h2>${eventTable(d.events)}`);
+}
+
+const STATUS: Record<FileChange["status"], [string, string]> = {
+  added: ["Added", "go"],
+  deleted: ["Deleted", "bad"],
+  modified: ["Modified", "signal"],
+  mode: ["Mode", ""],
+  binary: ["Binary", ""],
+  "too-large": ["Too large", "ask"],
+};
+
+// Each line keeps its +, - or space, so the diff reads without colour.
+function renderFile(f: FileChange, open: boolean): string {
+  const [label, tone] = STATUS[f.status];
+  const counts = f.added || f.removed ? `<span class="counts">+${f.added} −${f.removed}</span>` : "";
+  const note = f.status === "binary" ? "Binary file; not shown." : f.status === "too-large" ? "Too large to diff here; use <code>atelier diff</code>." : f.status === "mode" ? "Only the file mode changed." : "";
+  const body = f.hunks.length
+    ? `<pre class="diff">${f.hunks.map((h) =>
+        `<span class="hunk">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</span>` +
+        h.lines.map((l) => `<span class="${l.op === "+" ? "add" : l.op === "-" ? "del" : ""}">${l.op}${e(l.text)}</span>`).join("")).join("")}</pre>`
+    : note ? `<p class="meta" style="padding:0 10px 8px;margin:0">${note}</p>` : "";
+  return `<details class="file"${open ? " open" : ""}><summary><span class="tag ${tone}">${label}</span><code>${e(f.path)}</code>${counts}</summary>${body}</details>`;
+}
+
+function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null): string {
+  if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
+  if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
+  if (!diff.files.length) return `<p class="empty">No changes: the workspace is at <span class="mono">${short(diff.head)}</span>, the same as the baseline.</p>`;
+  const added = diff.files.reduce((n, f) => n + f.added, 0), removed = diff.files.reduce((n, f) => n + f.removed, 0);
+  const moved = recordedHead && recordedHead !== diff.head
+    ? `<p><span class="tag ask">Unrecorded</span> Artifacts holds <span class="mono">${short(diff.head)}</span>, newer than the recorded head <span class="mono">${short(recordedHead)}</span>; the owner has pushed without running <code>atelier push</code>.</p>`
+    : "";
+  return `${moved}<p class="meta">${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} changed, +${added} −${removed}, from <span class="mono">${short(diff.base)}</span> to <span class="mono">${short(diff.head)}</span>.${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
+${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 }
