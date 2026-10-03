@@ -4,6 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-03",
   "observability": { "enabled": true },
+  "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
+  "workers_dev": false,
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   "durable_objects": {
