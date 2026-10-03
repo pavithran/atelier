@@ -1,0 +1,16 @@
+atelier cloudflare-git/t3 "Show an item's diff against the baseline on its web page"
+accepted head 9621fac2436196a267f96ec81225c2cc3181512d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-03T22:34:22.899Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-03T22:34:24.684Z
+REPORTED Ran the t3 Worker under wrangler dev against real Artifacts: a fixture item with added, deleted, modified, mode-only and binary files rendered every status correctly, hunks matched git's, HTML in file content was escaped, and the page had no horizontal overflow at 375 px. — claude-code/opus-5.5 2026-10-03T22:34:27.838Z
+REVIEW approve — pavi: Approved by PAVI in chat, 2026-10-03: the index.ts change is one diff route and one item-page call.
+2026-10-03T22:29:33.993Z pavi item.created
+2026-10-03T22:30:24.217Z claude-code/opus-5.5 item.claimed
+2026-10-03T22:30:26.575Z claude-code/opus-5.5 fork.created
+2026-10-03T22:34:18.330Z claude-code/opus-5.5 push.observed
+2026-10-03T22:34:22.945Z claude-code/opus-5.5 evidence.observed
+2026-10-03T22:34:24.729Z claude-code/opus-5.5 evidence.observed
+2026-10-03T22:34:27.840Z claude-code/opus-5.5 evidence.reported
+2026-10-03T22:34:28.136Z claude-code/opus-5.5 item.submitted
+2026-10-03T22:34:49.820Z pavi review.approved
+2026-10-03T22:34:50.061Z pavi item.accepted
