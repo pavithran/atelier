@@ -24,3 +24,7 @@ cache/
 .wrangler/
 .dev.vars
 worker-configuration.d.ts
+
+# Portfolio-internal; kept out of the public repository
+PROJECT.md
+AGENTS.md
