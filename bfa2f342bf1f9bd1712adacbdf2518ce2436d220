@@ -1,0 +1,16 @@
+atelier cloudflare-git/t8 "Let atelier init re-run on a registered project"
+accepted head 95bd820434b21ddeb647b56d176bd415ee0b5530
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-03T22:39:49.034Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-03T22:39:50.950Z
+REPORTED Under wrangler dev against real Artifacts: before the fix a second init failed with internal: repo already exists; after it, re-init with --refuse-overlap succeeded, switched overlap from flagged to refused, and kept both existing items. — claude-code/opus-5.5 2026-10-03T22:39:51.476Z
+REVIEW approve — pavi: Approved by PAVI in chat, 2026-10-03: matching the error wording as well as its code, in two places.
+2026-10-03T22:37:30.679Z claude-code/opus-5.5 item.created
+2026-10-03T22:38:46.246Z claude-code/opus-5.5 item.claimed
+2026-10-03T22:38:48.411Z claude-code/opus-5.5 fork.created
+2026-10-03T22:39:45.352Z claude-code/opus-5.5 push.observed
+2026-10-03T22:39:49.075Z claude-code/opus-5.5 evidence.observed
+2026-10-03T22:39:50.996Z claude-code/opus-5.5 evidence.observed
+2026-10-03T22:39:51.476Z claude-code/opus-5.5 evidence.reported
+2026-10-03T22:39:51.768Z claude-code/opus-5.5 item.submitted
+2026-10-03T22:41:30.297Z pavi review.approved
+2026-10-03T22:41:30.554Z pavi item.accepted
