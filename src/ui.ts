@@ -19,9 +19,10 @@ import {
 // forms and commands always use the name.
 export const titleOf = (p: { name: string; title?: string }) => p.title || p.name;
 // A project's display title as stored: one line of plain text, at most 80
-// characters, or nothing.
+// characters, or nothing. Control, bidirectional override and isolate, and
+// zero-width characters never survive.
 export function cleanTitle(v: unknown): string | undefined {
-  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
   return s || undefined;
 }
 const titleMap = (ps: ProjectRecord[]) => new Map(ps.map((p) => [p.name, titleOf(p)]));

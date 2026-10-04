@@ -1,5 +1,6 @@
 import {expect,it} from 'vitest';
 import {renderInbox,renderItem,renderProject,renderHistory,type Detail} from '../src/ui';
+import {buildFloor} from '../src/floor';
 import type {ProjectRecord} from '../src/ledger';
 const head='a'.repeat(40),time='2026-10-03T12:00:00Z';
 const project:ProjectRecord={name:'example',repo:'example',policy:{checks:['npm test'],protected:['src/**']},createdAt:time};
@@ -93,6 +94,7 @@ import {cleanTitle,titleOf,renderProjects,renderStudio} from '../src/ui';
 it('a project title is one clean line, and the name stands in when there is none',()=>{
  expect(cleanTitle('  Atelier ')).toBe('Atelier');
  expect(cleanTitle('A\ntwo\u0007line')).toBe('A two line');
+ expect(cleanTitle('A\u202ab\u200bc\u2066d\ufeff')).toBe('A b c d');
  expect(cleanTitle('x'.repeat(200))).toHaveLength(80);
  expect(cleanTitle('')).toBeUndefined();
  expect(cleanTitle(undefined)).toBeUndefined();
@@ -109,7 +111,13 @@ it('pages call a project by its title and link it by its name',()=>{
  expect(page).toContain('action="/ui/cloudflare-git/new"');
  const s=buildStory('cloudflare-git',[],[],'pavi',false,'Atelier');
  expect(s.title).toBe('Atelier');
- expect(renderStudio({benches:[],from:time,to:time},'PAVI',new Date(time),false,[titled])).toContain('Studio');
+ // A bench of the titled project: the lane names it by title, not by name.
+ const benchItem={id:'t1',title:'Fix the lane',scope:[],state:'claimed' as const,owner:'codex/gpt-6',fork:'cloudflare-git--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
+ const floor=buildFloor([{project:titled,items:[benchItem],events:[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.claimed',data:{}}]}],new Date(time));
+ const studio=renderStudio(floor,'PAVI',new Date(time),false,[titled]);
+ expect(studio).toContain('<p class="meta">&lt;Atelier&gt;');
+ expect(studio).not.toContain('<p class="meta">cloudflare-git');
+ expect(studio).not.toContain('<p class="meta">example');
 });
 
 // ── showcase ──
