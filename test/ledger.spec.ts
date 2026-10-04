@@ -372,3 +372,21 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(after.policy).toMatchObject({ checks: ["npm test"], protected: ["src/index.ts"] });
   expect(after.title).toBe("Kept");
 });
+
+it("a push to an accepted task withdraws the acceptance, and only its owner can push", async () => {
+  const L = await setup("reopen");
+  await L.newItem("Conflicts on merge", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "reopen--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  expect(await L.item("t1")).toMatchObject({ state: "accepted", acceptedHead: H1 });
+  // The merge conflicted; the owner rebases and pushes a new revision.
+  const reopened = await L.recordPush("t1", A, H2, H2);
+  expect(reopened).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
+  const last = (await L.events("t1")).find((e) => e.kind === "push.observed");
+  expect(last?.data).toMatchObject({ head: H2, approvalInvalidated: true });
+  await expect(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null)).rejects.toThrow(/does not own/);
+});

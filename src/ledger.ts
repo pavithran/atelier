@@ -239,16 +239,25 @@ export class Ledger extends DurableObject<Env> {
 
   // The worker has already read the fork's head from Artifacts; what is logged
   // here is what Atelier saw, not what the agent said it pushed.
+  // An accepted task can still take a new revision, as when its merge
+  // conflicts and the owner rebases: the push withdraws the acceptance, and
+  // the task is back in progress until it is checked and submitted again.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null): Item {
     const item = this.item(id);
-    assertLive(item);
+    if (item.state !== "accepted") assertLive(item);
     assertOwner(item, actor);
     if (item.head === observedHead) return item;
     const now = new Date().toISOString();
-    this.update(id, { head: observedHead, last_push_at: now, state: item.state === "submitted" ? "submitted" : "claimed" });
+    const reopened = item.state === "accepted";
+    this.update(id, {
+      head: observedHead, last_push_at: now,
+      state: item.state === "submitted" ? "submitted" : "claimed",
+      ...(reopened ? { accepted_head: null } : {}),
+    });
     this.log(id, actor, "push.observed", {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
+      ...(reopened ? { approvalInvalidated: true } : {}),
     });
     return this.item(id);
   }

@@ -404,7 +404,9 @@ const commands = {
     const name = project(), id = itemArg(), as = actor();
     const branch = wsConfig("branch") ?? "main";
     const head = git(["rev-parse", "HEAD"]);
-    git(["push", "--quiet", "origin", `HEAD:${branch}`]);
+    // --force after `atelier update` rebased the workspace; the lease refuses
+    // to overwrite anything pushed since this workspace last fetched.
+    git(["push", "--quiet", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
     const item = await call("POST", `${I(name, id)}/push`, { head }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
