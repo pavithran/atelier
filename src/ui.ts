@@ -19,10 +19,11 @@ import {
 // forms and commands always use the name.
 export const titleOf = (p: { name: string; title?: string }) => p.title || p.name;
 // A project's display title as stored: one line of plain text, at most 80
-// characters, or nothing. Control, bidirectional override and isolate, and
-// zero-width characters never survive.
+// characters, or nothing. No control or zero-width character survives: C0 and
+// C1 controls, U+00AD, U+061C, U+180E, U+200B to U+200F, U+202A to U+202E,
+// U+2060 to U+2069 and U+FEFF are all replaced with a space.
 export function cleanTitle(v: unknown): string | undefined {
-  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
   return s || undefined;
 }
 const titleMap = (ps: ProjectRecord[]) => new Map(ps.map((p) => [p.name, titleOf(p)]));

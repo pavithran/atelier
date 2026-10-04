@@ -101,6 +101,11 @@ it('a project title is one clean line, and the name stands in when there is none
  expect(titleOf({name:'cloudflare-git'})).toBe('cloudflare-git');
  expect(titleOf({name:'cloudflare-git',title:'Atelier'})).toBe('Atelier');
 });
+it('invisible characters in a title become spaces, not hidden markup',()=>{
+ const removed:[string,string][]=[['U+0080','\u0080'],['U+009F','\u009f'],['U+00AD','\u00ad'],['U+061C','\u061c'],['U+180E','\u180e'],['U+200E','\u200e'],['U+200F','\u200f'],['U+2060','\u2060'],['U+2061','\u2061'],['U+2062','\u2062'],['U+2063','\u2063'],['U+2064','\u2064']];
+ for(const [name,ch] of removed) expect(cleanTitle('a'+ch+'b'),name).toBe('a b');
+ expect(cleanTitle('a‏b')).toBe('a b');
+});
 it('pages call a project by its title and link it by its name',()=>{
  const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
  const list=renderProjects([{project:titled,items:[]}]);
