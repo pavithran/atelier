@@ -209,3 +209,71 @@ it("the owners view reports live items without titles, scopes or paths", async (
   expect(Object.keys(owners[0]).sort()).toEqual(["head", "item", "owner", "since", "state"]);
   expect(owners[0]).toMatchObject({ item: "t1", state: "claimed", owner: A, head: H1 });
 });
+
+it("acceptance is bound to the expected revision and a push event invalidates approval", async () => {
+  const L=await setup('revision-bound');
+  await L.newItem('Review this revision',['src/**'],'owner'); await L.claim('t1',A); await L.setFork('t1','revision--t1',H0,A);
+  await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A);
+  await refusal(L.accept('t1','owner',H2),'stale_head',/changed since/);
+  await L.accept('t1','owner',H1);
+  await L.observePush('t1',H2,H1);
+  expect(await L.item('t1')).toMatchObject({state:'submitted',head:H2,acceptedHead:null});
+  await L.observePush('t1',H1,H0);
+  expect((await L.item('t1')).head).toBe(H2);
+});
+
+it("completed tasks cannot be reopened by push, submit, release, or review", async () => {
+  const L=await setup('closed-state');
+  await L.newItem('Close safely',[],'owner'); await L.claim('t1',A); await L.setFork('t1','closed--t1',H0,A);
+  await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A); await L.accept('t1','owner',H1);
+  await refusal(L.merged('t1','owner','merge',false),'unverified_merge',/not on the baseline/);
+  await L.merged('t1','owner','merge',true); await L.merged('t1','owner','merge',true);
+  await refusal(L.recordPush('t1',A,H2,H2),'closed',/merged/);
+  await refusal(L.submit('t1',A),'closed',/merged/);
+  await refusal(L.release('t1','owner',''),'closed',/merged/);
+  await refusal(L.addReview(review('t1',B,H1,true)),'closed',/merged/);
+  await L.observePush('t1',H2,H1);
+  expect((await L.item('t1')).state).toBe('merged');
+  expect(kinds(await L.events('t1')).filter(k=>k==='item.merged')).toHaveLength(1);
+});
+
+it("HTTP approval rejects missing and stale revisions before reading Artifacts", async () => {
+  const {default:worker}=await import('../src/index');
+  const L=await setup('http-review');await L.newItem('Bound form',[],'owner');await L.claim('t1',A);await L.setFork('t1','http--t1',H0,A);await L.recordPush('t1',A,H1,H1);
+  const bindings={...env,ATELIER_TOKEN:'fixture-token'};
+  for(const head of ['',H2]) {
+    const form=new URLSearchParams({head,note:'test'});
+    const res=await worker.fetch(new Request('https://atelier.test/ui/http-review/t1/approve',{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://atelier.test'},body:form}),bindings);
+    expect(res.status).toBe(head?409:400);
+    expect((await L.reviewsFor('t1')).length).toBe(0);
+  }
+  const cross=await worker.fetch(new Request('https://atelier.test/ui/http-review/t1/approve',{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://other.test'},body:new URLSearchParams({head:H1})}),bindings);
+  expect(cross.status).toBe(403);
+});
+
+it("push events read the authoritative branch head and ignore duplicate or unrelated events", async () => {
+  const {default:worker}=await import('../src/index');
+  const L=await setup('events-project');await L.newItem('Observe pushes',[],'owner');await L.claim('t1',A);await L.setFork('t1','events-project--t1',H0,A);
+  const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
+  await index.registerProject({name:'events-project',repo:'events-project',policy,createdAt:new Date().toISOString()});
+  let reads=0,acks=0,retries=0;
+  const artifacts={get:async()=>({info:async()=>({defaultBranch:'main'}),log:async()=>{reads++;return[{hash:H2}]},[Symbol.dispose](){}})} as unknown as Artifacts;
+  const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'events-project--t1'},payload:{ref:'refs/heads/main',after:H1}};
+  const send=async(body:unknown)=>worker.queue({messages:[{body,ack(){acks++},retry(){retries++}}]} as unknown as MessageBatch<unknown>,{...env,ARTIFACTS:artifacts});
+  await send(notice);await send(notice);await send({...notice,payload:{...notice.payload,ref:'refs/heads/other'}});
+  expect((await L.item('t1')).head).toBe(H2);expect(acks).toBe(3);expect(retries).toBe(0);expect(reads).toBe(2);
+  expect(kinds(await L.events('t1')).filter(k=>k==='push.observed')).toHaveLength(1);
+});
+
+it("HTTP review and acceptance preserve the displayed revision through successful form posts",async()=>{
+ const {default:worker}=await import('../src/index');
+ const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setFork('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
+ const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Artifacts;
+ const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token'};
+ for(const action of ['approve','accept']){
+  const res=await worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://atelier.test'},body:new URLSearchParams({head:H1,note:'Reviewed'})}),bindings);
+  expect(res.status).toBe(303);
+ }
+ expect(await L.item('t1')).toMatchObject({state:'accepted',acceptedHead:H1});
+ expect((await L.reviewsFor('t1'))[0].head).toBe(H1);
+});

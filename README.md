@@ -40,7 +40,7 @@ In detail:
 | `atelier new "title" --scope 'src/**'` | anyone | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/`. |
 | `atelier push` | the item's owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | anyone | Clones the workspace afresh at that head, runs each required check, measures which paths changed since the baseline, and records the results as Observed. A result for a head that has since moved is refused. |
+| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, measures which paths changed since the baseline, and records the results as Observed. A result for a head that has since moved is refused. |
 | `atelier report "…"` | anyone | Records a Reported claim. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -103,11 +103,11 @@ Trusted, and stated here so nobody assumes otherwise:
   name (`harness/model`) is what the caller says it is. The token proves only
   that the caller is one of the project owner's own tools. The write token is what stops
   a non-owner from pushing.
-- **Checks run on the caller's machine.** "Observed" means Atelier's own
-  runner ran the check in a clean clone at the verified head. That defeats
-  the common failures (a dirty tree, a stale head, a check that was never
-  run) but not an agent that forges API calls. Running checks inside
-  Cloudflare Sandbox or Containers would close that gap and is not built.
+- **Check execution is explicit.** Local checks run in a clean clone at
+  the verified head, but a caller with the shared token can forge local
+  evidence. Cloudflare container checks execute on the server and are
+  available with `--sandbox`; `sandboxOnly` policy requires that evidence.
+  The container integration still needs deployment and a live runtime check.
 - **Merging happens locally.** The Artifacts binding has no merge operation,
   and the iCloud checkout is the source of truth, so `atelier merge` merges
   with the local git.
@@ -221,3 +221,88 @@ operations the CLI performs, not a measurement.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+## Decisions, projects, and history
+
+The Decisions page puts reviews and blockers across projects beside the
+selected task. Passing output stays collapsed; failed checks show their
+output. Projects contains active work and task creation. History retains
+merged and closed tasks with their evidence. Ownership and Git details
+remain available inside each task.
+
+Approval and acceptance forms carry the revision displayed on the page.
+The server checks both the ledger and Artifacts before accepting that
+revision. A stale page must be refreshed. Each reviewer's latest verdict
+at a revision replaces their earlier verdict; another reviewer's rejection
+still blocks acceptance.
+
+## Finish and land
+
+After committing, an agent runs `atelier finish` in its claimed workspace.
+It pushes, runs required checks, and submits only if those checks pass and
+the workspace remains unchanged. A project with `sandboxOnly` enabled uses
+the cloud runner automatically. `--sandbox` selects it explicitly.
+
+The project owner can complete an exact revision with:
+
+```sh
+atelier land t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
+```
+
+`--approve` records an explicit owner review. Without it, any required review
+must already exist. Acceptance still goes through the gate. Already accepted
+work needs only `atelier land t9 --head FULL_COMMIT_SHA`.
+
+Landing records a journal in the registered checkout's Git directory,
+`atelier-landing.json`. If publishing the baseline or recording the merge
+fails, rerun the same command. It resumes from the local merge commit. It
+refuses a different revision, a dirty checkout, or concurrent landing. If a
+process stops during the uncommitted Git merge, inspect `git status` and
+resolve or abort that merge before retrying. The journal preserves the
+original revision and starting commit. Never remove it to bypass a mismatch.
+
+The browser provides this local command after acceptance. It does not run a
+network-accessible local executor. Deployment and pushing the project branch
+to its own remotes remain separate decisions.
+
+## Push event setup
+
+The Worker has a Queues consumer for `cf.artifacts.repo.pushed` notices in
+the `atelier` namespace. It rereads the default branch from Artifacts,
+ignores unrelated branches and duplicate events, and retries failed reads.
+A new push invalidates acceptance and evidence for the previous revision.
+The CLI's push observation remains available when event delivery is delayed.
+
+Before enabling this in production, provision a queue and dead-letter queue,
+subscribe the intended Artifacts repositories' push events to it, and add a
+consumer to the release configuration:
+
+```json
+{"queues":{"consumers":[{"queue":"atelier-events","max_batch_size":10,"max_retries":5,"dead_letter_queue":"atelier-events-dead-letter"}]}}
+```
+
+Queue provisioning, subscription creation, and deployment are release actions;
+adding the consumer handler alone does not activate event delivery. See
+[Artifacts event subscriptions](https://developers.cloudflare.com/artifacts/guides/event-subscriptions/).
+
+## Local visual review
+
+Run `node test/preview.mjs` for a local, read-only preview with illustrative
+content. It prints its URL. The preview cannot approve, merge, or create live
+tasks. Use `?state=empty`, `/p/cloudflare-git/t1?state=failed`, `state=ready`,
+`state=accepted`, `state=merged`, `state=unavailable`, or `state=long` to inspect
+important states. Append `theme=dark` to inspect the dark palette.
+
+The visual composition is saved in `.impeccable/mocks/decisions.png` with its
+prompt. Product intent lives in `PRODUCT.md`; the implemented visual system
+is recorded in `DESIGN.md`.
+
+## Integration basis
+
+The decision workspace integrates t1 at `5ebb64e9` (cloud checks), t4 at
+`8c44da71` (real Ledger runtime tests), and the merged t5 cleanup work.
+Their commits remain in the integration history. Combined test discovery
+runs TypeScript and JavaScript unit tests and the Workers runtime suite.
+Cloud checks now bound retained output and mark interrupted runs failed
+instead of leaving them indefinitely running. Local verification does not
+establish a successful production container run.

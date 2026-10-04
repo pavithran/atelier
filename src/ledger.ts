@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertClaimAllowed, assertEligible, assertOwner, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
+  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -137,13 +137,25 @@ export class Ledger extends DurableObject<Env> {
   // here is what Atelier saw, not what the agent said it pushed.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null): Item {
     const item = this.item(id);
+    assertLive(item);
     assertOwner(item, actor);
+    if (item.head === observedHead) return item;
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, last_push_at: now, state: item.state === "submitted" ? "submitted" : "claimed" });
     this.log(id, actor, "push.observed", {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
     });
+    return this.item(id);
+  }
+
+  observePush(id: string, observedHead: string, expectedHead: string | null): Item {
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
+    const now = new Date().toISOString();
+    this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
+      state: item.state === "accepted" ? "submitted" : item.state });
+    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted" });
     return this.item(id);
   }
 
@@ -160,6 +172,7 @@ export class Ledger extends DurableObject<Env> {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertEligible(r.by, this.project().policy, this.owner);
     const item = this.item(r.itemId);
+    assertLive(item);
     if (item.owner === r.by) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
@@ -168,6 +181,7 @@ export class Ledger extends DurableObject<Env> {
 
   submit(id: string, actor: string): Item {
     const item = this.item(id);
+    assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
     this.update(id, { state: "submitted" });
@@ -190,15 +204,17 @@ export class Ledger extends DurableObject<Env> {
 
   release(id: string, actor: string, note: string): Item {
     const item = this.item(id);
+    assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
     this.update(id, { owner: null, state: "open" });
     this.log(id, actor, "item.released", { from: item.owner, note });
     return this.item(id);
   }
 
-  accept(id: string, actor: string): Item {
+  accept(id: string, actor: string, expected?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     const item = this.item(id);
+    if (expected !== undefined) assertRevision(item, expected);
     const g = gate(item, this.project().policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     this.update(id, { state: "accepted", accepted_head: item.head });
@@ -209,6 +225,8 @@ export class Ledger extends DurableObject<Env> {
   merged(id: string, actor: string, mergeCommit: string, observed: boolean): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
     const item = this.item(id);
+    if (item.state === "merged" && this.events(id).some((e) => e.kind === "item.merged" && e.data.mergeCommit === mergeCommit)) return item;
+    if (!observed) throw new RuleError("unverified_merge", "merge commit is not on the baseline");
     if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}`);
     this.update(id, { state: "merged", owner: null });
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed });
@@ -217,6 +235,8 @@ export class Ledger extends DurableObject<Env> {
 
   abandon(id: string, actor: string, note: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     this.update(id, { state: "abandoned", owner: null });
     this.log(id, actor, "item.abandoned", { note });
     return this.item(id);
@@ -253,7 +273,7 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const evidence = this.evidenceFor(id);
     const reviews = this.reviewsFor(id);
-    return { item, policy, evidence, reviews, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    return { item, policy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string): InboxEntry[] {

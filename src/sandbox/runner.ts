@@ -95,9 +95,18 @@ export class CheckRunner extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     const state = await this.ctx.storage.get<RunState>("state");
-    if (!state || state.status !== "queued") return;
+    if (!state || state.status === "done" || state.status === "failed") return;
+    if (state.status === "running") {
+      state.status = "failed";
+      state.error = "The runner was interrupted or exceeded its deadline. Start a new check run.";
+      state.finishedAt = new Date().toISOString();
+      await this.ctx.storage.put("state",state);
+      await this.ctx.container?.destroy().catch(()=>{});
+      return;
+    }
     state.status = "running";
     state.startedAt = new Date().toISOString();
+    await this.ctx.storage.setAlarm(Date.now() + (state.request.checks.length * STEP_SECONDS + 120) * 1000);
     await this.ctx.storage.put("state", state);
     try {
       await this.run(state);
@@ -107,6 +116,7 @@ export class CheckRunner extends DurableObject<Env> {
       state.error = String((err as Error)?.message ?? err).slice(0, 1000);
     } finally {
       state.finishedAt = new Date().toISOString();
+      await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.put("state", state);
       const container = this.ctx.container;
       if (container?.running) await container.destroy().catch(() => {});
@@ -153,25 +163,34 @@ export class CheckRunner extends DurableObject<Env> {
     const [unpacked] = await Promise.all([unpack.output(), written]);
     if (unpacked.exitCode !== 0) throw new Error(`tar failed: ${new TextDecoder().decode(unpacked.stderr).slice(0, 500)}`);
 
-    const decoder = new TextDecoder();
     state.results = [];
     for (const claim of req.checks) {
       const t0 = Date.now();
       const proc = await container.exec(["timeout", "--kill-after=5", String(STEP_SECONDS), "sh", "-c", claim], { cwd: WORKDIR, stderr: "combined", env: ENV });
-      const out = await proc.output();
-      const timedOut = out.exitCode === 124 ? `\n[atelier] stopped after ${STEP_SECONDS}s` : "";
+      const decoder = new TextDecoder();
+      let output = "";
+      const read = async () => {
+        const stream = proc.stdout?.getReader();
+        if (!stream) return;
+        try { while (true) { const chunk = await stream.read(); if (chunk.done) break; output = tail(output + decoder.decode(chunk.value,{stream:true})); } output = tail(output + decoder.decode()); }
+        finally { stream.releaseLock(); }
+      };
+      const [exitCode] = await Promise.all([proc.exitCode,read()]);
+      const timedOut = exitCode === 124 ? `\n[atelier] stopped after ${STEP_SECONDS}s` : "";
       state.results.push({
         claim,
-        passed: out.exitCode === 0,
-        exitCode: out.exitCode,
+        passed: exitCode === 0,
+        exitCode,
         seconds: Math.round((Date.now() - t0) / 1000),
-        outputTail: tail(decoder.decode(out.stdout) + timedOut),
+        outputTail: tail(output + timedOut),
       });
       await this.ctx.storage.put("state", state);
     }
 
     // Record in the Ledger. It refuses evidence for a head the item has moved past.
     const ledger = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${req.project}`));
+    const current = await fork.log({ limit: 1 });
+    if (current[0]?.hash !== fp.head) throw new Error("the workspace changed while checks ran; record the push and check again");
     const at = new Date().toISOString();
     for (const r of state.results) {
       await ledger.addEvidence({

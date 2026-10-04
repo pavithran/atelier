@@ -1,0 +1,39 @@
+# Product
+
+<!-- impeccable:product-schema 1 -->
+
+## Platform
+
+web
+
+## Users
+
+PAVI manages agent work across projects. The main screen supports PAVI's decisions across projects. Agents use the CLI to claim, complete, and hand off work.
+
+## Product Purpose
+
+Give work to agents, see what deserves attention, and decide with evidence. Make coordination more powerful, robust, simple, and visually compelling.
+
+## Operating Context
+
+Git stores files, commits, branches, and merges. Cloudflare Artifacts stores the baseline and task forks. Agents work in local clones. Atelier records ownership, checks, reviews, and approvals. Merges occur in the registered local checkout; publication and deployment are separate decisions.
+
+## Capabilities and Constraints
+
+One owner per task. Evidence and approval bind to exact revisions. Protected changes require independent review or PAVI's approval. The existing server renders HTML and uses form posts with a script-free content security policy. Credentials stay outside the source tree. The generated src/theme.css is maintained by bin/sync-theme and must not be edited.
+
+## Product Principles
+
+- Put the owner's next decision first.
+- Explain what happened, who can resolve it, and the next action.
+- Keep verified evidence distinct from reports and unavailable information.
+- Make interrupted operations recoverable without losing work.
+- Keep publishing and deployment explicit.
+
+## Evidence on Hand
+
+The current implementation, task ledger, Git history, and test suites establish existing behavior. Local fixtures demonstrate interface states; they are not live project facts.
+
+## Brand Commitments
+
+The product is Atelier. PAVI approved an ivory, charcoal, and copper direction with clear typography, a narrow navigation rail, decision rows, and a generous review canvas. The first composition is generated as an image before implementation.
