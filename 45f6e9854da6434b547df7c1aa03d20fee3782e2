@@ -1,0 +1,38 @@
+atelier cloudflare-git/t55 "Fix: an accepted task whose merge conflicts can take a new revision: atelier push records it and withdraws the acceptance; also atelier push --force after a rebase"
+accepted head eba7e39f29fc0185471fa6901037ca93bfced470
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T19:13:21.517Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T19:13:23.472Z
+REVIEW reject — codex/gpt-6-astra: Cancellation does not fence an in-flight publication and bypasses the local landing lock; only 1,000 commits are checked before cancelling; a journal from before a reopen cannot be recovered by cancel.
+REVIEW approve — pavi: Approved by PAVI in chat, 2026-10-04, under the review bar: Codex's remaining findings are races between the owner's own merge and cancel, filed as t59.
+REVIEW approve — codex/gpt-6-astra: Re-review of the same revision under the owner's bar: no agent-triggered way to merge an unaccepted revision or lose accepted work; publication uses the accepted SHA and checks acceptance before taking the lease. Non-blocking, filed as t59: cancel not fenced against concurrent owner commands; 1,000-commit check; journal recovery after a reopen.
+2026-10-04T18:42:09.146Z pavi item.created
+2026-10-04T18:42:09.473Z claude-code/opus-5.5 item.claimed
+2026-10-04T18:42:12.523Z claude-code/opus-5.5 fork.created
+2026-10-04T18:43:03.941Z claude-code/opus-5.5 push.observed
+2026-10-04T18:43:17.330Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:43:19.503Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:43:23.545Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:43:26.023Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:43:43.512Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:43:46.505Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:44:10.334Z claude-code/opus-5.5 push.observed
+2026-10-04T18:44:21.035Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:44:22.952Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:44:37.099Z claude-code/opus-5.5 push.observed
+2026-10-04T18:44:47.477Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:44:49.410Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:44:49.845Z claude-code/opus-5.5 item.submitted
+2026-10-04T18:46:45.751Z codex/gpt-6-astra review.rejected
+2026-10-04T18:48:38.739Z claude-code/opus-5.5 push.observed
+2026-10-04T18:48:50.678Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:48:52.873Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:48:53.300Z claude-code/opus-5.5 item.submitted
+2026-10-04T19:11:08.565Z codex/gpt-6-astra review.rejected
+2026-10-04T19:13:11.744Z claude-code/opus-5.5 push.observed
+2026-10-04T19:13:21.605Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:13:23.545Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:13:24.270Z claude-code/opus-5.5 item.submitted
+2026-10-04T19:21:55.953Z codex/gpt-6-astra review.rejected
+2026-10-04T19:30:06.221Z pavi review.approved
+2026-10-04T19:31:26.305Z codex/gpt-6-astra review.approved
+2026-10-04T19:31:26.832Z pavi item.accepted
