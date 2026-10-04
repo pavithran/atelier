@@ -117,7 +117,8 @@ import {renderTree,renderBlob,renderCommit,renderLog,codeHref} from '../src/brow
 it('browsing pages escape names and contents and keep links inside the repository',()=>{
  const head={hash:'a'.repeat(40),treeHash:'b'.repeat(40),message:'<b>Subject</b>\nbody',author:{name:'<A>',email:'a@x'},parents:['c'.repeat(40)],authoredAt:1759600000};
  const w={project,item:'t1',at:null};
- const tree=renderTree(w,head,['src'],{kind:'tree',hash:'d'.repeat(40),entries:[{name:'<x>.ts',type:'blob',mode:'100644',hash:'e'.repeat(40)},{name:'lib',type:'tree',mode:'40000',hash:'f'.repeat(40)}]});
+ const tree=renderTree(w,head,['src'],{kind:'tree',hash:'d'.repeat(40),entries:[{name:'<x>.ts',type:'blob',mode:'100644',hash:'e'.repeat(40)},{name:'lib',type:'tree',mode:'40000',hash:'f'.repeat(40)},{name:'run.sh',type:'exec',mode:'100755',hash:'1'.repeat(40)}],total:3});
+ expect(tree).toContain('href="/p/example/t1/code/src/run.sh"');
  expect(tree).toContain('&lt;x&gt;.ts');
  expect(tree).toContain('href="/p/example/t1/code/src/%3Cx%3E.ts"');
  expect(tree).toContain('href="/p/example/t1/code/src/lib"');
@@ -128,4 +129,41 @@ it('browsing pages escape names and contents and keep links inside the repositor
  expect(renderCommit(w,{commit:head,parent:'c'.repeat(40),files:[],truncated:false})).toContain('href="/p/example/t1/commit/'+'c'.repeat(40)+'"');
  expect(renderLog({project,item:null,at:null},head,[head],1,true)).toContain('href="/p/example/log?page=2"');
  expect(codeHref({project,item:null,at:'a'.repeat(40)},['a b'])).toBe('/p/example/code/a%20b?at='+'a'.repeat(40));
+});
+
+it('browsing routes read only the baseline or that task fork, and say plainly what is missing',async()=>{
+ const {env}=await import('cloudflare:workers');
+ const {default:worker}=await import('../src/index');
+ const TOKEN='browse-test-token';
+ const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const record={name:'browsed',repo:'browsed',policy:{checks:[],protected:[]},createdAt:time};
+ const L=env.LEDGER.get(env.LEDGER.idFromName('project:browsed'));
+ await L.setProject(record,'owner');
+ await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
+ await L.newItem('Work',[],'owner');await L.claim('t1','codex/gpt-6');await L.setFork('t1','browsed--t1','0'.repeat(40),'codex/gpt-6');
+ const C='c'.repeat(40),T='d'.repeat(40),B='b'.repeat(40),X='e'.repeat(40);
+ const asked:string[]=[];
+ const repo=(name:string)=>({
+  log:async({ref}:{ref?:string})=>ref&&ref!=='HEAD'&&ref!==C?[]:[{hash:C,treeHash:T,message:`On ${name}`,author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}],
+  readCommit:async()=>null,
+  readTree:async(h:string)=>h===T?[{name:'README.md',mode:'100644',hash:B,type:'blob'},{name:'run.sh',mode:'100755',hash:X,type:'exec'}]:null,
+  readBlob:async(h:string)=>h===B?new Blob(['hello\n']):h===X?new Blob(['#!/bin/sh\n']):null,
+  [Symbol.dispose](){},
+ });
+ const ARTIFACTS={get:async(name:string)=>{asked.push(name);return repo(name)}} as unknown as Artifacts;
+ const bindings={...env,ARTIFACTS,ATELIER_TOKEN:TOKEN} as typeof env;
+ const get=(path:string,signed=true)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:`atelier=${hex}`}:{},redirect:'manual'}),bindings);
+ expect((await get('/p/browsed/code',false)).status).toBe(303);
+ const base=await get('/p/browsed/code');
+ expect(base.status).toBe(200);
+ expect(await base.text()).toContain('On browsed');
+ const fork=await get('/p/browsed/t1/code/run.sh');
+ expect(fork.status).toBe(200);
+ expect(await fork.text()).toContain('#!/bin/sh');
+ expect(asked).toEqual(['browsed','browsed--t1']);
+ const missing=await get(`/p/browsed/code?at=${'f'.repeat(40)}`);
+ expect(missing.status).toBe(404);
+ expect(await missing.text()).toContain('That commit is not in this repository');
+ expect((await get('/p/browsed/code/%2E%2E/x')).status).toBe(404);
+ expect((await get('/p/browsed/t1')).status).toBe(200);
 });

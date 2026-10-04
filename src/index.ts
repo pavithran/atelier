@@ -4,7 +4,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanTitle, titleOf, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
+import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
@@ -395,7 +395,7 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
     return c ? html(renderCommit(w, c, ownerName(env))) : notFound("That commit");
   }
   const head = await resolve(s, at ?? "HEAD");
-  if (!head) return html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(project)}`), 404);
+  if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(project)}`), 404);
   if (view === "log") {
     const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), 1000);
     const { commits, more } = await logPage(s, head.hash, page);
@@ -411,8 +411,8 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
   const node = await walk(s, head.treeHash, path);
   if (!node || node.kind === "other") return notFound("That path");
   if (node.kind === "tree") return html(renderTree(w, head, path, node, ownerName(env)));
-  const bytes = await s.blob(node.hash);
-  return bytes ? html(renderBlob(w, head, path, viewFile(bytes), ownerName(env))) : notFound("That file");
+  const bytes = await s.file(node.hash, FILE_LIMIT);
+  return bytes ? html(renderBlob(w, head, path, viewFile(bytes), ownerName(env), node.type === "symlink")) : notFound("That file");
 }
 
 async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {

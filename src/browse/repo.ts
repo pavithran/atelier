@@ -21,7 +21,13 @@ export interface Commit {
 export interface Source extends Reader {
   log(opts: { ref?: string; limit?: number; offset?: number }): Promise<Commit[]>;
   commit(hash: string): Promise<Commit | null>;
+  // A file's bytes, or only its size when it is over `limit`, so a large file
+  // is refused without being read into memory.
+  file(hash: string, limit: number): Promise<Uint8Array | { size: number } | null>;
 }
+
+// A file Artifacts would not buffer is reported as too large, not as an error.
+const MEMORY_LIMIT = /MEMORY_LIMIT/;
 
 export function repoSource(repo: ArtifactsRepo): Source {
   return {
@@ -32,6 +38,16 @@ export function repoSource(repo: ArtifactsRepo): Source {
     },
     log: (o) => repo.log(o),
     commit: (h) => repo.readCommit(h),
+    file: async (h, limit) => {
+      try {
+        const b = await repo.readBlob(h);
+        if (!b) return null;
+        return b.size > limit ? { size: b.size } : new Uint8Array(await b.arrayBuffer());
+      } catch (err) {
+        if (MEMORY_LIMIT.test(String((err as { code?: string }).code ?? err))) return { size: Number.POSITIVE_INFINITY };
+        throw err;
+      }
+    },
   };
 }
 
@@ -42,10 +58,18 @@ export function cleanPath(parts: string[]): string[] | null {
   return out.some((p) => p === "." || p === ".." || p.includes("\0")) ? null : out;
 }
 
+// Regular and executable files are both files; a symbolic link is shown as
+// the path it points to; a submodule has no content here.
+export const FILE_TYPES = new Set(["blob", "exec"]);
+export const READABLE = new Set(["blob", "exec", "symlink"]);
+
 export type Node =
-  | { kind: "tree"; hash: string; entries: { name: string; type: string; mode: string; hash: string }[] }
-  | { kind: "blob"; hash: string; mode: string }
+  | { kind: "tree"; hash: string; entries: { name: string; type: string; mode: string; hash: string }[]; total: number }
+  | { kind: "blob"; hash: string; mode: string; type: string }
   | { kind: "other"; hash: string; type: string };
+
+// The most entries a directory page lists; the rest are counted, not shown.
+export const TREE_LIMIT = 1000;
 
 // The object at a path under a root tree, or null when the path does not exist.
 export async function walk(r: Reader, rootTree: string, path: string[]): Promise<Node | null> {
@@ -56,7 +80,7 @@ export async function walk(r: Reader, rootTree: string, path: string[]): Promise
     if (!entry) return null;
     if (i < path.length - 1 && entry.type !== "tree") return null;
     if (i === path.length - 1) {
-      if (entry.type === "blob") return { kind: "blob", hash: entry.hash, mode: entry.mode };
+      if (READABLE.has(entry.type)) return { kind: "blob", hash: entry.hash, mode: entry.mode, type: entry.type };
       if (entry.type !== "tree") return { kind: "other", hash: entry.hash, type: entry.type };
     }
     hash = entry.hash;
@@ -64,7 +88,7 @@ export async function walk(r: Reader, rootTree: string, path: string[]): Promise
   const entries = (await r.tree(hash)) ?? [];
   // Directories first, then files, each by name, as a reader expects.
   const sorted = [...entries].sort((a, b) => (a.type === "tree" ? 0 : 1) - (b.type === "tree" ? 0 : 1) || a.name.localeCompare(b.name));
-  return { kind: "tree", hash, entries: sorted.map(({ name, type, mode, hash }) => ({ name, type, mode, hash })) };
+  return { kind: "tree", hash, entries: sorted.slice(0, TREE_LIMIT).map(({ name, type, mode, hash }) => ({ name, type, mode, hash })), total: sorted.length };
 }
 
 export const FILE_LIMIT = 512 * 1024;
@@ -74,7 +98,8 @@ export type FileView =
   | { kind: "binary"; bytes: number }
   | { kind: "too-large"; bytes: number };
 
-export function viewFile(bytes: Uint8Array): FileView {
+export function viewFile(bytes: Uint8Array | { size: number }): FileView {
+  if (!(bytes instanceof Uint8Array)) return { kind: "too-large", bytes: bytes.size };
   if (bytes.length > FILE_LIMIT) return { kind: "too-large", bytes: bytes.length };
   if (isBinary(bytes)) return { kind: "binary", bytes: bytes.length };
   const text = new TextDecoder().decode(bytes);
@@ -110,7 +135,11 @@ export async function commitChanges(s: Source, hash: string): Promise<{ commit: 
 // commit diffs as every file added.
 export const EMPTY_TREE = "4b825dc642cb6eb9a060c54bf8d69288fbee4904";
 
-export const HISTORY_CAP = 200;
+// A path's history examines at most this many commits, ten at a time, so one
+// page costs at most about a hundred root-tree reads plus the directories on
+// the path that changed, well inside Artifacts' 2,000 calls per 10 seconds.
+export const HISTORY_CAP = 100;
+const HISTORY_BATCH = 10;
 
 // The commits on the first-parent line that changed what is at a path: the
 // entry's hash differs from the next older commit's. Trees are read once per
@@ -128,13 +157,29 @@ export async function pathHistory(s: Source, ref: string, path: string[], cap = 
     },
     blob: s.blob,
   };
-  const at = await Promise.all(seen.map(async (c) => (await walk(cached, c.treeHash, path))?.hash ?? null));
+  const at: (string | null)[] = [];
+  for (let i = 0; i < seen.length; i += HISTORY_BATCH) {
+    at.push(...await Promise.all(seen.slice(i, i + HISTORY_BATCH).map(async (c) => (await locate(cached, c.treeHash, path)))));
+  }
   const complete = log.length <= cap;
   const commits = seen.filter((_, i) => {
     const older = i + 1 < seen.length ? at[i + 1] : complete ? null : at[i];
     return at[i] !== older;
   });
   return { commits, complete };
+}
+
+// The hash at a path without listing the final directory, as history needs.
+async function locate(r: Reader, root: string, path: string[]): Promise<string | null> {
+  let hash = root;
+  for (let i = 0; i < path.length; i++) {
+    const e = (await r.tree(hash))?.find((x) => x.name === path[i]);
+    if (!e) return null;
+    if (i === path.length - 1) return e.hash;
+    if (e.type !== "tree") return null;
+    hash = e.hash;
+  }
+  return hash;
 }
 
 export type { FileChange };

@@ -5,7 +5,7 @@
 
 import { escapeText as e, page, renderFile, titleOf } from "../ui.ts";
 import type { ProjectRecord } from "../ledger.ts";
-import type { Commit, FileChange, FileView, Node } from "./repo.ts";
+import { HISTORY_CAP, READABLE, type Commit, type FileChange, type FileView, type Node } from "./repo.ts";
 
 export interface Where {
   project: ProjectRecord;
@@ -44,19 +44,22 @@ function pathCrumbs(w: Where, path: string[]): string {
 export function renderTree(w: Where, head: Commit, path: string[], node: Extract<Node, { kind: "tree" }>, ownerName: string | null = null): string {
   const rows = node.entries.map((x) => {
     const dir = x.type === "tree";
-    const link = x.type === "tree" || x.type === "blob"
-      ? `<a href="${codeHref(w, [...path, x.name])}">${e(x.name)}${dir ? "/" : ""}</a>`
-      : `<span>${e(x.name)}</span> <span class="meta">${e(x.type)}</span>`;
+    const link = x.type === "tree" || READABLE.has(x.type)
+      ? `<a href="${codeHref(w, [...path, x.name])}">${e(x.name)}${dir ? "/" : ""}</a>${x.type === "exec" ? ' <span class="meta">executable</span>' : x.type === "symlink" ? ' <span class="meta">link</span>' : ""}`
+      : `<span>${e(x.name)}</span> <span class="meta">${x.type === "gitlink" ? "submodule" : e(x.type)}</span>`;
     return `<li class="${dir ? "dir" : "file"}">${link}</li>`;
   }).join("");
-  const body = `${pathCrumbs(w, path)}${node.entries.length ? `<ul class="repo-tree">${rows}</ul>` : '<p class="empty">This directory is empty.</p>'}`;
+  const more = node.total > node.entries.length ? `<p class="meta">The first ${node.entries.length} of ${node.total} entries; clone the repository for the rest.</p>` : "";
+  const body = `${pathCrumbs(w, path)}${node.entries.length ? `<ul class="repo-tree">${rows}</ul>${more}` : '<p class="empty">This directory is empty.</p>'}`;
   return frame(w, path.length ? path.join("/") : "Code", "code", head, body, ownerName);
 }
 
-export function renderBlob(w: Where, head: Commit, path: string[], view: FileView, ownerName: string | null = null): string {
-  const size = `${view.bytes.toLocaleString("en")} bytes`;
+export function renderBlob(w: Where, head: Commit, path: string[], view: FileView, ownerName: string | null = null, symlink = false): string {
+  const size = Number.isFinite(view.bytes) ? `${view.bytes.toLocaleString("en")} bytes` : "Very large";
   const tools = `<p class="meta">${size} · <a href="${historyHref(w, path)}">History of this file</a></p>`;
-  const body = view.kind === "text"
+  const body = symlink && view.kind === "text"
+    ? `<p>A symbolic link to <code>${e(view.lines.join("\n"))}</code>.</p>`
+    : view.kind === "text"
     ? `<ol class="code-lines" tabindex="0">${view.lines.map((l) => `<li><code>${e(l) || " "}</code></li>`).join("")}</ol>`
     : view.kind === "binary" ? '<p class="empty">A binary file; not shown.</p>'
     : '<p class="empty">Too large to show here; clone the repository to read it.</p>';
@@ -74,7 +77,7 @@ export function renderLog(w: Where, head: Commit | null, commits: Commit[], page
 }
 
 export function renderHistory(w: Where, head: Commit, path: string[], commits: Commit[], complete: boolean, ownerName: string | null = null): string {
-  const note = complete ? "Every commit on the first-parent line that changed it." : "Commits that changed it among the most recent 200 on the first-parent line.";
+  const note = complete ? "Every commit on the first-parent line that changed it." : `Commits that changed it among the most recent ${HISTORY_CAP} on the first-parent line.`;
   const body = `${pathCrumbs(w, path)}<p class="meta">${note}</p>${commits.length ? commitRows(w, commits) : '<p class="empty">No commit on this line changed it.</p>'}`;
   return frame(w, `History of ${path.join("/")}`, "log", head, body, ownerName);
 }

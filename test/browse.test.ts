@@ -14,7 +14,8 @@ const trees: Record<string, { name: string; mode: string; hash: string; type: st
   [h("s2")]: [{ name: "a.ts", mode: "100644", hash: h("b3"), type: "blob" }],
   [h("r1")]: [{ name: "README.md", mode: "100644", hash: h("b1"), type: "blob" }, { name: "src", mode: "40000", hash: h("s1"), type: "tree" }],
   [h("r2")]: [{ name: "README.md", mode: "100644", hash: h("b1"), type: "blob" }, { name: "src", mode: "40000", hash: h("s2"), type: "tree" }],
-  [h("r3")]: [{ name: "src", mode: "40000", hash: h("s2"), type: "tree" }, { name: "README.md", mode: "100644", hash: h("b4"), type: "blob" }],
+  [h("r3")]: [{ name: "src", mode: "40000", hash: h("s2"), type: "tree" }, { name: "README.md", mode: "100644", hash: h("b4"), type: "blob" },
+    { name: "run.sh", mode: "100755", hash: h("b4"), type: "exec" }, { name: "docs", mode: "120000", hash: h("b1"), type: "symlink" }, { name: "vendor", mode: "160000", hash: h("c1"), type: "gitlink" }],
 };
 const c = (id: string, tree: string, parent: string | null, msg: string, t: number): Commit =>
   ({ hash: h(id), treeHash: h(tree), message: msg, author: { name: "A", email: "a@example.com" }, parents: parent ? [h(parent)] : [], authoredAt: t });
@@ -28,6 +29,7 @@ const source: Source = {
     return start < 0 ? [] : commits.slice(start + offset, start + offset + limit);
   },
   commit: async (x) => commits.find((k) => k.hash === x) ?? null,
+  file: async (x, limit) => { const b = blobs[x]; return !b ? null : b.length > limit ? { size: b.length } : b; },
 };
 
 test("a path from a URL means exactly one path", () => {
@@ -40,8 +42,11 @@ test("a path from a URL means exactly one path", () => {
 test("walking finds directories, sorted dirs first, and files, and nothing else", async () => {
   const root = await walk(source, h("r3"), []);
   assert.equal(root?.kind, "tree");
-  assert.deepEqual(root?.kind === "tree" && root.entries.map((e) => e.name), ["src", "README.md"]);
-  assert.deepEqual(await walk(source, h("r3"), ["src", "a.ts"]), { kind: "blob", hash: h("b3"), mode: "100644" });
+  assert.deepEqual(root?.kind === "tree" && root.entries.map((e) => e.name), ["src", "docs", "README.md", "run.sh", "vendor"]);
+  assert.equal((await walk(source, h("r3"), ["run.sh"]))?.kind, "blob", "an executable file is a file");
+  assert.deepEqual(await walk(source, h("r3"), ["docs"]), { kind: "blob", hash: h("b1"), mode: "120000", type: "symlink" });
+  assert.equal((await walk(source, h("r3"), ["vendor"]))?.kind, "other", "a submodule has no content here");
+  assert.deepEqual(await walk(source, h("r3"), ["src", "a.ts"]), { kind: "blob", hash: h("b3"), mode: "100644", type: "blob" });
   assert.equal(await walk(source, h("r3"), ["missing"]), null);
   assert.equal(await walk(source, h("r3"), ["README.md", "x"]), null, "a file has no children");
 });
@@ -50,6 +55,7 @@ test("a file is shown as text, or said to be binary or too large", () => {
   assert.deepEqual(viewFile(text("a\nb\n")), { kind: "text", lines: ["a", "b"], bytes: 4 });
   assert.equal(viewFile(new Uint8Array([1, 0, 2])).kind, "binary");
   assert.equal(viewFile(new Uint8Array(600 * 1024)).kind, "too-large");
+  assert.deepEqual(viewFile({ size: 9e6 }), { kind: "too-large", bytes: 9e6 }, "a file over the limit is reported from its size alone");
 });
 
 test("a ref resolves to its commit, and the log pages", async () => {
@@ -73,6 +79,10 @@ test("a path's history is the commits that changed it, reading each tree once", 
   treeReads = 0;
   const readme = await pathHistory(source, "HEAD", ["README.md"]);
   assert.deepEqual(readme.commits.map((k) => k.message.split("\n")[0]), ["Third", "First"]);
+  assert.equal(treeReads, 3, "one read per distinct root tree, and none for the file");
+  treeReads = 0;
+  await pathHistory(source, "HEAD", ["src", "a.ts"]);
+  assert.equal(treeReads, 5, "three roots, and src only where its hash differs (s2 twice, s1 once: two reads)");
   assert.equal(readme.complete, true);
   const a = await pathHistory(source, "HEAD", ["src", "a.ts"]);
   assert.deepEqual(a.commits.map((k) => k.message.split("\n")[0]), ["Second", "First"]);
