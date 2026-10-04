@@ -61,7 +61,8 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
   const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length));
   res.headers.set("cache-control", "public, max-age=60");
-  await caches.default.put(key, res.clone());
+  // A copy the cache refuses is not an error: the page is still served.
+  await caches.default.put(key, res.clone()).catch(() => undefined);
   return res;
 }
 
@@ -469,7 +470,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0 || ["projects", "history", "studio", "flow"].includes(parts[0])) {
+  if (parts.length === 0 || ["decisions", "projects", "history", "studio", "flow"].includes(parts[0])) {
     const projects = await index(env).projects();
     const views: ProjectView[] = await Promise.all(projects.map(async project => {
       try { return {project, items: await ledger(env,project.name).items()}; }
@@ -509,6 +510,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     }));
     const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
     const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
+    // Signed in, / is Decisions while something waits on the owner, and Flow
+    // when nothing does. /decisions is always Decisions.
+    if (parts.length === 0 && !entries.length && !c.url.search) return Response.redirect(new URL("/flow", c.url).toString(), 303);
     const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
     const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
     const project = projects.find(p=>p.name===projectName);
@@ -590,7 +594,9 @@ export default {
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         return await api({ env, req, url, actor, body }, parts.slice(1));
       }
-      if (!how) return Response.redirect(new URL("/login", url).toString(), 303);
+      // The front door: a visitor who is not signed in sees the public showcase
+      // when there is one, and is otherwise asked to sign in.
+      if (!how) return Response.redirect(new URL(parts.length === 0 && showcased(env).length ? "/showcase" : "/login", url).toString(), 303);
       return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);

@@ -35,7 +35,7 @@ const when = (iso: string | null) => (iso ? iso.replace("T", " ").slice(0, 16) +
 const clock = (iso: string) => iso.slice(11, 16) + " UTC";
 const href = (...p: string[]) => "/" + p.map(encodeURIComponent).join("/");
 const selectedHref = (project: string, task: string) =>
-  `/?project=${encodeURIComponent(project)}&task=${encodeURIComponent(task)}#review`;
+  `/decisions?project=${encodeURIComponent(project)}&task=${encodeURIComponent(task)}#review`;
 const tag = (label: string, tone = "") => `<span class="tag ${tone}">${e(label)}</span>`;
 
 const ICONS: Record<string, string> = {
@@ -53,7 +53,7 @@ const icon = (name: string) =>
   `<svg aria-hidden="true" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ""}</svg>`;
 
 const NAV: [string, string, string][] = [
-  ["Decisions", "/", "decisions"],
+  ["Decisions", "/decisions", "decisions"],
   ["Flow", "/flow", "flow"],
   ["Studio", "/studio", "studio"],
   ["Projects", "/projects", "projects"],
@@ -217,6 +217,8 @@ export function renderInbox(
 // counted from the Ledger's events by graph.ts; nothing is estimated.
 
 const taskHref = (project: string) => (th: { id: string }) => href("p", project, th.id);
+// The owner's label at the start of a sentence.
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 function legendLine(vendors: Vendor[], who = "You"): string {
@@ -244,7 +246,7 @@ function tallyBlock(t: Tally, who = "You"): string {
 
 function headline(t: Tally, who = "You"): string {
   const agents = t.agents.length;
-  return `<span class="you">${e(who)} made ${plural(t.decisions, "decision")}.</span> <span class="them">${
+  return `<span class="you">${e(cap(who))} made ${plural(t.decisions, "decision")}.</span> <span class="them">${
     agents ? `${plural(agents, "agent")} did the other ${t.agentMoves} moves${t.sentBack ? `, and sent work back ${plural(t.sentBack, "time")}` : ""}.` : "No agent has started yet."}</span>`;
 }
 
@@ -281,12 +283,12 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
 </section>`).join("");
   const yours = who === "You" ? "your" : `${who}'s`;
   const journey = [
-    ["Planned", `${who} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope.`, `${plural(t.planned, "task")} planned`, "var(--main-line)"],
+    ["Planned", `${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope.`, `${plural(t.planned, "task")} planned`, "var(--main-line)"],
     ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
     ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
     ["Checked", "The project's checks run on a clean copy of the exact revision: in a Cloudflare container, or, where the project allows it, on the agent's machine.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
     ["Reviewed", `Changes to protected files need a model from another family, or ${who === "You" ? "you" : who}.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
-    ["Decided", `${who} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
+    ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
     ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
   ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
   const columns = `<div class="flow-cols">
@@ -323,10 +325,10 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
 export function renderShowcase(stories: Story[], total: Tally, owner: string, ownerName: string | null, unavailable = false): string {
-  const who = ownerName || "The owner";
+  const who = ownerName || "the owner";
   const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who);
   const body = shown.length
-    ? `${legendLine(vendorsIn(shown), who)}${stages}${columns}`
+    ? `${legendLine(vendorsIn(shown), cap(who))}${stages}${columns}`
     : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -526,7 +528,7 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null): string {
   const closed = d.item.state === "merged" || d.item.state === "abandoned";
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
+  <nav class="breadcrumbs"><a href="/decisions">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff })}</article>
 </div>`, closed ? "History" : "Decisions", ownerName);
 }
