@@ -43,7 +43,8 @@ test("each agent's family has a colour; the owner has their own", () => {
   assert.equal(vendorOf("zcode/glm-5.4", OWNER), "zai");
   assert.equal(vendorOf("gemini-cli/gemini-3.1-pro", OWNER), "google");
   assert.equal(vendorOf("opencode/gemini-3.1-pro", OWNER), "google", "a cloud-only family through OpenCode keeps its own colour");
-  assert.equal(vendorOf("opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX", OWNER), "studio", "a local build is home work");
+  assert.equal(vendorOf("opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX", OWNER), "studio", "DeepSeek through OpenCode is home work: its family is not cloud-only");
+  assert.equal(vendorOf("opencode/gemini-3.1-pro-mlx-4bit", OWNER), "studio", "a local build is home work even in a cloud-only family");
   assert.equal(vendorOf("someharness/deepseek-v4-pro", OWNER), "deepseek");
   assert.equal(vendorOf("someharness/qwen3.9-coder", OWNER), "qwen");
 });

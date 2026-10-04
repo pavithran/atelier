@@ -66,7 +66,11 @@ const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 // What a key looks like, so one pasted where an entry's name belongs is
 // refused rather than stored: the prefixes providers give their keys, or a
 // long run of key characters with no separator a name would have.
-const LOOKS_LIKE_KEY = /^(sk-|sk_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ|Bearer )|^[A-Za-z0-9_+/=]{32,}$/;
+const KEY_PREFIX = /(sk-|sk_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ|Bearer )/;
+const LOOKS_LIKE_KEY = new RegExp(`${KEY_PREFIX.source}|^[A-Za-z0-9_+/=]{32,}$`);
+// Any part of an endpoint's path that looks like a key: a known prefix, or a
+// long run of key characters that a path segment naming an API would not have.
+const keyInPath = (path: string) => path.split("/").some((seg) => KEY_PREFIX.test(seg) || /^[A-Za-z0-9_\-+=]{32,}$/.test(seg));
 
 // A pool entry from a form or an API body, validated, or a RuleError saying
 // what is wrong. Nothing that could hold a secret is accepted: an endpoint
@@ -91,6 +95,7 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
     if (u.protocol !== "https:" && u.protocol !== "http:") throw bad("endpoint must be http or https");
     if (u.username || u.password) throw bad("an endpoint must not carry a user name or password");
     if (u.search || u.hash) throw bad("an endpoint must not carry a query or fragment; a key belongs in the Keychain");
+    if (keyInPath(decodeURIComponent(u.pathname))) throw bad("an endpoint's path looks like it carries a key; a key belongs in the Keychain");
   }
   const keychain = str(body.keychain);
   if (keychain && (!KEYCHAIN.test(keychain) || LOOKS_LIKE_KEY.test(keychain))) throw bad("keychain must be the name of a Keychain entry, such as gemini.API_KEY, never the key itself");

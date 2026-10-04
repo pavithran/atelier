@@ -33,6 +33,9 @@ test("an entry is validated, its family derived, and no secret is accepted", () 
     [{ id: "x", harness: "opencode", where: "cloud", provider: "openai", keychain: "sk-proj-abc" }, /never the key itself/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "deepseek", keychain: "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6" }, /never the key itself/],
     [{ id: "x", harness: "opencode", where: "cloud" }, /which provider serves/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/v1/sk-123/chat" }, /path looks like it carries a key/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/k/AbCdEfGhIjKlMnOpQrStUvWxYz012345/v1" }, /path looks like it carries a key/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "google", keychain: "my.sk-proj-abc.entry" }, /never the key itself/],
     [{ id: "m".repeat(65), harness: "codex", where: "cloud" }, /not a model id/],
   ] as const) assert.throws(() => cleanEntry(body as Record<string, unknown>, "pavi", AT), why);
 });
