@@ -122,9 +122,11 @@ export function viewFile(bytes: Uint8Array | { size: number }): FileView {
   return { kind: "text", lines, bytes: bytes.length };
 }
 
-// The commit a ref names, or null.
-export async function resolve(s: Source, ref: string): Promise<Commit | null> {
-  return (await s.log({ ref, limit: 1 }))[0] ?? null;
+// The commit a ref names, or the head when there is none. Artifacts' log
+// takes a branch name or a commit id; "HEAD" and "refs/heads/…" resolve to
+// nothing there (measured 2026-10-04), so the head is asked for with no ref.
+export async function resolve(s: Source, ref: string | null): Promise<Commit | null> {
+  return (await s.log(ref ? { ref, limit: 1 } : { limit: 1 }))[0] ?? null;
 }
 
 export const LOG_PAGE = 50;

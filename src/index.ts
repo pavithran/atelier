@@ -438,7 +438,7 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
     const c = await commitChanges(s, hash);
     return c ? html(renderCommit(w, c, ownerName(env))) : notFound("That commit");
   }
-  const head = await resolve(s, at ?? "HEAD");
+  const head = await resolve(s, at);
   if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(project)}`), 404);
   if (view === "log") {
     const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), LOG_PAGES - 1);
