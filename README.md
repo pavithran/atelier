@@ -308,6 +308,11 @@ atelier runner --name home:studio
 Add `--once` to handle at most one task and exit, including when the queue
 is empty.
 
+The CLI's exit codes let the runner tell a task's own failure from the
+server's: 0 success, 1 a refusal or failure of the command, 3 a claim the
+server refused, 4 the server unavailable or a request that failed in
+transit (retry later).
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
