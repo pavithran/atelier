@@ -92,8 +92,8 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
       ...(models.length > 1 ? [`${models.length} models (${models.join(", ")})`] : models),
     ];
     const who = upper(asked.join(" and "));
-    const note = [...unanswered].sort((a, b) => a.at.localeCompare(b.at)).reverse().find((r) => r.note.trim())?.note.trim();
-    lines.push({ rank: 0, text: `${who} asked for changes and no push is recorded since.${note ? ` Note: ${clip(note, 120)}` : ""}` });
+    const noted = [...unanswered].sort((a, b) => a.at.localeCompare(b.at)).reverse().find((r) => r.note.trim());
+    lines.push({ rank: 0, text: `${who} asked for changes and no push is recorded since.${noted ? ` Note from ${reviewer(detail, noted.by)}: ${clip(noted.note.trim(), 120)}` : ""}` });
   }
   if (gate.outOfScope.length) {
     const shown = gate.outOfScope.slice(0, 3).join(", ");
@@ -151,10 +151,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   if (item.state === "merged" || item.state === "abandoned") {
     return { verdict: "decide", reason: `The task is ${state}, so nothing is waiting on you.` };
   }
-  if (item.state !== "submitted") {
-    return { verdict: "wait", reason: `The task is ${state} and has not been submitted for a decision.` };
-  }
-  if (gate.ready) {
+  if (item.state === "submitted" && gate.ready) {
     return {
       verdict: "accept",
       reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.` : "The project requires no checks, and nothing blocks it.",
@@ -165,7 +162,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   const asked = p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`);
   const failedChecks = p.failed.map((c) => `\`${c.claim}\` failed at this revision`);
   if (failedChecks.length) return { verdict: "send back", reason: `${upper([...asked, ...failedChecks].join(" and "))}.` };
-  if (gate.needsAssessor) {
+  if (item.state === "submitted" && gate.needsAssessor) {
     const also = [
       ...asked,
       ...p.pending.map((c) => `\`${c.claim}\` is also not yet observed at this revision`),
@@ -176,9 +173,12 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     };
   }
   if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };
+  if (item.state !== "submitted") {
+    return { verdict: "wait", reason: `The task is ${state} and has not been submitted for a decision.` };
+  }
   const waiting = [
     ...p.pending.map((c) => `\`${c.claim}\` to be observed at this revision`),
-        ...(p.unmeasured && !p.pending.length ? ["the changed paths to be measured"] : []),
+    ...(p.unmeasured && !p.pending.length ? ["the changed paths to be measured"] : []),
   ];
   if (waiting.length) return { verdict: "wait", reason: `Waiting for ${waiting.join(" and ")}.` };
   return { verdict: "decide", reason: `The record does not settle it: ${(gate.blockers[0] ?? "no blocker is recorded").replace(/[.!?]+$/, "")}.` };

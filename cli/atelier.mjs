@@ -60,9 +60,11 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
     if (a.startsWith("--")) {
-      const key = a.slice(2);
+      // --key=value carries its value; --key VALUE takes the next word unless it is a flag.
+      const eq = a.indexOf("=");
+      const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
       const next = argv[i + 1];
-      const val = next === undefined || next.startsWith("--") ? true : (i++, next);
+      const val = eq !== -1 ? a.slice(eq + 1) : next === undefined || next.startsWith("--") ? true : (i++, next);
       (out.multi[key] ??= []).push(val);
       out[key] = val;
     } else out._.push(a);

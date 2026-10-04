@@ -162,6 +162,23 @@ it('banner, brief heading and tag name one ask for a protected revision with a r
  const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
  expect(html).toContain('Your review is needed');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
 });
+it('a claimed task shows the same ask in its banner and its brief',()=>{
+ const brief=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const failing=detail();failing.item.state='claimed';failing.evidence[0].passed=false;
+ const f=renderItem(project,failing,'PAVI',null);
+ expect(f).toContain('Checks need attention');expect(brief(f)).toContain('Send t1 back');expect(brief(f)).toContain('<span class="tag bad">send back</span>');
+ const rejected=detail();rejected.item.state='claimed';rejected.reviews=[{itemId:'t1',head,approve:false,by:'codex/gpt-5.5',note:'no',at:time}];
+ const r=renderItem(project,rejected,'PAVI',null);
+ expect(r).toContain('Changes requested');expect(brief(r)).toContain('Send t1 back');expect(brief(r)).not.toContain('not been submitted');
+ const idle=detail();idle.item.state='claimed';
+ const i=renderItem(project,idle,'PAVI',null);
+ expect(brief(i)).toContain('Wait on t1');expect(brief(i)).toContain('in progress');
+});
+it('a project with no checks says so once',()=>{
+ const d=detail();d.policy={checks:[],protected:[]};d.evidence=[];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('This project requires no checks.');expect(html).not.toContain('No required checks are configured');
+});
 it('a protected revision awaiting an assessor shows a review tag under a review heading',()=>{
  const html=renderItem(project,detail(),'PAVI',null);
  const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));

@@ -82,7 +82,7 @@ test("with two rejections and scope flags, the flags and one rejection line stay
   const b = briefFor(d, []);
   assert.equal(b.evidence.length, 5);
   assert.equal(b.evidence.filter((l) => l.includes("asked for changes and no push is recorded since")).length, 1);
-  assert.ok(b.evidence.some((l) => l.startsWith("2 models (gpt-5.5, glm-5.3) asked for changes") && l.includes("Note: second")));
+  assert.ok(b.evidence.some((l) => l.startsWith("2 models (gpt-5.5, glm-5.3) asked for changes") && l.includes("Note from glm-5.3: second")));
   assert.ok(b.evidence.some((l) => l.startsWith("Changes outside the task's scope")));
   assert.ok(b.evidence.some((l) => l.includes("protected path")));
   assert.ok(b.evidence.some((l) => l.startsWith("Required checks")));
@@ -135,6 +135,18 @@ test("a failed check comes before a missing approval, as the page's banner says"
   assert.match(b.decided, /^Send t21 back/);
 });
 
+test("a task still in progress follows the page: a failed check or a rejection sends it back", () => {
+  const failed = briefFor(detail({ item: { state: "claimed" }, evidence: [pass({ passed: false })] }), []);
+  assert.equal(failed.recommendation.verdict, "send back");
+  assert.match(failed.decided, /^Send t21 back/);
+  const rejected = briefFor(detail({ item: { state: "claimed" }, reviews: [rev({ approve: false })] }), []);
+  assert.equal(rejected.recommendation.verdict, "send back");
+  assert.match(rejected.recommendation.reason, /^gpt-5\.5 asked for changes at this revision/);
+  const quiet = briefFor(detail({ item: { state: "claimed" }, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), []);
+  assert.equal(quiet.recommendation.verdict, "wait");
+  assert.match(quiet.recommendation.reason, /^The task is in progress/);
+});
+
 test("a merged or closed task has nothing to decide", () => {
   for (const state of ["merged", "abandoned"] as const) {
     const b = briefFor(detail({ item: { state } }), []);
@@ -156,7 +168,7 @@ test("the project owner is kept apart from models in review lines", () => {
     rev({ approve: false, by: "codex/gpt-5.5", note: "", at: "2026-10-03T12:02:00.000Z" }),
     rev({ approve: false, by: "zcode/glm-5.3", note: "", at: "2026-10-03T12:03:00.000Z" }),
   ] }), []);
-  assert.ok(b.evidence.includes("The project owner and 2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note: no"));
+  assert.ok(b.evidence.includes("The project owner and 2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note from the project owner: no"));
   assert.ok(b.evidence.includes("Reviews at this revision: the project owner asked for changes, gpt-5.5 asked for changes, glm-5.3 asked for changes."));
   assert.match(b.recommendation.reason, /^The project owner asked for changes at this revision and gpt-5\.5/);
   const one = briefFor(detail({ reviews: [rev({ approve: false, by: OWNER })] }), []);
@@ -208,7 +220,7 @@ test("several rejections say how many models and quote the newest non-empty note
     rev({ approve: false, by: "codex/gpt-5.5", note: "older note", at: "2026-10-03T12:01:00.000Z" }),
     rev({ approve: false, by: "zcode/glm-5.3", note: "  ", at: "2026-10-03T12:02:00.000Z" }),
   ] }), []);
-  assert.ok(b.evidence.includes("2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note: older note"));
+  assert.ok(b.evidence.includes("2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note from gpt-5.5: older note"));
 });
 
 test("scope flags, reports and where checks ran appear, capped at five lines", () => {

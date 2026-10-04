@@ -632,7 +632,7 @@ ${briefBlock(d)}
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : "This project requires no checks."}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
-  ${checkRows}${!view.checks.length ? '<p class="meta">No required checks are configured.</p>' : ""}${reports}${reviews}${blockers}
+  ${checkRows}${reports}${reviews}${blockers}
 </section>
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
