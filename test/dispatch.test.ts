@@ -64,3 +64,14 @@ test("a dispatch describes itself plainly", () => {
   assert.equal(describe(makeDispatch({ to: "home", agent: "opencode", model: "glm-5.3-flash" }, "pavi", T)), "a home runner, opencode with glm-5.3-flash");
   assert.equal(describe(makeDispatch({}, "pavi", T)), "any runner, its choice of agent");
 });
+
+test("AI Studio profile names, with a colon, can be dispatched and claimed; unclaimable names cannot", () => {
+  const studioModel = "Qwen3-Coder-Next-4bit:studio-code";
+  const d = makeDispatch({ to: "home", agent: "opencode", model: studioModel }, "pavi", T);
+  const offer: RunnerOffer = { runner: "home:studio", kind: "home", agents: [{ agent: "opencode", models: ["mlx-community/Qwen3", studioModel] }] };
+  assert.deepEqual(assign(d, offer), { agent: "opencode", model: studioModel, actor: `opencode/${studioModel}` });
+  assert.doesNotThrow(() => assertDispatchedClaim(item({ dispatch: d }), `opencode/${studioModel}`, parseRunner("home:studio")));
+  // An offered model no claim could carry is never handed out, even as a runner's first choice.
+  assert.equal(assign(makeDispatch({ to: "home" }, "pavi", T), offer)?.model, studioModel);
+  assert.throws(() => makeDispatch({ agent: "open:code" }, "pavi", T), /not a valid agent/);
+});

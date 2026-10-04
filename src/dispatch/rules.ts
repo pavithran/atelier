@@ -4,7 +4,7 @@
 // claim it through the ordinary atomic claim. A runner at home therefore only
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
-import { RuleError, type Item } from "../rules.ts";
+import { RuleError, validActor, type Item } from "../rules.ts";
 
 export type RunnerKind = "cloud" | "home";
 export const RUNNER_KINDS: RunnerKind[] = ["cloud", "home"];
@@ -32,6 +32,12 @@ export interface Assignment {
 }
 
 const NAME = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
+const AGENT = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+// Every name a runner could be told to claim under must be one a claim accepts.
+function claimable(agent: string, model: string): boolean {
+  return AGENT.test(agent) && NAME.test(model) && validActor(`${agent}/${model}`);
+}
 
 export function parseRunner(header: string | null): { runner: string; kind: RunnerKind } | null {
   if (!header) return null;
@@ -53,13 +59,11 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
     if (!NAME.test(s)) throw new RuleError("bad_dispatch", `"${s}" is not a valid ${what}`, 400);
     return s;
   };
-  return {
-    to: to as Dispatch["to"],
-    agent: optional(input.agent, "agent"),
-    model: optional(input.model, "model"),
-    by, at,
-    note: String(input.note ?? "").slice(0, 500),
-  };
+  const agent = optional(input.agent, "agent");
+  const model = optional(input.model, "model");
+  if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
+  if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
+  return { to: to as Dispatch["to"], agent, model, by, at, note: String(input.note ?? "").slice(0, 500) };
 }
 
 export function assertDispatchable(item: Item): void {
@@ -73,7 +77,8 @@ export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
   if (d.to !== "any" && d.to !== offer.kind) return null;
   for (const { agent, models } of offer.agents) {
     if (d.agent && agent !== d.agent) continue;
-    const model = d.model ? (models.includes(d.model) ? d.model : null) : models[0] ?? null;
+    const usable = models.filter((m) => claimable(agent, m));
+    const model = d.model ? (usable.includes(d.model) ? d.model : null) : usable[0] ?? null;
     if (model) return { agent, model, actor: `${agent}/${model}` };
   }
   return null;

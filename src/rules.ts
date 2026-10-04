@@ -63,7 +63,10 @@ export interface ProjectPolicy {
 // OWNER_ACTOR; "owner" is the default.
 export const DEFAULT_OWNER = "owner";
 
-const ACTOR = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i;
+// harness/model. A model may carry a ":profile" suffix, as the AI Studio's
+// oMLX profile ids do; the harness may not, so a runner name (kind:name) and
+// an actor never read alike.
+const ACTOR = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._:-]*)?$/i;
 
 export function validActor(actor: string): boolean {
   return ACTOR.test(actor);

@@ -142,16 +142,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
     const projects = await index(env).projects();
+    const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
       try { return (await ledger(env, p.name).waiting()).map((item) => ({ project: p.name, item })); }
-      catch { return []; }
+      catch { unreadable.push(p.name); return []; }
     }));
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
-    if (!offer) return json(queued);
-    return json(queued.flatMap(({ project, item }) => {
-      const a = item.dispatch ? assign(item.dispatch, offer) : null;
-      return a ? [{ project, item, ...a }] : [];
-    }));
+    const result = offer
+      ? queued.flatMap(({ project, item }) => {
+          const a = item.dispatch ? assign(item.dispatch, offer) : null;
+          return a ? [{ project, item, ...a }] : [];
+        })
+      : queued;
+    // A project that could not be read is named, so a missing task is never silent.
+    const res = json(result);
+    if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
+    return res;
   }
   if (parts[0] !== "projects") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 1 && m === "GET") return json(await index(env).projects());
