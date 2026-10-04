@@ -2,6 +2,7 @@ import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { cleanSummary } from "./brief";
 import { cleanTitle, titleOf, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
 import { addTally, buildStory, emptyTally } from "./graph";
@@ -318,7 +319,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.detail(id));
     }
     case "submit":
-      return json(await L.submit(id, actor));
+      return json(await L.submit(id, actor, cleanSummary(body.summary)));
     case "handoff": {
       const to = String(body.to ?? "");
       const before = await L.item(id);

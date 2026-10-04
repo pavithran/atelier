@@ -346,3 +346,39 @@ it("a claim belongs to the runner that made it; the same agent name from another
   expect(adopted.runner).toBe("home:laptop");
   await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
 });
+
+it("a submit records the summary in its event, cleaned and capped, and a later submit without one has none", async () => {
+  const L = await setup("summary");
+  await L.newItem("Summarise", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "summary--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(900)}  `);
+  const [first] = ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
+  const text = first.data.summary as string;
+  expect(text).toHaveLength(600);
+  expect(text.startsWith("Added the brief.  xxx")).toBe(true);
+  expect(first.data.head).toBe(H1);
+  await L.submit("t1", A);
+  const [latest] = ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
+  expect(latest.data).toEqual({ head: H1 });
+  expect(await L.item("t1")).not.toHaveProperty("summary");
+});
+
+it("the submit route passes an optional summary to the Ledger", async () => {
+  const TOKEN = "summary-route-token";
+  const L = await setup("summary-route");
+  await L.newItem("Via the route", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "summary-route--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  const { default: worker } = await import("../src/index.ts");
+  const res = await worker.fetch(new Request("https://atelier.test/api/projects/summary-route/items/t1/submit", {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": A, "content-type": "application/json" },
+    body: JSON.stringify({ summary: "  From the CLI.  " }),
+  }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(res.status).toBe(200);
+  const [event] = ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
+  expect(event.data.summary).toBe("From the CLI.");
+});

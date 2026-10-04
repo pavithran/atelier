@@ -468,7 +468,8 @@ const commands = {
 
   async submit() {
     const name = project(), id = itemArg(), as = actor();
-    await call("POST", `${I(name, id)}/submit`, {}, as);
+    if (args.summary === true) die('usage: atelier submit ID --summary "TEXT"');
+    await call("POST", `${I(name, id)}/submit`, args.summary ? { summary: args.summary } : {}, as);
     const d = await call("GET", I(name, id), undefined, as);
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
@@ -527,6 +528,7 @@ const commands = {
 
   async finish() {
     const name = project(), id = itemArg(), as = actor();
+    if (args.summary === true) die('usage: atelier finish ID --summary "TEXT"');
     if (wsConfig("project") !== name || wsConfig("item") !== id) die("finish must run in this task's claimed workspace");
     const d = await call("GET", I(name,id), undefined, as);
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
@@ -722,7 +724,7 @@ item with exactly one owner. Never edit the project checkout directly.
 
 Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
-Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
+Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue

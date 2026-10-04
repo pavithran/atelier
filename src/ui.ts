@@ -8,6 +8,7 @@ import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
+import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
 import { drawStory, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
@@ -487,6 +488,26 @@ export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null
 </div>`, closed ? "History" : "Decisions", ownerName);
 }
 
+const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", wait: "ask", decide: "ask", "send back": "bad" };
+
+// The brief sits above the diff: what is decided, what the agent said, what the
+// record shows, and what it points to.
+function briefBlock(d: Detail): string {
+  if (!["claimed", "submitted", "accepted"].includes(d.item.state)) return "";
+  const b = briefFor(d, d.events);
+  const said = submission(d.events, d.item.head);
+  const summary = said
+    ? `<div class="review-note"><p>“${e(said.summary)}”</p><p class="meta">Summary from ${e(said.by)}, not verified</p></div>`
+    : "";
+  return `<section class="review-section brief" id="brief" aria-label="Decision brief">
+  <h3>${e(b.decided)}</h3>
+  ${summary}
+  ${b.evidence.length ? `<p class="section-title">What the evidence shows</p><ul>${b.evidence.map((l) => `<li>${e(l)}</li>`).join("")}</ul>` : ""}
+  <p class="section-title">Recommendation</p>
+  <p>${tag(b.recommendation.verdict, VERDICT_TONE[b.recommendation.verdict])} ${e(b.recommendation.reason)}</p>
+</section>`;
+}
+
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
 function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
@@ -606,6 +627,7 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
     : "";
 
   return `${header}
+${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a></nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>

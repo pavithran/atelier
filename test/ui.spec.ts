@@ -111,3 +111,29 @@ it('pages call a project by its title and link it by its name',()=>{
  expect(s.title).toBe('Atelier');
  expect(renderStudio({benches:[],from:time,to:time},'PAVI',new Date(time),false,[titled])).toContain('Studio');
 });
+
+// ── decision brief ──
+it('the brief renders above the diff, escapes a hostile summary, and tags the verdict',()=>{
+ const d=detail();
+ d.evidence[0].where='sandbox';
+ d.reviews=[{itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'',at:time}];
+ d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ d.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'<img src=x onerror=alert(1)> done'}}];
+ const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
+ expect(html).toContain('Accept t1 at aaaaaaaa: &lt;script&gt;unsafe title&lt;/script&gt;.');
+ expect(html).toContain('&lt;img src=x onerror=alert(1)&gt; done');
+ expect(html).not.toContain('<img src=x');
+ expect(html).toContain('Summary from codex/gpt-6');
+ expect(html).toContain('1 passed in a Cloudflare container');
+ expect(html).toContain('<span class="tag go">accept</span>');
+ expect(html.indexOf('Decision brief')).toBeLessThan(html.indexOf('id="changes"'));
+});
+it('the brief tags a rejected revision as send back and a pending one as wait',()=>{
+ const d=detail();
+ d.evidence[0].passed=false;
+ expect(renderItem(project,d,'PAVI',null)).toContain('<span class="tag bad">send back</span>');
+ const w=detail();w.evidence=[];
+ const html=renderItem(project,w,'PAVI',null);
+ expect(html).toContain('<span class="tag ask">wait</span>');
+ expect(html).not.toContain('Summary from');
+});
