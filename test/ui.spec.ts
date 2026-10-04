@@ -234,7 +234,8 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
  const C='c'.repeat(40),T='d'.repeat(40),B='b'.repeat(40),X='e'.repeat(40);
  const asked:string[]=[];
  const repo=(name:string)=>({
-  log:async({ref}:{ref?:string})=>ref&&ref!=='HEAD'&&ref!==C?[]:[{hash:C,treeHash:T,message:`On ${name}`,author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}],
+  // As Artifacts does: no ref, or this commit, gives it; "HEAD" gives nothing.
+  log:async({ref}:{ref?:string})=>ref!==undefined&&ref!==C?[]:[{hash:C,treeHash:T,message:`On ${name}`,author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}],
   readCommit:async(h:string)=>h===C?{hash:C,treeHash:T,message:'Only',author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}:null,
   readTree:async(h:string)=>h===T?[{name:'README.md',mode:'100644',hash:B,type:'blob'},{name:'run.sh',mode:'100755',hash:X,type:'exec'}]:null,
   readBlob:async(h:string)=>h===B?new Blob(['hello\n']):h===X?new Blob(['#!/bin/sh\n']):null,
