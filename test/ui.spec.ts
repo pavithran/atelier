@@ -150,3 +150,36 @@ it('the showcase route is public only when the owner names projects, and caches 
  const login=await worker.fetch(new Request('https://atelier.test/login'),{...env,SHOWCASE:'shown'} as typeof env);
  expect(await login.text()).toContain('href="/showcase"');
 });
+
+it('the front door: visitors see the showcase, the owner sees Decisions only when something waits',async()=>{
+ const TOKEN='door-test-token';
+ const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const go=(path:string,extra:Record<string,string>={},signed=false)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:`atelier=${hex}`}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,...extra} as typeof env);
+ expect((await go('/',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/showcase');
+ expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
+ expect((await go('/flow',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/login');
+ const home=await go('/',{},true);
+ expect(home.status).toBe(303);
+ expect(home.headers.get('location')).toBe('https://atelier.test/flow');
+ const decisions=await go('/decisions',{},true);
+ expect(decisions.status).toBe(200);
+ expect(await decisions.text()).toContain('<title>Decisions · Atelier</title>');
+});
+it('the showcase draws a named project that has work, and survives a cache that refuses it',async()=>{
+ const record={name:'drawn',repo:'drawn',title:'Drawn project',policy:{checks:[],protected:[]},createdAt:time};
+ const L=env.LEDGER.get(env.LEDGER.idFromName('project:drawn'));
+ await L.setProject(record,'owner');
+ await L.newItem('Visible work',[],'owner');await L.claim('t1','codex/gpt-6');
+ await caches.default.delete(new Request('https://atelier.test/showcase'));
+ const put=caches.default.put;
+ (caches.default as {put:unknown}).put=async()=>{throw new Error('413')};
+ try{
+  const res=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'drawn',OWNER_NAME:''} as typeof env);
+  expect(res.status).toBe(200);
+  const body=await res.text();
+  expect(body).toContain('Drawn project');
+  expect(body).toContain('>t1<');
+  expect(body).toContain('The owner made 0 decisions.');
+  expect(body).toContain('until the owner accepts it');
+ }finally{(caches.default as {put:unknown}).put=put;}
+});

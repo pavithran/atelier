@@ -279,7 +279,10 @@ printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
 ```
 
 `SHOWCASE` takes project names separated by commas; deleting it hides the
-page again. The page may be cached for a minute.
+page again. The page is cached for a minute, so a change to `SHOWCASE` shows
+within a minute. With a showcase set, a visitor who is not signed in opens
+`atelier.zone` on it; signed in, `/` opens Decisions while something is
+waiting and Flow when nothing is, and `/decisions` is always Decisions.
 
 ## The Studio
 
