@@ -153,3 +153,19 @@ test("a diff stays within its memory budget, and says so when it cannot", () => 
   assert.equal(diffLines(left, right), null, "two unrelated large files exceed the budget");
   assert.ok(diffLines(left.slice(0, 50), right.slice(0, 50)), "small unrelated files are still diffed");
 });
+
+test("empty subdirectories never hide a later change, in a diff or in the protected-path list", async () => {
+  // 61 added empty directories, then a changed file: the file must still be found.
+  const trees: Record<string, { name: string; mode: string; hash: string; type: string }[]> = {
+    base: [{ name: "z.txt", mode: "100644", hash: "1".repeat(40), type: "blob" }],
+    head: [
+      ...Array.from({ length: 61 }, (_, i) => ({ name: `a${String(i).padStart(2, "0")}`, mode: "40000", hash: "e".repeat(40), type: "tree" })),
+      { name: "z.txt", mode: "100644", hash: "2".repeat(40), type: "blob" },
+    ],
+    ["e".repeat(40)]: [],
+  };
+  const r = { tree: async (h: string) => trees[h] ?? null, blob: async () => new TextEncoder().encode("x\n") };
+  const { files } = await treeDiff(r, "base", "head");
+  assert.deepEqual(files.map((f) => f.path), ["z.txt"]);
+  assert.deepEqual(await changedPaths(r, "base", "head"), ["z.txt"]);
+});
