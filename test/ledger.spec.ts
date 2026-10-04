@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
+import { briefFor } from "../src/brief.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy, type Review } from "../src/rules.ts";
 
@@ -345,6 +346,51 @@ it("a claim belongs to the runner that made it; the same agent name from another
   const { item: adopted } = await L.claim(item.id, "opencode/qwen3-coder-next", laptop);
   expect(adopted.runner).toBe("home:laptop");
   await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
+});
+
+it("a submit records the summary in its event, cleaned and capped, and only the latest submit at a head speaks", async () => {
+  const L = await setup("summary");
+  await L.newItem("Summarise", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "summary--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(900)}  `);
+  const submitted = async () => ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
+  const [first] = await submitted();
+  const text = first.data.summary as string;
+  expect(text).toHaveLength(600);
+  expect(text.startsWith("Added the brief.  xxx")).toBe(true);
+  expect(first.data.head).toBe(H1);
+  expect(first.actor).toBe(A);
+
+  // A new revision submitted without a summary has none, whatever came before.
+  await L.recordPush("t1", A, H2, H2);
+  await L.submit("t1", A);
+  const detail = (await L.detail("t1")) as unknown as Parameters<typeof briefFor>[0];
+  const events = detail.events;
+  expect(detail.item.head).toBe(H2);
+  expect(briefFor(detail, events).summary).toBeNull();
+  expect((await submitted())[0].data).toEqual({ head: H2 });
+  // The first revision's summary is still its own.
+  expect(briefFor({ ...detail, item: { ...detail.item, head: H1 } }, events).summary).toBe(text);
+});
+
+it("the submit route passes an optional summary to the Ledger", async () => {
+  const TOKEN = "summary-route-token";
+  const L = await setup("summary-route");
+  await L.newItem("Via the route", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "summary-route--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  const { default: worker } = await import("../src/index.ts");
+  const res = await worker.fetch(new Request("https://atelier.test/api/projects/summary-route/items/t1/submit", {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": A, "content-type": "application/json" },
+    body: JSON.stringify({ summary: "  From the CLI.  " }),
+  }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(res.status).toBe(200);
+  const [event] = ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
+  expect(event.data.summary).toBe("From the CLI.");
 });
 
 it("an init is merged into the project in one step and keeps every field it does not name", async () => {
