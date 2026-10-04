@@ -67,10 +67,23 @@ const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 // refused rather than stored: the prefixes providers give their keys, or a
 // long run of key characters with no separator a name would have.
 const KEY_PREFIX = /(sk-|sk_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ|Bearer )/;
-const LOOKS_LIKE_KEY = new RegExp(`${KEY_PREFIX.source}|^[A-Za-z0-9_+/=]{32,}$`);
-// Any part of an endpoint's path that looks like a key: a known prefix, or a
-// long run of key characters that a path segment naming an API would not have.
-const keyInPath = (path: string) => path.split("/").some((seg) => KEY_PREFIX.test(seg) || /^[A-Za-z0-9_\-+=]{32,}$/.test(seg));
+// A long run of letters and digits, mixing both, as random keys are and
+// names are not; some keys join two such runs with a dot (id.secret).
+const KEY_RUN = /[A-Za-z0-9]*(?:[A-Za-z][A-Za-z0-9]*[0-9]|[0-9][A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]*/g;
+const hasKeyRun = (s: string) => (s.match(KEY_RUN) ?? []).some((run) => run.length >= 24);
+const LOOKS_LIKE_KEY = { test: (s: string) => KEY_PREFIX.test(s) || hasKeyRun(s) };
+// Any part of an endpoint's path that looks like a key.
+const keyInPath = (path: string) => path.split("/").some((seg) => LOOKS_LIKE_KEY.test(seg));
+
+// What a runner reports is shown to the owner; a key a provider echoed back
+// in an error is replaced before it is stored.
+// A long mixed run, with any dotted parts that follow it (id.secret), goes as one.
+const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
+
+export function redactKeys(s: string): string {
+  return s.replace(new RegExp(`${KEY_PREFIX.source}\\S*`, "g"), "[key removed]")
+    .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));
+}
 
 // A pool entry from a form or an API body, validated, or a RuleError saying
 // what is wrong. Nothing that could hold a secret is accepted: an endpoint
@@ -115,8 +128,8 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
 export function cleanStatus(body: Record<string, unknown>, at: string, by: string): ModelStatus {
   const state = str(body.state);
   if (!["available", "refused", "slow", "unknown"].includes(state)) throw new RuleError("bad_status", "state must be available, refused, slow or unknown", 400);
-  const served = plain(str(body.served)).trim().slice(0, 128);
-  const detail = plain(str(body.detail)).trim().slice(0, 300);
+  const served = redactKeys(plain(str(body.served)).trim()).slice(0, 128);
+  const detail = redactKeys(plain(str(body.detail)).trim()).slice(0, 300);
   return { state: state as ModelStatus["state"], at, by, ...(served ? { served } : {}), ...(detail ? { detail } : {}) };
 }
 
