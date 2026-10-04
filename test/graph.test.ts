@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addTally, buildStory, drawStory, emptyTally, vendorOf } from "../src/graph.ts";
+import { addTally, buildStory, drawStory, emptyTally, vendorOf, wrap } from "../src/graph.ts";
 
 const OWNER = "pavi";
 let seq = 0;
@@ -104,7 +104,7 @@ test("the drawing escapes what agents wrote and links each task", () => {
   assert.ok(!svg.includes("<script>"));
   assert.ok(!svg.includes("<b>"));
   assert.match(svg, /&lt;script&gt;/);
-  assert.match(svg, /<a href="\/p\/demo\/t9">/);
+  assert.match(svg, /<a href="\/p\/demo\/t9"/);
   assert.match(svg, /--c:var\(--m-anthropic\)/);
 });
 
@@ -112,4 +112,35 @@ test("an empty project draws an empty story", () => {
   const s = buildStory("empty", [], [], OWNER);
   assert.equal(s.threads.length, 0);
   assert.match(drawStory(s, OWNER), /^<svg class="graph"/);
+});
+
+test("every mark and task has a card, shown only while it is pointed at or focused", () => {
+  const svg = drawStory(buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER), OWNER);
+  const marks = [...svg.matchAll(/class="g-bead[^"]*"[^>]*data-key="([^"]+)" tabindex="0"/g)].map((m) => m[1]);
+  assert.equal(marks.length, 9, "seven marks on t1, two on t2");
+  for (const k of marks) {
+    assert.ok(svg.includes(`data-card="${k}"`), `card for ${k}`);
+    assert.ok(svg.includes(`[data-key="${k}"]:hover`), `hover rule for ${k}`);
+  }
+  const tasks = [...svg.matchAll(/data-task="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(tasks.length, 2);
+  for (const k of tasks) assert.ok(svg.includes(`data-card="${k}"`));
+  // Cards come after every thread, so nothing is drawn over them.
+  assert.ok(svg.lastIndexOf('class="g-task') < svg.indexOf('class="g-cards"'));
+  assert.match(svg, /t1 · merged · opus-5\.5/);
+  assert.match(svg, /aria-label="[^"]*sent back: glm-5\.3 sent it back: Rule 2 filters too early"/);
+});
+
+test("two graphs on one page never share a card", () => {
+  const s = buildStory("demo", [item("t1", "merged")], night(), OWNER);
+  const a = drawStory(s, OWNER).match(/id="(g[0-9a-z]+)"/)![1];
+  const b = drawStory(s, OWNER).match(/id="(g[0-9a-z]+)"/)![1];
+  assert.notEqual(a, b);
+});
+
+test("a card's text wraps to its lines and says when it was cut", () => {
+  assert.deepEqual(wrap("one two three", 20, 3), ["one two three"]);
+  assert.deepEqual(wrap("aaaa bbbb cccc dddd eeee", 9, 2), ["aaaa bbbb", "cccc…"]);
+  assert.deepEqual(wrap("", 10, 2), []);
+  assert.ok(wrap("x".repeat(80), 20, 2).every((l) => l.length <= 20));
 });
