@@ -119,16 +119,20 @@ function itemArg(i = 1) {
 }
 
 async function call(method, path, body, as, extra = {}) {
-  const res = await fetch(server() + "/api" + path, {
-    method,
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
+  let res, text;
+  try {
+    res = await fetch(server() + "/api" + path, {
+      method,
+      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    text = await res.text();
+  } catch (error) { die(`server request failed: ${error.message}`, 4); }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
   if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
-    method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
+    res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
   return data;
 }
 

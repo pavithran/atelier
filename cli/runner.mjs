@@ -110,6 +110,7 @@ async function checked(argv, options, executeChild = execute) {
   if (result.code !== 0) {
     const error = new Error(result.stderr || `${argv[0]} exited ${result.signal ?? result.code}`);
     error.claimRefused = options?.claim && result.code === 3;
+    error.infrastructure = result.code === 4;
     throw error;
   }
   return result.output;
@@ -122,29 +123,37 @@ export async function runTask(assignment, config, name, io) {
   io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
-  let workspace, before, claimed = false, brief;
+  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief;
   try {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
     workspace = io.workspacePath(project, item.id);
     if (io.stopped()) throw new Error("interrupted");
+    claimAttempted = true;
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
     claimed = true;
     advance({ type: "claim" });
     before = await io.head(workspace);
+    await io.reset(workspace);
+    io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
     brief = await io.brief(workspace, briefFor({ ...item, owner: actor }, project));
     advance({ type: "start" });
+    taskFailure = true;
     const result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace);
     if (result.timedOut) throw new Error("harness timed out");
+    if (io.stopped()) throw new Error("interrupted");
+    taskFailure = result.code !== 0;
     const head = await io.head(workspace);
+    taskFailure = true;
     advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result.code, before, head });
     if (state.phase === "failed") throw new Error(state.reason);
     await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
     advance({ type: "finish" });
   } catch (error) {
     if (state.phase !== "failed") advance({ error: error.message });
+    state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
     if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
       io.log(`skipped: ${error.message}`);
@@ -155,11 +164,16 @@ export async function runTask(assignment, config, name, io) {
       io.log("claim preserved: work was committed before finish");
     } else if (claimed && before) {
       let head;
-      try { head = await io.head(workspace); } catch { /* Unknown commit status preserves the claim. */ }
+      try { head = await io.head(workspace, { cleanup: true }); } catch { /* Unknown commit status preserves the claim. */ }
       if (head === before) {
         try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace); io.log("released: no new commit"); }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else io.log("claim preserved: a commit exists or commit status is unknown");
+    } else if (claimAttempted && !claimed) {
+      try {
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason]);
+        io.log("released after claim step failed");
+      } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
     } else io.log("claim not released: claim or commit status is unknown");
   } finally {
     if (brief) await io.removeBrief(brief);
@@ -170,7 +184,7 @@ export async function runTask(assignment, config, name, io) {
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 
 export function failureCount(count, state) {
-  return count + (state.phase === "failed" && !state.claimRefused && !state.skipped ? 1 : 0);
+  return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
 
 export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute }) {
@@ -187,11 +201,19 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) process.on(signal, stop);
   const refused = new Set(), failures = new Map();
+  const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   const io = {
     workspacePath, log: line, stopped: () => controller.signal.aborted,
     cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, claim: argv[0] === "claim",
-      step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined }, executeChild),
-    head: (cwd) => checked(["git", "rev-parse", "HEAD"], { cwd, capture: true, signal: controller.signal }, executeChild),
+      step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
+      ...(argv[0] === "release" && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+    head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
+      { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
+    reset: async (cwd) => {
+      for (const args of [["reset", "--hard", "HEAD"], ["clean", "-fd"]]) {
+        await checked(["git", ...args], { cwd, capture: true, signal: controller.signal }, executeChild);
+      }
+    },
     harness: (argv, cwd) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }),
     brief: writeBrief, removeBrief,
     ...taskIO,

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -101,6 +102,7 @@ function fixture(options = {}) {
       calls.push({ argv, cwd });
       if (argv[0] === options.failCommand) throw new Error(`${argv[0]} refused`);
     },
+    async reset() {},
     async head() {
       reads++;
       if (options.unknownHead && reads > 1) throw new Error("unreadable HEAD");
@@ -121,7 +123,7 @@ test("runTask claims with the assignment, runs the harness, finishes and removes
   const { io, calls, logs } = fixture();
   const state = await runTask(assignment, config, "home:studio", io);
   assert.equal(state.phase, "submitted");
-  assert.deepEqual(logs, ["nothing claimed", "claimed", "working", "committed", "submitted"]);
+  assert.deepEqual(logs, ["nothing claimed", "claimed", "workspace reset to HEAD and untracked files removed", "working", "committed", "submitted"]);
   assert.deepEqual(calls[0].argv, ["claim", "t13", "--project", "atelier", "--as", assignment.actor, "--runner", "home:studio"]);
   assert.ok(calls[1].brief.includes(`Agent: ${assignment.actor}`));
   assert.equal(calls[2].cwd, "/cache/work/atelier/t13");
@@ -140,8 +142,8 @@ test("runTask releases only when failure leaves the original HEAD", async () => 
   }
 });
 
-test("runTask preserves claims on committed work, uncertain HEAD, or failed claim", async () => {
-  for (const options of [{ code: 1 }, { failCommand: "finish" }, { unknownHead: true }, { failCommand: "claim" }]) {
+test("runTask preserves claims on committed work or uncertain HEAD", async () => {
+  for (const options of [{ code: 1 }, { failCommand: "finish" }, { unknownHead: true }]) {
     const { io, calls, logs } = fixture(options);
     assert.equal((await runTask(assignment, config, "home:studio", io)).phase, "failed");
     assert.ok(!calls.some((c) => c.argv?.[0] === "release"));
@@ -170,19 +172,49 @@ test("runTask refuses assignments outside its offer or with unsafe paths", async
 });
 
 
-test("runTask handles interruption after a harness exits without submitting", async () => {
-  for (const head of ["before", "after"]) {
-    const { io, calls } = fixture({ head });
-    const harness = io.harness;
-    io.harness = async (...args) => {
-      const result = await harness(...args);
-      io.stopped = () => true;
-      return result;
-    };
-    const state = await runTask(assignment, config, "home:studio", io);
-    assert.equal(state.reason, "interrupted");
-    assert.equal(calls.some((c) => c.argv?.[0] === "release"), head === "before");
-    assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
+function gitWorkspace(t) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-wiring-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const workspace = join(dir, "t13");
+  mkdirSync(workspace);
+  const git = (...args) => execFileSync("git", args, { cwd: workspace, encoding: "utf8" }).trim();
+  git("init", "--quiet");
+  git("config", "user.name", "Runner test");
+  git("config", "user.email", "runner@example.test");
+  writeFileSync(join(workspace, "tracked"), "original");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "initial");
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  return { dir, workspace, git, path, args: { _: ["runner"], multi: {}, name: "home:studio", config: path } };
+}
+
+test("runner handles interruption after a harness exits with real HEAD and release wiring", async (t) => {
+  for (const committed of [false, true]) {
+    const { workspace, git, args } = gitWorkspace(t);
+    const commands = [], logs = [];
+    await runRunner({ ...args, once: true }, {
+      workspacePath: () => workspace, queue: async () => [assignment],
+      taskIO: {
+        log: (s) => logs.push(s),
+        harness: async () => {
+          if (committed) git("commit", "--quiet", "--allow-empty", "-m", "work");
+          process.emit("SIGINT");
+          return { code: 0 };
+        },
+      },
+      executeChild: async (argv, options) => {
+        if (argv[0] === "git") return execute(argv, options);
+        commands.push(argv[2]);
+        if (argv[2] === "release") {
+          assert.equal(options.signal?.aborted, undefined);
+          assert.equal(options.timeoutMs, 5000);
+        }
+        return execute([process.execPath, "-e", ""], options);
+      },
+    });
+    assert.deepEqual(commands, committed ? ["claim"] : ["claim", "release"]);
+    assert.ok(logs.includes("failed: interrupted"));
   }
 });
 
@@ -375,7 +407,7 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
   for (const [status, method, path, expected] of [
     [403, "POST", "/projects/p/items/t1/claim", 3],
     [409, "POST", "/projects/p/items/t1/claim", 3],
-    [500, "POST", "/projects/p/items/t1/claim", 1],
+    [500, "POST", "/projects/p/items/t1/claim", 4],
     [409, "POST", "/projects/p/items/t1/release", 1],
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
@@ -388,22 +420,25 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
 });
 
 test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release uncommitted work", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-signal-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   t.mock.method(console, "log", () => {});
-  const script = join(dir, "harness.mjs");
-  const path = join(dir, "runner.json");
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    const { dir, workspace, path, args } = gitWorkspace(t);
+    const script = join(dir, "harness.mjs");
     writeFileSync(script, `process.on('SIGTERM', () => {}); process.kill(process.ppid, '${signal}'); setInterval(() => {}, 1000);`);
     writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
-    const { io, calls } = fixture({ head: "before" });
-    const { harness, stopped, ...taskIO } = io;
+    const commands = [];
     const listeners = process.listenerCount(signal);
-    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-      workspacePath: () => dir, taskIO: { ...taskIO, workspacePath: () => dir }, queue: async () => [assignment],
+    await runRunner({ ...args, once: true }, {
+      workspacePath: () => workspace, queue: async () => [assignment],
+      executeChild: async (argv, options) => {
+        if (argv[1]?.endsWith("atelier.mjs")) {
+          commands.push(argv[2]);
+          return execute([process.execPath, "-e", ""], options);
+        }
+        return execute(argv, options);
+      },
     });
-    assert.ok(calls.some((c) => c.argv?.[0] === "release"));
-    assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
+    assert.deepEqual(commands, ["claim", "release"]);
     assert.equal(process.listenerCount(signal), listeners);
   }
 });
@@ -411,8 +446,8 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
 test("failure counts use task identity and exclude refusals and skipped tasks", () => {
   assert.equal(taskKey(assignment), taskKey({ ...assignment, item: { ...assignment.item, updatedAt: "later", head: "new" } }));
   assert.notEqual(taskKey(assignment), taskKey({ ...assignment, project: "other" }));
-  assert.equal(failureCount(1, { phase: "failed" }), 2);
-  for (const state of [{ phase: "submitted" }, { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
+  assert.equal(failureCount(1, { phase: "failed", taskFailure: true }), 2);
+  for (const state of [{ phase: "failed" }, { phase: "submitted" }, { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(failureCount(1, state), 1);
   }
 });
@@ -502,7 +537,7 @@ test("SIGINT stops claim, finish and release children and exits the loop", async
       workspacePath: io.workspacePath, taskIO,
       queue: async (_, signal) => { polls++; sharedSignal = signal; if (polls > 1) { process.emit("SIGINT"); return []; } return [assignment]; },
       async executeChild(argv, options) {
-        assert.equal(options.signal, sharedSignal);
+        assert.equal(options.signal, sharedSignal.aborted && argv[2] === "release" ? undefined : sharedSignal);
         commands.push(argv[2]);
         if (argv[2] !== step) return { code: 0 };
         const result = await execute([process.execPath, "-e",
@@ -512,7 +547,7 @@ test("SIGINT stops claim, finish and release children and exits the loop", async
       },
     });
     assert.equal(polls, 1);
-    assert.equal(commands.at(-1), step);
+    assert.equal(commands.at(-1), step === "claim" ? "release" : step);
     assert.equal(sharedSignal.aborted, true);
   }
 });
@@ -539,4 +574,122 @@ test("a second interrupt exits immediately", async (t) => {
 test("CLI help lists the runner command", () => {
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
   assert.match(source.slice(source.indexOf("  help() {")), /runner --name home:NAME \[--once\] \[--config PATH\]/);
+});
+
+test("claim child failures release possible claims and do not retire a task", async (t) => {
+  const { workspace, args } = gitWorkspace(t);
+  for (const [claimCode, releaseFails] of [[1, false], [1, true], [4, false]]) {
+    const commands = [], logs = [];
+    let polls = 0;
+    await runRunner(args, {
+      workspacePath: () => workspace, wait: async () => {},
+      queue: async () => {
+        if (++polls === 4) { process.emit("SIGINT"); return []; }
+        return [assignment];
+      },
+      taskIO: { log: (s) => logs.push(s) },
+      executeChild: async (argv, options) => {
+        commands.push(argv[2]);
+        assert.equal(options.cwd, undefined);
+        const code = argv[2] === "claim" ? claimCode : releaseFails ? 1 : 0;
+        return execute([process.execPath, "-e", `process.exit(${code})`], options);
+      },
+    });
+    assert.deepEqual(commands, ["claim", "release", "claim", "release", "claim", "release"]);
+    assert.equal(logs.filter((s) => s.includes(releaseFails ? "release failed" : "released after claim step failed")).length, 3);
+    assert.ok(!logs.some((s) => s.includes("needs the owner's attention")));
+  }
+});
+
+test("runner resets tracked edits and untracked files before every harness attempt", async (t) => {
+  const { dir, workspace, git, args } = gitWorkspace(t);
+  const outside = join(dir, "outside");
+  writeFileSync(outside, "keep");
+  const logs = [];
+  let polls = 0, attempts = 0;
+  await runRunner(args, {
+    workspacePath: () => workspace, wait: async () => {},
+    queue: async () => {
+      if (++polls === 3) { process.emit("SIGINT"); return []; }
+      return [assignment];
+    },
+    taskIO: {
+      log: (s) => logs.push(s),
+      harness: async () => {
+        attempts++;
+        assert.equal(readFileSync(join(workspace, "tracked"), "utf8"), "original");
+        assert.equal(existsSync(join(workspace, "leftover")), false);
+        assert.equal(readFileSync(outside, "utf8"), "keep");
+        if (attempts === 1) {
+          writeFileSync(join(workspace, "tracked"), "first attempt");
+          mkdirSync(join(workspace, "leftover"));
+          writeFileSync(join(workspace, "leftover", "file"), "first attempt");
+          return { code: 1 };
+        }
+        writeFileSync(join(workspace, "second"), "second attempt");
+        git("add", ".");
+        git("commit", "--quiet", "-m", "second attempt");
+        return { code: 0 };
+      },
+    },
+    executeChild: async (argv, options) => {
+      if (argv[0] === "git") {
+        assert.equal(options.cwd, workspace);
+        return execute(argv, options);
+      }
+      return execute([process.execPath, "-e", ""], options);
+    },
+  });
+  assert.equal(attempts, 2);
+  assert.equal(git("diff", "--name-only", "HEAD~1", "HEAD"), "second");
+  assert.equal(logs.filter((s) => s === "workspace reset to HEAD and untracked files removed").length, 2);
+});
+
+test("server failures in finish do not retire a healthy task", async (t) => {
+  const { args } = gitWorkspace(t);
+  const { io, logs } = fixture();
+  const { cli, ...taskIO } = io;
+  let polls = 0, finishes = 0, reads = 0;
+  taskIO.head = async () => ++reads % 2 ? "before" : "after";
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO, wait: async () => {},
+    queue: async () => {
+      if (++polls === 4) { process.emit("SIGINT"); return []; }
+      return [assignment];
+    },
+    executeChild: async (argv, options) => {
+      if (argv[2] === "finish") finishes++;
+      return execute([process.execPath, "-e", `process.exit(${argv[2] === "finish" ? 4 : 0})`], { ...options, cwd: undefined });
+    },
+  });
+  assert.equal(finishes, 3);
+  assert.ok(!logs.some((s) => s.includes("needs the owner's attention")));
+});
+
+test("CLI marks network and server failures distinctly from task errors", async () => {
+  const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
+  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P ="));
+  for (const fetch of [
+    async () => { throw new Error("offline"); },
+    async () => ({ text: async () => { throw new Error("connection lost"); } }),
+    ...[500, 503, 408, 429].map((status) => async () => ({ ok: false, status, text: async () => '{"error":"unavailable"}' })),
+  ]) {
+    const call = runInNewContext(`${callSource}; call`, {
+      server: () => "https://unused", apiToken: () => "unused", fetch,
+      die: (message, code) => { throw Object.assign(new Error(message), { code }); },
+    });
+    await assert.rejects(call("POST", "/projects/p/items/t1/submit", {}, "codex/model"), (error) => error.code === 4);
+  }
+});
+
+
+test("workspace preparation and HEAD read failures do not count as task failures", async () => {
+  for (const failure of ["reset", "head"]) {
+    const { io, calls } = fixture({ unknownHead: failure === "head" });
+    if (failure === "reset") io.reset = async () => { throw new Error("reset failed"); };
+    const state = await runTask(assignment, config, "home:studio", io);
+    assert.equal(state.phase, "failed");
+    assert.equal(failureCount(1, state), 1);
+    if (failure === "reset") assert.ok(!calls.some((c) => c.harness));
+  }
 });
