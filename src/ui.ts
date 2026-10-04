@@ -9,7 +9,7 @@ import type { ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { describe as describeDispatch } from "./dispatch/rules";
-import { drawStory, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { addTally, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -64,7 +64,7 @@ const NAV: [string, string, string][] = [
 
 const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
-function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
@@ -267,6 +267,10 @@ function restingGraph(s: Story, owner: string): string {
 const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
   m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : `var(--m-${vendorFor(m.actor, owner)})`;
 
+// A page's numbers count only the projects whose threads it draws, so the
+// headline and the picture agree. Callers' totals are not used.
+const drawnTotal = (stories: Story[]) => stories.filter((s) => s.threads.length).reduce((acc, s) => addTally(acc, s.tally), emptyTally());
+
 interface FlowParts { stages: string; columns: string; shown: Story[] }
 
 // The parts Flow and the public showcase share. `where` is the page the replay
@@ -301,8 +305,8 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   return { stages, columns, shown };
 }
 
-export function renderFlow(stories: Story[], total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
-  const t = total;
+export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
+  const t = drawnTotal(stories);
   const { stages, columns, shown } = flowParts(stories, t, owner, "/flow", (s) => taskHref(s.project));
   const body = shown.length
     ? `${legendLine(vendorsIn(shown))}${stages}${columns}`
@@ -326,7 +330,8 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
-export function renderShowcase(stories: Story[], total: Tally, owner: string, ownerName: string | null, unavailable = false): string {
+export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false): string {
+  const total = drawnTotal(stories);
   const who = ownerName || "the owner";
   const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who);
   const body = shown.length
@@ -485,7 +490,8 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   </dl>`;
   return page(titleOf(p), `<div class="page-width">
   <nav class="breadcrumbs"><a href="/projects">Projects</a> / ${e(titleOf(p))}</nav>
-  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p></header>
+  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p>
+  <nav class="repo-tabs" aria-label="Repository"><a href="${href("p", p.name, "code")}">Code</a><a href="${href("p", p.name, "log")}">Log</a></nav></header>
   <details class="new-task"><summary>Create a task</summary>
     <form method="post" action="${href("ui", p.name, "new")}" class="stack">
       <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
@@ -654,7 +660,7 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
     : "";
 
   return `${header}
-<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a></nav>
+<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${decision.passed} of ${view.checks.length} required checks passed at this revision.${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
@@ -681,15 +687,17 @@ const STATUS: Record<FileChange["status"], [string, string]> = {
   mode: ["Mode", ""],
   binary: ["Binary", ""],
   "too-large": ["Too large", "ask"],
+  submodule: ["Submodule", ""],
 };
 
 // Each line keeps its +, - or space, so the diff reads without colour.
-function renderFile(f: FileChange, open: boolean): string {
+export function renderFile(f: FileChange, open: boolean): string {
   const [label, tone] = STATUS[f.status];
   const counts = f.added || f.removed ? `<span class="counts">+${f.added} −${f.removed}</span>` : "";
   const note = f.status === "binary" ? "Binary file; not shown."
     : f.status === "too-large" ? "Too large to diff here; use <code>atelier diff</code>."
-    : f.status === "mode" ? "Only the file mode changed." : "";
+    : f.status === "mode" ? "Only the file mode changed."
+    : f.status === "submodule" ? "A submodule: the commit it points to changed. Its contents are in another repository." : "";
   const body = f.hunks.length
     ? `<pre class="diff" tabindex="0">${f.hunks.map((h) =>
         `<span class="hunk">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</span>` +

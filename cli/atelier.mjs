@@ -407,7 +407,9 @@ const commands = {
     const name = project(), id = itemArg(), as = actor();
     const branch = wsConfig("branch") ?? "main";
     const head = git(["rev-parse", "HEAD"]);
-    git(["push", "--quiet", "origin", `HEAD:${branch}`]);
+    // --force after `atelier update` rebased the workspace; the lease refuses
+    // to overwrite anything pushed since this workspace last fetched.
+    git(["push", "--quiet", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
     const item = await call("POST", `${I(name, id)}/push`, { head }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
@@ -553,9 +555,33 @@ const commands = {
   // The project owner merges an exact revision. With --head, a submitted item
   // is first approved (with --approve) and accepted at that revision only.
   async merge() {
+    // Ends an interrupted merge's landing lease, so the task's owner can push
+    // again; refused once the merge is on the baseline.
+    if (args.cancel === true) {
+      const name = project(), id = itemArg();
+      const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
+      const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+      const item = (await call("GET", I(name, id), undefined, OWNER)).item;
+      let journal;
+      try { journal = landingJournal(gitDir, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
+      const local = journal.state?.mergeCommit;
+      // An unpublished merge commit in the checkout is kept unless the owner
+      // asks for it to go; then the checkout returns to where the merge began.
+      if (local && args["discard-local"] !== true) {
+        die(`the checkout holds this merge's unpublished commit ${short(local)} on top of ${short(journal.state.start)}.\nFinish it with: atelier merge ${id}\nor cancel and remove it with: atelier merge ${id} --cancel --discard-local`);
+      }
+      await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
+      if (local) {
+        if (git(["rev-parse", "HEAD"], { cwd }) !== local || git(["status", "--porcelain"], { cwd })) die("the checkout moved since the merge; reset it yourself, then remove .git/atelier-landing.json");
+        git(["reset", "--quiet", "--hard", journal.state.start], { cwd });
+        console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(journal.state.start)}.`);
+      }
+      journal.clear();
+      return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+    }
     const name=project(), id=itemArg();
     if (args.head !== undefined) {
-      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]]");
+      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]] | atelier merge ID --cancel [--discard-local]");
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
@@ -607,8 +633,11 @@ const commands = {
       }
       const mergeCommit=journal.state.mergeCommit;
       if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the checkout before retrying');
-      const current=await call('GET',I(name,id),undefined,OWNER);
-      if(current.item.state!=='accepted'||current.item.acceptedHead!==item.acceptedHead)die('approval changed during the merge; the local commit is preserved for reconciliation');
+      // Take the landing lease: it confirms the acceptance has not moved and
+      // stops a push over this revision until the merge is recorded.
+      // A refusal ends the command here with the server's reason; the local
+      // merge commit is kept for reconciliation.
+      await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
       const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git([...auth(base.token),'ls-remote',base.remote,'refs/notes/atelier'],{cwd});
