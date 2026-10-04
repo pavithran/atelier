@@ -58,3 +58,30 @@ it("a claim on a dispatched task is refused without the right runner header", as
   expect(((await wrong.json()) as { error: string }).error).toBe("wrong_runner");
   expect((await claim("opencode/glm-5.3-flash", "laptop")).status).toBe(400);
 });
+
+it("init again changes only what it names, and --reset starts over", async () => {
+  const ARTIFACTS = {
+    create: async () => ({}),
+    get: async () => ({ info: async () => ({ remote: "https://example/r.git", defaultBranch: "main" }), createToken: async () => ({ plaintext: "t", id: "i", expiresAt: "x" }), [Symbol.dispose]() {} }),
+  } as unknown as Artifacts;
+  const put = (body: unknown) => worker.fetch(new Request("https://atelier.test/api/projects/kept", {
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  const policy = async () => (await (await put({})).json() as { project: { title?: string; policy: Record<string, unknown> } }).project;
+
+  const first = await put({ checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true, title: "Kept" });
+  expect(first.status).toBe(200);
+  // A second init that names nothing keeps every setting, the title included.
+  expect(await policy()).toMatchObject({ title: "Kept", policy: { checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true } });
+  // Naming one setting replaces that one only.
+  await put({ checks: ["npm run typecheck"] });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
+  // --reset rebuilds from what it is given and the defaults.
+  await put({ reset: true, checks: ["npm test"] });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], sandboxOnly: false });
+  // A first init of a new project with nothing named gets the defaults.
+  const fresh = await worker.fetch(new Request("https://atelier.test/api/projects/fresh", {
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: "{}",
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  expect((await fresh.json() as { project: { policy: unknown } }).project.policy).toMatchObject({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"] });
+});

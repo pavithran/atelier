@@ -203,20 +203,29 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     const repo = repoName(project);
-    // A title is kept when init is run again without one, and cleared by an empty one.
-    const kept = await L.project().then((p) => p.title, () => undefined);
-    const title = body.title === undefined ? kept : cleanTitle(body.title);
+    // Running init again changes only what it is given: a field absent from
+    // the body keeps the project's current value, and `reset` rebuilds the
+    // policy from the body and the defaults, as a first init does.
+    // Only "no project yet" means a first init; any other failure stops here,
+    // rather than rebuilding the policy from nothing.
+    const current = body.reset ? null : await L.project().catch((err) => {
+      if (parseRuleError(err)?.code === "no_project") return null;
+      throw err;
+    });
+    const kept = current?.policy;
+    const given = (k: string) => body[k] !== undefined;
+    const title = body.title === undefined ? current?.title : cleanTitle(body.title);
     const record: ProjectRecord = {
       name: project,
       ...(title ? { title } : {}),
       repo,
       policy: {
-        checks: asStrings(body.checks),
-        protected: asStrings(body.protected),
-        eligible: asStrings(body.eligible),
-        refuseOverlap: Boolean(body.refuseOverlap),
-        sandboxOnly: Boolean(body.sandboxOnly),
-        ...(body.approval ? { approval: String(body.approval).slice(0, 500) } : {}),
+        checks: given("checks") || !kept ? asStrings(body.checks) : kept.checks,
+        protected: given("protected") || !kept ? (given("protected") ? asStrings(body.protected) : [...DEFAULT_PROTECTED]) : kept.protected,
+        eligible: given("eligible") || !kept ? asStrings(body.eligible) : kept.eligible ?? [],
+        refuseOverlap: given("refuseOverlap") || !kept ? Boolean(body.refuseOverlap) : Boolean(kept.refuseOverlap),
+        sandboxOnly: given("sandboxOnly") || !kept ? Boolean(body.sandboxOnly) : Boolean(kept.sandboxOnly),
+        ...(given("approval") ? (body.approval ? { approval: String(body.approval).slice(0, 500) } : {}) : kept?.approval ? { approval: kept.approval } : {}),
       },
       createdAt: new Date().toISOString(),
     };
@@ -396,6 +405,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 }
 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
+// What a project protects when its first init names nothing else.
+const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+
 async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
   if (!fork) return null;
   try {
