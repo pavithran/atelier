@@ -179,8 +179,14 @@ export async function pathHistory(s: Source, ref: string, path: string[], cap = 
   for (let i = 0; i < located.length; i += HISTORY_BATCH) {
     at.push(...await Promise.all(located.slice(i, i + HISTORY_BATCH).map(async (c) => (await locate(cached, c.treeHash, path)))));
   }
-  const complete = log.length <= cap;
-  const commits = seen.filter((_, i) => at[i] !== (i + 1 < at.length ? at[i + 1] : null));
+  // The log ends early at the first commit, or where a parent cannot be
+  // read; only the first is the whole history.
+  const last = log[log.length - 1];
+  const complete = log.length <= cap && (!last || last.parents.length === 0);
+  // The oldest commit read is decided against its parent when the log goes
+  // on, against nothing when it is the first commit, and not at all when its
+  // parent could not be read.
+  const commits = seen.filter((_, i) => i + 1 < at.length ? at[i] !== at[i + 1] : complete && at[i] !== null);
   return { commits, complete };
 }
 

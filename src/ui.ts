@@ -634,6 +634,7 @@ const STATUS: Record<FileChange["status"], [string, string]> = {
   mode: ["Mode", ""],
   binary: ["Binary", ""],
   "too-large": ["Too large", "ask"],
+  submodule: ["Submodule", ""],
 };
 
 // Each line keeps its +, - or space, so the diff reads without colour.
@@ -642,7 +643,8 @@ export function renderFile(f: FileChange, open: boolean): string {
   const counts = f.added || f.removed ? `<span class="counts">+${f.added} −${f.removed}</span>` : "";
   const note = f.status === "binary" ? "Binary file; not shown."
     : f.status === "too-large" ? "Too large to diff here; use <code>atelier diff</code>."
-    : f.status === "mode" ? "Only the file mode changed." : "";
+    : f.status === "mode" ? "Only the file mode changed."
+    : f.status === "submodule" ? "A submodule: the commit it points to changed. Its contents are in another repository." : "";
   const body = f.hunks.length
     ? `<pre class="diff" tabindex="0">${f.hunks.map((h) =>
         `<span class="hunk">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</span>` +

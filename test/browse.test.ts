@@ -104,3 +104,17 @@ test("a path's history is the commits that changed it, reading each tree once", 
   assert.deepEqual((await pathHistory(source, "HEAD", ["src", "a.ts"], 2)).commits.map((k) => k.message.split("\n")[0]), ["Second"]);
   assert.deepEqual((await pathHistory(source, "HEAD", ["src", "a.ts"], 1)).commits, []);
 });
+
+test("a submodule's change is listed, and a log cut short decides nothing at its edge", async () => {
+  const sub = (to: string) => [{ name: "vendor", mode: "160000", hash: h(to), type: "gitlink" }];
+  const t3: Record<string, ReturnType<typeof sub>> = { [h("g1")]: sub("p1"), [h("g2")]: sub("p2") };
+  const line = [c("s2", "g2", "s1", "Bump submodule", 2), c("s1", "g1", null, "Add submodule", 1)];
+  const src: Source = { ...source, tree: async (x) => t3[x] ?? null, commit: async (x) => line.find((k) => k.hash === x) ?? null };
+  const bump = await commitChanges(src, h("s2"));
+  assert.deepEqual(bump?.files.map((f) => [f.path, f.status]), [["vendor", "submodule"]]);
+  // Only s2 is readable: its parent s1 is missing from the log, so s2 is not claimed as the change.
+  const cut: Source = { ...src, log: async () => [line[0]] };
+  const history = await pathHistory(cut, "HEAD", ["vendor"]);
+  assert.equal(history.complete, false);
+  assert.deepEqual(history.commits, []);
+});
