@@ -342,17 +342,21 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  // A merge lands the accepted revision under a short lease: while it is
-  // held, the task's owner cannot push a new revision over the one being
-  // merged. Recording the merge ends it; an interrupted merge's lease
-  // expires on its own, and running the merge again takes it again.
-  static readonly LANDING_MS = 10 * 60_000;
-
+  // A merge lands the accepted revision under a lease: while it is held,
+  // the task's owner cannot push a new revision over the one being merged.
+  // It has no expiry, because a merge may have published the revision even
+  // if it never recorded it. Recording the merge ends it; the project owner
+  // can cancel it only while the merge is not on the baseline (see the
+  // landing route), and running the merge again resumes it.
   private landing(id: string): string | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing:${id}`).toArray()[0];
-    if (!row) return null;
-    const { head, at } = JSON.parse(row.value as string) as { head: string; at: number };
-    return Date.now() - at < Ledger.LANDING_MS ? head : null;
+    return row ? (JSON.parse(row.value as string) as { head: string }).head : null;
+  }
+
+  cancelLanding(id: string, actor: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
+    return this.item(id);
   }
 
   beginLanding(id: string, actor: string, head: string): Item {

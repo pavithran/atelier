@@ -552,9 +552,33 @@ const commands = {
   // The project owner merges an exact revision. With --head, a submitted item
   // is first approved (with --approve) and accepted at that revision only.
   async merge() {
+    // Ends an interrupted merge's landing lease, so the task's owner can push
+    // again; refused once the merge is on the baseline.
+    if (args.cancel === true) {
+      const name = project(), id = itemArg();
+      const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
+      const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+      const item = (await call("GET", I(name, id), undefined, OWNER)).item;
+      let journal;
+      try { journal = landingJournal(gitDir, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
+      const local = journal.state?.mergeCommit;
+      // An unpublished merge commit in the checkout is kept unless the owner
+      // asks for it to go; then the checkout returns to where the merge began.
+      if (local && args["discard-local"] !== true) {
+        die(`the checkout holds this merge's unpublished commit ${short(local)} on top of ${short(journal.state.start)}.\nFinish it with: atelier merge ${id}\nor cancel and remove it with: atelier merge ${id} --cancel --discard-local`);
+      }
+      await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
+      if (local) {
+        if (git(["rev-parse", "HEAD"], { cwd }) !== local || git(["status", "--porcelain"], { cwd })) die("the checkout moved since the merge; reset it yourself, then remove .git/atelier-landing.json");
+        git(["reset", "--quiet", "--hard", journal.state.start], { cwd });
+        console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(journal.state.start)}.`);
+      }
+      journal.clear();
+      return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+    }
     const name=project(), id=itemArg();
     if (args.head !== undefined) {
-      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]]");
+      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]] | atelier merge ID --cancel [--discard-local]");
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");

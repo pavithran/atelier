@@ -407,6 +407,15 @@ it("a merge holds a landing lease: no push over the revision being merged, and t
   // While landing, the owner's push is refused and a push event changes nothing.
   await refusal(L.recordPush("t1", A, H2, H2), "landing", /being merged at aaaaaaaa/);
   expect(await L.observePush("t1", H2, H1)).toMatchObject({ state: "accepted", head: H1, acceptedHead: H1 });
+  // The lease has no expiry: only the owner can end it, and then a push is taken again.
+  await refusal(L.cancelLanding("t1", A), "not_project_owner", /only the project owner/);
+  await L.cancelLanding("t1", "owner");
+  expect(await L.recordPush("t1", A, H2, H2)).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  await L.beginLanding("t1", "owner", H1);
   // The merge record must name the revision its commit was verified against.
   await refusal(L.merged("t1", "owner", "c".repeat(40), true, H2), "acceptance_changed", /accepted again/);
   expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
