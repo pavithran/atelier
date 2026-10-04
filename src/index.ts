@@ -2,6 +2,7 @@ import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { cleanSummary } from "./brief";
 import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -354,7 +355,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.detail(id));
     }
     case "submit":
-      return json(await L.submit(id, actor));
+      // A missing summary is fine; one that is not text or has none left after cleaning is refused.
+      const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
+      if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
+      return json(await L.submit(id, actor, summary));
     case "handoff": {
       const to = String(body.to ?? "");
       const before = await L.item(id);

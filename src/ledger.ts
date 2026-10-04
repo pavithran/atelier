@@ -3,6 +3,7 @@ import {
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
+import { cleanSummary } from "./brief";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
@@ -299,13 +300,16 @@ export class Ledger extends DurableObject<Env> {
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head });
   }
 
-  submit(id: string, actor: string): Item {
+  // The summary is recorded in the event and nowhere else; a later submit
+  // without one leaves the new revision with none.
+  submit(id: string, actor: string, summary?: string): Item {
     const item = this.item(id);
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
     this.update(id, { state: "submitted" });
-    this.log(id, actor, "item.submitted", { head: item.head });
+    const text = cleanSummary(summary);
+    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) });
     return this.item(id);
   }
 

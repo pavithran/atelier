@@ -151,6 +151,80 @@ it('pages call a project by its title and link it by its name',()=>{
  expect(studio).not.toContain('<p class="meta">example');
 });
 
+// ── decision brief ──
+it('the brief renders above the diff, escapes a hostile summary, and tags the verdict',()=>{
+ const d=detail();
+ d.evidence[0].where='sandbox';
+ d.reviews=[{itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'',at:time}];
+ d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ d.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'<img src=x onerror=alert(1)> done'}}];
+ const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
+ expect(html).toContain('Accept t1 at aaaaaaaa: &lt;script&gt;unsafe title&lt;/script&gt;.');
+ expect(html).toContain('&lt;img src=x onerror=alert(1)&gt; done');
+ expect(html).not.toContain('<img src=x');
+ expect(html).toContain('Summary from codex/gpt-6');
+ // A summary by another actor at an older head is not shown for this one.
+ d.events=[{seq:2,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'current words'}},
+  {seq:1,itemId:'t1',at:time,actor:'someone/else',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'stale words'}}];
+ const briefOf=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const other=briefOf(renderItem(project,d,'PAVI',null));
+ expect(other).toContain('current words');expect(other).toContain('Summary from codex/gpt-6');
+ expect(other).not.toContain('stale words');expect(other).not.toContain('someone/else');
+ d.events=[{seq:1,itemId:'t1',at:time,actor:'someone/else',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'stale words'}}];
+ const none=briefOf(renderItem(project,d,'PAVI',null));
+ expect(none).not.toContain('stale words');expect(none).not.toContain('Summary from');
+ expect(html).toContain('1 passed in a Cloudflare container');
+ expect(html).toContain('<span class="tag go">accept</span>');
+ expect(html.indexOf('Decision brief')).toBeLessThan(html.indexOf('id="changes"'));
+});
+it('the brief tags a rejected revision as send back and a pending one as wait',()=>{
+ const d=detail();
+ d.evidence[0].passed=false;
+ const sent=renderItem(project,d,'PAVI',null);
+ expect(sent).toContain('<span class="tag bad">send back</span>');expect(sent).toContain('Send t1 back at aaaaaaaa');
+ const w=detail();w.evidence=[];w.gate={ready:false,needsAssessor:false,blockers:[],outOfScope:[]};w.item.scope=[];
+ w.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'older revision'}}];
+ const html=renderItem(project,w,'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(brief).toContain('<span class="tag ask">wait</span>');
+ expect(brief).toContain('Wait on t1 at aaaaaaaa');
+ expect(brief).not.toContain('older revision');
+});
+it('a project with no required checks says so instead of counting zero of zero',()=>{
+ const d=detail();d.policy={checks:[],protected:[]};d.evidence=[];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('This project requires no checks.');expect(html).not.toContain('0 of 0');
+});
+it('banner, brief heading and tag name one ask for a protected revision with a rejection',()=>{
+ const d=detail();d.reviews=[{itemId:'t1',head,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
+ const html=renderItem(project,d,'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(html).toContain('Your review is needed');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
+});
+it('a claimed task shows the same ask in its banner and its brief',()=>{
+ const brief=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const failing=detail();failing.item.state='claimed';failing.evidence[0].passed=false;
+ const f=renderItem(project,failing,'PAVI',null);
+ expect(f).toContain('Checks need attention');expect(brief(f)).toContain('Send t1 back');expect(brief(f)).toContain('<span class="tag bad">send back</span>');
+ const rejected=detail();rejected.item.state='claimed';rejected.reviews=[{itemId:'t1',head,approve:false,by:'codex/gpt-5.5',note:'no',at:time}];
+ const r=renderItem(project,rejected,'PAVI',null);
+ expect(r).toContain('Changes requested');expect(brief(r)).toContain('Send t1 back');expect(brief(r)).not.toContain('not been submitted');
+ const idle=detail();idle.item.state='claimed';
+ const i=renderItem(project,idle,'PAVI',null);
+ expect(brief(i)).toContain('Wait on t1');expect(brief(i)).toContain('in progress');
+});
+it('a project with no checks says so once',()=>{
+ const d=detail();d.policy={checks:[],protected:[]};d.evidence=[];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('This project requires no checks.');expect(html).not.toContain('No required checks are configured');
+});
+it('a protected revision awaiting an assessor shows a review tag under a review heading',()=>{
+ const html=renderItem(project,detail(),'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(brief).toContain('<span class="tag ask">review</span>');
+ expect(brief).toContain('Review t1 at aaaaaaaa');
+});
+
 // ── showcase ──
 import {renderShowcase} from '../src/ui';
 it('the showcase is read only: no forms, no links into signed-in pages, and no notes',()=>{

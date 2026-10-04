@@ -61,9 +61,11 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
     if (a.startsWith("--")) {
-      const key = a.slice(2);
+      // --key=value carries its value; --key VALUE takes the next word unless it is a flag.
+      const eq = a.indexOf("=");
+      const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
       const next = argv[i + 1];
-      const val = next === undefined || next.startsWith("--") ? true : (i++, next);
+      const val = eq !== -1 ? a.slice(eq + 1) : next === undefined || next.startsWith("--") ? true : (i++, next);
       (out.multi[key] ??= []).push(val);
       out[key] = val;
     } else out._.push(a);
@@ -105,6 +107,12 @@ function project() {
     for (const [name, p] of Object.entries(cfg.projects ?? {})) if (resolve(p.path) === here) return name;
   }
   die("which project? pass --project NAME, or run inside a registered checkout or workspace");
+}
+
+// --summary takes text; a bare flag or an empty or blank value is refused, not dropped.
+function summaryArg(cmd) {
+  if (args.summary === undefined) return;
+  if (typeof args.summary !== "string" || !args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
 }
 
 function itemArg(i = 1) {
@@ -480,7 +488,8 @@ const commands = {
 
   async submit() {
     const name = project(), id = itemArg(), as = actor();
-    await call("POST", `${I(name, id)}/submit`, {}, as);
+    summaryArg("submit");
+    await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
@@ -539,6 +548,7 @@ const commands = {
 
   async finish() {
     const name = project(), id = itemArg(), as = actor();
+    summaryArg("finish");
     if (wsConfig("project") !== name || wsConfig("item") !== id) die("finish must run in this task's claimed workspace");
     const d = await call("GET", I(name,id), undefined, as);
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
@@ -774,7 +784,7 @@ item with exactly one owner. Never edit the project checkout directly.
 
 Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
-Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
+Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
