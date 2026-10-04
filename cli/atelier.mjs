@@ -284,6 +284,26 @@ async function checkInSandbox() {
 // ── commands ───────────────────────────────────────────────────────────────
 
 const commands = {
+  async runner() {
+    const { runRunner } = await import("./runner.mjs");
+    try {
+      await runRunner(args, {
+        workspacePath,
+        async queue(offer, signal) {
+          const res = await fetch(server() + "/api/queue", {
+            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "content-type": "application/json" },
+            body: JSON.stringify(offer),
+          });
+          if (!res.ok) throw new Error(`queue: ${res.status}`);
+          const incomplete = res.headers.get("x-atelier-incomplete");
+          if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
+          return res.json();
+        },
+      });
+    } catch (error) { die(error.message); }
+  },
+
   async login() {
     if (!args.server) die("usage: atelier login --server https://atelier.example.com");
     cfg.server = String(args.server).replace(/\/$/, "");

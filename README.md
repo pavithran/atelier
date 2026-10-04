@@ -263,6 +263,43 @@ A runner's name is declared, like every actor's; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits.
 
+## Home runner
+
+`atelier runner` polls the queue every 30 seconds, claims one eligible task,
+and runs its configured harness in the claimed workspace. The brief is kept
+outside that workspace. After a successful harness exit with a new commit,
+the runner calls `finish` to push, run required checks, and submit. Failure
+releases a claim only when no new commit was made. Otherwise the claim stays
+in place for inspection. SIGINT stops polling and interrupts an active harness.
+
+Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
+
+```json
+{
+  "agents": [
+    {
+      "agent": "opencode",
+      "models": ["GLM-5.3-Flash-4_8bit"],
+      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."]
+    }
+  ]
+}
+```
+
+Agent ids are `opencode`, `claude-code`, `codex`, or `zcode`. Set model ids
+and command arguments to match the installed harness. Commands are argv
+arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
+the runner invokes them directly without a shell. The example requires that
+model to be configured in opencode. Atelier login and credentials are shared
+with the ordinary CLI.
+
+```sh
+atelier runner --name home:studio
+```
+
+Add `--once` to handle at most one task and exit, including when the queue
+is empty.
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
