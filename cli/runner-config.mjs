@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+export const DEFAULT_TASK_TIMEOUT_MS = 45 * 60_000;
+
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const PLACEHOLDERS = ["model", "brief_file", "workspace"];
@@ -14,6 +16,8 @@ export function parseConfig(json) {
   if (!value || !Array.isArray(value.agents) || !value.agents.length) {
     return { agents, errors: ["config must contain a nonempty agents array"] };
   }
+  const taskTimeoutMs = value.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
+  if (!Number.isInteger(taskTimeoutMs) || taskTimeoutMs <= 0 || taskTimeoutMs > 2_147_483_647) errors.push("taskTimeoutMs must be a positive timer-safe integer");
   const seen = new Set();
   for (const [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
@@ -37,10 +41,10 @@ export function parseConfig(json) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command] });
   }
-  return { agents, errors };
+  return { agents, errors, taskTimeoutMs };
 }
 
-export function readConfig(path = join(homedir(), ".config", "atelier", "runner.json")) {
+export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {
   const config = parseConfig(readFileSync(path, "utf8"));
   if (config.errors.length) throw new Error(config.errors.join("; "));
   return config;

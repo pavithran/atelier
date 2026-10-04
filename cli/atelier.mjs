@@ -12,6 +12,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { redactGitArgs } from "./runner.mjs";
+
 import { landingJournal, landingLock } from "./landing.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
@@ -46,8 +48,12 @@ function apiToken() {
 
 function git(args, opts = {}) {
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
-  const shown = args.filter((a, i) => !a.startsWith("http.extraHeader") && !(a === "-c" && args[i + 1]?.startsWith("http.extraHeader")));
-  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${(r.stderr || r.stdout).trim()}`);
+  const shown = redactGitArgs(args);
+  let detail = (r.stderr || r.stdout || "").trim();
+  for (const [i, arg] of args.entries()) {
+    if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
+  }
+  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${detail}`);
   return opts.allowFail ? r : r.stdout.trim();
 }
 
@@ -121,7 +127,8 @@ async function call(method, path, body, as, extra = {}) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`);
+  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
+    method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
   return data;
 }
 
