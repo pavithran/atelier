@@ -84,15 +84,16 @@ test("two failures on the same head are not stuck, nor is one failure", () => {
   assert.equal(detectStuck([it], same, NOW).filter((f) => f.reason.includes("heads")).length, 0);
   const one = [claim(T0), fail("2026-10-02T00:00:00.000Z", H1)];
   assert.equal(detectStuck([it], one, NOW).filter((f) => f.reason.includes("heads")).length, 0);
-  // The rule counts failed observations only, so a pass between two failures
-  // does not reset it; the last two failures are still on different heads.
+  // The rule takes the last two observed checks of any result, so a pass on
+  // the current head before the latest failure is not stuck: fail, pass, fail
+  // means the owner passed in between.
   const recovered = [
     claim(T0),
     fail("2026-10-02T00:00:00.000Z", H1),
     event({ at: "2026-10-02T06:00:00.000Z", kind: "evidence.observed", data: { claim: "npm test", passed: true, head: H1 } }),
     fail("2026-10-03T00:00:00.000Z", H2),
   ];
-  assert.equal(detectStuck([it], recovered, NOW).filter((f) => f.reason.includes("heads")).length, 1);
+  assert.equal(detectStuck([it], recovered, NOW).filter((f) => f.reason.includes("heads")).length, 0);
 });
 
 test("an old rejection with no push since is stuck, a push after it is not", () => {

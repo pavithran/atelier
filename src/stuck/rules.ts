@@ -60,13 +60,13 @@ export function detectStuck(items: Item[], events: LedgerEvent[], now: Date, lim
       }
     }
 
-    // Rule 2: the last two observed checks failed on different heads, so the
-    // owner has retested and still not passed.
-    const failed = mine
-      .filter((e) => e.kind === "evidence.observed" && e.data.passed === false)
+    // Rule 2: the last two observed checks, of any result, both failed on
+    // different heads, so the owner has retested and still not passed.
+    const observed = mine
+      .filter((e) => e.kind === "evidence.observed")
       .sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq);
-    const a = failed[failed.length - 2], b = failed[failed.length - 1];
-    if (a && b && a.data.head !== b.data.head) {
+    const a = observed[observed.length - 2], b = observed[observed.length - 1];
+    if (a && b && a.data.passed === false && b.data.passed === false && a.data.head !== b.data.head) {
       out.push({
         itemId: item.id, owner: item.owner,
         reason: "the last two observed checks failed on different heads",
