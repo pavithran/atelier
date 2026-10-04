@@ -39,7 +39,7 @@ export interface Thread {
   state: Item["state"];
   start: number;               // position of the first claim
   end: number | null;          // position of the merge or closure; null while live
-  ending: "merged" | "closed" | null;
+  ending: "merged" | "closed" | "released" | null;
   holds: Hold[];               // who held it, from which position
   beads: Bead[];
   merge?: { pos: number; sha: string };
@@ -180,9 +180,22 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         if (th) { th.end = pos; th.ending = "closed"; }
         say(`${name(ev.actor)} closed ${id}${d.note && !R ? `: ${clip(str(d.note), 140)}` : ""}`, ev.actor === owner ? "you" : "");
         break;
+      case "item.released":
+      case "item.claim_failed":
+        // The task went back to the pool: the thread ends here, cap and all.
+        if (th) { th.end = pos; th.ending = "released"; }
+        break;
     }
   }
-  for (const th of threads.values()) th.state = titles.get(th.id)?.state ?? th.state;
+  for (const th of threads.values()) {
+    th.state = titles.get(th.id)?.state ?? th.state;
+    // A record cut short can leave an open task with no end of its own on
+    // the page; such a thread ends at its last mark, or where it began.
+    if (th.state === "open" && th.end === null) {
+      th.end = th.beads.at(-1)?.pos ?? th.start;
+      th.ending = "released";
+    }
+  }
 
   const times = [0, 0.25, 0.5, 0.75, 1].map((f) => {
     const target = f * span;
@@ -278,8 +291,8 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     const xs = x(th.start);
     const end = th.end ?? s.span;
     const xe = th.end === null ? X1 + 6 : x(end);
-    const closed = th.ending === "closed";
-    const live = th.end === null;
+    const closed = th.ending === "closed" || th.ending === "released";
+    const live = th.end === null && (th.state === "claimed" || th.state === "submitted" || th.state === "accepted");
     const segs = th.holds.map((h, i) => ({ who: h.who, from: i ? h.pos : th.start, to: th.holds[i + 1]?.pos ?? end }));
     const g: string[] = [];
     g.push(`<path class="g-thread draw" pathLength="1" style="--c:${c(segs[0].who)};--d:${at(th.start)};--l:0.35s" d="M${r1(xs - R)} ${MAIN}C${xs} ${MAIN} ${r1(xs - R)} ${y} ${xs} ${y}"/>`);

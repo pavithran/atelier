@@ -108,6 +108,41 @@ test("the drawing escapes what agents wrote and links each task", () => {
   assert.match(svg, /--c:var\(--m-anthropic\)/);
 });
 
+test("a released task ends on its thread, closed and not live", () => {
+  seq = 0;
+  const evs = [
+    ev("t3", "codex/gpt-6", "item.claimed"),
+    ev("t3", "codex/gpt-6", "push.observed", { head: "eeeeeeee55" }),
+    ev("t3", OWNER, "item.released", { from: "codex/gpt-6", note: "stalled" }),
+  ].reverse();
+  const s = buildStory("demo", [item("t3", "open")], evs, OWNER);
+  assert.equal(s.threads[0].ending, "released");
+  assert.ok(s.threads[0].end !== null);
+  const svg = drawStory(s, OWNER);
+  assert.match(svg, /g-cap/, "a released task is capped like a closed one");
+  assert.match(svg, /g-task closed/);
+  assert.doesNotMatch(svg, /g-task[^"]*live/);
+});
+
+test("a failed claim ends the thread the same way as a release", () => {
+  seq = 0;
+  const evs = [
+    ev("t4", "zcode/glm-5.3", "item.claimed"),
+    ev("t4", "zcode/glm-5.3", "item.claim_failed", { reason: "the fork could not be created" }),
+  ].reverse();
+  const [t4] = buildStory("demo", [item("t4", "open")], evs, OWNER).threads;
+  assert.equal(t4.ending, "released");
+});
+
+test("an open task with no end on its record is not live either", () => {
+  seq = 0;
+  const evs = [ev("t5", "codex/gpt-6", "item.claimed")].reverse();
+  const s = buildStory("demo", [item("t5", "open")], evs, OWNER);
+  assert.ok(s.threads[0].end !== null, "the thread ends where its record ends");
+  assert.equal(s.threads[0].ending, "released");
+  assert.doesNotMatch(drawStory(s, OWNER), /g-task[^"]*live/);
+});
+
 test("an empty project draws an empty story", () => {
   const s = buildStory("empty", [], [], OWNER);
   assert.equal(s.threads.length, 0);
