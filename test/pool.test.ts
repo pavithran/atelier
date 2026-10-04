@@ -33,6 +33,9 @@ test("an entry is validated, its family derived, and no secret is accepted", () 
     [{ id: "x", harness: "opencode", where: "cloud", provider: "openai", keychain: "sk-proj-abc" }, /never the key itself/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "deepseek", keychain: "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6" }, /never the key itself/],
     [{ id: "x", harness: "opencode", where: "cloud" }, /which provider serves/],
+    [{ id: "sk-proj-AbC123xyzQrS456", harness: "codex", where: "cloud" }, /model id looks like a key/],
+    [{ id: "x", harness: "codex", where: "cloud", aliases: "fine, sk-proj-AbC123xyzQrS456" }, /alias looks like a key/],
+    [{ id: "x", harness: "codex", where: "cloud", note: "key is AIzaSyD-abcdefghijklmnopqrstu" }, /note looks like it carries a key/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/v1/sk-proj-AbC123xyzQrS456/chat" }, /path looks like it carries a key/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/k/AbCdEfGhIjKlMnOpQrStUvWxYz012345/v1" }, /path looks like it carries a key/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "google", keychain: "my.sk-proj-abc.entry" }, /never the key itself/],
@@ -44,7 +47,7 @@ test("an entry is validated, its family derived, and no secret is accepted", () 
 
 test("a status report is one of four states, with what was served", () => {
   assert.deepEqual(cleanStatus({ state: "available", served: "gemini-3.1-pro-002" }, AT, "home:studio"), { state: "available", at: AT, by: "home:studio", served: "gemini-3.1-pro-002" });
-  // Control characters become spaces in what is shown, in the served name too.
+  // Control characters become spaces, in the served name too; spaces at the ends are trimmed.
   assert.deepEqual(cleanStatus({ state: "refused", served: "evil\u001b[2Jname", detail: "not\nsupported\u009b" }, AT, "home:studio"),
     { state: "refused", at: AT, by: "home:studio", served: "evil [2Jname", detail: "not supported" });
   assert.throws(() => cleanStatus({ state: "great" }, AT, "home:studio"), /available, refused, slow or unknown/);

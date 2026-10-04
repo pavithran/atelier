@@ -96,6 +96,9 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
   if ("key" in body || "apiKey" in body || "token" in body) throw bad("Atelier never stores keys; give the name of the Keychain entry that holds it");
   const id = str(body.id);
   if (!ID.test(id)) throw bad(`"${id}" is not a model id Atelier can record`);
+  // A key pasted into any field by mistake is refused, never stored or shown.
+  const pasted = (s: string) => LOOKS_LIKE_KEY.test(s);
+  if (pasted(id)) throw bad("the model id looks like a key; a key belongs in the Keychain");
   const harness = str(body.harness) as PoolHarness;
   if (!HARNESSES.includes(harness)) throw bad(`harness must be one of ${HARNESSES.join(", ")}`);
   const where = str(body.where);
@@ -118,6 +121,8 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
   const aliases = (Array.isArray(body.aliases) ? body.aliases : str(body.aliases).split(","))
     .map(str).filter(Boolean).slice(0, 10);
   if (aliases.some((a) => !ID.test(a))) throw bad("an alias must be a model id");
+  if (aliases.some(pasted)) throw bad("an alias looks like a key; a key belongs in the Keychain");
+  if (pasted(str(body.note))) throw bad("the note looks like it carries a key; a key belongs in the Keychain");
   const family = (str(body.family) || familyOf(id)) as PoolFamily;
   return {
     id, harness, where, provider,
