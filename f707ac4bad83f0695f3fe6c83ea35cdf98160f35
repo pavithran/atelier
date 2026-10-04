@@ -1,0 +1,32 @@
+atelier cloudflare-git/t27 "t26 review follow-ups: bare --title keeps; non-string titles refused; keep-read fails only on no_project; strip bidi and zero-width; real Studio title test; README init --title"
+accepted head 7816509727d2c090645910b2bdd4e4e4e0224b6e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/GLM-5.3-Flash-4_8bit 2026-10-04T20:31:28.084Z
+OBSERVED pass npm run types && npm run typecheck — opencode/GLM-5.3-Flash-4_8bit 2026-10-04T20:31:30.058Z
+REVIEW approve — pavi: Approved under PAVI's instruction in chat (2026-10-04, 'do it all' for t62, t38 and t27): this revision only merges main into the version Codex approved; both sets of route tests kept.
+2026-10-04T17:30:20.620Z pavi item.created
+2026-10-04T18:15:27.466Z opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX item.claimed
+2026-10-04T18:15:29.380Z opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX fork.created
+2026-10-04T18:20:17.745Z pavi item.handoff
+2026-10-04T18:26:37.938Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-04T18:26:51.240Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T18:26:54.273Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T18:26:54.661Z opencode/GLM-5.3-Flash-4_8bit item.submitted
+2026-10-04T19:05:43.180Z zcode/glm-5.3 review.rejected
+2026-10-04T19:06:24.688Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-04T19:10:44.648Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-04T19:10:55.281Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T19:10:57.198Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T19:10:57.639Z opencode/GLM-5.3-Flash-4_8bit item.submitted
+2026-10-04T19:21:54.501Z codex/gpt-6-astra review.rejected
+2026-10-04T19:43:23.378Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-04T19:43:34.872Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T19:43:38.088Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T19:43:38.649Z opencode/GLM-5.3-Flash-4_8bit item.submitted
+2026-10-04T20:23:55.538Z codex/gpt-6-astra review.approved
+2026-10-04T20:29:47.941Z pavi item.accepted
+2026-10-04T20:31:16.820Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-04T20:31:28.174Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T20:31:30.134Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-04T20:31:30.631Z opencode/GLM-5.3-Flash-4_8bit item.submitted
+2026-10-04T20:31:37.250Z pavi review.approved
+2026-10-04T20:31:37.652Z pavi item.accepted
