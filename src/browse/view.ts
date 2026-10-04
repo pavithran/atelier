@@ -78,11 +78,12 @@ export function renderLog(w: Where, head: Commit | null, commits: Commit[], page
 
 export function renderHistory(w: Where, head: Commit, path: string[], commits: Commit[], complete: boolean, ownerName: string | null = null): string {
   const note = complete ? "Every commit on the first-parent line that changed it." : `Commits that changed it among the most recent ${HISTORY_CAP} on the first-parent line.`;
-  const body = `${pathCrumbs(w, path)}<p class="meta">${note}</p>${commits.length ? commitRows(w, commits) : '<p class="empty">No commit on this line changed it.</p>'}`;
+  const none = complete ? "No commit on this line changed it." : `No commit among the most recent ${HISTORY_CAP} changed it.`;
+  const body = `${pathCrumbs(w, path)}<p class="meta">${note}</p>${commits.length ? commitRows(w, commits) : `<p class="empty">${none}</p>`}`;
   return frame(w, `History of ${path.join("/")}`, "log", head, body, ownerName);
 }
 
-export function renderCommit(w: Where, c: { commit: Commit; parent: string | null; files: FileChange[]; truncated: boolean }, ownerName: string | null = null): string {
+export function renderCommit(w: Where, c: { commit: Commit; parent: string | null; files: FileChange[]; truncated: boolean; parentMissing?: boolean }, ownerName: string | null = null): string {
   const { commit, parent, files, truncated } = c;
   const added = files.reduce((n, f) => n + f.added, 0), removed = files.reduce((n, f) => n + f.removed, 0);
   const at: Where = { ...w, at: commit.hash };
@@ -90,7 +91,7 @@ export function renderCommit(w: Where, c: { commit: Commit; parent: string | nul
 ${commit.message.includes("\n") ? `<pre class="commit-body">${e(commit.message.split("\n").slice(1).join("\n").trim())}</pre>` : ""}
 <p class="meta"><span class="mono">${commit.hash}</span> · ${e(commit.author.name)} · ${day(commit.authoredAt)}${
     commit.parents.length ? ` · parent${commit.parents.length > 1 ? "s" : ""} ${commit.parents.map((p) => `<a class="mono" href="${commitHref(w, p)}">${short(p)}</a>`).join(", ")}` : " · the first commit"} · <a href="${codeHref(at, [])}">Browse files at this commit</a></p></section>
-<p class="meta">${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"} changed, +${added} −${removed}${parent ? `, against <span class="mono">${short(parent)}</span>` : ""}.</p>
+${c.parentMissing ? `<p class="empty">Its parent, <span class="mono">${short(parent!)}</span>, could not be read from this repository, so its changes are not shown.</p>` : `<p class="meta">${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"} changed, +${added} −${removed}${parent ? `, against <span class="mono">${short(parent)}</span>` : ""}.</p>`}
 ${files.map((f) => renderFile(f, files.length <= 8)).join("")}`;
   return frame(w, short(commit.hash), "commit", null, body, ownerName);
 }

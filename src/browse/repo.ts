@@ -4,7 +4,7 @@
 // here writes. The functions take a small interface rather than the binding,
 // so the tests drive them with plain objects.
 
-import { treeDiff, type FileChange, type Reader } from "../diff.ts";
+import { LIMITS, treeDiff, type FileChange, type Reader } from "../diff.ts";
 
 // The same test git uses: a zero byte in the first 8,000 means binary.
 const isBinary = (bytes: Uint8Array) => bytes.subarray(0, 8000).includes(0);
@@ -28,13 +28,23 @@ export interface Source extends Reader {
 
 // A file Artifacts would not buffer is reported as too large, not as an error.
 const MEMORY_LIMIT = /MEMORY_LIMIT/;
+const OVERSIZE = new Uint8Array(LIMITS.blobBytes + 1);
 
 export function repoSource(repo: ArtifactsRepo): Source {
   return {
     tree: (h) => repo.readTree(h),
     blob: async (h) => {
-      const b = await repo.readBlob(h);
-      return b ? new Uint8Array(await b.arrayBuffer()) : null;
+      try {
+        const b = await repo.readBlob(h);
+        if (!b) return null;
+        // Bytes beyond the diff's own limit are never compared; a stand-in of
+        // that size is enough for the diff to list the file as too large.
+        if (b.size > OVERSIZE.length - 1) return OVERSIZE;
+        return new Uint8Array(await b.arrayBuffer());
+      } catch (err) {
+        if (MEMORY_LIMIT.test(String((err as { code?: string }).code ?? err))) return OVERSIZE;
+        throw err;
+      }
     },
     log: (o) => repo.log(o),
     commit: (h) => repo.readCommit(h),
@@ -60,7 +70,6 @@ export function cleanPath(parts: string[]): string[] | null {
 
 // Regular and executable files are both files; a symbolic link is shown as
 // the path it points to; a submodule has no content here.
-export const FILE_TYPES = new Set(["blob", "exec"]);
 export const READABLE = new Set(["blob", "exec", "symlink"]);
 
 export type Node =
@@ -121,11 +130,14 @@ export async function logPage(s: Source, ref: string, page: number): Promise<{ c
 }
 
 // One commit's changes against its first parent; a root commit against nothing.
-export async function commitChanges(s: Source, hash: string): Promise<{ commit: Commit; parent: string | null; files: FileChange[]; truncated: boolean } | null> {
+export async function commitChanges(s: Source, hash: string): Promise<{ commit: Commit; parent: string | null; files: FileChange[]; truncated: boolean; parentMissing?: boolean } | null> {
   const commit = await s.commit(hash);
   if (!commit) return null;
   const parentHash = commit.parents[0] ?? null;
   const parent = parentHash ? await s.commit(parentHash) : null;
+  // A parent that cannot be read is said so; diffing against nothing would
+  // show every file as added.
+  if (parentHash && !parent) return { commit, parent: parentHash, files: [], truncated: false, parentMissing: true };
   const r: Reader = { tree: (h) => (h === EMPTY_TREE ? Promise.resolve([]) : s.tree(h)), blob: s.blob };
   const { files, truncated } = await treeDiff(r, parent?.treeHash ?? EMPTY_TREE, commit.treeHash);
   return { commit, parent: parentHash, files, truncated };
@@ -135,9 +147,11 @@ export async function commitChanges(s: Source, hash: string): Promise<{ commit: 
 // commit diffs as every file added.
 export const EMPTY_TREE = "4b825dc642cb6eb9a060c54bf8d69288fbee4904";
 
-// A path's history examines at most this many commits, ten at a time, so one
-// page costs at most about a hundred root-tree reads plus the directories on
-// the path that changed, well inside Artifacts' 2,000 calls per 10 seconds.
+// A path's history examines at most this many commits, ten at a time. Each
+// distinct tree on the path is read once, so a page costs one read per
+// commit for the root and one per changed directory below it: about a
+// hundred reads for a shallow path, and up to the cap times the path's depth
+// for a deep path changed in every commit.
 export const HISTORY_CAP = 100;
 const HISTORY_BATCH = 10;
 
@@ -157,15 +171,16 @@ export async function pathHistory(s: Source, ref: string, path: string[], cap = 
     },
     blob: s.blob,
   };
+  // The commit just beyond the window is located too, so the oldest commit
+  // examined is decided like every other: it changed the path when its entry
+  // differs from its parent's.
+  const located = log.slice(0, cap + 1);
   const at: (string | null)[] = [];
-  for (let i = 0; i < seen.length; i += HISTORY_BATCH) {
-    at.push(...await Promise.all(seen.slice(i, i + HISTORY_BATCH).map(async (c) => (await locate(cached, c.treeHash, path)))));
+  for (let i = 0; i < located.length; i += HISTORY_BATCH) {
+    at.push(...await Promise.all(located.slice(i, i + HISTORY_BATCH).map(async (c) => (await locate(cached, c.treeHash, path)))));
   }
   const complete = log.length <= cap;
-  const commits = seen.filter((_, i) => {
-    const older = i + 1 < seen.length ? at[i + 1] : complete ? null : at[i];
-    return at[i] !== older;
-  });
+  const commits = seen.filter((_, i) => at[i] !== (i + 1 < at.length ? at[i + 1] : null));
   return { commits, complete };
 }
 

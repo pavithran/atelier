@@ -73,6 +73,9 @@ test("a commit's changes are against its first parent; the first commit adds eve
   assert.deepEqual(one?.files.map((f) => [f.path, f.status]).sort(), [["README.md", "added"], ["src/a.ts", "added"]]);
   assert.equal(one?.parent, null);
   assert.equal(await commitChanges(source, h("nope")), null);
+  // A parent that cannot be read is reported, not diffed against nothing.
+  const orphan = { ...source, commit: async (x: string) => (x === h("c2") ? commits[1] : null) };
+  assert.deepEqual(await commitChanges(orphan, h("c2")), { commit: commits[1], parent: h("c1"), files: [], truncated: false, parentMissing: true });
 });
 
 test("a path's history is the commits that changed it, reading each tree once", async () => {
@@ -89,4 +92,7 @@ test("a path's history is the commits that changed it, reading each tree once", 
   const capped = await pathHistory(source, "HEAD", ["README.md"], 2);
   assert.equal(capped.complete, false);
   assert.deepEqual(capped.commits.map((k) => k.message.split("\n")[0]), ["Third"], "beyond the window, an unchanged path is not counted");
+  // The oldest commit in the window is decided against the one beyond it.
+  assert.deepEqual((await pathHistory(source, "HEAD", ["src", "a.ts"], 2)).commits.map((k) => k.message.split("\n")[0]), ["Second"]);
+  assert.deepEqual((await pathHistory(source, "HEAD", ["src", "a.ts"], 1)).commits, []);
 });

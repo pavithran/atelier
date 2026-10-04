@@ -126,6 +126,9 @@ it('browsing pages escape names and contents and keep links inside the repositor
  const blob=renderBlob(w,head,['src','a.ts'],{kind:'text',lines:['<script>alert(1)</script>'],bytes:26});
  expect(blob).toContain('&lt;script&gt;');
  expect(blob).toContain('href="/p/example/t1/history/src/a.ts"');
+ const link=renderBlob(w,head,['docs'],{kind:'text',lines:['../<b>elsewhere</b>'],bytes:20},null,true);
+ expect(link).toContain('A symbolic link to <code>../&lt;b&gt;elsewhere&lt;/b&gt;</code>');
+ expect(link).not.toContain('class="code-lines"');
  expect(renderCommit(w,{commit:head,parent:'c'.repeat(40),files:[],truncated:false})).toContain('href="/p/example/t1/commit/'+'c'.repeat(40)+'"');
  expect(renderLog({project,item:null,at:null},head,[head],1,true)).toContain('href="/p/example/log?page=2"');
  expect(codeHref({project,item:null,at:'a'.repeat(40)},['a b'])).toBe('/p/example/code/a%20b?at='+'a'.repeat(40));
@@ -145,7 +148,7 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
  const asked:string[]=[];
  const repo=(name:string)=>({
   log:async({ref}:{ref?:string})=>ref&&ref!=='HEAD'&&ref!==C?[]:[{hash:C,treeHash:T,message:`On ${name}`,author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}],
-  readCommit:async()=>null,
+  readCommit:async(h:string)=>h===C?{hash:C,treeHash:T,message:'Only',author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}:null,
   readTree:async(h:string)=>h===T?[{name:'README.md',mode:'100644',hash:B,type:'blob'},{name:'run.sh',mode:'100755',hash:X,type:'exec'}]:null,
   readBlob:async(h:string)=>h===B?new Blob(['hello\n']):h===X?new Blob(['#!/bin/sh\n']):null,
   [Symbol.dispose](){},
@@ -166,4 +169,14 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
  expect(await missing.text()).toContain('That commit is not in this repository');
  expect((await get('/p/browsed/code/%2E%2E/x')).status).toBe(404);
  expect((await get('/p/browsed/t1')).status).toBe(200);
+ const log=await get('/p/browsed/log');
+ expect(log.status).toBe(200);
+ expect(await log.text()).toContain(`/p/browsed/commit/${C}`);
+ const commit=await get(`/p/browsed/commit/${C}`);
+ expect(commit.status).toBe(200);
+ expect(await commit.text()).toContain('README.md');
+ const history=await get('/p/browsed/history/README.md');
+ expect(history.status).toBe(200);
+ expect(await history.text()).toContain('On browsed');
+ expect((await get('/p/browsed/history')).status).toBe(404);
 });

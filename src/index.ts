@@ -404,7 +404,7 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
   const path = cleanPath(tail);
   if (!path) return notFound("That path");
   if (view === "history") {
-    if (!path.length) return null;
+    if (!path.length) return notFound("A path");
     const { commits, complete } = await pathHistory(s, head.hash, path);
     return html(renderBrowseHistory(w, head, path, commits, complete, ownerName(env)));
   }
