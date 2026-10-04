@@ -388,5 +388,5 @@ it("a push to an accepted task withdraws the acceptance, and only its owner can 
   expect(reopened).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
   const last = (await L.events("t1")).find((e) => e.kind === "push.observed");
   expect(last?.data).toMatchObject({ head: H2, approvalInvalidated: true });
-  await expect(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null)).rejects.toThrow(/does not own/);
+  await refusal(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null), "not_owner", /does not own/);
 });
