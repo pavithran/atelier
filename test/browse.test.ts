@@ -78,6 +78,14 @@ test("a commit's changes are against its first parent; the first commit adds eve
   assert.deepEqual(await commitChanges(orphan, h("c2")), { commit: commits[1], parent: h("c1"), files: [], truncated: false, parentMissing: true });
 });
 
+test("a change of mode alone is a change in a path's history", async () => {
+  const one = (mode: string, type: string) => [{ name: "run", mode, hash: h("b4"), type }];
+  const t2: Record<string, ReturnType<typeof one>> = { [h("m1")]: one("100644", "blob"), [h("m2")]: one("100755", "exec"), [h("m3")]: one("120000", "symlink") };
+  const line = [c("k3", "m3", "k2", "Linked", 3), c("k2", "m2", "k1", "Made executable", 2), c("k1", "m1", null, "Added", 1)];
+  const src: Source = { ...source, tree: async (x) => t2[x] ?? null, log: async ({ limit = 50 }) => line.slice(0, limit) };
+  assert.deepEqual((await pathHistory(src, "HEAD", ["run"])).commits.map((k) => k.message), ["Linked", "Made executable", "Added"]);
+});
+
 test("a path's history is the commits that changed it, reading each tree once", async () => {
   treeReads = 0;
   const readme = await pathHistory(source, "HEAD", ["README.md"]);

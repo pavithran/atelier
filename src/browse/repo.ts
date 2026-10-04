@@ -190,7 +190,9 @@ async function locate(r: Reader, root: string, path: string[]): Promise<string |
   for (let i = 0; i < path.length; i++) {
     const e = (await r.tree(hash))?.find((x) => x.name === path[i]);
     if (!e) return null;
-    if (i === path.length - 1) return e.hash;
+    // The mode is part of what changed: an executable bit, or a file turned
+    // into a symbolic link, is a change even when the bytes are the same.
+    if (i === path.length - 1) return `${e.mode} ${e.hash}`;
     if (e.type !== "tree") return null;
     hash = e.hash;
   }
