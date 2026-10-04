@@ -193,3 +193,36 @@ test("gc requires an expired check record and no live process", async () => {
   assert.ok(gcCheckReason(old + 1, false, now));
   for (const age of [undefined, "yesterday", NaN, Infinity, now + 1]) assert.ok(gcCheckReason(age, false, now));
 });
+
+test("under sandboxOnly, only checks the Worker observed in a sandbox count", () => {
+  const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
+  const local = pass();                                   // posted by the CLI: where is absent, so "runner"
+  const cloud = pass({ where: "sandbox", by: "atelier/sandbox" });
+  assert.equal(gate(item(), policy, [local], []).ready, true);
+  const g = gate(item(), strict, [local], []);
+  assert.equal(g.ready, false);
+  assert.match(g.blockers.join(), /not yet observed/);
+  assert.equal(gate(item(), strict, [local, cloud], []).ready, true);
+  assert.deepEqual(evidenceAt(strict, [cloud], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "sandbox" }]);
+  assert.equal(evidenceAt(policy, [local], H1).checks[0].where, "runner");
+});
+
+test("decisions reject stale revisions and retain the latest review from each reviewer", async () => {
+  const { assertRevision, latestReviews, decisionFor } = await import('../src/rules.ts');
+  assert.throws(()=>assertRevision(item(),''),/refresh the task/);
+  assert.throws(()=>assertRevision(item(),H2),/changed since/);
+  assert.doesNotThrow(()=>assertRevision(item(),H1));
+  const no: Review={itemId:'t1',head:H1,by:'owner',approve:false,note:'Fix it',at:T};
+  const yes: Review={...no,approve:true,at:'2026-10-03T13:00:00Z'};
+  assert.deepEqual(latestReviews([no,yes],H1),[yes]);
+  assert.equal(gate(item(),policy,[pass()],[no,yes]).ready,true);
+  assert.equal(decisionFor(item({state:'merged'}),policy,[],[]).action,'none');
+  assert.equal(decisionFor(item(),policy,[pass({passed:false})],[]).title,'Checks need attention');
+});
+
+test("push notices admit only valid branch updates in the configured namespace", async () => {
+  const {pushNotice}=await import('../src/rules.ts');
+  const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'project--t1'},payload:{ref:'refs/heads/main',after:H1}};
+  assert.deepEqual(pushNotice(notice),{repo:'project--t1',ref:'refs/heads/main',after:H1});
+  for(const bad of [null,{}, {...notice,type:'other'}, {...notice,source:{...notice.source,namespace:'other'}},{...notice,payload:{ref:'refs/tags/v1',after:H1}},{...notice,payload:{ref:'refs/heads/main',after:'0'.repeat(40)}}])assert.equal(pushNotice(bad),null);
+});

@@ -33,6 +33,10 @@ export interface Evidence {
   at: string;
   changedPaths?: string[];  // observed checks record what the item actually changes
   outputTail?: string;
+  // Where an observed check ran: "sandbox" is a Cloudflare container started by
+  // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
+  // Worker's own code can record "sandbox"; anything posted to the API is "runner".
+  where?: "sandbox" | "runner";
 }
 
 export interface Review {
@@ -49,7 +53,8 @@ export interface ProjectPolicy {
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
-  approval?: string;        // the project owner's recorded approval for copying the project into Artifacts
+  approval?: string;
+  sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
 }
 
 // The actor that stands for the project owner. A deployment names its own with
@@ -173,20 +178,24 @@ export function assertOwner(item: Item, actor: string): void {
 // The evidence picture at one head: every required check is observed-pass,
 // observed-fail, or pending; reports are listed but never satisfy a check.
 export interface EvidenceView {
-  checks: { claim: string; grade: Grade; passed: boolean | null }[];
+  checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner" }[];
   reports: Evidence[];
   changedPaths: string[] | null;  // null until an observed check has measured them
 }
 
 export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null): EvidenceView {
   const atHead = head ? evidence.filter((e) => e.head === head) : [];
+  // Under sandboxOnly, a check run on someone's machine is still shown but does not count.
+  const counts = (e: Evidence) => e.grade === "observed" && (!policy.sandboxOnly || e.where === "sandbox");
   const latest = (claim: string) =>
-    atHead.filter((e) => e.grade === "observed" && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    atHead.filter((e) => counts(e) && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
   const checks = policy.checks.map((claim) => {
     const e = latest(claim);
-    return e ? { claim, grade: "observed" as Grade, passed: e.passed } : { claim, grade: "pending" as Grade, passed: null };
+    return e
+      ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner" }
+      : { claim, grade: "pending" as Grade, passed: null };
   });
-  const measured = atHead.filter((e) => e.grade === "observed" && e.changedPaths).sort((a, b) => a.at.localeCompare(b.at)).pop();
+  const measured = atHead.filter((e) => counts(e) && e.changedPaths).sort((a, b) => a.at.localeCompare(b.at)).pop();
   return {
     checks,
     reports: atHead.filter((e) => e.grade === "reported"),
@@ -226,6 +235,7 @@ export interface Gate {
 }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Gate {
+  reviews = latestReviews(reviews, item.head);
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
   if (!item.head) blockers.push("no verified push");
@@ -349,4 +359,48 @@ export function gcCheckReason(startedAt: unknown, running: boolean, now: number)
   if (typeof startedAt !== "number" || !Number.isFinite(startedAt) || startedAt > now) return "invalid check age";
   if (now - startedAt < GC_CHECK_AGE_MS) return "check is less than 24 hours old";
   return null;
+}
+
+export function assertRevision(item: Item, expected: string): void {
+  if (!/^[a-f0-9]{40,64}$/.test(expected)) throw new RuleError("missing_revision", "refresh the task and choose a revision before acting", 400);
+  if (expected !== item.head) throw new RuleError("stale_head", "this task changed since you opened it; refresh and review the new revision");
+}
+
+export function assertLive(item: Item): void {
+  if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
+}
+
+export function latestReviews(reviews: Review[], head: string | null): Review[] {
+  const latest = new Map<string, Review>();
+  for (const r of reviews.filter((r) => r.head === head).sort((a, b) => a.at.localeCompare(b.at))) latest.set(r.by, r);
+  return [...latest.values()];
+}
+
+export const stateLabel: Record<ItemState, string> = {
+  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed",
+};
+
+export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER) {
+  const g = gate(item, policy, evidence, reviews, owner);
+  const view = evidenceAt(policy, evidence, item.head);
+  const passed = view.checks.filter((c) => c.grade === "observed" && c.passed).length;
+  const failed = view.checks.some((c) => c.grade === "observed" && !c.passed);
+  if (item.state === "merged") return { title: "Merged into the project", detail: "The accepted revision is in the project baseline. Publishing and deployment are separate actions.", action: "none", tone: "go", passed };
+  if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
+  if (item.state === "accepted") return { title: "Ready to merge", detail: "Approval is recorded. Run the revision-bound command below in your local checkout.", action: "merge", tone: "go", passed };
+  if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
+  if (item.state === "submitted" && g.needsAssessor) return { title: "Your review is needed", detail: "This task changes protected files. Review the changes and approve this revision, or request changes.", action: "review", tone: "ask", passed };
+  if (item.state === "submitted" && g.ready) return { title: "Ready to accept", detail: "Required checks passed for this revision. Accept it to prepare the local merge.", action: "accept", tone: "go", passed };
+  if (latestReviews(reviews, item.head).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
+  return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The task owner is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
+}
+
+export interface PushNotice { repo: string; ref: string; after: string }
+export function pushNotice(value: unknown, namespace = "atelier"): PushNotice | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as { type?: string; source?: { namespace?: string; repoName?: string }; payload?: { ref?: string; after?: string } };
+  if (v.type !== "cf.artifacts.repo.pushed" || v.source?.namespace !== namespace) return null;
+  const { ref, after } = v.payload ?? {};
+  if (!v.source.repoName || !ref?.startsWith("refs/heads/") || !after || !/^[a-f0-9]{40,64}$/.test(after) || /^0+$/.test(after)) return null;
+  return { repo: v.source.repoName, ref, after };
 }

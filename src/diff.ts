@@ -212,23 +212,44 @@ export function mergeBase(workspaceLog: string[], baselineLog: string[]): string
   return workspaceLog.find((h) => shared.has(h)) ?? null;
 }
 
-export async function itemDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
-  using fork = await artifacts.get(workspaceRepo);
-  using baseline = await artifacts.get(baselineRepo);
+// The workspace head and its fork point, with the trees of both.
+export interface ForkPoint { base: string; baseTree: string; head: string; headTree: string }
+
+export async function forkPoint(fork: ArtifactsRepo, baseline: ArtifactsRepo): Promise<ForkPoint | null> {
   const [forkLog, baseLog] = await Promise.all([fork.log({ limit: 500 }), baseline.log({ limit: 1000 })]);
   const head = forkLog[0];
   const base = mergeBase(forkLog.map((c) => c.hash), baseLog.map((c) => c.hash));
   if (!head || !base) return null;
   const baseCommit = forkLog.find((c) => c.hash === base) ?? (await fork.readCommit(base));
   if (!baseCommit) return null;
-  if (base === head.hash) return { base, head: head.hash, files: [], truncated: false };
-  const reader: Reader = {
-    tree: (h) => fork.readTree(h),
+  return { base, baseTree: baseCommit.treeHash, head: head.hash, headTree: head.treeHash };
+}
+
+export function repoReader(repo: ArtifactsRepo): Reader {
+  return {
+    tree: (h) => repo.readTree(h),
     blob: async (h) => {
-      const b = await fork.readBlob(h);
+      const b = await repo.readBlob(h);
       return b ? new Uint8Array(await b.arrayBuffer()) : null;
     },
   };
-  const { files, truncated } = await treeDiff(reader, baseCommit.treeHash, head.treeHash);
-  return { base, head: head.hash, files, truncated };
+}
+
+// Every changed path, uncapped by the display limit: deciding whether an item
+// touches a protected path needs the whole list, not the first page of it.
+export async function changedPaths(r: Reader, baseTree: string, headTree: string, cap = 20_000): Promise<string[]> {
+  const pairs: [Leaf | null, Leaf | null][] = [];
+  await changedLeaves(r, baseTree, headTree, "", pairs, cap);
+  if (pairs.length > cap) throw new Error(`more than ${cap} changed paths`);
+  return pairs.map(([l, rt]) => (rt ?? l)!.path);
+}
+
+export async function itemDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
+  using fork = await artifacts.get(workspaceRepo);
+  using baseline = await artifacts.get(baselineRepo);
+  const fp = await forkPoint(fork, baseline);
+  if (!fp) return null;
+  if (fp.base === fp.head) return { base: fp.base, head: fp.head, files: [], truncated: false };
+  const { files, truncated } = await treeDiff(repoReader(fork), fp.baseTree, fp.headTree);
+  return { base: fp.base, head: fp.head, files, truncated };
 }

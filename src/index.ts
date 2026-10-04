@@ -1,9 +1,11 @@
 import { itemDiff, type ItemDiff } from "./diff";
-import { Ledger, type ProjectRecord } from "./ledger";
-import { DEFAULT_OWNER, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { escapeText, renderInbox, renderItem, renderLogin, renderProject } from "./ui";
+import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
+import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
+import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { buildFloor, type FloorView } from "./floor";
 
-export { Ledger };
+export { CheckRunner, Egress, Ledger };
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
@@ -55,7 +57,7 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | null> 
 // ── helpers ────────────────────────────────────────────────────────────────
 
 const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 const html = (body: string, status = 200) =>
   new Response(body, {
@@ -63,6 +65,9 @@ const html = (body: string, status = 200) =>
     headers: {
       "content-type": "text/html; charset=utf-8",
       "x-frame-options": "DENY",
+      "cache-control": "no-store",
+      "referrer-policy": "same-origin",
+      "x-content-type-options": "nosniff",
       "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
     },
   });
@@ -148,6 +153,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         protected: asStrings(body.protected),
         eligible: asStrings(body.eligible),
         refuseOverlap: Boolean(body.refuseOverlap),
+        sandboxOnly: Boolean(body.sandboxOnly),
         ...(body.approval ? { approval: String(body.approval).slice(0, 500) } : {}),
       },
       createdAt: new Date().toISOString(),
@@ -177,6 +183,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const id = parts[3];
   const verb = parts[4];
   if (!verb && m === "GET") return json(await L.detail(id));
+  if (verb === "sandbox" && parts[5] && m === "GET") {
+    if (!parts[5].startsWith(`${project}:${id}:`)) throw new RuleError("not_found", "no such run", 404);
+    const state = await env.RUNNER.get(env.RUNNER.idFromName(parts[5])).state();
+    if (!state) throw new RuleError("not_found", "no such run", 404);
+    return json(state);
+  }
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
@@ -235,7 +247,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         passed: check ? Boolean(body.passed) : null,
         by: actor,
         at: new Date().toISOString(),
-        ...(check ? { changedPaths: asStrings(body.changedPaths), outputTail: String(body.outputTail ?? "").slice(-4000) } : {}),
+        ...(check ? { changedPaths: asStrings(body.changedPaths), outputTail: String(body.outputTail ?? "").slice(-4000), where: "runner" as const } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // An observed check counts only against the head Atelier itself reads from Artifacts.
@@ -245,8 +257,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.addEvidence(e);
       return json(await L.detail(id));
     }
+    case "sandbox": {
+      // Run the required checks in a Cloudflare container. The run reports to the
+      // Ledger itself; the caller polls GET .../sandbox/RUN_ID.
+      const item = await L.item(id);
+      if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
+      const p = await L.project();
+      if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
+      const runId = `${project}:${id}:${item.head.slice(0, 12)}:${Date.now()}`;
+      const request: RunRequest = {
+        runId, project, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
+        checks: p.policy.checks, requestedBy: actor,
+      };
+      const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
+      return json({ runId, state }, 202);
+    }
     case "review": {
       const item = await L.item(id);
+      assertRevision(item, String(body.head ?? ""));
+      if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
@@ -274,12 +303,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "accept":
       requireOwner(env, actor);
-      return json(await L.accept(id, actor));
+      await verifyRevision(env, project, id, String(body.head ?? ""));
+      return json(await L.accept(id, actor, String(body.head ?? "")));
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
       const merge = String(body.mergeCommit ?? "");
-      return json(await L.merged(id, actor, merge, (await headOf(env, p.repo)) === merge));
+      const item = await L.item(id);
+      using baseline = await env.ARTIFACTS.get(p.repo);
+      const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
+      const history = await baseline.log({limit:1000});
+      const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
+      return json(await L.merged(id, actor, merge, observed));
     }
     case "abandon": {
       requireOwner(env, actor);
@@ -312,27 +347,40 @@ async function inbox(env: Env) {
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
 
+async function verifyRevision(env: Env, project: string, id: string, expected: string) {
+  const item = await ledger(env,project).item(id);
+  assertRevision(item,expected);
+  if (item.fork && await headOf(env,item.fork) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+}
+
 // ── UI ─────────────────────────────────────────────────────────────────────
 
 async function ui(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req } = c;
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
-    if (origin && origin !== c.url.origin) return html("Cross-origin form refused.", 403);
+    if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);
     const form = await req.formData();
     const [, project, id, verb] = parts; // /ui/<project>/<id>/<verb>
     const L = ledger(env, project);
     const note = String(form.get("note") ?? "");
     const owner = ownerActor(env);
+    if (id === "new" && !verb) {
+      const item = await L.newItem(String(form.get("title") ?? "").slice(0,300), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner);
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
+    }
     const before = await L.item(id);
+    const expected = String(form.get("head") ?? "");
+    if (before.head) assertRevision(before, expected);
+    if (["accept", "approve", "reject"].includes(verb)) await verifyRevision(env, project, id, expected);
     const oldToken = await L.tokenId(id);
-    if (verb === "accept") await L.accept(id, owner);
+    if (verb === "accept") await L.accept(id, owner, expected);
     else if (verb === "abandon") await L.abandon(id, owner, note);
     else if (verb === "release") await L.release(id, owner, note);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note);
     else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: before.head ?? "", approve: verb === "approve", note, at: new Date().toISOString() });
-    } else return html("Unknown action.", 400);
+      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() });
+    } else return html(renderError("Unknown action."), 400);
     if (verb === "abandon" || verb === "release" || verb === "handoff") {
       await revoke(env, before.fork, oldToken);
       await L.setToken(id, null);
@@ -340,10 +388,44 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0) return html(renderInbox(await inbox(env), await index(env).projects(), ownerName(env)));
+  if (parts.length === 0 || ["projects", "history", "studio"].includes(parts[0])) {
+    const projects = await index(env).projects();
+    const views: ProjectView[] = await Promise.all(projects.map(async project => {
+      try { return {project, items: await ledger(env,project.name).items()}; }
+      catch { return {project, items: [], unavailable: true}; }
+    }));
+    if (parts[0] === "projects") return html(renderProjects(views, ownerName(env)));
+    if (parts[0] === "history") return html(renderHistory(views, ownerName(env)));
+    // The floor reads each project's recent events; a project that cannot be read is left off it.
+    const now = new Date();
+    const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
+      // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
+      try { return { ...v, events: (await ledger(env, v.project.name).events(undefined, 400)) as unknown as LedgerEvent[] }; }
+      catch { v.unavailable = true; return null; }
+    }))).filter((v): v is FloorView => v !== null);
+    const floor = buildFloor(floorViews, now);
+    if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable)));
+    const lists = await Promise.all(views.map(async v => {
+      if (v.unavailable) return [];
+      try { return await ledger(env,v.project.name).inbox(new Date().toISOString()); }
+      catch { v.unavailable = true; return []; }
+    }));
+    const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
+    const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
+    const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
+    const project = projects.find(p=>p.name===projectName);
+    let selected: ReviewContext | undefined;
+    if (project && task) {
+      const L = ledger(env,project.name);
+      const detail = await L.detail(task);
+      const selectedItem = await L.item(task);
+      selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
+    }
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now));
+  }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
-    return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40)));
+    return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env)));
   }
   if (parts[0] === "p" && parts.length === 3) {
     const L = ledger(env, parts[1]);
@@ -357,6 +439,28 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
 // ── entry ──────────────────────────────────────────────────────────────────
 
 export default {
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        const notice = pushNotice(message.body);
+        if (notice) {
+          const projects = await index(env).projects();
+          for (const project of projects) {
+            const L = ledger(env,project.name);
+            const item = (await L.items()).find(i=>i.fork===notice.repo);
+            if (!item || ["merged","abandoned"].includes(item.state)) continue;
+            using repo = await env.ARTIFACTS.get(notice.repo);
+            const info = await repo.info();
+            if (notice.ref !== `refs/heads/${info.defaultBranch}`) break;
+            const current = await headOf(env,notice.repo);
+            if (current) { const recorded = await L.observePush(item.id,current,item.head); if (!["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation"); }
+            break;
+          }
+        }
+        message.ack();
+      } catch (error) { console.error("push event retry", error); message.retry(); }
+    }
+  },
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     try {
@@ -392,10 +496,10 @@ export default {
       if (rule) {
         return url.pathname.startsWith("/api/")
           ? json({ error: rule.code, detail: rule.detail }, rule.status)
-          : html(`<!doctype html><meta charset="utf-8"><p>${escapeText(rule.detail)}</p><p><a href="/">Back to the inbox</a></p>`, rule.status);
+          : html(renderError(rule.detail), rule.status);
       }
       console.error(err);
-      return json({ error: "internal", detail: String((err as Error)?.message ?? err) }, 500);
+      return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed."),500);
     }
   },
 } satisfies ExportedHandler<Env>;

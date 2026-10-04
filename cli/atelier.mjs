@@ -12,10 +12,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { landingJournal, landingLock } from "./landing.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 
 const HOME = homedir();
-const CONFIG_DIR = join(HOME, ".config", "atelier");
+const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
 const CONFIG = join(CONFIG_DIR, "config.json");
 const CACHE = process.env.ATELIER_CACHE ?? join(HOME, "Library", "Caches", "ai-projects", "cloudflare-git");
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
@@ -256,6 +257,29 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
   return file.slice(cwd.length + 1);
 }
 
+// Run the project's required checks in a Cloudflare container instead of
+// here. The Worker records the results itself; this only starts and waits.
+async function checkInSandbox() {
+  const name = project(), id = itemArg(), as = actor();
+  const { runId } = await call("POST", `${I(name, id)}/sandbox`, {}, as);
+  process.stderr.write(`atelier: running the checks for ${id} in a Cloudflare container (run ${runId})…\n`);
+  let state;
+  for (let waited = 0; ; waited += 5) {
+    state = await call("GET", `${I(name, id)}/sandbox/${encodeURIComponent(runId)}`, undefined, as);
+    if (state.status === "done" || state.status === "failed") break;
+    if (waited > 20 * 60) die(`still ${state.status} after 20 minutes; check later with atelier show ${id}`);
+    await new Promise((ok) => setTimeout(ok, 5000));
+  }
+  for (const r of state.results ?? []) {
+    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}  (${r.seconds}s, in Cloudflare)`);
+    if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
+  }
+  if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
+  if (state.status === "failed") die(`the run failed: ${state.error}`);
+  if (!state.recorded) die("the checks ran but the ledger did not record them");
+  if (state.results.some((r) => !r.passed)) process.exit(2);
+}
+
 // ── commands ───────────────────────────────────────────────────────────────
 
 const commands = {
@@ -285,6 +309,7 @@ const commands = {
       protected: protect,
       eligible: cp?.eligible ?? [],
       refuseOverlap: cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]),
+      sandboxOnly: Boolean(args["sandbox-only"]),
       approval: args.approval === true ? undefined : args.approval,
       defaultBranch: branch,
     }, OWNER);
@@ -385,8 +410,10 @@ const commands = {
   // Observed evidence: run each required check (or the given command) in a
   // clean clone of exactly the head Artifacts holds, and record the result.
   async check() {
+    if (args.sandbox) return checkInSandbox();
     const name = project(), id = itemArg(), as = actor();
     const d = await call("GET", I(name, id), undefined, as);
+    if (d.policy.sandboxOnly) return checkInSandbox();
     const cmds = args.rest?.length ? [args.rest.join(" ")] : d.policy.checks;
     if (!cmds.length) die("this project has no required checks; pass one: atelier check -- npm test");
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
@@ -462,7 +489,7 @@ const commands = {
     const name = project(), id = itemArg(), as = actor();
     if (!args.approve && !args.reject) die("usage: atelier review t3 --approve|--reject --note '…' --as harness/model");
     const d = await call("GET", I(name, id), undefined, as);
-    await call("POST", `${I(name, id)}/review`, { approve: Boolean(args.approve), note: args.note === true ? "" : args.note ?? "", head: d.item.head }, as);
+    await call("POST", `${I(name, id)}/review`, { approve: Boolean(args.approve), note: args.note === true ? "" : args.note ?? "", head: args.head ?? d.item.head }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
   },
 
@@ -481,7 +508,8 @@ const commands = {
 
   async accept() {
     const name = project(), id = itemArg();
-    const item = await call("POST", `${I(name, id)}/accept`, {}, OWNER);
+    const d = await call("GET", I(name,id), undefined, OWNER);
+    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head}, OWNER);
     console.log(`${id} accepted at ${short(item.acceptedHead)}. Merge it with: atelier merge ${id}`);
   },
 
@@ -491,62 +519,103 @@ const commands = {
     console.log(`${id} abandoned.`);
   },
 
-  // The project owner, in the checkout: merge exactly the accepted head, record the
-  // provenance as a git note, and publish the new baseline.
+  async finish() {
+    const name = project(), id = itemArg(), as = actor();
+    if (wsConfig("project") !== name || wsConfig("item") !== id) die("finish must run in this task's claimed workspace");
+    const d = await call("GET", I(name,id), undefined, as);
+    if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
+    if (git(["status","--porcelain"])) die("commit your changes before finishing");
+    const head = git(["rev-parse","HEAD"]);
+    await commands.push();
+    if (d.policy.sandboxOnly || args.sandbox) await checkInSandbox(); else await commands.check();
+    if (git(["rev-parse","HEAD"]) !== head || git(["status","--porcelain"])) die("the workspace changed while finishing; inspect it and finish again");
+    const current = await call("GET", I(name,id), undefined, as);
+    if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
+    await commands.submit();
+  },
+
+  // The project owner merges an exact revision. With --head, a submitted item
+  // is first approved (with --approve) and accepted at that revision only.
   async merge() {
-    const name = project(), id = itemArg();
-    const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
-    const cwd = p.path;
-    const d = await call("GET", I(name, id), undefined, OWNER);
-    const { item } = d;
-    if (item.state !== "accepted") die(`${id} is ${item.state}; accept it first`);
-    if (git(["status", "--porcelain"], { cwd })) die(`${cwd} has uncommitted changes; merge into a clean checkout`);
-    if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
-
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
-    git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
-    const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
-    const ahead = git(["merge-base", "--is-ancestor", baselineHead, "HEAD"], { cwd, allowFail: true });
-    if (ahead.status !== 0) die(`the baseline has commits this checkout lacks (${short(baselineHead)}); pull them in first`);
-
-    const ws = await call("POST", `${I(name, id)}/read-token`, {}, OWNER);
-    git([...auth(ws.token), "fetch", "--quiet", ws.remote, item.acceptedHead], { cwd });
-    if (git(["rev-parse", "FETCH_HEAD"], { cwd }) !== item.acceptedHead) die("fetched head does not match the accepted head");
-
-    const owners = [...new Set(d.events.filter((e) => e.kind === "item.claimed" || e.kind === "item.handoff").map((e) => e.data.to ?? e.actor))];
-    const msg = `Merge ${id}: ${item.title}\n\nAtelier: ${name}/${id} accepted at ${item.acceptedHead}\nWorked by: ${owners.join(" → ") || item.owner}`;
-    const m = git(["merge", "--no-ff", "--no-commit", item.acceptedHead], { cwd, allowFail: true });
-    if (m.status !== 0) {
-      git(["merge", "--abort"], { cwd, allowFail: true });
-      die(`merge conflicts. Hand it back: the owner runs \`atelier update\`, pushes, re-checks; you re-accept.\n${m.stdout}`);
+    const name=project(), id=itemArg();
+    if (args.head !== undefined) {
+      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]]");
+      const d=await call("GET",I(name,id),undefined,OWNER);
+      if (d.item.state==="submitted") {
+        if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
+        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:typeof args.note==="string"?args.note:""},OWNER);
+        await call("POST",`${I(name,id)}/accept`,{head:args.head},OWNER);
+      }
     }
-    const view = d.evidence.filter((e) => e.head === item.acceptedHead);
-    const reviews = d.reviews.filter((r) => r.head === item.acceptedHead);
-    // The receipt rides in the merge commit itself, in the project's own
-    // ControlPlane receipt format, so the merge and its record are one change.
-    const receipt = writeReceipt(cwd, { name, id, item, owners, view, reviews, policy: d.policy, branch: p.branch, notesRemote: p.notesRemote });
-    if (receipt) git(["add", receipt], { cwd });
-    git(["commit", "--quiet", "-m", msg], { cwd });
-    const mergeCommit = git(["rev-parse", "HEAD"], { cwd });
-    const note = [
-      `atelier ${name}/${id} "${item.title}"`,
-      `accepted head ${item.acceptedHead}`,
-      ...view.map((e) => `${e.grade.toUpperCase()} ${e.passed === null ? "" : e.passed ? "pass " : "FAIL "}${e.claim} — ${e.by} ${e.at}`),
-      ...reviews.map((r) => `REVIEW ${r.approve ? "approve" : "reject"} — ${r.by}: ${r.note}`),
-      ...d.events.slice().reverse().map((e) => `${e.at} ${e.actor} ${e.kind}`),
-    ].join("\n");
-    git(["notes", "--ref=atelier", "add", "-f", "-m", note, mergeCommit], { cwd });
-    git([...auth(base.token), "push", "--quiet", base.remote, `${p.branch}:${p.branch}`, "refs/notes/atelier:refs/notes/atelier"], { cwd });
-    // Provenance can travel to the project's own remote on its own; the merged
-    // branch never does, so publishing the code stays a separate decision.
-    const notesPush = p.notesRemote ? git(["push", "--quiet", p.notesRemote, "refs/notes/atelier:refs/notes/atelier"], { cwd, allowFail: true }) : null;
-    await call("POST", `${I(name, id)}/merged`, { mergeCommit }, OWNER);
-    console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline updated.`);
-    if (receipt) console.log(`Receipt: ${receipt}`);
-    console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
-    if (notesPush?.status === 0) console.log(`Provenance notes pushed to ${p.notesRemote}. ${p.branch} itself was not pushed, and nothing was deployed.`);
-    else if (notesPush) console.log(`Provenance notes did NOT reach ${p.notesRemote}: ${(notesPush.stderr || notesPush.stdout).trim()}\nRetry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
-    else console.log(`Nothing was deployed or pushed to the project's own remotes.`);
+    const p=cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd=p.path;
+    const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd});
+    let unlock;
+    try { unlock=landingLock(gitDir); } catch (error) { die(error.message); }
+    try {
+      const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
+      if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
+      if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
+      const journal=landingJournal(gitDir,{project:name,item:id,head:item.acceptedHead});
+      if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
+      if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
+      if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) die(`check out ${p.branch} in ${cwd} first`);
+      const base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
+      git([...auth(base.token),'fetch','--quiet',base.remote,p.branch],{cwd});
+      const baselineHead=git(['rev-parse','FETCH_HEAD'],{cwd});
+      const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
+      git([...auth(ws.token),'fetch','--quiet',ws.remote,item.acceptedHead],{cwd});
+      if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
+      const local=git(['rev-parse','HEAD'],{cwd});
+      const owners=[...new Set(d.events.filter(e=>['item.claimed','item.handoff'].includes(e.kind)).map(e=>e.data.to??e.actor))];
+      const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
+      const marker=`Atelier: ${name}/${id} accepted at ${item.acceptedHead}`;
+      if (!journal.state) {
+        if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
+        journal.save({start:local,phase:'prepared'});
+      }
+      if (!journal.state.mergeCommit) {
+        // Recover a commit made just before a crash prevented the journal update.
+        const parents=git(['rev-list','--parents','-n','1','HEAD'],{cwd}).split(' ');
+        const ownCommit=parents.length===3 && parents[1]===journal.state.start && parents[2]===item.acceptedHead && git(['log','-1','--format=%B'],{cwd}).split('\n').includes(marker);
+        if (ownCommit) journal.save({mergeCommit:local,phase:'committed'});
+        else {
+          if(local!==journal.state.start) die('checkout moved during an interrupted merge; inspect the journal before retrying');
+          const result=git(['merge','--no-ff','--no-commit',item.acceptedHead],{cwd,allowFail:true});
+          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
+          if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
+          const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote});
+          if(receipt)git(['add',receipt],{cwd});
+          git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd});
+          journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});
+        }
+      }
+      const mergeCommit=journal.state.mergeCommit;
+      if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the checkout before retrying');
+      const current=await call('GET',I(name,id),undefined,OWNER);
+      if(current.item.state!=='accepted'||current.item.acceptedHead!==item.acceptedHead)die('approval changed during the merge; the local commit is preserved for reconciliation');
+      const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
+      // Reconcile provenance independently: a previous push can publish only one ref.
+      const remoteNotes=git([...auth(base.token),'ls-remote',base.remote,'refs/notes/atelier'],{cwd});
+      if(remoteNotes){
+        git([...auth(base.token),'fetch','--quiet',base.remote,'refs/notes/atelier'],{cwd});
+        if(git(['rev-parse','--verify','refs/notes/atelier'],{cwd,allowFail:true}).status===0)
+          git(['notes','--ref=atelier','merge','FETCH_HEAD'],{cwd});
+        else git(['update-ref','refs/notes/atelier','FETCH_HEAD'],{cwd});
+      }
+      const priorNote=git(['notes','--ref=atelier','show',mergeCommit],{cwd,allowFail:true});
+      if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,mergeCommit],{cwd});
+      const alreadyPublished=git(['merge-base','--is-ancestor',mergeCommit,baselineHead],{cwd,allowFail:true}).status===0;
+      git([...auth(base.token),'push','--quiet',base.remote,...(alreadyPublished?[]:[`${mergeCommit}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd});
+      journal.save({phase:'published'});
+      await call('POST',`${I(name,id)}/merged`,{mergeCommit},OWNER);
+      journal.clear();
+      const notesPush=p.notesRemote?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
+      console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline and ledger agree.`);
+      console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
+      if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
+      else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
+      console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
+    } finally { unlock(); }
   },
 
   // One line per live item, for a wrap to copy into STATE.md's Owner section.
@@ -612,11 +681,11 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
-Agents     claim ID --as H/M · push · update · check [-- CMD] · report "…" · submit
+Agents     claim ID --as H/M · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-Owner      accept ID · merge ID · abandon ID
+Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Local      gc [--project NAME] [--dry-run | --apply]
 Docs       guide   (paste into a project's AGENTS.md)
 
