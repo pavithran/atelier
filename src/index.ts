@@ -210,6 +210,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // into the current record in one step (initProject). Only reset: true
     // starts over from the defaults.
     if (body.reset !== undefined && typeof body.reset !== "boolean") throw new RuleError("bad_reset", "reset must be true or false", 400);
+    // A title is text: omit it to keep the current one, or pass "" to clear it.
+    if (body.title !== undefined && typeof body.title !== "string") {
+      throw new RuleError("bad_title", "the title must be a string: omit it to keep the current one, or pass \"\" to clear it", 400);
+    }
     const has = (k: string) => body[k] !== undefined;
     const init: ProjectInit = {
       name: project, repo, reset: body.reset === true,

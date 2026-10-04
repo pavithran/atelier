@@ -119,3 +119,42 @@ it("a merge's lease cannot be cancelled once the merge is on the baseline", asyn
   published = false;
   expect((await cancel()).status).toBe(200);
 });
+
+// The Artifacts calls a PUT makes, stubbed so the route runs to completion here.
+const artifacts = {
+  create: async () => {},
+  get: async () => ({
+    info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+    createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+    [Symbol.dispose]() {},
+  }),
+} as unknown as Artifacts;
+const artifactsEnv = { ...testEnv, ARTIFACTS: artifacts };
+
+function putTitle(name: string, title: unknown) {
+  return worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...(title === undefined ? {} : { title }) }),
+  }), artifactsEnv);
+}
+
+it("the title route keeps the stored title on re-init, clears it on an empty one, and takes only strings", async () => {
+  await project("routes-title");
+  const titleOf = async (t: unknown) =>
+    (((await (await putTitle("routes-title", t)).json()) as { project: { title?: string } }).project.title);
+  expect(await titleOf("Atelier")).toBe("Atelier");
+  expect(await titleOf(undefined)).toBe("Atelier"); // re-init without a title keeps it
+  expect(await titleOf("")).toBeUndefined();
+  for (const bad of [false, null, {}, 7]) {
+    const res = await putTitle("routes-title", bad);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_title");
+  }
+});
+
+it("a first init with no title creates the project without one", async () => {
+  const res = await putTitle("routes-fresh", undefined);
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as { project: { title?: string } }).project.title).toBeUndefined();
+});
