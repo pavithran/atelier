@@ -36,7 +36,7 @@ In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths. |
+| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths, and an optional display title. |
 | `atelier new "title" --scope 'src/**'` | anyone | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/`. |
 | `atelier push` | the item's owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
@@ -108,9 +108,11 @@ Trusted, and stated here so nobody assumes otherwise:
   evidence. Cloudflare container checks execute on the server and are
   available with `--sandbox`; `sandboxOnly` policy requires that evidence.
   The container integration still needs deployment and a live runtime check.
-- **Merging happens locally.** The Artifacts binding has no merge operation,
-  and the iCloud checkout is the source of truth, so `atelier merge` merges
-  with the local git.
+- **Merging happens locally.** The Artifacts binding and REST API can read
+  repositories (commits, trees, blobs, files, a first-parent log) but cannot
+  write. The only way to write is a git push with a write token, so Atelier
+  merges in git on the owner's machine and pushes. The iCloud checkout is the
+  source of truth.
 
 ## Setup
 
@@ -164,12 +166,18 @@ atelier login --server https://atelier.example.workers.dev
 ```
 
 ```bash
-atelier init --check "npm test" --protect AGENTS.md --protect "wrangler.*"
+atelier init --title "My project" --check "npm test" --protect AGENTS.md --protect "wrangler.*"
 ```
 
 Run `init` inside the project checkout. `atelier guide` prints the
 instructions an agent needs; paste them into the project's `AGENTS.md` or
 `CLAUDE.md`.
+
+Running `atelier init` again changes only what it names: `--title` changes the
+title, `--check` replaces the required checks, `--protect` replaces the
+protected paths (with the defaults), and everything not named keeps its value.
+`atelier init --reset` rebuilds the policy from the options given and the
+defaults, as a first init does; the project's title and creation date are kept.
 
 ## Local cache cleanup
 
@@ -262,6 +270,25 @@ response names it in the `X-Atelier-Incomplete` header and `atelier queue` says 
 A runner's name is declared, like every actor's; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits.
+
+## The public showcase
+
+`/showcase` is the one page anyone can read without signing in. It shows the
+projects the owner names, as the Flow page draws them: each task's thread,
+who held it, its checks, reviews and decisions, and the tally. It leaves out
+what anyone wrote (review notes, reports, check commands and closing notes),
+the diffs, every form and every link into the signed-in pages. Nothing is
+shown until the owner names a project:
+
+```text
+printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
+```
+
+`SHOWCASE` takes project names separated by commas; deleting it hides the
+page again. The page is cached for a minute, so a change to `SHOWCASE` shows
+within a minute. With a showcase set, a visitor who is not signed in opens
+`atelier.zone` on it; signed in, `/` opens Decisions while something is
+waiting and Flow when nothing is, and `/decisions` is always Decisions.
 
 ## The Studio
 
