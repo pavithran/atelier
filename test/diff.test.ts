@@ -141,3 +141,31 @@ test("changedPaths lists every change, past the display limit", async () => {
   assert.ok(paths.includes("deep/x.ts"));
   await assert.rejects(changedPaths(s.reader, s.tree({}), s.tree(many), 10), /more than 10 changed paths/);
 });
+
+test("a diff stays within its memory budget, and says so when it cannot", () => {
+  const added = Array.from({ length: 50_000 }, (_, i) => `line ${i}`);
+  const ops = diffLines([], added)!;
+  assert.equal(ops.length, 50_000, "an added file needs no search");
+  assert.ok(ops.every((o) => o.op === "+"));
+  const kept = diffLines(["a", ...added, "z"], ["a", "z"])!;
+  assert.equal(kept.filter((o) => o.op === "-").length, 50_000, "common ends are set aside first");
+  const left = Array.from({ length: 6_000 }, (_, i) => `l${i}`), right = Array.from({ length: 6_000 }, (_, i) => `r${i}`);
+  assert.equal(diffLines(left, right), null, "two unrelated large files exceed the budget");
+  assert.ok(diffLines(left.slice(0, 50), right.slice(0, 50)), "small unrelated files are still diffed");
+});
+
+test("empty subdirectories never hide a later change, in a diff or in the protected-path list", async () => {
+  // 61 added empty directories, then a changed file: the file must still be found.
+  const trees: Record<string, { name: string; mode: string; hash: string; type: string }[]> = {
+    base: [{ name: "z.txt", mode: "100644", hash: "1".repeat(40), type: "blob" }],
+    head: [
+      ...Array.from({ length: 61 }, (_, i) => ({ name: `a${String(i).padStart(2, "0")}`, mode: "40000", hash: "e".repeat(40), type: "tree" })),
+      { name: "z.txt", mode: "100644", hash: "2".repeat(40), type: "blob" },
+    ],
+    ["e".repeat(40)]: [],
+  };
+  const r = { tree: async (h: string) => trees[h] ?? null, blob: async () => new TextEncoder().encode("x\n") };
+  const { files } = await treeDiff(r, "base", "head");
+  assert.deepEqual(files.map((f) => f.path), ["z.txt"]);
+  assert.deepEqual(await changedPaths(r, "base", "head"), ["z.txt"]);
+});
