@@ -58,6 +58,7 @@ test("send back: a required check failed at this head, and where it ran is named
 });
 
 test("the decided sentence follows the recommendation", () => {
+  assert.equal(briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), []).decided, "Review t21 at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ reviews: [rev({ approve: false })] }), []).decided, "Send t21 back at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ evidence: [pass({ passed: false })] }), []).decided, "Send t21 back at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ evidence: [] }), []).decided, "Wait on t21 at aaaaaaaa: Fix the thing.");
@@ -102,13 +103,49 @@ test("wait: a required check is pending, and it is named", () => {
   assert.equal(b.evidence[0], "Required checks at this revision: 1 waiting.");
 });
 
-test("wait and review: a protected path needs an assessor and none has approved", () => {
-  const d = detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })] });
-  const b = briefFor(d, []);
-  assert.equal(b.recommendation.verdict, "wait");
+test("review: a protected path needs an assessor and none has approved this revision", () => {
+  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), []);
+  assert.equal(b.recommendation.verdict, "review");
   assert.match(b.recommendation.reason, /approval from a different model or the project owner/);
   assert.match(b.decided, /^Review t21 at aaaaaaaa/);
-  assert.ok(b.evidence.some((l) => l.includes("protected path")));
+  assert.ok(b.evidence.includes("It touches a protected path and no different model or the project owner has approved this revision."));
+});
+
+test("a protected path with a check still pending waits, and the heading says so", () => {
+  const d = detail({
+    policy: { checks: ["npm test", "npm run lint"], protected: ["AGENTS.md"] },
+    evidence: [pass({ changedPaths: ["AGENTS.md"] })],
+  });
+  const b = briefFor(d, []);
+  assert.equal(b.recommendation.verdict, "wait");
+  assert.match(b.decided, /^Wait on t21/);
+  assert.match(b.recommendation.reason, /`npm run lint` to be observed.*approval of this revision/);
+});
+
+test("an approval at an older head does not count for this revision", () => {
+  const d = detail({ item: { head: H2 }, evidence: [pass({ head: H2, changedPaths: ["AGENTS.md"] })], reviews: [rev({ head: H1 })] });
+  const b = briefFor(d, []);
+  assert.equal(b.recommendation.verdict, "review");
+  assert.ok(!b.evidence.some((l) => l.startsWith("Reviews at this revision")));
+});
+
+test("the project owner is kept apart from models in review lines", () => {
+  const b = briefFor(detail({ reviews: [
+    rev({ approve: false, by: OWNER, note: "no", at: "2026-10-03T12:01:00.000Z" }),
+    rev({ approve: false, by: "codex/gpt-5.5", note: "", at: "2026-10-03T12:02:00.000Z" }),
+    rev({ approve: false, by: "zcode/glm-5.3", note: "", at: "2026-10-03T12:03:00.000Z" }),
+  ] }), []);
+  assert.ok(b.evidence.includes("The project owner and 2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note: no"));
+  assert.ok(b.evidence.includes("Reviews at this revision: the project owner asked for changes, gpt-5.5 asked for changes, glm-5.3 asked for changes."));
+  assert.match(b.recommendation.reason, /^The project owner asked for changes at this revision and gpt-5\.5/);
+  const one = briefFor(detail({ reviews: [rev({ approve: false, by: OWNER })] }), []);
+  assert.ok(one.evidence.some((l) => l.startsWith("The project owner asked for changes and no push")));
+});
+
+test("another item's submission is never attributed to this one", () => {
+  const other: LedgerEvent = { ...submitted(5, H1, "someone else's words", "codex/gpt-5.5"), itemId: "t22" };
+  assert.equal(briefFor(detail(), [other]).summary, null);
+  assert.equal(briefFor(detail(), [other, submitted(1, H1, "mine")]).summary, "mine");
 });
 
 test("a protected path with an independent approval is ready to accept", () => {
@@ -120,7 +157,7 @@ test("a protected path with an independent approval is ready to accept", () => {
 test("decide: only a blocker that is not a check, a review or a measurement remains", () => {
   const b = briefFor(detail({ item: { state: "claimed" } }), []);
   assert.equal(b.recommendation.verdict, "wait");
-  assert.match(b.recommendation.reason, /not been submitted/);
+  assert.match(b.recommendation.reason, /^The task is in progress and has not been submitted/);
   const open = briefFor(detail({ item: { head: null }, policy: { checks: [], protected: [] }, evidence: [] }), []);
   assert.equal(open.recommendation.verdict, "decide");
   assert.match(open.recommendation.reason, /no verified push/);

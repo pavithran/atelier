@@ -3,11 +3,11 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { evidenceAt, latestReviews, modelOf, stateLabel } from "./rules.ts";
+import { DEFAULT_OWNER, evidenceAt, latestReviews, modelOf, stateLabel } from "./rules.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
-export type Verdict = "accept" | "merge" | "wait" | "send back" | "decide";
+export type Verdict = "accept" | "merge" | "review" | "wait" | "send back" | "decide";
 
 export interface Brief {
   decided: string;
@@ -28,10 +28,10 @@ export function cleanSummary(v: unknown): string | undefined {
 
 // The latest submission for this head decides the summary: a later submit
 // without one leaves none. Events arrive newest first, but order by seq anyway.
-export function submission(events: LedgerEvent[], head: string | null): { summary: string; by: string } | null {
+export function submission(events: LedgerEvent[], itemId: string, head: string | null): { summary: string; by: string } | null {
   if (!head) return null;
   const last = events
-    .filter((ev) => ev.kind === "item.submitted" && ev.data.head === head)
+    .filter((ev) => ev.itemId === itemId && ev.kind === "item.submitted" && ev.data.head === head)
     .sort((a, b) => a.seq - b.seq)
     .pop();
   const summary = last && typeof last.data.summary === "string" ? last.data.summary : "";
@@ -40,6 +40,10 @@ export function submission(events: LedgerEvent[], head: string | null): { summar
 
 const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on the agent's machine" } as const;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+// The project owner is not a model; the gate keeps them apart, and so do these lines.
+const reviewer = (d: Detail, by: string) => (by === (d.ownerActor ?? DEFAULT_OWNER) ? "the project owner" : modelOf(by));
+// Only "the project owner" opens a sentence in capitals; a model keeps its own spelling.
+const upper = (s: string) => (s.startsWith("the ") ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events): Brief {
@@ -71,7 +75,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     lines.push({ rank: 1, text: `Required checks at this revision: ${parts.join(", ")}.` });
   }
   if (reviews.length) {
-    lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${modelOf(r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.` });
+    lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${reviewer(detail, r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.` });
   }
   // A rejection is answered when a push was observed after it, as the stuck
   // rules read it; the head alone cannot say, since a head can return.
@@ -82,8 +86,12 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     .pop() ?? item.lastPushAt;
   const unanswered = rejections.filter((r) => !(pushed && pushed > r.at));
   if (unanswered.length) {
-    const models = [...new Set(unanswered.map((r) => modelOf(r.by)))];
-    const who = models.length > 1 ? `${models.length} models (${models.join(", ")})` : models[0];
+    const models = [...new Set(unanswered.filter((r) => reviewer(detail, r.by) !== "the project owner").map((r) => modelOf(r.by)))];
+    const asked = [
+      ...(unanswered.some((r) => reviewer(detail, r.by) === "the project owner") ? ["the project owner"] : []),
+      ...(models.length > 1 ? [`${models.length} models (${models.join(", ")})`] : models),
+    ];
+    const who = upper(asked.join(" and "));
     const note = [...unanswered].sort((a, b) => a.at.localeCompare(b.at)).reverse().find((r) => r.note.trim())?.note.trim();
     lines.push({ rank: 0, text: `${who} asked for changes and no push is recorded since.${note ? ` Note: ${clip(note, 120)}` : ""}` });
   }
@@ -91,7 +99,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     const shown = gate.outOfScope.slice(0, 3).join(", ");
     lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
-  if (gate.needsAssessor) lines.push({ rank: 0, text: "It touches a protected path and no different model or the project owner has approved." });
+  if (gate.needsAssessor) lines.push({ rank: 0, text: "It touches a protected path and no different model or the project owner has approved this revision." });
   if (view.reports.length) lines.push({ rank: 3, text: `${plural(view.reports.length, "report")} recorded, not verified.` });
   while (lines.length > 5) {
     let drop = 0;
@@ -107,12 +115,12 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     item.state === "merged" || item.state === "abandoned" ? `${item.id} is ${stateLabel[item.state].toLowerCase()} ${rev}: ${title}.`
     : recommendation.verdict === "merge" ? `Merge ${subject}`
     : recommendation.verdict === "send back" ? `Send ${item.id} back ${rev}: ${title}.`
-    : item.state === "submitted" && gate.needsAssessor ? `Review ${subject}`
+    : recommendation.verdict === "review" ? `Review ${subject}`
     : recommendation.verdict === "accept" ? `Accept ${subject}`
     : recommendation.verdict === "wait" ? `Wait on ${subject}`
     : `Decide ${subject}`;
 
-  const submitted = submission(events, item.head);
+  const submitted = submission(events, item.id, item.head);
   return {
     decided,
     summary: submitted?.summary ?? null,
@@ -131,17 +139,20 @@ interface Picture {
 }
 
 // accept when the gate is ready; merge when accepted; send back when a review
-// at this head rejects or a required check failed; wait while checks or a
-// required review are pending; decide otherwise.
-function recommend({ item, gate }: Detail, p: Picture): Brief["recommendation"] {
+// at this head rejects or a required check failed; review when only an
+// independent approval of a protected change is missing; wait while checks are
+// pending; decide otherwise.
+function recommend(d: Detail, p: Picture): Brief["recommendation"] {
+  const { item, gate } = d;
+  const state = item.state === "claimed" ? "in progress" : stateLabel[item.state].toLowerCase();
   if (item.state === "accepted") {
     return { verdict: "merge", reason: "Approval is recorded for this revision, and the merge runs in your local checkout." };
   }
   if (item.state === "merged" || item.state === "abandoned") {
-    return { verdict: "decide", reason: `The task is ${stateLabel[item.state].toLowerCase()}, so nothing is waiting on you.` };
+    return { verdict: "decide", reason: `The task is ${state}, so nothing is waiting on you.` };
   }
   if (item.state !== "submitted") {
-    return { verdict: "wait", reason: `The task is ${stateLabel[item.state].toLowerCase()} and has not been submitted for a decision.` };
+    return { verdict: "wait", reason: `The task is ${state} and has not been submitted for a decision.` };
   }
   if (gate.ready) {
     return {
@@ -150,13 +161,16 @@ function recommend({ item, gate }: Detail, p: Picture): Brief["recommendation"] 
     };
   }
   const against = [
-    ...p.rejections.map((r) => `${modelOf(r.by)} asked for changes at this revision`),
+    ...p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`),
     ...p.failed.map((c) => `\`${c.claim}\` failed at this revision`),
   ];
-  if (against.length) return { verdict: "send back", reason: `${against.join(" and ")}.` };
+  if (against.length) return { verdict: "send back", reason: `${upper(against.join(" and "))}.` };
+  if (gate.needsAssessor && !p.pending.length) {
+    return { verdict: "review", reason: "This revision touches a protected path and needs an approval from a different model or the project owner." };
+  }
   const waiting = [
     ...p.pending.map((c) => `\`${c.claim}\` to be observed at this revision`),
-    ...(gate.needsAssessor ? ["an approval from a different model or the project owner"] : []),
+    ...(gate.needsAssessor ? ["an approval of this revision from a different model or the project owner"] : []),
     ...(p.unmeasured && !p.pending.length ? ["the changed paths to be measured"] : []),
   ];
   if (waiting.length) return { verdict: "wait", reason: `Waiting for ${waiting.join(" and ")}.` };

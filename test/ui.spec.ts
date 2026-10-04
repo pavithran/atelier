@@ -151,3 +151,9 @@ it('the brief tags a rejected revision as send back and a pending one as wait',(
  expect(brief).toContain('Wait on t1 at aaaaaaaa');
  expect(brief).not.toContain('older revision');
 });
+it('a protected revision awaiting an assessor shows a review tag under a review heading',()=>{
+ const html=renderItem(project,detail(),'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(brief).toContain('<span class="tag ask">review</span>');
+ expect(brief).toContain('Review t1 at aaaaaaaa');
+});

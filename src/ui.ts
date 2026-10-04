@@ -488,14 +488,14 @@ export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null
 </div>`, closed ? "History" : "Decisions", ownerName);
 }
 
-const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", wait: "ask", decide: "ask", "send back": "bad" };
+const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad" };
 
 // The brief sits above the diff: what is decided, what the agent said, what the
 // record shows, and what it points to.
 function briefBlock(d: Detail): string {
   if (!["claimed", "submitted", "accepted"].includes(d.item.state)) return "";
   const b = briefFor(d, d.events);
-  const said = submission(d.events, d.item.head);
+  const said = submission(d.events, d.item.id, d.item.head);
   const summary = said
     ? `<div class="review-note"><p>“${e(said.summary)}”</p><p class="meta">Summary from ${e(said.by)}, not verified</p></div>`
     : "";
