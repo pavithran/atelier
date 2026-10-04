@@ -196,7 +196,51 @@ export interface DrawOptions {
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
+// Hover cards. A card is drawn last, above every thread, and shown by CSS
+// when its mark is hovered or focused: :has() ties the two together, since
+// SVG has no z-index and the pages carry no script. Each drawing gets its own
+// id prefix so two graphs on a page never share a card.
+let drawings = 0;
+const CHAR_W = 6.7;           // IBM Plex Mono at 11px, per character, near enough for a card's width
+// Words into at most `lines` lines of `width` characters; the last line ends in
+// an ellipsis when text is left over.
+export function wrap(s: string, width: number, lines: number): string[] {
+  const out: string[] = [];
+  let line = "", rest = false;
+  for (const w of s.split(/\s+/).filter(Boolean)) {
+    if (!line) line = w;
+    else if (line.length + 1 + w.length <= width) line += " " + w;
+    else if (out.length + 1 < lines) { out.push(line); line = w; }
+    else { rest = true; break; }
+  }
+  if (line) out.push(line);
+  if (rest) {
+    // Drop whole words until the ellipsis fits; a single long word is cut instead.
+    let last = out[out.length - 1];
+    while (last.length + 1 > width && last.includes(" ")) last = last.slice(0, last.lastIndexOf(" "));
+    out[out.length - 1] = last.length + 1 > width ? clip(last, width) : last + "…";
+  }
+  return out.map((l) => clip(l, width));
+}
+
+interface Card { key: string; x: number; y: number; head: string; body: string; color: string }
+
+function drawCard(k: Card, W: number, H: number): string {
+  const lines = wrap(k.body, 46, 3);
+  const w = Math.max(k.head.length, ...lines.map((l) => l.length)) * CHAR_W + 24;
+  const h = 26 + lines.length * 16;
+  const left = k.x + 14 + w > W - 4 ? k.x - 14 - w : k.x + 14;
+  const top = Math.min(Math.max(k.y - h / 2, 4), H - h - 4);
+  return `<g class="g-card" data-card="${k.key}" style="--c:${k.color}" transform="translate(${r1(left)} ${r1(top)})" aria-hidden="true">`
+    + `<rect width="${r1(w)}" height="${h}" rx="7"/>`
+    + `<text class="g-card-head" x="12" y="18">${esc(k.head)}</text>`
+    + lines.map((l, i) => `<text class="g-card-body" x="12" y="${36 + i * 16}">${esc(l)}</text>`).join("")
+    + `</g>`;
+}
+
 export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string {
+  const id = `g${(++drawings).toString(36)}`;
+  const cards: Card[] = [];
   const W = o.compact ? 760 : 1200, X0 = o.compact ? 46 : 64, MAIN = o.compact ? 26 : 50;
   const R = o.compact ? 18 : 26, X1 = W - R - 34;   // room for the last merge to curve home
   const LANE = o.compact ? 20 : 30, TOP = MAIN + (o.compact ? 34 : 46);
@@ -242,10 +286,19 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     } else {
       g.push(`<circle class="g-head pop" style="--c:${c(lastWho)};--d:${at(end)}" cx="${xe}" cy="${y}" r="4.5"/>`);
     }
-    for (const b of th.beads) g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor)));
+    th.beads.forEach((b, i) => {
+      const key = `${id}-${k}-${i}`;
+      g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
+      cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
+    });
+    const holders = th.holds.map((h) => (h.who === owner ? "you" : splitActor(h.who).model || h.who)).join(" → ");
+    const tkey = `${id}-${k}`;
+    cards.push({ key: tkey, x: X0 - 4, y, color: c(th.holds[0].who), head: `${th.id} · ${STATE_NAMES[th.state] ?? th.state} · ${holders}`, body: th.title });
     const label = `<text class="g-name" x="${X0 - 12}" y="${y + 4}" text-anchor="end" style="fill:${c(th.holds[0].who)}">${esc(th.id)}</text>`;
-    const title = `<title>${esc(`${th.id} · ${th.title} · ${th.holds.map((h) => splitActor(h.who).model || h.who).join(" → ")}`)}</title>`;
-    out.push(`<g class="g-task${closed ? " closed" : ""}${live ? " live" : ""}">${title}${o.href ? `<a href="${esc(o.href(th))}">${label}</a>` : label}${g.join("")}</g>`);
+    const title = `<title>${esc(`${th.id} · ${th.title} · ${holders}`)}</title>`;
+    // A wide, invisible band along the lane makes the whole thread easy to point at.
+    const band = `<rect class="g-band" data-key="${tkey}" x="${r1(xs - 4)}" y="${y - LANE / 2}" width="${r1(xe - xs + 8)}" height="${LANE}"/>`;
+    out.push(`<g class="g-task${closed ? " closed" : ""}${live ? " live" : ""}" data-task="${tkey}">${title}${band}${o.href ? `<a href="${esc(o.href(th))}" data-key="${tkey}">${label}</a>` : label}${g.join("")}</g>`);
     if (th.merge) {
       const mx = r1(xe + R);
       out.push(`<g class="pop" style="--d:${at(end)}"><circle class="g-merge" cx="${mx}" cy="${MAIN}" r="${o.compact ? 4 : 5.5}"><title>${esc(`${th.id} merged as ${th.merge.sha.slice(0, 12)}`)}</title></circle>${
@@ -254,12 +307,25 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     }
   });
 
-  return `<svg class="graph${o.compact ? " compact" : ""}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${s.project}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`)}">${out.join("")}</svg>`;
+  // One rule per card: show it while its mark or task label is hovered or focused.
+  const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible) [data-card="${k.key}"]`).join(",");
+  out.push(`<style>${rules ? `${rules}{opacity:1}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
+  return `<svg class="graph${o.compact ? " compact" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${s.project}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`)}">${out.join("")}</svg>`;
 }
 
-function bead(b: Bead, X: number, y: number, d: string, color: string): string {
-  const title = `<title>${esc(`${b.at.slice(0, 16).replace("T", " ")} UTC · ${b.label}`)}</title>`;
-  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}" style="--d:${d}${style}" transform="translate(${X} ${y})">${title}`;
+const BEAD_NAMES: Record<BeadKind, string> = {
+  push: "pushed", pass: "check passed", fail: "check failed", reported: "reported", submit: "submitted",
+  approve: "approved", reject: "sent back", handoff: "handed off", accept: "accepted", dispatch: "dispatched",
+};
+const STATE_NAMES: Record<string, string> = {
+  open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed",
+};
+
+function bead(b: Bead, X: number, y: number, d: string, color: string, key: string): string {
+  // Each mark is focusable, so a keyboard reaches the same card a pointer does;
+  // its accessible name is the card's text.
+  const name = esc(`${b.at.slice(0, 16).replace("T", " ")} UTC, ${BEAD_NAMES[b.kind]}: ${b.label}`);
+  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}" style="--d:${d}${style}" transform="translate(${X} ${y})" data-key="${key}" tabindex="0" role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
   switch (b.kind) {
     case "push": return `${open("push")}<path d="M0 -6V6"/></g>`;
     case "pass": return `${open("pass")}<circle r="3.6"/></g>`;

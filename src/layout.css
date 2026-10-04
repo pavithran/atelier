@@ -441,3 +441,20 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .resting > .resting-graph { max-width: none; text-align: left; color: var(--text); }
 .resting-graph svg.graph { width: 100%; height: auto; }
 .resting-graph .legend-line { margin-bottom: 8px; }
+
+/* ── graph: hover and focus ──────────────────────────────────────────────── */
+/* The hit area is larger than the mark and never painted, whatever the mark's own circle rules say. */
+.graph .g-bead circle.hit, .graph .g-band { fill: transparent; stroke: none; pointer-events: all; }
+.g-bead { cursor: default; outline: none; }
+.g-bead:hover > :not(.hit), .g-bead:focus-visible > :not(.hit) { transform: scale(1.6); transform-box: fill-box; transform-origin: center; transition: transform var(--motion-tap, .12s) ease-out; }
+.graph .g-bead:focus-visible circle.hit { stroke: var(--signal); stroke-width: 1.5; }
+/* Pointing at a task lights its thread and lets the others fall back. */
+.graph:has(.g-task:hover) .g-task:not(:hover),
+.graph:has(.g-task:focus-within) .g-task:not(:focus-within) { opacity: .28; }
+.graph .g-task { transition: opacity .15s; }
+.g-cards { pointer-events: none; }
+.g-card { opacity: 0; transition: opacity .12s ease-out; }
+.g-card rect { fill: #0a0e13; stroke: var(--c); stroke-width: 1.2; filter: drop-shadow(0 6px 18px rgba(0, 0, 0, .6)); }
+.graph text.g-card-head { font-size: 11px; fill: var(--c, var(--text-muted)); }
+.graph text.g-card-body { font-size: 12.5px; fill: var(--text); font-family: var(--font-sans); }
+@media (prefers-reduced-motion: reduce) { .g-card, .graph .g-task, .g-bead > * { transition: none; } }
