@@ -1,0 +1,12 @@
+atelier cloudflare-git/t2 "Record pushes from Artifacts push events, not only when the CLI reports them"
+accepted head fe0d8491662809dc44cdc597adf7f1ec4d4b99f4
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — zcode/glm-5.3 2026-10-04T16:07:06.600Z
+OBSERVED pass npm run types && npm run typecheck — zcode/glm-5.3 2026-10-04T16:07:08.580Z
+2026-10-03T22:29:33.737Z pavi item.created
+2026-10-04T16:01:23.172Z zcode/glm-5.3 item.claimed
+2026-10-04T16:01:25.442Z zcode/glm-5.3 fork.created
+2026-10-04T16:06:56.782Z zcode/glm-5.3 push.observed
+2026-10-04T16:07:06.678Z zcode/glm-5.3 evidence.observed
+2026-10-04T16:07:08.625Z zcode/glm-5.3 evidence.observed
+2026-10-04T16:07:09.093Z zcode/glm-5.3 item.submitted
+2026-10-04T16:13:43.905Z pavi item.accepted
