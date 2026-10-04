@@ -1,8 +1,9 @@
 import { itemDiff, type ItemDiff } from "./diff";
-import { Ledger, type ProjectRecord } from "./ledger";
+import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { escapeText, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, type ReviewContext, type ProjectView } from "./ui";
+import { renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { buildFloor, type FloorView } from "./floor";
 
 export { CheckRunner, Egress, Ledger };
 
@@ -387,7 +388,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0 || ["projects", "history"].includes(parts[0])) {
+  if (parts.length === 0 || ["projects", "history", "studio"].includes(parts[0])) {
     const projects = await index(env).projects();
     const views: ProjectView[] = await Promise.all(projects.map(async project => {
       try { return {project, items: await ledger(env,project.name).items()}; }
@@ -395,6 +396,15 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     }));
     if (parts[0] === "projects") return html(renderProjects(views, ownerName(env)));
     if (parts[0] === "history") return html(renderHistory(views, ownerName(env)));
+    // The floor reads each project's recent events; a project that cannot be read is left off it.
+    const now = new Date();
+    const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
+      // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
+      try { return { ...v, events: (await ledger(env, v.project.name).events(undefined, 400)) as unknown as LedgerEvent[] }; }
+      catch { v.unavailable = true; return null; }
+    }))).filter((v): v is FloorView => v !== null);
+    const floor = buildFloor(floorViews, now);
+    if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable)));
     const lists = await Promise.all(views.map(async v => {
       if (v.unavailable) return [];
       try { return await ledger(env,v.project.name).inbox(new Date().toISOString()); }
@@ -411,7 +421,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const selectedItem = await L.item(task);
       selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
     }
-    return html(renderInbox(entries,projects,ownerName(env),selected,views));
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now));
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);

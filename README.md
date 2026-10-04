@@ -236,7 +236,17 @@ revision. A stale page must be refreshed. Each reviewer's latest verdict
 at a revision replaces their earlier verdict; another reviewer's rejection
 still blocks acceptance.
 
-## Finish and land
+## The Studio
+
+`/studio` shows the floor: one lane per live task on a shared time axis,
+banded by who has held it, with a mark for every claim, push, check,
+handoff, submission and review. A handoff is a visible change of band, and
+every check mark says whether it ran in a Cloudflare container or on the
+agent's machine. The page refreshes every fifteen seconds. The Decisions page
+shows the same agents in brief before anything is opened. `DESIGN.md`
+describes the marks.
+
+## Finish and merge
 
 After committing, an agent runs `atelier finish` in its claimed workspace.
 It pushes, runs required checks, and submits only if those checks pass and
@@ -246,17 +256,17 @@ the cloud runner automatically. `--sandbox` selects it explicitly.
 The project owner can complete an exact revision with:
 
 ```sh
-atelier land t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
+atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
 ```
 
 `--approve` records an explicit owner review. Without it, any required review
 must already exist. Acceptance still goes through the gate. Already accepted
-work needs only `atelier land t9 --head FULL_COMMIT_SHA`.
+work needs only `atelier merge t9 --head FULL_COMMIT_SHA`.
 
-Landing records a journal in the registered checkout's Git directory,
+Merging records a journal in the registered checkout's Git directory,
 `atelier-landing.json`. If publishing the baseline or recording the merge
 fails, rerun the same command. It resumes from the local merge commit. It
-refuses a different revision, a dirty checkout, or concurrent landing. If a
+refuses a different revision, a dirty checkout, or concurrent merge. If a
 process stops during the uncommitted Git merge, inspect `git status` and
 resolve or abort that merge before retrying. The journal preserves the
 original revision and starting commit. Never remove it to bypass a mismatch.

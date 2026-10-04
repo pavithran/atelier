@@ -28,3 +28,7 @@ worker-configuration.d.ts
 # Portfolio-internal; kept out of the public repository
 PROJECT.md
 AGENTS.md
+
+# Design review captures live in ~/Documents/ai-project-data/cloudflare-git/
+.impeccable/review/*.jpg
+.impeccable/mocks/*.png

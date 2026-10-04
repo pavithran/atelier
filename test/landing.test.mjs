@@ -16,7 +16,7 @@ test('landing journals survive restarts and refuse another revision or live lock
  const release=landingLock(p);assert.throws(()=>landingLock(p),/still running/);release();journal.clear();assert.equal(landingJournal(p,identity).state,null);
 });
 
-test('land resumes after ledger failure without a second merge; finish stops on failed checks',async t=>{
+test('merge --head resumes after ledger failure without a second merge; finish stops on failed checks',async t=>{
  const p=root(t),seed=join(p,'seed'),baseline=join(p,'baseline.git'),fork=join(p,'fork.git'),checkout=join(p,'checkout'),workspace=join(p,'workspace'),config=join(p,'config');
  mkdirSync(seed);mkdirSync(config);git(seed,'init','-b','main');git(seed,'config','user.name','Fixture');git(seed,'config','user.email','fixture@example.invalid');writeFileSync(join(seed,'work.txt'),'base\n');git(seed,'add','.');git(seed,'commit','-m','Initial');
  git(p,'clone','--bare',seed,baseline);git(p,'clone','--bare',baseline,fork);git(p,'clone',baseline,checkout);git(p,'clone',fork,workspace);
@@ -42,14 +42,14 @@ test('land resumes after ledger failure without a second merge; finish stops on 
  await new Promise(ok=>server.listen(0,'127.0.0.1',ok));t.after(()=>server.close());
  const url=`http://127.0.0.1:${server.address().port}`;writeFileSync(join(config,'config.json'),JSON.stringify({server:url,owner:'owner',projects:{proj:{path:checkout,branch:'main'}}}));
  async function run(cwd,...args){const child=spawn(process.execPath,[resolve('cli/atelier.mjs'),...args,'--project','proj'],{cwd,env:{...process.env,ATELIER_CONFIG_DIR:config,ATELIER_TOKEN:'fixture',ATELIER_CACHE:join(p,'cache'),ATELIER_SERVER:url}});let output='';child.stdout.on('data',s=>output+=s);child.stderr.on('data',s=>output+=s);const status=await new Promise(ok=>child.on('close',ok));return{status,output};}
- const first=await run(checkout,'land','t1','--head',head,'--approve');assert.equal(first.status,1,first.output);const mergedHead=git(checkout,'rev-parse','HEAD');assert.notEqual(mergedHead,head);assert.ok(existsSync(join(checkout,'.git','atelier-landing.json')));
+ const first=await run(checkout,'merge','t1','--head',head,'--approve');assert.equal(first.status,1,first.output);const mergedHead=git(checkout,'rev-parse','HEAD');assert.notEqual(mergedHead,head);assert.ok(existsSync(join(checkout,'.git','atelier-landing.json')));
  // Simulate another baseline commit before retrying the failed ledger acknowledgment.
  const next=join(p,'next');git(p,'clone',baseline,next);git(next,'config','user.name','Fixture');git(next,'config','user.email','fixture@example.invalid');
  writeFileSync(join(next,'later.txt'),'later work\n');git(next,'add','.');git(next,'commit','-m','Later work');git(next,'push','origin','main');
  const advanced=git(next,'rev-parse','HEAD');
  // Also simulate a partial ref publication: the baseline arrived but its notes did not.
  git(p,'--git-dir',baseline,'update-ref','-d','refs/notes/atelier');
- const second=await run(checkout,'land','t1','--head',head);assert.equal(second.status,0,second.output);assert.equal(git(checkout,'rev-parse','HEAD'),mergedHead);assert.equal(git(p,'--git-dir',baseline,'rev-parse','HEAD'),advanced);assert.match(git(p,'--git-dir',baseline,'notes','--ref=atelier','show',mergedHead),/accepted head/);assert.equal(state,'merged');assert.ok(!existsSync(join(checkout,'.git','atelier-landing.json')));
+ const second=await run(checkout,'merge','t1','--head',head);assert.equal(second.status,0,second.output);assert.equal(git(checkout,'rev-parse','HEAD'),mergedHead);assert.equal(git(p,'--git-dir',baseline,'rev-parse','HEAD'),advanced);assert.match(git(p,'--git-dir',baseline,'notes','--ref=atelier','show',mergedHead),/accepted head/);assert.equal(state,'merged');assert.ok(!existsSync(join(checkout,'.git','atelier-landing.json')));
  state='claimed';failChecks=true;requests.length=0;const failed=await run(workspace,'finish');assert.equal(failed.status,2,failed.output);assert.ok(!requests.some(r=>r.path.endsWith('/submit')));
  failChecks=false;const finished=await run(workspace,'finish');assert.equal(finished.status,0,finished.output);assert.equal(state,'submitted');
 });

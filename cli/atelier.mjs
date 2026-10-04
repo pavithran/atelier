@@ -534,20 +534,19 @@ const commands = {
     await commands.submit();
   },
 
-  async land() {
-    const name=project(), id=itemArg();
-    if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier land ID --head FULL_REVISION [--approve --note TEXT]");
-    let d=await call("GET",I(name,id),undefined,OWNER);
-    if (d.item.head!==args.head) die("the task changed; review the new revision before landing");
-    if (d.item.state==='submitted') {
-      if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:typeof args.note==='string'?args.note:''},OWNER);
-      await call("POST",`${I(name,id)}/accept`,{head:args.head},OWNER);
-    }
-    await commands.merge();
-  },
-
+  // The project owner merges an exact revision. With --head, a submitted item
+  // is first approved (with --approve) and accepted at that revision only.
   async merge() {
     const name=project(), id=itemArg();
+    if (args.head !== undefined) {
+      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]]");
+      const d=await call("GET",I(name,id),undefined,OWNER);
+      if (d.item.state==="submitted") {
+        if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
+        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:typeof args.note==="string"?args.note:""},OWNER);
+        await call("POST",`${I(name,id)}/accept`,{head:args.head},OWNER);
+      }
+    }
     const p=cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd=p.path;
     const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd});
     let unlock;
@@ -571,7 +570,7 @@ const commands = {
       const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
       const marker=`Atelier: ${name}/${id} accepted at ${item.acceptedHead}`;
       if (!journal.state) {
-        if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before landing');
+        if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
         journal.save({start:local,phase:'prepared'});
       }
       if (!journal.state.mergeCommit) {
@@ -580,10 +579,10 @@ const commands = {
         const ownCommit=parents.length===3 && parents[1]===journal.state.start && parents[2]===item.acceptedHead && git(['log','-1','--format=%B'],{cwd}).split('\n').includes(marker);
         if (ownCommit) journal.save({mergeCommit:local,phase:'committed'});
         else {
-          if(local!==journal.state.start) die('checkout moved during an interrupted landing; inspect the journal before retrying');
+          if(local!==journal.state.start) die('checkout moved during an interrupted merge; inspect the journal before retrying');
           const result=git(['merge','--no-ff','--no-commit',item.acceptedHead],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
-          if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this landing record; reconcile its history first'); }
+          if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote});
           if(receipt)git(['add',receipt],{cwd});
           git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd});
@@ -591,9 +590,9 @@ const commands = {
         }
       }
       const mergeCommit=journal.state.mergeCommit;
-      if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the landing checkout before retrying');
+      if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the checkout before retrying');
       const current=await call('GET',I(name,id),undefined,OWNER);
-      if(current.item.state!=='accepted'||current.item.acceptedHead!==item.acceptedHead)die('approval changed during the landing; the local commit is preserved for reconciliation');
+      if(current.item.state!=='accepted'||current.item.acceptedHead!==item.acceptedHead)die('approval changed during the merge; the local commit is preserved for reconciliation');
       const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git([...auth(base.token),'ls-remote',base.remote,'refs/notes/atelier'],{cwd});
@@ -686,7 +685,7 @@ Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--sa
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
 Agents     claim ID --as H/M · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-Owner      land ID --head SHA [--approve] · accept ID · merge ID · abandon ID
+Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Local      gc [--project NAME] [--dry-run | --apply]
 Docs       guide   (paste into a project's AGENTS.md)
 
