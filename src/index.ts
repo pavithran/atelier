@@ -208,7 +208,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // policy from the body and the defaults, as a first init does.
     // Only "no project yet" means a first init; any other failure stops here,
     // rather than rebuilding the policy from nothing.
-    const current = body.reset ? null : await L.project().catch((err) => {
+    if (body.reset !== undefined && typeof body.reset !== "boolean") throw new RuleError("bad_reset", "reset must be true or false", 400);
+    const current = body.reset === true ? null : await L.project().catch((err) => {
       if (parseRuleError(err)?.code === "no_project") return null;
       throw err;
     });

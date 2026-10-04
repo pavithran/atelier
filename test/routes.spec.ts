@@ -76,6 +76,11 @@ it("init again changes only what it names, and --reset starts over", async () =>
   // Naming one setting replaces that one only.
   await put({ checks: ["npm run typecheck"] });
   expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
+  // Only reset: true resets; anything else that is not a boolean is refused.
+  expect((await put({ reset: "false", title: "X" })).status).toBe(400);
+  expect((await put({ reset: 1 })).status).toBe(400);
+  await put({ reset: false, title: "Still kept" });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
   // --reset rebuilds from what it is given and the defaults.
   await put({ reset: true, checks: ["npm test"] });
   expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], sandboxOnly: false });
