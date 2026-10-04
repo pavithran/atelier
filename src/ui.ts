@@ -15,6 +15,17 @@ import {
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
 } from "./rules";
 
+// What a page calls a project: its title when it has one, else its name. Links,
+// forms and commands always use the name.
+export const titleOf = (p: { name: string; title?: string }) => p.title || p.name;
+// A project's display title as stored: one line of plain text, at most 80
+// characters, or nothing.
+export function cleanTitle(v: unknown): string | undefined {
+  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  return s || undefined;
+}
+const titleMap = (ps: ProjectRecord[]) => new Map(ps.map((p) => [p.name, titleOf(p)]));
+
 export function escapeText(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
@@ -156,6 +167,7 @@ export function renderInbox(
   queued: { project: ProjectRecord; item: Item }[] = [],
   latest?: { story: Story; owner: string },
 ): string {
+  const names = titleMap(projects);
   const groups = new Map<string, InboxEntry[]>();
   for (const x of entries) {
     const key = `${x.project}/${x.itemId}`;
@@ -166,7 +178,7 @@ export function renderInbox(
     const current = selected?.project.name === lead.project && selected.detail.item.id === lead.itemId;
     const extra = more.length ? `<span class="meta">${more.map((m) => e(KIND[m.kind][0])).join(" · ")}</span>` : "";
     return `<li><a class="decision-row${current ? " selected" : ""}" href="${selectedHref(lead.project, lead.itemId)}"${current ? ' aria-current="true"' : ""}>
-      ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a></li>`;
+      ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a></li>`;
   }).join("");
 
   const needs = new Set(entries.map((x) => `${x.project}/${x.itemId}`));
@@ -174,7 +186,7 @@ export function renderInbox(
     items.filter((i) => i.state === "claimed" && !needs.has(`${project.name}/${i.id}`)).map((item) => ({ project, item })));
   const workingList = working.length
     ? `<h2 class="section-title">Working</h2><ul class="decision-list">${working.map(({ project, item }) =>
-        `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("decisions")}<span><strong>${e(item.title)}</strong><span class="meta">${e(project.name)} · ${e(item.owner ?? "Unassigned")}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>`
+        `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("decisions")}<span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.owner ?? "Unassigned")}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>`
     : "";
 
   const lead = groups.size
@@ -187,7 +199,7 @@ export function renderInbox(
   ${rows ? `<ul class="decision-list">${rows}</ul>` : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
   ${workingList}
   ${queued.length ? `<h2 class="section-title">Waiting for a runner</h2><ul class="decision-list">${queued.map(({ project, item }) =>
-    `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("studio")}<span><strong>${e(item.title)}</strong><span class="meta">${e(project.name)} · ${e(item.id)} · for ${e(describeDispatch(item.dispatch!))}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>` : ""}
+    `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("studio")}<span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.id)} · for ${e(describeDispatch(item.dispatch!))}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>` : ""}
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
   ${!projects.length ? '<div class="empty"><h3>Bring your first project.</h3><p>In its checkout, run <code>atelier init</code> to register it.</p></div>' : ""}
 </section>`;
@@ -238,7 +250,7 @@ function headline(t: Tally): string {
 function restingGraph(s: Story, owner: string): string {
   const t = s.tally;
   return `<div class="resting-graph">
-  <span class="kicker">${e(s.project)} · the work so far</span>
+  <span class="kicker">${e(s.title)} · the work so far${s.partial ? " · the most recent part of the record" : ""}</span>
   <h2><span class="you">You made ${plural(t.decisions, "decision")}.</span> ${plural(t.agents.length, "agent")} made ${t.agentMoves} moves.</h2>
   <p>Nothing is waiting on you. Each thread is a task an agent took off main; it flows back only when you accept it.</p>
   ${legendLine(Object.keys(t.byVendor) as Vendor[])}
@@ -253,12 +265,12 @@ const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
 export function renderFlow(stories: Story[], total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
   const shown = stories.filter((s) => s.threads.length);
   const moments = shown
-    .flatMap((s) => s.moments.map((m) => ({ ...m, project: s.project })))
+    .flatMap((s) => s.moments.map((m) => ({ ...m, project: s.title })))
     .sort((a, b) => b.at.localeCompare(a.at))
     .slice(0, 14);
   const many = shown.length > 1;
-  const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.project)}">
-  <div class="stage-head"><h2>${e(s.project)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}</span>
+  const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.title)}">
+  <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}</span>
   <a class="replay" href="/flow?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a></div>
   <div class="stage-scroll">${drawStory(s, owner, { href: taskHref(s.project) })}</div>
 </section>`).join("");
@@ -332,7 +344,7 @@ const MID = 40;
 
 // One lane: a band per holder (the current one tinted), the shared axis, and a
 // mark for every recorded event, staggered where marks crowd together.
-function lane(b: Bench, floor: Floor, now: Date): string {
+function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): string {
   const pct = (at: string) => position(at, floor) * 100;
   const spans = b.spans.map((sp, i) => {
     const x = pct(sp.from), w = Math.max(0.6, pct(sp.to ?? now.toISOString()) - x);
@@ -354,7 +366,7 @@ function lane(b: Bench, floor: Floor, now: Date): string {
   <div class="bench">
     <p class="who"><strong>${e(b.model)}</strong><span class="meta">${e(b.harness || "agent")}</span></p>
     <p class="task"><a href="${href("p", b.project, b.item.id)}">${e(b.item.title)}</a></p>
-    <p class="meta">${e(b.project)} · ${e(b.item.id)} · ${tag(stateLabel[b.item.state], tone)}</p>
+    <p class="meta">${e(titles.get(b.project) ?? b.project)} · ${e(b.item.id)} · ${tag(stateLabel[b.item.state], tone)}</p>
     ${chain}
   </div>
   <div class="track">
@@ -369,14 +381,15 @@ function lane(b: Bench, floor: Floor, now: Date): string {
 </li>`;
 }
 
-export function renderStudio(floor: Floor, ownerName: string | null = null, now = new Date(), unavailable = false): string {
+export function renderStudio(floor: Floor, ownerName: string | null = null, now = new Date(), unavailable = false, projects: ProjectRecord[] = []): string {
+  const titles = titleMap(projects);
   const agents = new Set(floor.benches.map((b) => b.agent)).size;
   const legend = (Object.keys(MARK_NAMES) as MarkKind[]).map((k) =>
     `<li><svg width="24" height="24" aria-hidden="true"><svg x="12" y="12" overflow="visible" class="mark">${markShape(k)}</svg></svg>${e(MARK_NAMES[k])}</li>`).join("");
   const mid = new Date((Date.parse(floor.from) + Date.parse(floor.to)) / 2).toISOString();
   const body = floor.benches.length
     ? `<div class="axis-labels" aria-hidden="true"><span>${e(clock(floor.from))}</span><span>${e(clock(mid))}</span><span>now</span></div>
-<ol class="lanes">${floor.benches.map((b) => lane(b, floor, now)).join("")}</ol>`
+<ol class="lanes">${floor.benches.map((b) => lane(b, floor, now, titles)).join("")}</ol>`
     : `<div class="empty"><h3>The floor is quiet.</h3><p>When an agent claims a task, its bench appears here with every push, check and handoff as it happens.</p></div>`;
   return page("Studio", `<div class="studio">
   <header><h1>Studio</h1>
@@ -395,7 +408,7 @@ export function renderProjects(views: ProjectView[], ownerName: string | null = 
     const summary = unavailable
       ? "Temporarily unavailable. Open to retry."
       : `${count(["claimed", "submitted", "accepted"])} active · ${count(["open"])} ready to start · ${count(["merged"])} merged`;
-    return `<li><a href="${href("p", project.name)}"><h2>${e(project.name)}</h2><p>${summary}</p>${icon("arrow")}</a></li>`;
+    return `<li><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2><p>${summary}</p>${icon("arrow")}</a></li>`;
   }).join("");
   return page("Projects", `<div class="page-width">
   <header><h1>Projects</h1><p class="lead">Work in motion, with a clear owner for every task.</p></header>
@@ -422,9 +435,9 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
-  return page(p.name, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/projects">Projects</a> / ${e(p.name)}</nav>
-  <header><h1>${e(p.name)}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p></header>
+  return page(titleOf(p), `<div class="page-width">
+  <nav class="breadcrumbs"><a href="/projects">Projects</a> / ${e(titleOf(p))}</nav>
+  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p></header>
   <details class="new-task"><summary>Create a task</summary>
     <form method="post" action="${href("ui", p.name, "new")}" class="stack">
       <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
@@ -446,7 +459,7 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
     .flatMap(({ project, items }) => items.filter((i) => i.state === "merged" || i.state === "abandoned").map((item) => ({ project, item })))
     .sort((a, b) => b.item.updatedAt.localeCompare(a.item.updatedAt));
   const rows = completed.map(({ project, item }) => `<li><a href="${href("p", project.name, item.id)}">
-    <span><strong>${e(item.title)}</strong><span class="meta">${e(project.name)} · ${e(item.id)}</span></span>
+    <span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.id)}</span></span>
     ${tag(stateLabel[item.state], item.state === "merged" ? "go" : "")}<time class="meta">${when(item.updatedAt)}</time>${icon("arrow")}</a></li>`).join("");
   return page("History", `<div class="page-width">
   <header><h1>History</h1><p class="lead">Finished work, with its evidence intact.</p></header>
@@ -469,7 +482,7 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null): string {
   const closed = d.item.state === "merged" || d.item.state === "abandoned";
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/">Decisions</a> / <a href="${href("p", p.name)}">${e(p.name)}</a> / ${e(d.item.id)}</nav>
+  <nav class="breadcrumbs"><a href="/">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff })}</article>
 </div>`, closed ? "History" : "Decisions", ownerName);
 }
@@ -526,7 +539,7 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
     : "";
 
   const header = `<header class="review-header">
-  <p class="context">${e(p.name)} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
+  <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
   <h2>${e(item.title)}</h2>
   <p class="review-description">${e(decision.detail)}</p>
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>

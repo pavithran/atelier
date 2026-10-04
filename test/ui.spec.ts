@@ -87,3 +87,27 @@ it('the flow route is served behind sign-in, under a policy that allows only the
  expect(csp).toContain('font-src https://fonts.gstatic.com');
  expect(csp).not.toContain('script-src');
 });
+
+// ── project titles ──
+import {cleanTitle,titleOf,renderProjects,renderStudio} from '../src/ui';
+it('a project title is one clean line, and the name stands in when there is none',()=>{
+ expect(cleanTitle('  Atelier ')).toBe('Atelier');
+ expect(cleanTitle('A\ntwo\u0007line')).toBe('A two line');
+ expect(cleanTitle('x'.repeat(200))).toHaveLength(80);
+ expect(cleanTitle('')).toBeUndefined();
+ expect(cleanTitle(undefined)).toBeUndefined();
+ expect(titleOf({name:'cloudflare-git'})).toBe('cloudflare-git');
+ expect(titleOf({name:'cloudflare-git',title:'Atelier'})).toBe('Atelier');
+});
+it('pages call a project by its title and link it by its name',()=>{
+ const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
+ const list=renderProjects([{project:titled,items:[]}]);
+ expect(list).toContain('&lt;Atelier&gt;');
+ expect(list).toContain('href="/p/cloudflare-git"');
+ const page=renderProject(titled,[],[]);
+ expect(page).toContain('<h1>&lt;Atelier&gt;</h1>');
+ expect(page).toContain('action="/ui/cloudflare-git/new"');
+ const s=buildStory('cloudflare-git',[],[],'pavi',false,'Atelier');
+ expect(s.title).toBe('Atelier');
+ expect(renderStudio({benches:[],from:time,to:time},'PAVI',new Date(time),false,[titled])).toContain('Studio');
+});

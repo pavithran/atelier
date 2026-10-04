@@ -58,6 +58,7 @@ export interface Tally {
 }
 export interface Story {
   project: string;
+  title: string;               // what the pages call the project
   partial: boolean;            // the record was cut at the read limit; older tasks are not drawn
   span: number;                // the last position; positions run from 0
   times: { pos: number; at: string }[];
@@ -91,7 +92,7 @@ const sha8 = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
 
-export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false): Story {
+export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project): Story {
   const evs = [...events].sort((a, b) => a.seq - b.seq);
   const posOf = new Map<number, number>();
   let p = 0;
@@ -182,7 +183,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     for (const ev of evs) if (posOf.get(ev.seq)! <= target) best = ev;
     return { pos: best ? posOf.get(best.seq)! : 0, at: best?.at ?? "" };
   });
-  return { project, partial, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
+  return { project, title, partial, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
 }
 
 // ── drawing ────────────────────────────────────────────────────────────────
@@ -310,7 +311,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
   // One rule per card: show it while its mark or task label is hovered or focused.
   const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible) [data-card="${k.key}"]`).join(",");
   out.push(`<style>${rules ? `${rules}{opacity:1}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
-  return `<svg class="graph${o.compact ? " compact" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${s.project}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`)}">${out.join("")}</svg>`;
+  return `<svg class="graph${o.compact ? " compact" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${s.title}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`)}">${out.join("")}</svg>`;
 }
 
 const BEAD_NAMES: Record<BeadKind, string> = {

@@ -2,7 +2,7 @@ import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { cleanTitle, titleOf, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
 import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
@@ -172,8 +172,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     const repo = repoName(project);
+    // A title is kept when init is run again without one, and cleared by an empty one.
+    const kept = await L.project().then((p) => p.title, () => undefined);
+    const title = body.title === undefined ? kept : cleanTitle(body.title);
     const record: ProjectRecord = {
       name: project,
+      ...(title ? { title } : {}),
       repo,
       policy: {
         checks: asStrings(body.checks),
@@ -458,7 +462,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const story = async (v: FloorView) => {
       try {
         const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-        return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS);
+        return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
       } catch { return null; }
     };
     const recent = (v: FloorView) => v.events[0]?.at ?? "";
@@ -468,7 +472,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
       return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete));
     }
-    if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable)));
+    if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects));
     const lists = await Promise.all(views.map(async v => {
       if (v.unavailable) return [];
       try { return await ledger(env,v.project.name).inbox(new Date().toISOString()); }
