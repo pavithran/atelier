@@ -1,0 +1,19 @@
+atelier cloudflare-git/t22 "Graph follow-ups from t21 review: released tasks not live; totals only for drawn projects; cut-record note on Decisions; DESIGN.md palette"
+accepted head 630f6f85fa716b6bb9285f346a1512d6cd4d3533
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3-flash 2026-10-04T19:34:45.357Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3-flash 2026-10-04T19:34:47.778Z
+2026-10-04T17:05:49.607Z pavi item.created
+2026-10-04T17:06:10.682Z opencode/glm-5.3-flash item.claimed
+2026-10-04T17:06:14.350Z opencode/glm-5.3-flash fork.created
+2026-10-04T18:14:40.046Z opencode/glm-5.3-flash push.observed
+2026-10-04T18:14:50.475Z opencode/glm-5.3-flash evidence.observed
+2026-10-04T18:14:52.473Z opencode/glm-5.3-flash evidence.observed
+2026-10-04T18:14:52.847Z opencode/glm-5.3-flash item.submitted
+2026-10-04T18:39:04.899Z pavi item.accepted
+2026-10-04T18:39:46.758Z opencode/glm-5.3-flash evidence.observed
+2026-10-04T18:39:48.693Z opencode/glm-5.3-flash evidence.observed
+2026-10-04T19:34:32.922Z opencode/glm-5.3-flash push.observed
+2026-10-04T19:34:45.857Z opencode/glm-5.3-flash evidence.observed
+2026-10-04T19:34:47.867Z opencode/glm-5.3-flash evidence.observed
+2026-10-04T19:34:48.364Z opencode/glm-5.3-flash item.submitted
+2026-10-04T19:36:34.211Z pavi item.accepted
