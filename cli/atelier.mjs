@@ -753,7 +753,7 @@ Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push 
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
-Local      gc [--project NAME] [--dry-run | --apply]
+Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);

@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey } from "../cli/runner.mjs";
+import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, taskKey } from "../cli/runner.mjs";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -14,7 +14,7 @@ const assignment = { project: "atelier", item: { id: "t13", title: "Home runner"
 test("parseConfig accepts supported harnesses and copies their arrays", () => {
   const value = { agents: ["opencode", "claude-code", "codex", "zcode"].map((agent) => ({ ...entry, agent })) };
   const parsed = parseConfig(JSON.stringify(value));
-  assert.deepEqual(parsed, { ...value, errors: [], taskTimeoutMs: DEFAULT_TASK_TIMEOUT_MS });
+  assert.deepEqual(parsed, { ...value, errors: [], taskTimeoutMs: DEFAULT_TASK_TIMEOUT_MS, finishTimeoutMs: DEFAULT_FINISH_TIMEOUT_MS });
   const direct = parseConfig(config);
   direct.agents[0].models.push("extra");
   assert.equal(entry.models.length, 2);
@@ -121,7 +121,7 @@ test("runTask claims with the assignment, runs the harness, finishes and removes
   const { io, calls, logs } = fixture();
   const state = await runTask(assignment, config, "home:studio", io);
   assert.equal(state.phase, "submitted");
-  assert.deepEqual(logs, ["asked", "claimed", "working", "committed", "submitted"]);
+  assert.deepEqual(logs, ["nothing claimed", "claimed", "working", "committed", "submitted"]);
   assert.deepEqual(calls[0].argv, ["claim", "t13", "--project", "atelier", "--as", assignment.actor, "--runner", "home:studio"]);
   assert.ok(calls[1].brief.includes(`Agent: ${assignment.actor}`));
   assert.equal(calls[2].cwd, "/cache/work/atelier/t13");
@@ -406,4 +406,137 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
     assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
     assert.equal(process.listenerCount(signal), listeners);
   }
+});
+
+test("failure counts use task identity and exclude refusals and skipped tasks", () => {
+  assert.equal(taskKey(assignment), taskKey({ ...assignment, item: { ...assignment.item, updatedAt: "later", head: "new" } }));
+  assert.notEqual(taskKey(assignment), taskKey({ ...assignment, project: "other" }));
+  assert.equal(failureCount(1, { phase: "failed" }), 2);
+  for (const state of [{ phase: "submitted" }, { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
+    assert.equal(failureCount(1, state), 1);
+  }
+});
+
+test("runner remembers unsupported project names and claims the task behind them", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-skip-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const { io, calls, logs } = fixture();
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async queue() {
+      if (++polls === 3) { process.emit("SIGINT"); return []; }
+      return [{ ...assignment, project: "My Project" }, ...(polls === 1 ? [assignment] : [])];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "claim").length, 1);
+  assert.equal(logs.filter((s) => s.startsWith("skipped:")).length, 1);
+});
+
+test("runner stops retrying after two failures even when the task revision changes", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-retry-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  for (const failure of ["exit", "timeout", "spawn"]) {
+    const { io, calls, logs } = fixture({ head: "before", code: 1, timedOut: failure === "timeout" });
+    if (failure === "spawn") io.harness = async () => { throw new Error("ENOENT"); };
+    let polls = 0;
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      async queue() {
+        if (++polls === 4) { process.emit("SIGINT"); return []; }
+        return [{ ...assignment, item: { ...assignment.item, updatedAt: String(polls) } },
+          { ...assignment, item: { ...assignment.item, id: "t14" } }];
+      },
+    });
+    assert.deepEqual(calls.filter((c) => c.argv?.[0] === "claim").map((c) => c.argv[1]), ["t13", "t13", "t14"]);
+    assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+  }
+});
+
+test("finish timeout config has a sixty minute default and validates overrides", () => {
+  assert.equal(parseConfig(config).finishTimeoutMs, 60 * 60_000);
+  assert.equal(parseConfig({ ...config, finishTimeoutMs: 100 }).finishTimeoutMs, 100);
+  for (const finishTimeoutMs of [0, -1, 1.5, "100", Infinity, 2 ** 31]) {
+    assert.match(parseConfig({ ...config, finishTimeoutMs }).errors.join(" "), /finishTimeoutMs/);
+  }
+});
+
+test("finish deadline stops a real child and preserves committed work", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-finish-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, finishTimeoutMs: 100 }));
+  const { io, logs } = fixture();
+  const { cli, ...taskIO } = io;
+  const commands = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO, queue: async () => [assignment],
+    async executeChild(argv, options) {
+      commands.push(argv[2]);
+      if (argv[2] !== "finish") return { code: 0 };
+      assert.equal(options.timeoutMs, 100);
+      return execute([process.execPath, "-e", "setInterval(() => {}, 1000)"], { ...options, cwd: dir, capture: true });
+    },
+  });
+  assert.deepEqual(commands, ["claim", "finish"]);
+  assert.ok(logs.some((s) => s.includes("finish timed out; claim preserved")));
+});
+
+test("SIGINT stops claim, finish and release children and exits the loop", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-cli-signal-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  for (const step of ["claim", "finish", "release"]) {
+    const { io } = fixture({ head: step === "release" ? "before" : "after" });
+    const { cli, stopped, ...taskIO } = io;
+    let polls = 0, sharedSignal;
+    const commands = [];
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+      workspacePath: io.workspacePath, taskIO,
+      queue: async (_, signal) => { polls++; sharedSignal = signal; if (polls > 1) { process.emit("SIGINT"); return []; } return [assignment]; },
+      async executeChild(argv, options) {
+        assert.equal(options.signal, sharedSignal);
+        commands.push(argv[2]);
+        if (argv[2] !== step) return { code: 0 };
+        const result = await execute([process.execPath, "-e",
+          "process.on('SIGTERM', () => {}); process.kill(process.ppid, 'SIGINT'); setInterval(() => {}, 1000);"], { ...options, cwd: dir, capture: true });
+        assert.equal(result.signal, "SIGKILL");
+        return result;
+      },
+    });
+    assert.equal(polls, 1);
+    assert.equal(commands.at(-1), step);
+    assert.equal(sharedSignal.aborted, true);
+  }
+});
+
+test("a second interrupt exits immediately", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-second-signal-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const exits = [];
+  t.mock.method(process, "exit", (code) => { exits.push(code); });
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    async queue(_, signal) {
+      process.emit("SIGINT");
+      assert.equal(signal.aborted, true);
+      assert.deepEqual(exits, []);
+      process.emit("SIGINT");
+      assert.deepEqual(exits, [130]);
+      return [];
+    },
+  });
+});
+
+test("CLI help lists the runner command", () => {
+  const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
+  assert.match(source.slice(source.indexOf("  help() {")), /runner --name home:NAME \[--once\] \[--config PATH\]/);
 });

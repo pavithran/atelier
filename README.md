@@ -270,7 +270,12 @@ and runs its configured harness in the claimed workspace. The brief is kept
 outside that workspace. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
-in place for inspection. SIGINT stops polling and interrupts an active harness.
+in place for inspection. After two failures, that task is skipped for the rest
+of the runner process and logged as needing the owner's attention. Project
+names rejected by runner validation are skipped and remembered so other tasks
+can run.
+SIGINT stops polling and interrupts the active child process. A second
+interrupt exits immediately.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
@@ -291,7 +296,10 @@ and command arguments to match the installed harness. Commands are argv
 arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
 the runner invokes them directly without a shell. The example requires that
 model to be configured in opencode. Atelier login and credentials are shared
-with the ordinary CLI.
+with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
+deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
+deadline from 60 minutes. Expiry terminates the process group, with forced
+termination after five seconds. A finish timeout leaves the claim held.
 
 ```sh
 atelier runner --name home:studio

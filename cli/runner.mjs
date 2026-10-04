@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { DEFAULT_TASK_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
+import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -103,8 +103,10 @@ export function writeBrief(workspace, text) {
 
 export const removeBrief = ({ file }) => rmSync(file, { force: true });
 
-async function checked(argv, options) {
-  const result = await execute(argv, options);
+async function checked(argv, options, executeChild = execute) {
+  const result = await executeChild(argv, options);
+  if (result.timedOut) throw new Error(`${options.step} timed out; claim preserved for owner inspection`);
+  if (options.signal?.aborted) throw new Error("interrupted");
   if (result.code !== 0) {
     const error = new Error(result.stderr || `${argv[0]} exited ${result.signal ?? result.code}`);
     error.claimRefused = options?.claim && result.code === 3;
@@ -117,14 +119,14 @@ async function checked(argv, options) {
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
-  io.log("asked");
+  io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
   let workspace, before, claimed = false, brief;
   try {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw new Error("queue returned an invalid project or task id");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
     workspace = io.workspacePath(project, item.id);
     if (io.stopped()) throw new Error("interrupted");
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
@@ -143,9 +145,14 @@ export async function runTask(assignment, config, name, io) {
     advance({ type: "finish" });
   } catch (error) {
     if (state.phase !== "failed") advance({ error: error.message });
-    if (!claimed && error.claimRefused) {
+    if (!claimed && error.skipped) {
+      state = { ...state, skipped: true };
+      io.log(`skipped: ${error.message}`);
+    } else if (!claimed && error.claimRefused) {
       state = { ...state, claimRefused: true };
       io.log(`claim refused: ${error.message}`);
+    } else if (claimed && state.head) {
+      io.log("claim preserved: work was committed before finish");
     } else if (claimed && before) {
       let head;
       try { head = await io.head(workspace); } catch { /* Unknown commit status preserves the claim. */ }
@@ -160,22 +167,32 @@ export async function runTask(assignment, config, name, io) {
   return state;
 }
 
-export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay }) {
+export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
+
+export function failureCount(count, state) {
+  return count + (state.phase === "failed" && !state.claimRefused && !state.skipped ? 1 : 0);
+}
+
+export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH]");
   }
   const config = readConfig(args.config), offer = offerFrom(config, args.name);
   const controller = new AbortController();
-  const stop = () => controller.abort();
+  const stop = () => {
+    if (controller.signal.aborted) process.exit(130);
+    controller.abort();
+  };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) process.on(signal, stop);
-  const refused = new Set();
+  const refused = new Set(), failures = new Map();
   const io = {
     workspacePath, log: line, stopped: () => controller.signal.aborted,
-    cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, captureError: true, claim: argv[0] === "claim" }),
-    head: (cwd) => checked(["git", "rev-parse", "HEAD"], { cwd, capture: true }),
-    harness: (argv, cwd) => execute(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }),
+    cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, claim: argv[0] === "claim",
+      step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined }, executeChild),
+    head: (cwd) => checked(["git", "rev-parse", "HEAD"], { cwd, capture: true, signal: controller.signal }, executeChild),
+    harness: (argv, cwd) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }),
     brief: writeBrief, removeBrief,
     ...taskIO,
   };
@@ -186,9 +203,13 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         const tasks = await queue(offer, controller.signal);
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
-        for (const task of tasks.filter((task) => !refused.has(refusedKey(task)))) {
+        for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2)) {
           state = await runTask(task, config, offer.runner, io);
-          if (!state.claimRefused || controller.signal.aborted) break;
+          if (controller.signal.aborted) break;
+          const key = taskKey(task), count = failureCount(failures.get(key) ?? 0, state);
+          failures.set(key, count);
+          if (count === 2) io.log(`${task.project}/${task.item.id} needs the owner's attention after 2 failures; skipped for this process`);
+          if (!state.claimRefused && !state.skipped) break;
           refused.add(refusedKey(task));
         }
         state ??= { phase: "idle" };

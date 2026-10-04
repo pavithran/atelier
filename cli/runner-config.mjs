@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const DEFAULT_TASK_TIMEOUT_MS = 45 * 60_000;
+export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
@@ -18,6 +19,8 @@ export function parseConfig(json) {
   }
   const taskTimeoutMs = value.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
   if (!Number.isInteger(taskTimeoutMs) || taskTimeoutMs <= 0 || taskTimeoutMs > 2_147_483_647) errors.push("taskTimeoutMs must be a positive timer-safe integer");
+  const finishTimeoutMs = value.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS;
+  if (!Number.isInteger(finishTimeoutMs) || finishTimeoutMs <= 0 || finishTimeoutMs > 2_147_483_647) errors.push("finishTimeoutMs must be a positive timer-safe integer");
   const seen = new Set();
   for (const [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
@@ -41,7 +44,7 @@ export function parseConfig(json) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command] });
   }
-  return { agents, errors, taskTimeoutMs };
+  return { agents, errors, taskTimeoutMs, finishTimeoutMs };
 }
 
 export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {
