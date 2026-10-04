@@ -106,6 +106,17 @@ it('invisible characters in a title become spaces, not hidden markup',()=>{
  for(const [name,ch] of removed) expect(cleanTitle('a'+ch+'b'),name).toBe('a b');
  expect(cleanTitle('a‏b')).toBe('a b');
 });
+it('default ignorable characters in a title become spaces, and an invisible title is no title',()=>{
+ const removed:[string,string][]=[
+  ['U+034F','\u034f'],['U+115F','\u115f'],['U+1160','\u1160'],['U+17B4','\u17b4'],['U+17B5','\u17b5'],
+  ['U+180B','\u180b'],['U+180F','\u180f'],['U+206A','\u206a'],['U+206F','\u206f'],['U+3164','\u3164'],
+  ['U+FE00','\ufe00'],['U+FE0F','\ufe0f'],['U+FFA0','\uffa0'],['U+FFF0','\ufff0'],['U+FFF8','\ufff8'],
+  ['U+1BCA0','\u{1bca0}'],['U+1BCA3','\u{1bca3}'],['U+1D173','\u{1d173}'],['U+1D17A','\u{1d17a}'],
+  ['U+E0000','\u{e0000}'],['U+E0FFF','\u{e0fff}']];
+ for(const [name,ch] of removed) expect(cleanTitle('a'+ch+'b'),name).toBe('a b');
+ expect(cleanTitle('\u034f\ufe00\u{e0000}')).toBeUndefined();
+ expect(cleanTitle('͏'.repeat(80)+'Visible')).toBe('Visible');
+});
 it('pages call a project by its title and link it by its name',()=>{
  const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
  const list=renderProjects([{project:titled,items:[]}]);
