@@ -390,3 +390,24 @@ it("a push to an accepted task withdraws the acceptance, and only its owner can 
   expect(last?.data).toMatchObject({ head: H2, approvalInvalidated: true });
   await refusal(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null), "not_owner", /does not own/);
 });
+
+it("a merge holds a landing lease: no push over the revision being merged, and the record names that revision", async () => {
+  const L = await setup("landing");
+  await L.newItem("Land me", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "landing--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  // Only the task's owner may push to an accepted task.
+  await refusal(L.recordPush("t1", "codex/someone-else", H2, null), "not_owner", /does not own/);
+  await refusal(L.beginLanding("t1", "owner", H2), "acceptance_changed", /no longer accepted at bbbbbbbb/);
+  await L.beginLanding("t1", "owner", H1);
+  // While landing, the owner's push is refused and a push event changes nothing.
+  await refusal(L.recordPush("t1", A, H2, H2), "landing", /being merged at aaaaaaaa/);
+  expect(await L.observePush("t1", H2, H1)).toMatchObject({ state: "accepted", head: H1, acceptedHead: H1 });
+  // The merge record must name the revision its commit was verified against.
+  await refusal(L.merged("t1", "owner", "c".repeat(40), true, H2), "acceptance_changed", /accepted again/);
+  expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
+});

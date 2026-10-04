@@ -606,8 +606,11 @@ const commands = {
       }
       const mergeCommit=journal.state.mergeCommit;
       if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the checkout before retrying');
-      const current=await call('GET',I(name,id),undefined,OWNER);
-      if(current.item.state!=='accepted'||current.item.acceptedHead!==item.acceptedHead)die('approval changed during the merge; the local commit is preserved for reconciliation');
+      // Take the landing lease: it confirms the acceptance has not moved and
+      // stops a push over this revision until the merge is recorded.
+      // A refusal ends the command here with the server's reason; the local
+      // merge commit is kept for reconciliation.
+      await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
       const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git([...auth(base.token),'ls-remote',base.remote,'refs/notes/atelier'],{cwd});
