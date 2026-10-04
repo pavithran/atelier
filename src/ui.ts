@@ -113,6 +113,7 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
 <dt>Protected</dt><dd>${p.policy.protected.map((c) => `<code>${e(c)}</code>`).join(" ") || "none"}</dd>
 <dt>Eligible</dt><dd>${p.policy.eligible?.length ? p.policy.eligible.map((c) => e(c)).join(", ") : "any agent"}</dd>
 <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "overlapping claims are refused" : "overlapping claims are flagged"}</dd>
+<dt>Checks count</dt><dd>${p.policy.sandboxOnly ? "only when run in a Cloudflare container" : "from a Cloudflare container or the CLI runner"}</dd>
 ${p.policy.approval ? `<dt>Approval</dt><dd>${e(p.policy.approval)}</dd>` : ""}
 </dl>
 <h2>Items</h2>${items.length ? `<ul class="rows">${rows}</ul>` : `<p class="empty">No items. Create one with <code>atelier new "title" --scope 'src/**'</code>.</p>`}
@@ -144,8 +145,9 @@ export function renderItem(
   const action = (verb: string) => href("ui", p.name, item.id, verb);
   const checks = view.checks.map((c) => {
     const [label, tone] = c.grade === "pending" ? ["Pending", "ask"] : c.passed ? ["Observed ✓", "go"] : ["Observed ✗", "bad"];
-    const last = d.evidence.filter((x) => x.claim === c.claim && x.head === item.head && x.grade === "observed").pop();
-    return `<tr><td><span class="tag ${tone}">${label}</span></td><td><code>${e(c.claim)}</code>${last?.outputTail ? `<pre>${e(last.outputTail.slice(-1500))}</pre>` : ""}</td><td class="meta">${last ? `${e(last.by)}<br>${when(last.at)}` : ""}</td></tr>`;
+    const where = c.grade === "observed" ? (c.where === "sandbox" ? "in a Cloudflare container" : "by the CLI runner") : "";
+    const last = d.evidence.filter((x) => x.claim === c.claim && x.head === item.head && x.grade === "observed" && (x.where ?? "runner") === c.where).pop();
+    return `<tr><td><span class="tag ${tone}">${label}</span></td><td><code>${e(c.claim)}</code>${last?.outputTail ? `<pre>${e(last.outputTail.slice(-1500))}</pre>` : ""}</td><td class="meta">${last ? `${e(last.by)}<br>${where}<br>${when(last.at)}` : ""}</td></tr>`;
   }).join("");
   const reports = view.reports.map((r) => `<tr><td><span class="tag">Reported</span></td><td>${e(r.claim)}</td><td class="meta">${e(r.by)}<br>${when(r.at)}</td></tr>`).join("");
   const reviews = d.reviews.filter((r) => r.head === item.head).map((r) => `<tr><td><span class="tag ${r.approve ? "go" : "bad"}">${r.approve ? "Approved" : "Rejected"}</span></td><td>${e(r.note || "—")}</td><td class="meta">${e(r.by)}<br>${when(r.at)}</td></tr>`).join("");

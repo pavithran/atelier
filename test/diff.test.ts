@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diffLines, mergeBase, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
+import { changedPaths, diffLines, mergeBase, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
 
 const replay = (ops: { op: string; text: string }[]) => ({
   a: ops.filter((o) => o.op !== "+").map((o) => o.text),
@@ -131,4 +131,13 @@ test("oversized files are listed but not diffed", async () => {
   const s = store();
   const { files } = await treeDiff(s.reader, s.tree({}), s.tree({ big: { blob: s.blob("x".repeat(100)) } }), { files: 10, blobBytes: 50, diffLines: 1e6, context: 3 });
   assert.deepEqual(files.map((f) => f.status), ["too-large"]);
+});
+
+test("changedPaths lists every change, past the display limit", async () => {
+  const s = store();
+  const many = Object.fromEntries(Array.from({ length: 75 }, (_, i) => [`f${String(i).padStart(2, "0")}`, { blob: s.blob(`${i}\n`) }]));
+  const paths = await changedPaths(s.reader, s.tree({}), s.tree({ ...many, deep: { tree: s.tree({ "x.ts": { blob: s.blob("x") } }) } }));
+  assert.equal(paths.length, 76);
+  assert.ok(paths.includes("deep/x.ts"));
+  await assert.rejects(changedPaths(s.reader, s.tree({}), s.tree(many), 10), /more than 10 changed paths/);
 });

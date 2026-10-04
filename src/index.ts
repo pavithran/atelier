@@ -1,9 +1,10 @@
 import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type ProjectRecord } from "./ledger";
+import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { escapeText, renderInbox, renderItem, renderLogin, renderProject } from "./ui";
 
-export { Ledger };
+export { CheckRunner, Egress, Ledger };
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
@@ -148,6 +149,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         protected: asStrings(body.protected),
         eligible: asStrings(body.eligible),
         refuseOverlap: Boolean(body.refuseOverlap),
+        sandboxOnly: Boolean(body.sandboxOnly),
         ...(body.approval ? { approval: String(body.approval).slice(0, 500) } : {}),
       },
       createdAt: new Date().toISOString(),
@@ -177,6 +179,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const id = parts[3];
   const verb = parts[4];
   if (!verb && m === "GET") return json(await L.detail(id));
+  if (verb === "sandbox" && parts[5] && m === "GET") {
+    if (!parts[5].startsWith(`${project}:${id}:`)) throw new RuleError("not_found", "no such run", 404);
+    const state = await env.RUNNER.get(env.RUNNER.idFromName(parts[5])).state();
+    if (!state) throw new RuleError("not_found", "no such run", 404);
+    return json(state);
+  }
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
@@ -235,7 +243,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         passed: check ? Boolean(body.passed) : null,
         by: actor,
         at: new Date().toISOString(),
-        ...(check ? { changedPaths: asStrings(body.changedPaths), outputTail: String(body.outputTail ?? "").slice(-4000) } : {}),
+        ...(check ? { changedPaths: asStrings(body.changedPaths), outputTail: String(body.outputTail ?? "").slice(-4000), where: "runner" as const } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // An observed check counts only against the head Atelier itself reads from Artifacts.
@@ -244,6 +252,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       await L.addEvidence(e);
       return json(await L.detail(id));
+    }
+    case "sandbox": {
+      // Run the required checks in a Cloudflare container. The run reports to the
+      // Ledger itself; the caller polls GET .../sandbox/RUN_ID.
+      const item = await L.item(id);
+      if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
+      const p = await L.project();
+      if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
+      const runId = `${project}:${id}:${item.head.slice(0, 12)}:${Date.now()}`;
+      const request: RunRequest = {
+        runId, project, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
+        checks: p.policy.checks, requestedBy: actor,
+      };
+      const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
+      return json({ runId, state }, 202);
     }
     case "review": {
       const item = await L.item(id);

@@ -9,7 +9,16 @@
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   "durable_objects": {
-    "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }]
+    "bindings": [
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "RUNNER", "class_name": "CheckRunner" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger"] }]
+  // One container per check run, started from the Cloudflare-managed
+  // cloudflare/debian-trixie image (Node 24), so no image is built or pushed.
+  "containers": [{ "class_name": "CheckRunner", "scheduling_policy": "durable_object" }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Ledger"] },
+    { "tag": "v2", "new_sqlite_classes": ["CheckRunner"] }
+  ]
 }
