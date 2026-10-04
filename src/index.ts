@@ -1,11 +1,14 @@
 import { itemDiff, type ItemDiff } from "./diff";
-import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
+import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { cleanSummary } from "./brief";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
+import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
+import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
@@ -63,7 +66,8 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
   const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length));
   res.headers.set("cache-control", "public, max-age=60");
-  await caches.default.put(key, res.clone());
+  // A copy the cache refuses is not an error: the page is still served.
+  await caches.default.put(key, res.clone()).catch(() => undefined);
   return res;
 }
 
@@ -226,29 +230,31 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     const repo = repoName(project);
-    // A title is kept when init is run again without one, and cleared by an empty one.
-    const kept = await L.project().then((p) => p.title, () => undefined);
-    const title = body.title === undefined ? kept : cleanTitle(body.title);
-    const record: ProjectRecord = {
-      name: project,
-      ...(title ? { title } : {}),
-      repo,
-      policy: {
-        checks: asStrings(body.checks),
-        protected: asStrings(body.protected),
-        eligible: asStrings(body.eligible),
-        refuseOverlap: Boolean(body.refuseOverlap),
-        sandboxOnly: Boolean(body.sandboxOnly),
-        ...(body.approval ? { approval: String(body.approval).slice(0, 500) } : {}),
-      },
-      createdAt: new Date().toISOString(),
+    // Running init again changes only what it is given; the Ledger merges it
+    // into the current record in one step (initProject). Only reset: true
+    // starts over from the defaults.
+    if (body.reset !== undefined && typeof body.reset !== "boolean") throw new RuleError("bad_reset", "reset must be true or false", 400);
+    // A title is text: omit it to keep the current one, or pass "" to clear it.
+    if (body.title !== undefined && typeof body.title !== "string") {
+      throw new RuleError("bad_title", "the title must be a string: omit it to keep the current one, or pass \"\" to clear it", 400);
+    }
+    const has = (k: string) => body[k] !== undefined;
+    const init: ProjectInit = {
+      name: project, repo, reset: body.reset === true,
+      ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("checks") ? { checks: asStrings(body.checks) } : {}),
+      ...(has("protected") ? { protected: asStrings(body.protected) } : {}),
+      ...(has("eligible") ? { eligible: asStrings(body.eligible) } : {}),
+      ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
     };
     try {
       await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: body.defaultBranch ?? "main" });
     } catch (err) {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
-    await L.setProject(record, actor);
+    const record = await L.initProject(init, actor);
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write") });
   }
@@ -372,7 +378,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.detail(id));
     }
     case "submit":
-      return json(await L.submit(id, actor));
+      // A missing summary is fine; one that is not text or has none left after cleaning is refused.
+      const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
+      if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
+      return json(await L.submit(id, actor, summary));
     case "handoff": {
       const to = String(body.to ?? "");
       const before = await L.item(id);
@@ -403,7 +412,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
       const history = await baseline.log({limit:1000});
       const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      return json(await L.merged(id, actor, merge, observed));
+      return json(await L.merged(id, actor, merge, observed, item.acceptedHead));
+    }
+    case "landing": {
+      requireOwner(env, actor);
+      if (body.cancel === true) {
+        // A merge already on the baseline cannot be cancelled: running the
+        // merge again records it.
+        const item = await L.item(id);
+        const p = await L.project();
+        using baseline = await env.ARTIFACTS.get(p.repo);
+        const landed = (await baseline.log({ limit: 1000 })).some((c) => c.parents.includes(item.acceptedHead ?? "-"));
+        if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
+        return json(await L.cancelLanding(id, actor));
+      }
+      return json(await L.beginLanding(id, actor, String(body.head ?? "")));
     }
     case "abandon": {
       requireOwner(env, actor);
@@ -455,6 +478,54 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, { events: MODEL_EVENTS, unread }), error ? 400 : 200);
+}
+
+// Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
+// /p/P/tN/{code,log,commit,history}/… reads task tN's fork. Null when the
+// path is not a browsing path, so the task page keeps /p/P/tN.
+const VIEWS = new Set(["code", "log", "commit", "history"]);
+const HASH = /^[0-9a-f]{40}$/;
+
+async function browse(env: Env, url: URL, parts: string[]): Promise<Response | null> {
+  const [project, second, ...rest] = parts;
+  const item = VIEWS.has(second) ? null : second;
+  const [view, ...tail] = item ? rest : [second, ...rest];
+  if (!VIEWS.has(view ?? "")) return null;
+  const L = ledger(env, project);
+  const p = await L.project();
+  const repoName = item ? (await L.item(item)).fork : p.repo;
+  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(project)}/${encodeURIComponent(item!)}`), 404);
+  const atParam = url.searchParams.get("at");
+  const at = atParam && HASH.test(atParam) ? atParam : null;
+  const w: Where = { project: p, item, at };
+  using repo = await env.ARTIFACTS.get(repoName);
+  const s = repoSource(repo);
+  const notFound = (what: string) => html(renderError(`${what} is not in this repository.`, codeHref({ ...w, at: null }, [])), 404);
+  if (view === "commit") {
+    const hash = tail[0] ?? "";
+    if (!HASH.test(hash) || tail.length !== 1) return notFound("That commit");
+    const c = await commitChanges(s, hash);
+    return c ? html(renderCommit(w, c, ownerName(env))) : notFound("That commit");
+  }
+  const head = await resolve(s, at);
+  if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(project)}`), 404);
+  if (view === "log") {
+    const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), LOG_PAGES - 1);
+    const { commits, more } = await logPage(s, head.hash, page);
+    return html(renderLog(w, head, commits, page, more, ownerName(env)));
+  }
+  const path = cleanPath(tail);
+  if (!path) return notFound("That path");
+  if (view === "history") {
+    if (!path.length) return notFound("A path");
+    const { commits, complete, examined } = await pathHistory(s, head.hash, path);
+    return html(renderBrowseHistory(w, head, path, commits, complete, ownerName(env), examined));
+  }
+  const node = await walk(s, head.treeHash, path);
+  if (!node || node.kind === "other") return notFound("That path");
+  if (node.kind === "tree") return html(renderTree(w, head, path, node, ownerName(env)));
+  const bytes = await s.file(node.hash, FILE_LIMIT);
+  return bytes ? html(renderBlob(w, head, path, viewFile(bytes), ownerName(env), node.type === "symlink")) : notFound("That file");
 }
 
 async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
@@ -533,7 +604,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0 || ["projects", "history", "studio", "flow"].includes(parts[0])) {
+  if (parts.length === 0 || ["decisions", "projects", "history", "studio", "flow"].includes(parts[0])) {
     const projects = await index(env).projects();
     const views: ProjectView[] = await Promise.all(projects.map(async project => {
       try { return {project, items: await ledger(env,project.name).items()}; }
@@ -573,6 +644,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     }));
     const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
     const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
+    // Signed in, / is Decisions while something waits on the owner, and Flow
+    // when nothing does. /decisions is always Decisions.
+    if (parts.length === 0 && !entries.length && !c.url.search) return Response.redirect(new URL("/flow", c.url).toString(), 303);
     const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
     const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
     const project = projects.find(p=>p.name===projectName);
@@ -590,6 +664,10 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
     return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env)));
+  }
+  if (parts[0] === "p" && parts.length >= 3) {
+    const res = await browse(env, c.url, parts.slice(1));
+    if (res) return res;
   }
   if (parts[0] === "p" && parts.length === 3) {
     const L = ledger(env, parts[1]);
@@ -654,7 +732,9 @@ export default {
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         return await api({ env, req, url, actor, body }, parts.slice(1));
       }
-      if (!how) return Response.redirect(new URL("/login", url).toString(), 303);
+      // The front door: a visitor who is not signed in sees the public showcase
+      // when there is one, and is otherwise asked to sign in.
+      if (!how) return Response.redirect(new URL(parts.length === 0 && showcased(env).length ? "/showcase" : "/login", url).toString(), 303);
       return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);

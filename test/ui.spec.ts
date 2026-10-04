@@ -1,5 +1,6 @@
 import {expect,it} from 'vitest';
 import {renderInbox,renderItem,renderProject,renderHistory,type Detail} from '../src/ui';
+import {buildFloor} from '../src/floor';
 import type {ProjectRecord} from '../src/ledger';
 const head='a'.repeat(40),time='2026-10-03T12:00:00Z';
 const project:ProjectRecord={name:'example',repo:'example',policy:{checks:['npm test'],protected:['src/**']},createdAt:time};
@@ -73,6 +74,21 @@ it('decisions at rest show the latest graph, and the old resting sheet when ther
  expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:s,owner:'pavi'})).toContain('See the whole flow');
  expect(renderInbox([],[project],'PAVI')).toContain('Space to focus.');
 });
+it('the flow headline counts only the projects whose threads are drawn',()=>{
+ const s1=story();
+ const hollow=buildStory('hollow',[{...detail().item,id:'t9',state:'merged'}],[
+  ev(1,'t9','pavi','item.accepted'),ev(2,'t9','pavi','item.accepted')].reverse(),'pavi');
+ expect(hollow.threads.length).toBe(0);
+ const html=renderFlow([s1,hollow],hollow.tally,'pavi','PAVI');
+ expect(html).toContain('You made 1 decision.');
+ expect(html).toContain('2 agents did the other 2 moves');
+});
+it('a cut record says so where the graph rests',()=>{
+ const partial=buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
+  ev(1,'t1','codex/gpt-6','item.claimed')].reverse(),'pavi',true);
+ expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:partial,owner:'pavi'}))
+  .toContain('the most recent part of the record');
+});
 it('the flow route is served behind sign-in, under a policy that allows only the fonts',async()=>{
  const TOKEN='flow-test-token';
  const testEnv={...env,ATELIER_TOKEN:TOKEN} as typeof env;
@@ -93,11 +109,28 @@ import {cleanTitle,titleOf,renderProjects,renderStudio} from '../src/ui';
 it('a project title is one clean line, and the name stands in when there is none',()=>{
  expect(cleanTitle('  Atelier ')).toBe('Atelier');
  expect(cleanTitle('A\ntwo\u0007line')).toBe('A two line');
+ expect(cleanTitle('A\u202ab\u200bc\u2066d\ufeff')).toBe('A b c d');
  expect(cleanTitle('x'.repeat(200))).toHaveLength(80);
  expect(cleanTitle('')).toBeUndefined();
  expect(cleanTitle(undefined)).toBeUndefined();
  expect(titleOf({name:'cloudflare-git'})).toBe('cloudflare-git');
  expect(titleOf({name:'cloudflare-git',title:'Atelier'})).toBe('Atelier');
+});
+it('invisible characters in a title become spaces, not hidden markup',()=>{
+ const removed:[string,string][]=[['U+0080','\u0080'],['U+009F','\u009f'],['U+00AD','\u00ad'],['U+061C','\u061c'],['U+180E','\u180e'],['U+200E','\u200e'],['U+200F','\u200f'],['U+2060','\u2060'],['U+2061','\u2061'],['U+2062','\u2062'],['U+2063','\u2063'],['U+2064','\u2064']];
+ for(const [name,ch] of removed) expect(cleanTitle('a'+ch+'b'),name).toBe('a b');
+ expect(cleanTitle('a‏b')).toBe('a b');
+});
+it('default ignorable characters in a title become spaces, and an invisible title is no title',()=>{
+ const removed:[string,string][]=[
+  ['U+034F','\u034f'],['U+115F','\u115f'],['U+1160','\u1160'],['U+17B4','\u17b4'],['U+17B5','\u17b5'],
+  ['U+180B','\u180b'],['U+180F','\u180f'],['U+206A','\u206a'],['U+206F','\u206f'],['U+3164','\u3164'],
+  ['U+FE00','\ufe00'],['U+FE0F','\ufe0f'],['U+FFA0','\uffa0'],['U+FFF0','\ufff0'],['U+FFF8','\ufff8'],
+  ['U+1BCA0','\u{1bca0}'],['U+1BCA3','\u{1bca3}'],['U+1D173','\u{1d173}'],['U+1D17A','\u{1d17a}'],
+  ['U+E0000','\u{e0000}'],['U+E0FFF','\u{e0fff}']];
+ for(const [name,ch] of removed) expect(cleanTitle('a'+ch+'b'),name).toBe('a b');
+ expect(cleanTitle('\u034f\ufe00\u{e0000}')).toBeUndefined();
+ expect(cleanTitle('͏'.repeat(80)+'Visible')).toBe('Visible');
 });
 it('pages call a project by its title and link it by its name',()=>{
  const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
@@ -109,7 +142,87 @@ it('pages call a project by its title and link it by its name',()=>{
  expect(page).toContain('action="/ui/cloudflare-git/new"');
  const s=buildStory('cloudflare-git',[],[],'pavi',false,'Atelier');
  expect(s.title).toBe('Atelier');
- expect(renderStudio({benches:[],from:time,to:time},'PAVI',new Date(time),false,[titled])).toContain('Studio');
+ // A bench of the titled project: the lane names it by title, not by name.
+ const benchItem={id:'t1',title:'Fix the lane',scope:[],state:'claimed' as const,owner:'codex/gpt-6',fork:'cloudflare-git--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
+ const floor=buildFloor([{project:titled,items:[benchItem],events:[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.claimed',data:{}}]}],new Date(time));
+ const studio=renderStudio(floor,'PAVI',new Date(time),false,[titled]);
+ expect(studio).toContain('<p class="meta">&lt;Atelier&gt;');
+ expect(studio).not.toContain('<p class="meta">cloudflare-git');
+ expect(studio).not.toContain('<p class="meta">example');
+});
+
+// ── decision brief ──
+it('the brief renders above the diff, escapes a hostile summary, and tags the verdict',()=>{
+ const d=detail();
+ d.evidence[0].where='sandbox';
+ d.reviews=[{itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'',at:time}];
+ d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ d.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'<img src=x onerror=alert(1)> done'}}];
+ const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
+ expect(html).toContain('Accept t1 at aaaaaaaa: &lt;script&gt;unsafe title&lt;/script&gt;.');
+ expect(html).toContain('&lt;img src=x onerror=alert(1)&gt; done');
+ expect(html).not.toContain('<img src=x');
+ expect(html).toContain('Summary from codex/gpt-6');
+ // A summary by another actor at an older head is not shown for this one.
+ d.events=[{seq:2,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'current words'}},
+  {seq:1,itemId:'t1',at:time,actor:'someone/else',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'stale words'}}];
+ const briefOf=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const other=briefOf(renderItem(project,d,'PAVI',null));
+ expect(other).toContain('current words');expect(other).toContain('Summary from codex/gpt-6');
+ expect(other).not.toContain('stale words');expect(other).not.toContain('someone/else');
+ d.events=[{seq:1,itemId:'t1',at:time,actor:'someone/else',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'stale words'}}];
+ const none=briefOf(renderItem(project,d,'PAVI',null));
+ expect(none).not.toContain('stale words');expect(none).not.toContain('Summary from');
+ expect(html).toContain('1 passed in a Cloudflare container');
+ expect(html).toContain('<span class="tag go">accept</span>');
+ expect(html.indexOf('Decision brief')).toBeLessThan(html.indexOf('id="changes"'));
+});
+it('the brief tags a rejected revision as send back and a pending one as wait',()=>{
+ const d=detail();
+ d.evidence[0].passed=false;
+ const sent=renderItem(project,d,'PAVI',null);
+ expect(sent).toContain('<span class="tag bad">send back</span>');expect(sent).toContain('Send t1 back at aaaaaaaa');
+ const w=detail();w.evidence=[];w.gate={ready:false,needsAssessor:false,blockers:[],outOfScope:[]};w.item.scope=[];
+ w.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'older revision'}}];
+ const html=renderItem(project,w,'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(brief).toContain('<span class="tag ask">wait</span>');
+ expect(brief).toContain('Wait on t1 at aaaaaaaa');
+ expect(brief).not.toContain('older revision');
+});
+it('a project with no required checks says so instead of counting zero of zero',()=>{
+ const d=detail();d.policy={checks:[],protected:[]};d.evidence=[];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('This project requires no checks.');expect(html).not.toContain('0 of 0');
+});
+it('banner, brief heading and tag name one ask for a protected revision with a rejection',()=>{
+ const d=detail();d.reviews=[{itemId:'t1',head,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
+ const html=renderItem(project,d,'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(html).toContain('Your review is needed');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
+});
+it('a claimed task shows the same ask in its banner and its brief',()=>{
+ const brief=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const failing=detail();failing.item.state='claimed';failing.evidence[0].passed=false;
+ const f=renderItem(project,failing,'PAVI',null);
+ expect(f).toContain('Checks need attention');expect(brief(f)).toContain('Send t1 back');expect(brief(f)).toContain('<span class="tag bad">send back</span>');
+ const rejected=detail();rejected.item.state='claimed';rejected.reviews=[{itemId:'t1',head,approve:false,by:'codex/gpt-5.5',note:'no',at:time}];
+ const r=renderItem(project,rejected,'PAVI',null);
+ expect(r).toContain('Changes requested');expect(brief(r)).toContain('Send t1 back');expect(brief(r)).not.toContain('not been submitted');
+ const idle=detail();idle.item.state='claimed';
+ const i=renderItem(project,idle,'PAVI',null);
+ expect(brief(i)).toContain('Wait on t1');expect(brief(i)).toContain('in progress');
+});
+it('a project with no checks says so once',()=>{
+ const d=detail();d.policy={checks:[],protected:[]};d.evidence=[];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('This project requires no checks.');expect(html).not.toContain('No required checks are configured');
+});
+it('a protected revision awaiting an assessor shows a review tag under a review heading',()=>{
+ const html=renderItem(project,detail(),'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(brief).toContain('<span class="tag ask">review</span>');
+ expect(brief).toContain('Review t1 at aaaaaaaa');
 });
 
 // ── showcase ──
@@ -175,4 +288,115 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  expect(await bad.text()).toContain('must not carry a user name or password');
  const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:`atelier=${hex}`}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  expect(await page.text()).toContain('deepseek-chat');
+});
+it('the front door: visitors see the showcase, the owner sees Decisions only when something waits',async()=>{
+ const TOKEN='door-test-token';
+ const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const go=(path:string,extra:Record<string,string>={},signed=false)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:`atelier=${hex}`}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,...extra} as typeof env);
+ expect((await go('/',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/showcase');
+ expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
+ expect((await go('/flow',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/login');
+ const home=await go('/',{},true);
+ expect(home.status).toBe(303);
+ expect(home.headers.get('location')).toBe('https://atelier.test/flow');
+ const decisions=await go('/decisions',{},true);
+ expect(decisions.status).toBe(200);
+ expect(await decisions.text()).toContain('<title>Decisions · Atelier</title>');
+});
+it('the showcase draws a named project that has work, and survives a cache that refuses it',async()=>{
+ const record={name:'drawn',repo:'drawn',title:'Drawn project',policy:{checks:[],protected:[]},createdAt:time};
+ const L=env.LEDGER.get(env.LEDGER.idFromName('project:drawn'));
+ await L.setProject(record,'owner');
+ await L.newItem('Visible work',[],'owner');await L.claim('t1','codex/gpt-6');
+ await caches.default.delete(new Request('https://atelier.test/showcase'));
+ const put=caches.default.put;
+ (caches.default as {put:unknown}).put=async()=>{throw new Error('413')};
+ try{
+  const res=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'drawn',OWNER_NAME:''} as typeof env);
+  expect(res.status).toBe(200);
+  const body=await res.text();
+  expect(body).toContain('Drawn project');
+  expect(body).toContain('>t1<');
+  expect(body).toContain('The owner made 0 decisions.');
+  expect(body).toContain('until the owner accepts it');
+ }finally{(caches.default as {put:unknown}).put=put;}
+});
+
+// ── browsing ──
+import {renderTree,renderBlob,renderCommit,renderLog,codeHref} from '../src/browse/view';
+it('browsing pages escape names and contents and keep links inside the repository',()=>{
+ const head={hash:'a'.repeat(40),treeHash:'b'.repeat(40),message:'<b>Subject</b>\nbody',author:{name:'<A>',email:'a@x'},parents:['c'.repeat(40)],authoredAt:1759600000};
+ const w={project,item:'t1',at:null};
+ const tree=renderTree(w,head,['src'],{kind:'tree',hash:'d'.repeat(40),entries:[{name:'<x>.ts',type:'blob',mode:'100644',hash:'e'.repeat(40)},{name:'lib',type:'tree',mode:'40000',hash:'f'.repeat(40)},{name:'run.sh',type:'exec',mode:'100755',hash:'1'.repeat(40)}],total:3});
+ expect(tree).toContain('href="/p/example/t1/code/src/run.sh"');
+ expect(tree).toContain('&lt;x&gt;.ts');
+ expect(tree).toContain('href="/p/example/t1/code/src/%3Cx%3E.ts"');
+ expect(tree).toContain('href="/p/example/t1/code/src/lib"');
+ expect(tree).not.toContain('<b>Subject</b>');
+ const blob=renderBlob(w,head,['src','a.ts'],{kind:'text',lines:['<script>alert(1)</script>'],bytes:26});
+ expect(blob).toContain('&lt;script&gt;');
+ expect(blob).toContain('href="/p/example/t1/history/src/a.ts"');
+ const link=renderBlob(w,head,['docs'],{kind:'text',lines:['../<b>elsewhere</b>'],bytes:20},null,true);
+ expect(link).toContain('A symbolic link to <code>../&lt;b&gt;elsewhere&lt;/b&gt;</code>');
+ expect(link).not.toContain('class="code-lines"');
+ expect(renderCommit(w,{commit:head,parent:'c'.repeat(40),files:[],truncated:false})).toContain('href="/p/example/t1/commit/'+'c'.repeat(40)+'"');
+ expect(renderLog({project,item:null,at:null},head,[head],1,true)).toContain('href="/p/example/log?page=2"');
+ expect(codeHref({project,item:null,at:'a'.repeat(40)},['a b'])).toBe('/p/example/code/a%20b?at='+'a'.repeat(40));
+});
+
+it('browsing routes read only the baseline or that task fork, and say plainly what is missing',async()=>{
+ const {env}=await import('cloudflare:workers');
+ const {default:worker}=await import('../src/index');
+ const TOKEN='browse-test-token';
+ const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const record={name:'browsed',repo:'browsed',policy:{checks:[],protected:[]},createdAt:time};
+ const L=env.LEDGER.get(env.LEDGER.idFromName('project:browsed'));
+ await L.setProject(record,'owner');
+ await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
+ await L.newItem('Work',[],'owner');await L.claim('t1','codex/gpt-6');await L.setFork('t1','browsed--t1','0'.repeat(40),'codex/gpt-6');
+ const C='c'.repeat(40),T='d'.repeat(40),B='b'.repeat(40),X='e'.repeat(40);
+ const asked:string[]=[];
+ const repo=(name:string)=>({
+  // As Artifacts does: no ref, or this commit, gives it; "HEAD" gives nothing.
+  log:async({ref}:{ref?:string})=>ref!==undefined&&ref!==C?[]:[{hash:C,treeHash:T,message:`On ${name}`,author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}],
+  readCommit:async(h:string)=>h===C?{hash:C,treeHash:T,message:'Only',author:{name:'A',email:'a@x'},committer:{name:'A',email:'a@x'},parents:[],authoredAt:1,committedAt:1}:null,
+  readTree:async(h:string)=>h===T?[{name:'README.md',mode:'100644',hash:B,type:'blob'},{name:'run.sh',mode:'100755',hash:X,type:'exec'}]:null,
+  readBlob:async(h:string)=>h===B?new Blob(['hello\n']):h===X?new Blob(['#!/bin/sh\n']):null,
+  [Symbol.dispose](){},
+ });
+ const ARTIFACTS={get:async(name:string)=>{asked.push(name);return repo(name)}} as unknown as Artifacts;
+ const bindings={...env,ARTIFACTS,ATELIER_TOKEN:TOKEN} as typeof env;
+ const get=(path:string,signed=true)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:`atelier=${hex}`}:{},redirect:'manual'}),bindings);
+ expect((await get('/p/browsed/code',false)).status).toBe(303);
+ const base=await get('/p/browsed/code');
+ expect(base.status).toBe(200);
+ expect(await base.text()).toContain('On browsed');
+ const fork=await get('/p/browsed/t1/code/run.sh');
+ expect(fork.status).toBe(200);
+ expect(await fork.text()).toContain('#!/bin/sh');
+ expect(asked).toEqual(['browsed','browsed--t1']);
+ const missing=await get(`/p/browsed/code?at=${'f'.repeat(40)}`);
+ expect(missing.status).toBe(404);
+ expect(await missing.text()).toContain('That commit is not in this repository');
+ expect((await get('/p/browsed/code/%2E%2E/x')).status).toBe(404);
+ expect((await get('/p/browsed/t1')).status).toBe(200);
+ const log=await get('/p/browsed/log');
+ expect(log.status).toBe(200);
+ expect(await log.text()).toContain(`/p/browsed/commit/${C}`);
+ const commit=await get(`/p/browsed/commit/${C}`);
+ expect(commit.status).toBe(200);
+ expect(await commit.text()).toContain('README.md');
+ const history=await get('/p/browsed/history/README.md');
+ expect(history.status).toBe(200);
+ expect(await history.text()).toContain('On browsed');
+ expect((await get('/p/browsed/history')).status).toBe(404);
+});
+
+it('the log stops offering older pages at its last page instead of looping',async()=>{
+ const {renderLog,LOG_PAGES}=await import('../src/browse/view');
+ const head={hash:'a'.repeat(40),treeHash:'b'.repeat(40),message:'m',author:{name:'A',email:'a@x'},parents:[],authoredAt:1};
+ const last=renderLog({project,item:null,at:null},head,[head],LOG_PAGES-1,true);
+ expect(last).not.toContain('>Older<');
+ expect(last).toContain('Older commits are not paged here');
+ expect(renderLog({project,item:null,at:null},head,[head],3,true)).toContain('>Older<');
 });
