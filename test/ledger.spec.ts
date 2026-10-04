@@ -323,3 +323,26 @@ it("the queue lists the oldest dispatch first and skips tasks that are not open"
   await L.claim(first.id, "codex/gpt-6", { runner: "cloud:atelier", kind: "cloud" });
   expect((await L.waiting()).map((i) => i.id)).toEqual([second.id]);
 });
+
+it("a claim belongs to the runner that made it; the same agent name from another runner is refused", async () => {
+  const L = await setup("runner-held");
+  const item = await L.newItem("Edit", ["a/**"], "owner");
+  await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash" });
+  const actor = "opencode/glm-5.3-flash";
+  const studio = { runner: "home:studio", kind: "home" as const };
+  const laptop = { runner: "home:laptop", kind: "home" as const };
+
+  const { item: held } = await L.claim(item.id, actor, studio);
+  expect(held.runner).toBe("home:studio");
+  await refusal(L.claim(item.id, actor, laptop), "owned", /held by opencode\/glm-5.3-flash on home:studio, not home:laptop/);
+  await refusal(L.claim(item.id, actor), "owned", /not a claim made without a runner/);
+  // The holding runner may refresh its own claim.
+  expect((await L.claim(item.id, actor, studio)).item.runner).toBe("home:studio");
+
+  // A handoff ends the old runner's hold; the first runner to claim as the new owner adopts it.
+  await L.handoff(item.id, "owner", "opencode/qwen3-coder-next", "try the coder");
+  expect((await L.item(item.id)).runner).toBeNull();
+  const { item: adopted } = await L.claim(item.id, "opencode/qwen3-coder-next", laptop);
+  expect(adopted.runner).toBe("home:laptop");
+  await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
+});

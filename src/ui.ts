@@ -410,9 +410,9 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
     ? item.dispatch
       ? `<div class="notice" role="status"><h3>Waiting for ${e(describeDispatch(item.dispatch))}</h3>
         <p>Sent by ${e(item.dispatch.by)} ${when(item.dispatch.at)}${item.dispatch.note ? `: ${e(item.dispatch.note)}` : ""}. The first matching runner to ask for work claims it.</p>
-        <form method="post" action="${action("undispatch")}"><button>Withdraw</button></form></div>`
+        <form method="post" action="${action("undispatch")}">${revision}<button>Withdraw</button></form></div>`
       : `<details class="request-changes dispatch-form"><summary>Send to an agent</summary>
-        <form class="stack" method="post" action="${action("dispatch")}">
+        <form class="stack" method="post" action="${action("dispatch")}">${revision}
           <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Studio)</option><option value="cloud">Cloud runner</option></select></label>
           <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option></select></label>
           <label>Model <span class="meta">optional, as the runner names it</span><input type="text" name="model" placeholder="e.g. glm-5.3-flash"></label>

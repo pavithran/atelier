@@ -75,3 +75,8 @@ test("AI Studio profile names, with a colon, can be dispatched and claimed; uncl
   assert.equal(assign(makeDispatch({ to: "home" }, "pavi", T), offer)?.model, studioModel);
   assert.throws(() => makeDispatch({ agent: "open:code" }, "pavi", T), /not a valid agent/);
 });
+
+test("runner names are exactly kind:name, normalized, with no further colon", () => {
+  assert.throws(() => parseRunner("home:a:b"), /not a runner/);
+  assert.deepEqual(parseRunner("HOME:studio"), { runner: "home:studio", kind: "home" });
+});

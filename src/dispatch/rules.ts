@@ -39,13 +39,18 @@ function claimable(agent: string, model: string): boolean {
   return AGENT.test(agent) && NAME.test(model) && validActor(`${agent}/${model}`);
 }
 
+const RUNNER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+// A runner is exactly kind:name, with no further colon, and is returned
+// normalized so what is stored is what was matched.
 export function parseRunner(header: string | null): { runner: string; kind: RunnerKind } | null {
   if (!header) return null;
-  const [kind, name] = header.split(":");
-  if (!RUNNER_KINDS.includes(kind as RunnerKind) || !name || !NAME.test(name)) {
+  const at = header.indexOf(":");
+  const kind = header.slice(0, at), name = header.slice(at + 1);
+  if (at < 0 || !RUNNER_KINDS.includes(kind.toLowerCase() as RunnerKind) || !RUNNER_NAME.test(name)) {
     throw new RuleError("bad_runner", `"${header}" is not a runner; use cloud:NAME or home:NAME`, 400);
   }
-  return { runner: header, kind: kind as RunnerKind };
+  return { runner: `${kind.toLowerCase()}:${name}`, kind: kind.toLowerCase() as RunnerKind };
 }
 
 export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown }, by: string, at: string): Dispatch {

@@ -18,6 +18,7 @@ export interface Item {
   updatedAt: string;
   lastPushAt: string | null;
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
+  runner?: string | null;     // the runner that holds the claim, if a runner claimed it
 }
 
 // Observed: Atelier ran it itself, in a clean clone, at the exact head.

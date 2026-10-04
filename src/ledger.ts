@@ -60,6 +60,7 @@ export class Ledger extends DurableObject<Env> {
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
+    if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
   }
 
   // ── index instance ───────────────────────────────────────────────────────
@@ -117,8 +118,20 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     assertDispatchedClaim(item, actor, runner);
     assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner);
-    if (item.owner === actor) return { item, needsFork: !item.fork };
-    this.update(id, { owner: actor, state: "claimed" });
+    if (item.owner === actor) {
+      // Re-claiming refreshes the write token, so it is allowed only from where
+      // the claim is held: two runners offering the same agent and model share
+      // an actor name, and the second must not take over the first's fork.
+      const held = item.runner ?? null, asking = runner?.runner ?? null;
+      if (held && held !== asking) {
+        throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
+      }
+      // After a handoff the new owner holds no runner yet; the first runner to
+      // claim as that owner takes the claim, and any other is refused above.
+      if (!held && asking) this.update(id, { owner: actor, runner: asking });
+      return { item: this.item(id), needsFork: !item.fork };
+    }
+    this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null });
     this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {});
     return { item: this.item(id), needsFork: !item.fork };
   }
@@ -318,6 +331,8 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private update(id: string, fields: Record<string, string | null>): void {
+    // A change of owner always ends the previous holder's runner.
+    if ("owner" in fields && !("runner" in fields)) fields = { ...fields, runner: null };
     const keys = Object.keys(fields);
     const set = keys.map((k) => `${k} = ?`).join(", ");
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), new Date().toISOString(), id);
@@ -346,5 +361,6 @@ function toItem(r: Row): Item {
     updatedAt: r.updated_at as string,
     lastPushAt: (r.last_push_at as string | null) ?? null,
     dispatch: r.dispatch ? (JSON.parse(r.dispatch as string) as Dispatch) : null,
+    runner: (r.runner as string | null) ?? null,
   };
 }
