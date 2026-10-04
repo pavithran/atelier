@@ -118,3 +118,14 @@ test("a submodule's change is listed, and a log cut short decides nothing at its
   assert.equal(history.complete, false);
   assert.deepEqual(history.commits, []);
 });
+
+test("a path's history stops within its read budget and says it is incomplete", async () => {
+  treeReads = 0;
+  const capped = await pathHistory(source, "HEAD", ["src", "a.ts"], 100, 2);
+  assert.ok(treeReads <= 2, `read ${treeReads} trees`);
+  assert.equal(capped.complete, false);
+  // Within the two reads, c3's and c2's roots were read; src s2 was not, so nothing can be decided.
+  assert.deepEqual(capped.commits, []);
+  const full = await pathHistory(source, "HEAD", ["src", "a.ts"], 100, 100);
+  assert.deepEqual(full.commits.map((k) => k.message.split("\n")[0]), ["Second", "First"]);
+});

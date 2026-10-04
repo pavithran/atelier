@@ -5,7 +5,7 @@ import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, Ru
 import { cleanTitle, titleOf, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
-import { codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
+import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
@@ -397,7 +397,7 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
   const head = await resolve(s, at ?? "HEAD");
   if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(project)}`), 404);
   if (view === "log") {
-    const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), 1000);
+    const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), LOG_PAGES - 1);
     const { commits, more } = await logPage(s, head.hash, page);
     return html(renderLog(w, head, commits, page, more, ownerName(env)));
   }

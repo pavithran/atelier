@@ -94,8 +94,10 @@ export async function walk(r: Reader, rootTree: string, path: string[]): Promise
     }
     hash = entry.hash;
   }
+  // Artifacts returns a directory whole, so its size bounds this read and no
+  // limit here can avoid that; TREE_LIMIT bounds what is copied out and shown.
+  // The sort works on a copy of the references, never on the reader's array.
   const entries = (await r.tree(hash)) ?? [];
-  // Directories first, then files, each by name, as a reader expects.
   const sorted = [...entries].sort((a, b) => (a.type === "tree" ? 0 : 1) - (b.type === "tree" ? 0 : 1) || a.name.localeCompare(b.name));
   return { kind: "tree", hash, entries: sorted.slice(0, TREE_LIMIT).map(({ name, type, mode, hash }) => ({ name, type, mode, hash })), total: sorted.length };
 }
@@ -153,6 +155,9 @@ export const EMPTY_TREE = "4b825dc642cb6eb9a060c54bf8d69288fbee4904";
 // hundred reads for a shallow path, and up to the cap times the path's depth
 // for a deep path changed in every commit.
 export const HISTORY_CAP = 100;
+// And at most this many tree reads in all: a deep path changed in every
+// commit stops early and says the history is incomplete.
+export const HISTORY_READS = 400;
 const HISTORY_BATCH = 10;
 
 // The commits on the first-parent line that changed what is at a path: the
@@ -160,35 +165,43 @@ const HISTORY_BATCH = 10;
 // hash, so directories that did not change cost nothing after the first read.
 // At most HISTORY_CAP commits are examined; `complete` says whether that was
 // the whole history.
-export async function pathHistory(s: Source, ref: string, path: string[], cap = HISTORY_CAP): Promise<{ commits: Commit[]; complete: boolean }> {
+export async function pathHistory(s: Source, ref: string, path: string[], cap = HISTORY_CAP, budget = HISTORY_READS): Promise<{ commits: Commit[]; complete: boolean }> {
   const log = await s.log({ ref, limit: cap + 1 });
-  const seen = log.slice(0, cap);
-  const trees = new Map<string, Promise<Awaited<ReturnType<Reader["tree"]>>>>();
+  const trees = new Map<string, ReturnType<Reader["tree"]>>();
+  let reads = 0;
   const cached: Reader = {
     tree: (h) => {
-      if (!trees.has(h)) trees.set(h, s.tree(h));
+      if (!trees.has(h)) {
+        if (++reads > budget) throw OVER_BUDGET;
+        trees.set(h, s.tree(h));
+      }
       return trees.get(h)!;
     },
     blob: s.blob,
   };
-  // The commit just beyond the window is located too, so the oldest commit
-  // examined is decided like every other: it changed the path when its entry
-  // differs from its parent's.
-  const located = log.slice(0, cap + 1);
+  // Each commit's entry at the path, located ten commits at a time; the walk
+  // stops at the first commit the read budget does not reach.
   const at: (string | null)[] = [];
-  for (let i = 0; i < located.length; i += HISTORY_BATCH) {
-    at.push(...await Promise.all(located.slice(i, i + HISTORY_BATCH).map(async (c) => (await locate(cached, c.treeHash, path)))));
+  let stopped = false;
+  for (let i = 0; i < log.length && !stopped; i += HISTORY_BATCH) {
+    const batch = await Promise.all(log.slice(i, i + HISTORY_BATCH).map((c) =>
+      locate(cached, c.treeHash, path).catch((err) => { if (err === OVER_BUDGET) return UNKNOWN; throw err; })));
+    for (const x of batch) {
+      if (x === UNKNOWN) { stopped = true; break; }
+      at.push(x as string | null);
+    }
   }
-  // The log ends early at the first commit, or where a parent cannot be
-  // read; only the first is the whole history.
-  const last = log[log.length - 1];
-  const complete = log.length <= cap && (!last || last.parents.length === 0);
-  // The oldest commit read is decided against its parent when the log goes
-  // on, against nothing when it is the first commit, and not at all when its
-  // parent could not be read.
-  const commits = seen.filter((_, i) => i + 1 < at.length ? at[i] !== at[i + 1] : complete && at[i] !== null);
-  return { commits, complete };
+  // A commit is decided against the one before it in history. The oldest one
+  // located is decided only when it is the first commit of all.
+  const last = log[at.length - 1];
+  const reachedRoot = at.length === log.length && log.length <= cap && (!last || last.parents.length === 0);
+  const decided = Math.min(cap, reachedRoot ? at.length : at.length - 1);
+  const commits = log.slice(0, Math.max(0, decided)).filter((_, i) => i + 1 < at.length ? at[i] !== at[i + 1] : at[i] !== null);
+  return { commits, complete: reachedRoot };
 }
+
+const OVER_BUDGET = new Error("history read budget reached");
+const UNKNOWN = Symbol("unknown");
 
 // The hash at a path without listing the final directory, as history needs.
 async function locate(r: Reader, root: string, path: string[]): Promise<string | null> {

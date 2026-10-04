@@ -70,8 +70,11 @@ function commitRows(w: Where, commits: Commit[]): string {
   return `<ol class="repo-log">${commits.map((c) => `<li><a class="mono" href="${commitHref(w, c.hash)}">${short(c.hash)}</a><span class="msg">${e(firstLine(c.message))}</span><span class="meta">${e(c.author.name)} · ${day(c.authoredAt)}</span></li>`).join("")}</ol>`;
 }
 
+export const LOG_PAGES = 1000;
+
 export function renderLog(w: Where, head: Commit | null, commits: Commit[], page: number, more: boolean, ownerName: string | null = null): string {
-  const pager = `<nav class="pager" aria-label="Pages">${page > 0 ? `<a href="${logHref(w, page - 1)}">Newer</a>` : ""}${more ? `<a href="${logHref(w, page + 1)}">Older</a>` : ""}</nav>`;
+  const older = more && page + 1 < LOG_PAGES;
+  const pager = `<nav class="pager" aria-label="Pages">${page > 0 ? `<a href="${logHref(w, page - 1)}">Newer</a>` : ""}${older ? `<a href="${logHref(w, page + 1)}">Older</a>` : ""}</nav>${more && !older ? '<p class="meta">Older commits are not paged here; clone the repository to read them.</p>' : ""}`;
   const body = commits.length ? `<p class="meta">The first-parent line, newest first.</p>${commitRows(w, commits)}${pager}` : '<p class="empty">No commits.</p>';
   return frame(w, "Log", "log", head, body, ownerName);
 }

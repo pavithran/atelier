@@ -180,3 +180,12 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
  expect(await history.text()).toContain('On browsed');
  expect((await get('/p/browsed/history')).status).toBe(404);
 });
+
+it('the log stops offering older pages at its last page instead of looping',async()=>{
+ const {renderLog,LOG_PAGES}=await import('../src/browse/view');
+ const head={hash:'a'.repeat(40),treeHash:'b'.repeat(40),message:'m',author:{name:'A',email:'a@x'},parents:[],authoredAt:1};
+ const last=renderLog({project,item:null,at:null},head,[head],LOG_PAGES-1,true);
+ expect(last).not.toContain('>Older<');
+ expect(last).toContain('Older commits are not paged here');
+ expect(renderLog({project,item:null,at:null},head,[head],3,true)).toContain('>Older<');
+});
