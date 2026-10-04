@@ -1,0 +1,28 @@
+atelier cloudflare-git/t11 "Dispatch: queue a task for a kind of runner, and let runners poll for and claim dispatched work"
+accepted head e96d6d99955c988ff9719fc0a56543061af6d331
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T16:27:05.059Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T16:27:07.006Z
+REVIEW approve — zcode/glm-5.3: Third review at e96d6d9: all three second-round findings fixed and tested; no bypass, double claim or lost task found; claim is synchronous so a refused runner never reaches token rotation; 84 node and 24 Workers tests and typecheck clean. Nits, not blocking: runner names lowercase only the kind; runner adoption after a handoff logs no event; undispatch on a claimed item gives a misleading reason. [Review by zcode/glm-5.3 on a read-only copy; recorded by the orchestrator.]
+2026-10-04T15:48:04.307Z pavi item.created
+2026-10-04T15:49:32.956Z claude-code/opus-5.5 item.claimed
+2026-10-04T15:49:36.379Z claude-code/opus-5.5 fork.created
+2026-10-04T16:04:58.176Z claude-code/opus-5.5 push.observed
+2026-10-04T16:05:08.676Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:05:10.527Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:05:11.022Z claude-code/opus-5.5 item.submitted
+2026-10-04T16:12:19.165Z zcode/glm-5.3 review.rejected
+2026-10-04T16:14:00.195Z claude-code/opus-5.5 push.observed
+2026-10-04T16:14:10.155Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:14:12.044Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:14:12.550Z claude-code/opus-5.5 item.submitted
+2026-10-04T16:18:32.399Z zcode/glm-5.3 review.rejected
+2026-10-04T16:21:01.477Z pavi review.approved
+2026-10-04T16:21:03.744Z pavi review.approved
+2026-10-04T16:21:12.359Z pavi review.approved
+2026-10-04T16:21:14.299Z pavi review.approved
+2026-10-04T16:26:55.154Z claude-code/opus-5.5 push.observed
+2026-10-04T16:27:05.142Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:27:07.059Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:27:07.553Z claude-code/opus-5.5 item.submitted
+2026-10-04T16:31:23.916Z zcode/glm-5.3 review.approved
+2026-10-04T16:32:49.533Z pavi item.accepted
