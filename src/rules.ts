@@ -329,3 +329,24 @@ export function repoName(project: string, itemId?: string): string {
   if (!name || name.length > 63) throw new RuleError("bad_name", `cannot make a repo name from "${project}"`, 400);
   return name;
 }
+
+// Local cache cleanup requires proof that no unpublished work will be lost.
+export function gcWorkspaceReason(
+  item: Pick<Item, "state" | "acceptedHead"> | undefined,
+  head: string, dirty: boolean, extraCommits: boolean,
+): string | null {
+  if (item?.state !== "merged") return "item is not confirmed merged";
+  if (!item.acceptedHead || head !== item.acceptedHead) return "HEAD is not the merged head";
+  if (dirty) return "contains changed, untracked or ignored files";
+  if (extraCommits) return "contains commits outside the merged history";
+  return null;
+}
+
+export const GC_CHECK_AGE_MS = 24 * 60 * 60 * 1000;
+
+export function gcCheckReason(startedAt: unknown, running: boolean, now: number): string | null {
+  if (running) return "check process may still be running";
+  if (typeof startedAt !== "number" || !Number.isFinite(startedAt) || startedAt > now) return "invalid check age";
+  if (now - startedAt < GC_CHECK_AGE_MS) return "check is less than 24 hours old";
+  return null;
+}

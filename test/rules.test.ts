@@ -171,3 +171,25 @@ test("overlapping claims are refused when the project says so, and only then", (
   const unscoped = item({ id: "t4", state: "open", owner: null, scope: [] });
   assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
+
+test("gc removes only clean workspaces at their confirmed merged head", async () => {
+  const { gcWorkspaceReason } = await import("../src/rules.ts");
+  assert.equal(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, false), null);
+  for (const state of ["open", "claimed", "submitted", "accepted", "abandoned"] as const) {
+    assert.match(gcWorkspaceReason(item({ state, acceptedHead: H1 }), H1, false, false)!, /not confirmed merged/);
+  }
+  assert.ok(gcWorkspaceReason(undefined, H1, false, false));
+  assert.ok(gcWorkspaceReason(item({ state: "merged" }), H1, false, false));
+  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H2 }), H1, false, false));
+  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, true, false));
+  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, true));
+});
+
+test("gc requires an expired check record and no live process", async () => {
+  const { gcCheckReason, GC_CHECK_AGE_MS } = await import("../src/rules.ts");
+  const now = Date.now(), old = now - GC_CHECK_AGE_MS;
+  assert.equal(gcCheckReason(old, false, now), null);
+  assert.ok(gcCheckReason(old, true, now));
+  assert.ok(gcCheckReason(old + 1, false, now));
+  for (const age of [undefined, "yesterday", NaN, Infinity, now + 1]) assert.ok(gcCheckReason(age, false, now));
+});
