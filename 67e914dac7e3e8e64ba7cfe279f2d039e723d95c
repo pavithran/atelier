@@ -1,0 +1,12 @@
+atelier cloudflare-git/t45 "Clean-ups: demo script and README for the current pages, and atelier status for the owner's queue in the terminal"
+accepted head c6f04e7e149733e078b15d952613898de0c0b79f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-04T17:46:27.757Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-04T17:46:29.751Z
+2026-10-04T17:31:08.426Z pavi item.created
+2026-10-04T17:44:15.703Z claude-code/sonnet-5.5 item.claimed
+2026-10-04T17:44:17.741Z claude-code/sonnet-5.5 fork.created
+2026-10-04T17:46:16.617Z claude-code/sonnet-5.5 push.observed
+2026-10-04T17:46:27.825Z claude-code/sonnet-5.5 evidence.observed
+2026-10-04T17:46:29.821Z claude-code/sonnet-5.5 evidence.observed
+2026-10-04T17:46:30.241Z claude-code/sonnet-5.5 item.submitted
+2026-10-04T17:53:12.949Z pavi item.accepted
