@@ -1,0 +1,12 @@
+atelier cloudflare-git/t63 "Fix: tally numbers line up across a row when their labels wrap differently (phone width)"
+accepted head ba745d3a587e6906affbba96bfe0702ee606b32e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T20:38:56.645Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T20:38:58.944Z
+2026-10-04T20:38:10.195Z pavi item.created
+2026-10-04T20:38:10.498Z claude-code/opus-5.5 item.claimed
+2026-10-04T20:38:14.833Z claude-code/opus-5.5 fork.created
+2026-10-04T20:38:45.424Z claude-code/opus-5.5 push.observed
+2026-10-04T20:38:57.023Z claude-code/opus-5.5 evidence.observed
+2026-10-04T20:38:59.004Z claude-code/opus-5.5 evidence.observed
+2026-10-04T20:38:59.463Z claude-code/opus-5.5 item.submitted
+2026-10-04T23:34:52.681Z pavi item.accepted
