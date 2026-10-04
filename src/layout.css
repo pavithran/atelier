@@ -482,3 +482,13 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 .pager { display: flex; gap: var(--space-lg); margin-top: 16px; }
 .commit-head h2 { font: 700 26px/1.2 var(--font-display); margin: 0 0 8px; color: var(--text-bright); overflow-wrap: anywhere; }
 .commit-body { white-space: pre-wrap; font: 14px/1.6 var(--font-mono); color: var(--text-muted); margin: 0 0 10px; }
+
+/* ── showcase: the public page, without the signed-in rail ─────────────────── */
+body.public { display: block; }
+.public-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-lg); max-width: 1240px; margin: 0 auto; padding: 18px 16px 0; }
+.public-bar .brand { padding: 0; font-size: 30px; }
+.public-bar nav { display: flex; gap: var(--space-lg); font-size: 14px; }
+.public-bar nav a { color: var(--text-muted); }
+.public-bar nav a:hover { color: var(--text); }
+body.public main { margin: 0 auto; padding: 28px 16px 64px; }
+.public-note { margin-top: 32px; }
