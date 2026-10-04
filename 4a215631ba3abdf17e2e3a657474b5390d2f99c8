@@ -1,0 +1,12 @@
+atelier cloudflare-git/t14 "Model registry and routing: priors from model cards and benchmarks, local qualification receipts, Atelier's track record, and privacy rules"
+accepted head a6698c4abf657a5abe2bea6dac1f4358e60ee55f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-04T16:09:43.436Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-04T16:09:45.353Z
+2026-10-04T15:48:05.211Z pavi item.created
+2026-10-04T16:01:14.484Z codex/gpt-6-astra item.claimed
+2026-10-04T16:01:18.308Z codex/gpt-6-astra fork.created
+2026-10-04T16:09:33.332Z codex/gpt-6-astra push.observed
+2026-10-04T16:09:43.497Z codex/gpt-6-astra evidence.observed
+2026-10-04T16:09:45.399Z codex/gpt-6-astra evidence.observed
+2026-10-04T16:09:45.904Z codex/gpt-6-astra item.submitted
+2026-10-04T16:20:16.274Z pavi item.accepted
