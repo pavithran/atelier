@@ -17,10 +17,11 @@ function night() {
     ev("t1", "claude-code/opus-5.5", "item.claimed"),
     ev("t1", "claude-code/opus-5.5", "fork.created"),
     ev("t1", "claude-code/opus-5.5", "push.observed", { head: "aaaaaaaa11" }),
-    ev("t1", "claude-code/opus-5.5", "evidence.observed", { claim: "npm test", passed: true, where: "sandbox" }),
+    // Atelier's sandbox records its own checks, and its push events its own pushes.
+    ev("t1", "atelier/sandbox", "evidence.observed", { claim: "npm test", passed: true, where: "sandbox" }),
     ev("t1", "claude-code/opus-5.5", "item.submitted", { head: "aaaaaaaa11" }),
     ev("t1", "zcode/glm-5.3", "review.rejected", { note: "Rule 2 filters too early" }),
-    ev("t1", "claude-code/opus-5.5", "push.observed", { head: "bbbbbbbb22" }),
+    ev("t1", "atelier/events", "push.observed", { head: "bbbbbbbb22", source: "artifacts" }),
     ev("t1", "zcode/glm-5.3", "review.approved"),
     ev("t1", OWNER, "item.accepted", { head: "bbbbbbbb22" }),
     ev("t1", OWNER, "item.merged", { mergeCommit: "cccccccc33", head: "bbbbbbbb22" }),
@@ -54,16 +55,36 @@ test("a story has a thread per claimed task, with who held it and how it ended",
 test("the tally counts agents' moves apart from the owner's decisions", () => {
   const t = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER).tally;
   assert.equal(t.decisions, 2, "an acceptance and a handoff; a merge and task creation are not decisions");
-  assert.equal(t.agentMoves, 9, "everything agents did except opening a fork");
+  assert.equal(t.agentMoves, 7, "everything agents did except opening a fork; Atelier's own records are not moves");
   assert.equal(t.checks, 2);
   assert.equal(t.inCloud, 1);
   assert.equal(t.sentBack, 1);
   assert.deepEqual(t.agents, ["claude-code/opus-5.5", "zcode/glm-5.3", "codex/gpt-5.5", "codex/gpt-6"]);
-  assert.equal(t.byVendor.anthropic, 5);
+  assert.equal(t.byVendor.anthropic, 3);
+  assert.equal(t.byVendor.other, undefined, "Atelier is not an agent");
   const both = addTally(t, t);
-  assert.equal(both.agentMoves, 18);
+  assert.equal(both.agentMoves, 14);
   assert.equal(both.agents.length, 4, "an agent in two projects is one agent");
   assert.deepEqual(addTally(emptyTally(), t), t);
+});
+
+test("what Atelier recorded is drawn on the holder's thread, in the holder's colour", () => {
+  const [t1] = buildStory("demo", [item("t1", "merged")], night(), OWNER).threads;
+  const pushes = t1.beads.filter((b) => b.kind === "push");
+  assert.deepEqual(pushes.map((b) => [b.actor, b.label]), [
+    ["claude-code/opus-5.5", "opus-5.5 pushed aaaaaaaa"],
+    ["claude-code/opus-5.5", "opus-5.5 pushed bbbbbbbb"],
+  ]);
+  assert.equal(t1.beads.find((b) => b.kind === "pass")?.actor, "claude-code/opus-5.5");
+});
+
+test("a merge is counted only when its task is drawn, and a cut record says so", () => {
+  seq = 0;
+  // The claim fell outside the read window; only the merge remains.
+  const s = buildStory("demo", [item("t7", "merged")], [ev("t7", OWNER, "item.merged", { mergeCommit: "dddddddd44" })], OWNER, true);
+  assert.equal(s.threads.length, 0);
+  assert.equal(s.tally.merges, 0);
+  assert.equal(s.partial, true);
 });
 
 test("a rejection and a failed check are moments worth telling", () => {

@@ -35,6 +35,9 @@ function sameString(a: string, b: string): boolean {
 type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string };
 
 // The actor that stands for the project owner, and the name the pages use.
+// How much of a project's record the graph reads; a longer record is drawn from its most recent part.
+const STORY_EVENTS = 3000;
+
 function ownerActor(env: Env): string {
   return (env as unknown as Settings).OWNER_ACTOR || DEFAULT_OWNER;
 }
@@ -445,16 +448,25 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const now = new Date();
     const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
-      try { return { ...v, events: (await ledger(env, v.project.name).events(undefined, 5000)) as unknown as LedgerEvent[] }; }
+      try { return { ...v, events: (await ledger(env, v.project.name).events(undefined, 400)) as unknown as LedgerEvent[] }; }
       catch { v.unavailable = true; return null; }
     }))).filter((v): v is FloorView => v !== null);
     const floor = buildFloor(floorViews, now);
-    // The graph reads each project's whole record, newest project first.
+    // The graph reads a project's longer record: every project's on Flow, and
+    // only the most recently active project's on Decisions. Studio needs none.
     const owner = ownerActor(env);
-    const stories = floorViews.map((v) => buildStory(v.project.name, v.items, v.events, owner))
-      .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
+    const story = async (v: FloorView) => {
+      try {
+        const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+        return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS);
+      } catch { return null; }
+    };
+    const recent = (v: FloorView) => v.events[0]?.at ?? "";
     if (parts[0] === "flow") {
-      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), views.some((v) => v.unavailable)));
+      const stories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null)
+        .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
+      const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete));
     }
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable)));
     const lists = await Promise.all(views.map(async v => {
@@ -474,8 +486,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const selectedItem = await L.item(task);
       selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
     }
-    const latest = stories.find((s) => s.threads.length);
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest && { story: latest, owner }));
+    const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
+    const latest = busiest && !selected ? await story(busiest) : null;
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined));
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);

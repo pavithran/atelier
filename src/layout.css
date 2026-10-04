@@ -386,7 +386,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .g-main { stroke: var(--main-line); stroke-width: 4; stroke-linecap: round; fill: none; filter: drop-shadow(0 0 5px rgba(244, 241, 232, .45)); }
 .g-thread { stroke: var(--c); stroke-width: 2.4; fill: none; stroke-linecap: round; opacity: .9; }
 .g-lane { stroke-width: 3.2; opacity: 1; filter: drop-shadow(0 0 4px var(--c)); }
-.g-task.closed { opacity: .5; }
+.g-task.closed .g-thread, .g-task.closed .g-bead, .g-task.closed .g-cap { opacity: .45; }  /* the label stays legible */
 .g-cap { stroke: var(--text-dim); stroke-width: 2.4; stroke-linecap: round; }
 .g-head { fill: var(--c); filter: drop-shadow(0 0 6px var(--c)); }
 .g-task.live .g-head { animation: breathe 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }

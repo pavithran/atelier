@@ -224,7 +224,7 @@ function tallyBlock(t: Tally): string {
   return `<div class="tally"><div class="tally-bar" aria-hidden="true">${bar}</div><dl>
   <div><dt>agent moves</dt><dd>${t.agentMoves}</dd></div>
   <div class="you"><dt>your decisions</dt><dd>${t.decisions}</dd></div>
-  <div class="cloud"><dt>checks Atelier ran itself${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}</dt><dd>${t.checks}</dd></div>
+  <div class="cloud"><dt>checks run on a clean copy${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}</dt><dd>${t.checks}</dd></div>
   <div class="catch"><dt>times a model sent work back</dt><dd>${t.sentBack}</dd></div>
 </dl></div>`;
 }
@@ -258,7 +258,7 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
     .slice(0, 14);
   const many = shown.length > 1;
   const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.project)}">
-  <div class="stage-head"><h2>${e(s.project)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}</span>
+  <div class="stage-head"><h2>${e(s.project)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}</span>
   <a class="replay" href="/flow?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a></div>
   <div class="stage-scroll">${drawStory(s, owner, { href: taskHref(s.project) })}</div>
 </section>`).join("");
@@ -267,7 +267,7 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
     ["Planned", "You describe an outcome; it becomes a task with a scope.", `${plural(t.planned, "task")} planned`, "var(--main-line)"],
     ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
     ["Worked", "The agent commits and pushes to its fork, never to your checkout.", `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
-    ["Checked", "Atelier runs the project's checks itself, in a Cloudflare container, on the exact revision.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
+    ["Checked", "The project's checks run on a clean copy of the exact revision: in a Cloudflare container, or, where the project allows it, on the agent's machine.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
     ["Reviewed", "Changes to protected files need a model from another family, or you.", `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
     ["Decided", "You see the diff, the evidence and the reviews, and accept one revision.", `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
     ["Merged", "It merges into main on your machine, with its whole history attached as a git note.", `${t.merges} merged`, "var(--main-line)"],
@@ -285,7 +285,7 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
   <header class="flow-hero">
     <div><span class="kicker">Atelier · every project · from the ledger</span>
       <h1>${headline(t)}</h1>
-      <p class="lead">Each coloured thread is a task an agent took off main: its pushes, the checks Atelier ran itself, the reviews from other models, and your decision. Hover a mark for what happened; select a task to open it.</p></div>
+      <p class="lead">Each coloured thread is a task an agent took off main: its pushes, its checks, the reviews from other models, and your decision. Hover a mark for what happened; select a task to open it.</p></div>
     ${tallyBlock(t)}
   </header>
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}

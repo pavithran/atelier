@@ -13,6 +13,10 @@ export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "own
 
 // Which family an actor belongs to, by the harness it runs in. The colour is
 // the vendor's, so a reader can see a thread change hands between companies.
+// Atelier records some events itself: checks its sandbox ran, pushes it saw.
+// They are the platform's work, not an agent's, and are never counted as moves.
+export const isAtelier = (actor: string) => actor.startsWith("atelier/");
+
 export function vendorOf(actor: string, owner: string): Vendor {
   if (actor === owner) return "owner";
   const { harness, model } = splitActor(actor);
@@ -54,6 +58,7 @@ export interface Tally {
 }
 export interface Story {
   project: string;
+  partial: boolean;            // the record was cut at the read limit; older tasks are not drawn
   span: number;                // the last position; positions run from 0
   times: { pos: number; at: string }[];
   threads: Thread[];
@@ -86,7 +91,7 @@ const sha8 = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
 
-export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string): Story {
+export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false): Story {
   const evs = [...events].sort((a, b) => a.seq - b.seq);
   const posOf = new Map<number, number>();
   let p = 0;
@@ -103,11 +108,14 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     const d = ev.data ?? {};
     const id = ev.itemId ?? "";
     const item = titles.get(id);
-    const name = (a: string) => (a === owner ? "You" : splitActor(a).model || a);
+    const holder = threads.get(id)?.holds.at(-1)?.who;
+    // An event Atelier recorded is told, and coloured, as part of the holder's thread.
+    const actor = isAtelier(ev.actor) && holder ? holder : ev.actor;
+    const name = (a: string) => (a === owner ? "You" : isAtelier(a) ? "Atelier" : splitActor(a).model || a);
     const say = (text: string, tone: Moment["tone"] = "") => moments.push({ pos, at: ev.at, actor: ev.actor, item: id, kind: ev.kind, text, tone });
 
     if (ev.actor === owner) { if (DECISIONS.has(ev.kind)) t.decisions++; }
-    else if (!QUIET.has(ev.kind)) {
+    else if (!QUIET.has(ev.kind) && !isAtelier(ev.actor)) {
       t.agentMoves++;
       const v = vendorOf(ev.actor, owner);
       t.byVendor[v] = (t.byVendor[v] ?? 0) + 1;
@@ -115,7 +123,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     }
 
     let th = threads.get(id);
-    const bead = (kind: BeadKind, label: string) => th?.beads.push({ pos, kind, actor: ev.actor, at: ev.at, label });
+    const bead = (kind: BeadKind, label: string) => th?.beads.push({ pos, kind, actor, at: ev.at, label });
     switch (ev.kind) {
       case "item.created": t.planned++; break;
       case "item.claimed":
@@ -136,7 +144,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         say(`${id} handed from ${name(str(d.from))} to ${name(to)}`);
         break;
       }
-      case "push.observed": t.pushes++; bead("push", `${name(ev.actor)} pushed ${sha8(d.head)}`); break;
+      case "push.observed": t.pushes++; bead("push", `${name(actor)} pushed ${sha8(d.head)}`); break;
       case "evidence.observed": {
         t.checks++;
         if (d.where === "sandbox") t.inCloud++;
@@ -156,8 +164,8 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       case "item.accepted": t.accepts++; bead("accept", `${name(ev.actor)} accepted ${sha8(d.head)}`); say(`${name(ev.actor)} accepted ${id}`, ev.actor === owner ? "you" : ""); break;
       case "item.dispatched": say(`${name(ev.actor)} sent ${id} to ${str(d.to) === "any" ? "any runner" : `a ${str(d.to)} runner`}`, ev.actor === owner ? "you" : ""); break;
       case "item.merged":
-        t.merges++;
-        if (th) { th.end = pos; th.ending = "merged"; th.merge = { pos, sha: str(d.mergeCommit) }; }
+        // Only a merge whose thread is drawn is counted, so the numbers match the picture.
+        if (th) { t.merges++; th.end = pos; th.ending = "merged"; th.merge = { pos, sha: str(d.mergeCommit) }; }
         say(`${id} merged into main${d.mergeCommit ? ` as ${sha8(d.mergeCommit)}` : ""}`, "merge");
         break;
       case "item.abandoned":
@@ -174,7 +182,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     for (const ev of evs) if (posOf.get(ev.seq)! <= target) best = ev;
     return { pos: best ? posOf.get(best.seq)! : 0, at: best?.at ?? "" };
   });
-  return { project, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
+  return { project, partial, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
 }
 
 // ── drawing ────────────────────────────────────────────────────────────────
