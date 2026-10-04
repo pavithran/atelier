@@ -61,9 +61,11 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
     if (a.startsWith("--")) {
-      const key = a.slice(2);
+      // --key=value carries its value; --key VALUE takes the next word unless it is a flag.
+      const eq = a.indexOf("=");
+      const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
       const next = argv[i + 1];
-      const val = next === undefined || next.startsWith("--") ? true : (i++, next);
+      const val = eq !== -1 ? a.slice(eq + 1) : next === undefined || next.startsWith("--") ? true : (i++, next);
       (out.multi[key] ??= []).push(val);
       out[key] = val;
     } else out._.push(a);
@@ -105,6 +107,12 @@ function project() {
     for (const [name, p] of Object.entries(cfg.projects ?? {})) if (resolve(p.path) === here) return name;
   }
   die("which project? pass --project NAME, or run inside a registered checkout or workspace");
+}
+
+// --summary takes text; a bare flag or an empty or blank value is refused, not dropped.
+function summaryArg(cmd) {
+  if (args.summary === undefined) return;
+  if (typeof args.summary !== "string" || !args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
 }
 
 function itemArg(i = 1) {
@@ -298,6 +306,9 @@ const commands = {
 
   // The project owner, in the project's checkout.
   async init() {
+    // A bare --title has no value, like a bare --approval: refuse rather than
+    // silently clear the stored title.
+    if (args.title === true) die('give the title as --title TEXT, or --title "" to clear it');
     const top = git(["rev-parse", "--show-toplevel"]);
     const name = args.name ?? top.split("/").pop();
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
@@ -305,16 +316,22 @@ const commands = {
     if (cp && (!args.approval || args.approval === true)) {
       die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
     }
-    const protect = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
+    // Only what this command names is sent; the server keeps everything else
+    // as it is. --reset starts the policy over from these options and the
+    // defaults. A ControlPlane project always sends the policy ControlPlane holds.
+    const reset = args.reset === true;
+    const policy = {};
+    if (args.multi.check || reset) policy.checks = args.multi.check ?? [];
+    if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
+    if (cp) policy.eligible = cp.eligible ?? [];
+    if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]);
+    if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = Boolean(args["sandbox-only"]);
     const r = await call("PUT", P(name), {
-      checks: args.multi.check ?? [],
-      protected: protect,
-      eligible: cp?.eligible ?? [],
-      refuseOverlap: cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]),
-      sandboxOnly: Boolean(args["sandbox-only"]),
+      ...policy,
+      ...(reset ? { reset: true } : {}),
       approval: args.approval === true ? undefined : args.approval,
       // Omitted keeps the current title; --title "" clears it.
-      ...(args.title === undefined ? {} : { title: args.title === true ? "" : args.title }),
+      ...(args.title === undefined ? {} : { title: args.title }),
       defaultBranch: branch,
     }, OWNER);
     git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
@@ -398,7 +415,9 @@ const commands = {
     const name = project(), id = itemArg(), as = actor();
     const branch = wsConfig("branch") ?? "main";
     const head = git(["rev-parse", "HEAD"]);
-    git(["push", "--quiet", "origin", `HEAD:${branch}`]);
+    // --force after `atelier update` rebased the workspace; the lease refuses
+    // to overwrite anything pushed since this workspace last fetched.
+    git(["push", "--quiet", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
     const item = await call("POST", `${I(name, id)}/push`, { head }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
@@ -469,7 +488,8 @@ const commands = {
 
   async submit() {
     const name = project(), id = itemArg(), as = actor();
-    await call("POST", `${I(name, id)}/submit`, {}, as);
+    summaryArg("submit");
+    await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
@@ -528,6 +548,7 @@ const commands = {
 
   async finish() {
     const name = project(), id = itemArg(), as = actor();
+    summaryArg("finish");
     if (wsConfig("project") !== name || wsConfig("item") !== id) die("finish must run in this task's claimed workspace");
     const d = await call("GET", I(name,id), undefined, as);
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
@@ -544,9 +565,33 @@ const commands = {
   // The project owner merges an exact revision. With --head, a submitted item
   // is first approved (with --approve) and accepted at that revision only.
   async merge() {
+    // Ends an interrupted merge's landing lease, so the task's owner can push
+    // again; refused once the merge is on the baseline.
+    if (args.cancel === true) {
+      const name = project(), id = itemArg();
+      const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
+      const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+      const item = (await call("GET", I(name, id), undefined, OWNER)).item;
+      let journal;
+      try { journal = landingJournal(gitDir, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
+      const local = journal.state?.mergeCommit;
+      // An unpublished merge commit in the checkout is kept unless the owner
+      // asks for it to go; then the checkout returns to where the merge began.
+      if (local && args["discard-local"] !== true) {
+        die(`the checkout holds this merge's unpublished commit ${short(local)} on top of ${short(journal.state.start)}.\nFinish it with: atelier merge ${id}\nor cancel and remove it with: atelier merge ${id} --cancel --discard-local`);
+      }
+      await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
+      if (local) {
+        if (git(["rev-parse", "HEAD"], { cwd }) !== local || git(["status", "--porcelain"], { cwd })) die("the checkout moved since the merge; reset it yourself, then remove .git/atelier-landing.json");
+        git(["reset", "--quiet", "--hard", journal.state.start], { cwd });
+        console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(journal.state.start)}.`);
+      }
+      journal.clear();
+      return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+    }
     const name=project(), id=itemArg();
     if (args.head !== undefined) {
-      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]]");
+      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]] | atelier merge ID --cancel [--discard-local]");
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
@@ -598,8 +643,11 @@ const commands = {
       }
       const mergeCommit=journal.state.mergeCommit;
       if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the checkout before retrying');
-      const current=await call('GET',I(name,id),undefined,OWNER);
-      if(current.item.state!=='accepted'||current.item.acceptedHead!==item.acceptedHead)die('approval changed during the merge; the local commit is preserved for reconciliation');
+      // Take the landing lease: it confirms the acceptance has not moved and
+      // stops a push over this revision until the merge is recorded.
+      // A refusal ends the command here with the server's reason; the local
+      // merge commit is kept for reconciliation.
+      await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
       const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git([...auth(base.token),'ls-remote',base.remote,'refs/notes/atelier'],{cwd});
@@ -763,9 +811,9 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
-Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
+Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
