@@ -1,3 +1,4 @@
+import type { ModelEntry, ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
@@ -42,6 +43,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -72,6 +74,33 @@ export class Ledger extends DurableObject<Env> {
 
   projects(): ProjectRecord[] {
     return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  // The model pool, on the index instance like the project list: shared by
+  // every project, written by the owner, read by runners.
+  models(): ModelEntry[] {
+    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  putModel(entry: ModelEntry): ModelEntry {
+    const kept = this.sql.exec(`SELECT json FROM models WHERE id = ?`, entry.id).toArray()[0];
+    // Changing an entry keeps the last status the runner reported for it.
+    const status = kept ? (JSON.parse(kept.json as string) as ModelEntry).status : undefined;
+    const record = { ...entry, ...(status ? { status } : {}) };
+    this.sql.exec(`INSERT OR REPLACE INTO models (id, json) VALUES (?, ?)`, entry.id, JSON.stringify(record));
+    return record;
+  }
+
+  removeModel(id: string): boolean {
+    return this.sql.exec(`DELETE FROM models WHERE id = ?`, id).rowsWritten > 0;
+  }
+
+  setModelStatus(id: string, status: ModelStatus): ModelEntry {
+    const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, id).toArray()[0];
+    if (!row) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    const record = { ...(JSON.parse(row.json as string) as ModelEntry), status };
+    this.sql.exec(`UPDATE models SET json = ? WHERE id = ?`, JSON.stringify(record), id);
+    return record;
   }
 
   // ── project instance ─────────────────────────────────────────────────────

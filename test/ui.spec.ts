@@ -150,3 +150,27 @@ it('the showcase route is public only when the owner names projects, and caches 
  const login=await worker.fetch(new Request('https://atelier.test/login'),{...env,SHOWCASE:'shown'} as typeof env);
  expect(await login.text()).toContain('href="/showcase"');
 });
+
+it('the Models page lists the pool by where it runs, escapes it, and adds through a same-origin form',async()=>{
+ const {renderModels}=await import('../src/ui');
+ const html=renderModels([
+  {id:'GLM-5.3-Flash-4_8bit',harness:'opencode',where:'home',provider:'ai-studio',aliases:[],family:'zai',note:'<b>local</b>',addedBy:'pavi',addedAt:time,status:{state:'available',at:time}},
+  {id:'mystery-1',harness:'codex',where:'cloud',provider:'subscription',aliases:[],family:'other',note:'',addedBy:'pavi',addedAt:time},
+ ],new Map([['opencode/GLM-5.3-Flash-4_8bit',{itemsClaimed:2,checkPasses:3,checkFailures:0,reviewsApproved:0,reviewsRejected:1,handoffsAway:0,merges:2}]]),'PAVI');
+ expect(html).toContain('At home · 1');
+ expect(html).toContain('In the cloud · 1');
+ expect(html).toContain('&lt;b&gt;local&lt;/b&gt;');
+ expect(html).toContain('Took 2 tasks, merged 2');
+ expect(html).toContain('family not recognised');
+ expect(html).toContain('action="/models/add"');
+ const TOKEN='models-page-token';
+ const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const post=(origin:string,form:Record<string,string>)=>worker.fetch(new Request('https://atelier.test/models/add',{method:'POST',headers:{cookie:`atelier=${hex}`,origin},body:new URLSearchParams(form),redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
+ expect((await post('https://evil.test',{id:'x',harness:'codex',where:'cloud'})).status).toBe(403);
+ expect((await post('https://atelier.test',{id:'deepseek-chat',harness:'opencode',where:'cloud',provider:'deepseek',keychain:'deepseek.API_KEY'})).status).toBe(303);
+ const bad=await post('https://atelier.test',{id:'x',harness:'opencode',where:'cloud',endpoint:'https://u:p@x.test'});
+ expect(bad.status).toBe(400);
+ expect(await bad.text()).toContain('must not carry a user name or password');
+ const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:`atelier=${hex}`}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
+ expect(await page.text()).toContain('deepseek-chat');
+});

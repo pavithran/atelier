@@ -58,3 +58,27 @@ it("a claim on a dispatched task is refused without the right runner header", as
   expect(((await wrong.json()) as { error: string }).error).toBe("wrong_runner");
   expect((await claim("opencode/glm-5.3-flash", "laptop")).status).toBe(400);
 });
+
+it("the model pool: anyone signed in reads it, only the owner changes it, a runner reports status", async () => {
+  const api = (method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}) =>
+    worker.fetch(new Request(`https://atelier.test/api/models${path}`, {
+      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), testEnv);
+  const entry = { harness: "opencode", where: "cloud", provider: "google", keychain: "gemini.API_KEY" };
+  expect((await api("PUT", "/gemini-3.1-pro", "codex/gpt-6-astra", entry)).status).toBe(403);
+  const added = await api("PUT", "/gemini-3.1-pro", "owner", entry);
+  expect(added.status).toBe(200);
+  expect(await added.json()).toMatchObject({ id: "gemini-3.1-pro", family: "google", keychain: "gemini.API_KEY" });
+  expect((await api("PUT", "/leaky", "owner", { ...entry, key: "AIza-secret" })).status).toBe(400);
+  const list = await (await api("GET", "", "codex/gpt-6-astra")).json() as { id: string }[];
+  expect(list.map((m) => m.id)).toContain("gemini-3.1-pro");
+  expect(JSON.stringify(list)).not.toContain("AIza");
+  expect((await api("POST", "/gemini-3.1-pro/status", "opencode/gemini-3.1-pro", { state: "available" })).status).toBe(400);
+  const reported = await api("POST", "/gemini-3.1-pro/status", "opencode/gemini-3.1-pro", { state: "available", served: "gemini-3.1-pro-002" }, { "x-atelier-runner": "home:studio" });
+  expect(await reported.json()).toMatchObject({ status: { state: "available", served: "gemini-3.1-pro-002" } });
+  // Replacing an entry keeps the status the runner last reported.
+  expect(await (await api("PUT", "/gemini-3.1-pro", "owner", { ...entry, note: "via OpenCode" })).json()).toMatchObject({ note: "via OpenCode", status: { state: "available" } });
+  expect((await api("POST", "/missing/status", "x/y", { state: "available" }, { "x-atelier-runner": "home:studio" })).status).toBe(404);
+  expect(await (await api("DELETE", "/gemini-3.1-pro", "owner")).json()).toEqual({ removed: true });
+});

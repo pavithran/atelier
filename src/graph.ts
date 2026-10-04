@@ -8,8 +8,9 @@
 import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
+import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
 
-export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "owner" | "other";
+export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
 
 // Which family an actor belongs to, by the harness it runs in. The colour is
 // the vendor's, so a reader can see a thread change hands between companies.
@@ -17,15 +18,24 @@ export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "own
 // They are the platform's work, not an agent's, and are never counted as moves.
 export const isAtelier = (actor: string) => actor.startsWith("atelier/");
 
+// The model's family decides, by its name (src/models/pool.ts), so a new
+// release is coloured on the day it appears. Work through OpenCode is home
+// work, in the Studio's colour, unless the model is built for a local server
+// or belongs to a family only served from the cloud. A name no family claims
+// falls back to its harness's usual family.
+const CLOUD_ONLY = new Set(["google", "openai", "anthropic"]);
+
 export function vendorOf(actor: string, owner: string): Vendor {
   if (actor === owner) return "owner";
   const { harness, model } = splitActor(actor);
-  const h = harness.toLowerCase(), m = model.toLowerCase();
-  if (h === "claude-code" || m.startsWith("claude") || m.startsWith("opus") || m.startsWith("sonnet")) return "anthropic";
-  if (h === "codex" || m.startsWith("gpt")) return "openai";
-  if (h === "opencode") return "studio";
-  if (h === "zcode" || m.startsWith("glm")) return "zai";
-  if (h === "gemini" || h === "antigravity" || m.startsWith("gemini")) return "google";
+  const h = harness.toLowerCase();
+  const family = familyOf(model);
+  if (h === "opencode" && (LOCAL_BUILD.test(model) || !CLOUD_ONLY.has(family))) return "studio";
+  if (family !== "other") return family;
+  if (h === "claude-code") return "anthropic";
+  if (h === "codex") return "openai";
+  if (h === "zcode") return "zai";
+  if (h === "gemini-cli" || h === "gemini" || h === "antigravity") return "google";
   return "other";
 }
 
@@ -351,6 +361,7 @@ function bead(b: Bead, X: number, y: number, d: string, color: string, key: stri
 
 // Every vendor that appears in a story, for its legend, in a fixed order.
 export const VENDOR_NAMES: [Vendor, string][] = [
-  ["anthropic", "Claude"], ["openai", "GPT via Codex"], ["zai", "GLM via ZCode"],
-  ["studio", "Local, on your Studio"], ["google", "Gemini"], ["other", "Other agents"], ["owner", "You"],
+  ["anthropic", "Claude"], ["openai", "GPT"], ["zai", "GLM"], ["google", "Gemini"], ["deepseek", "DeepSeek"],
+  ["qwen", "Qwen"], ["minimax", "MiniMax"], ["mistral", "Mistral"], ["meta", "Llama"],
+  ["studio", "Local, on your Studio"], ["other", "Other agents"], ["owner", "You"],
 ];

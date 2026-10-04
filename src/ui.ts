@@ -9,6 +9,8 @@ import type { ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { describe as describeDispatch } from "./dispatch/rules";
+import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
+import type { ModelRecord } from "./models/record";
 import { drawStory, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
@@ -43,6 +45,7 @@ const ICONS: Record<string, string> = {
   studio: '<path d="M3 20h18M5 20V9l7-5 7 5v11M9 20v-6h6v6"/>',
   projects: '<path d="M3 6h7l2 3h9v11H3V6Z"/>',
   history: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/>',
+  models: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13v7M13 16.5h7"/>',
   flow: '<path d="M3 6h18"/><path d="M6 6c3 0 2 6 5 6h7c3 0 2-6 5-6M6 6c3 0 2 12 5 12h4"/>',
   arrow: '<path d="m9 6 6 6-6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
@@ -56,6 +59,7 @@ const NAV: [string, string, string][] = [
   ["Decisions", "/", "decisions"],
   ["Flow", "/flow", "flow"],
   ["Studio", "/studio", "studio"],
+  ["Models", "/models", "models"],
   ["Projects", "/projects", "projects"],
   ["History", "/history", "history"],
 ];
@@ -347,6 +351,60 @@ export function renderShowcase(stories: Story[], total: Tally, owner: string, ow
   ${body}
   <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded.</p>
 </main></body></html>`;
+}
+
+// ── models ─────────────────────────────────────────────────────────────────
+// The pool: every model the owner has made available, where it runs, how it
+// is reached, what the runner last found, and what the record says it did.
+
+const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
+
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = ""): string {
+  const card = (m: ModelEntry) => {
+    const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
+    const r = actors.map((a) => record.get(a)).filter(Boolean).reduce((acc, x) => ({
+      claimed: acc.claimed + x!.itemsClaimed, merges: acc.merges + x!.merges, pass: acc.pass + x!.checkPasses,
+      fail: acc.fail + x!.checkFailures, back: acc.back + x!.reviewsRejected,
+    }), { claimed: 0, merges: 0, pass: 0, fail: 0, back: 0 });
+    const status = m.status
+      ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
+      : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
+    const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
+    return `<li class="model" style="--c:var(--m-${m.where === "home" ? "studio" : m.family})">
+  <div class="model-head"><strong class="mono">${e(m.id)}</strong>${m.family === "other" ? tag("family not recognised", "ask") : `<span class="meta">${e(m.family)}</span>`}</div>
+  <p class="meta">${how}</p>
+  ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
+  <p class="model-status">${status}</p>
+  <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
+  ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
+  <form method="post" action="/models/remove" class="inline"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
+</li>`;
+  };
+  const group = (where: "home" | "cloud", title: string, none: string) => {
+    const list = entries.filter((m) => m.where === where);
+    return `<h2 class="section-title">${title} · ${list.length}</h2>${list.length ? `<ul class="model-grid">${list.map(card).join("")}</ul>` : `<p class="empty">${none}</p>`}`;
+  };
+  const opts = (values: readonly string[]) => values.map((v) => `<option>${e(v)}</option>`).join("");
+  return page("Models", `<div class="page-width">
+  <header><h1>Models</h1><p class="lead">${plural(entries.length, "model")} in the pool. The runner on your machine checks each one and reports what it found.</p></header>
+  ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
+  ${group("home", "At home", "No home models yet. Add one served by your Studio or another local server.")}
+  ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
+  <details class="new-task"${entries.length ? "" : " open"}><summary>Add a model</summary>
+    <form method="post" action="/models/add" class="stack">
+      <label>Model id, as the harness names it<input name="id" required maxlength="128" placeholder="gemini-3.1-pro, GLM-5.3-Flash-4_8bit"></label>
+      <label>Harness<select name="harness">${opts(HARNESSES)}</select></label>
+      <label>Where it runs<select name="where"><option>home</option><option>cloud</option></select></label>
+      <label>Provider<select name="provider">${opts(PROVIDERS)}</select></label>
+      <label>Endpoint, for an OpenAI-compatible server<input name="endpoint" type="url" placeholder="http://10.0.0.110:8000/v1"></label>
+      <label>Keychain entry holding its key<input name="keychain" maxlength="100" placeholder="gemini.API_KEY"></label>
+      <p class="meta">Atelier stores the entry's name, never the key. Create the entry yourself on the runner's machine.</p>
+      <label>Other names for it, separated by commas<input name="aliases" maxlength="300"></label>
+      <label>Note<input name="note" maxlength="300"></label>
+      <button class="primary">Add to the pool</button>
+    </form>
+  </details>
+</div>`, "Models", ownerName);
 }
 
 // ── studio ─────────────────────────────────────────────────────────────────

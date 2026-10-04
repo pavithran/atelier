@@ -281,6 +281,28 @@ printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
 `SHOWCASE` takes project names separated by commas; deleting it hides the
 page again. The page may be cached for a minute.
 
+## The model pool
+
+The Models page (`/models`) and `atelier models` hold the models Atelier
+can dispatch to. Each entry names the model as its harness does, the
+harness (OpenCode, Claude Code, Codex, ZCode or the Gemini CLI), where it
+runs, its provider and, for an API, the name of the Keychain entry on the
+runner's machine that holds its key. Atelier stores that name and never a
+key; a form or request that carries one is refused.
+
+```text
+atelier models add GLM-5.3-Flash-4_8bit --harness opencode --where home --endpoint http://studio.local:8000/v1
+atelier models add gemini-3.1-pro --harness opencode --where cloud --provider google --keychain gemini.API_KEY
+atelier models
+```
+
+A model's family (Claude, GPT, GLM, Gemini, DeepSeek, Qwen and others) is
+recognised from its name, so a new release is coloured correctly on the
+graph the day it appears; a name no family claims is shown as not
+recognised. The home runner reports what it finds for each model, through
+`POST /api/models/ID/status` under its runner name, and the Models page
+shows the latest report beside each model's record.
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
