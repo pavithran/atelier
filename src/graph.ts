@@ -92,7 +92,14 @@ const sha8 = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
 
-export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project): Story {
+// For a public page: what an agent or the owner wrote (review notes, reports,
+// check commands, closing notes) is left out, and the owner is named rather
+// than addressed. Titles, models, kinds and times stay.
+export interface StoryOptions { redact?: boolean; ownerLabel?: string }
+
+export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
+  const R = !!opts.redact;
+  const you = opts.ownerLabel ?? "You";
   const evs = [...events].sort((a, b) => a.seq - b.seq);
   const posOf = new Map<number, number>();
   let p = 0;
@@ -112,7 +119,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     const holder = threads.get(id)?.holds.at(-1)?.who;
     // An event Atelier recorded is told, and coloured, as part of the holder's thread.
     const actor = isAtelier(ev.actor) && holder ? holder : ev.actor;
-    const name = (a: string) => (a === owner ? "You" : isAtelier(a) ? "Atelier" : splitActor(a).model || a);
+    const name = (a: string) => (a === owner ? you : isAtelier(a) ? "Atelier" : splitActor(a).model || a);
     const say = (text: string, tone: Moment["tone"] = "") => moments.push({ pos, at: ev.at, actor: ev.actor, item: id, kind: ev.kind, text, tone });
 
     if (ev.actor === owner) { if (DECISIONS.has(ev.kind)) t.decisions++; }
@@ -150,17 +157,17 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         t.checks++;
         if (d.where === "sandbox") t.inCloud++;
         const where = d.where === "sandbox" ? "in a Cloudflare container" : "on the agent's machine";
-        if (d.passed === false) { bead("fail", `Failed ${where}: ${str(d.claim)}`); say(`A check on ${id} failed ${where}`, "catch"); }
-        else bead("pass", `Passed ${where}: ${str(d.claim)}`);
+        if (d.passed === false) { bead("fail", R ? `Failed ${where}` : `Failed ${where}: ${str(d.claim)}`); say(`A check on ${id} failed ${where}`, "catch"); }
+        else bead("pass", R ? `Passed ${where}` : `Passed ${where}: ${str(d.claim)}`);
         break;
       }
-      case "evidence.reported": bead("reported", `${name(ev.actor)} reported: ${clip(str(d.claim), 160)}`); break;
+      case "evidence.reported": bead("reported", R ? `${name(ev.actor)} reported on its work` : `${name(ev.actor)} reported: ${clip(str(d.claim), 160)}`); break;
       case "item.submitted": bead("submit", `${name(ev.actor)} submitted ${sha8(d.head)}`); say(`${name(ev.actor)} submitted ${id} for review`); break;
       case "review.approved": t.approvals++; bead("approve", `${name(ev.actor)} approved`); break;
       case "review.rejected":
         t.sentBack++;
-        bead("reject", `${name(ev.actor)} sent it back: ${clip(str(d.note), 220)}`);
-        say(`${name(ev.actor)} sent ${id} back: ${clip(str(d.note), 180)}`, "catch");
+        bead("reject", R ? `${name(ev.actor)} sent it back` : `${name(ev.actor)} sent it back: ${clip(str(d.note), 220)}`);
+        say(R ? `${name(ev.actor)} sent ${id} back` : `${name(ev.actor)} sent ${id} back: ${clip(str(d.note), 180)}`, "catch");
         break;
       case "item.accepted": t.accepts++; bead("accept", `${name(ev.actor)} accepted ${sha8(d.head)}`); say(`${name(ev.actor)} accepted ${id}`, ev.actor === owner ? "you" : ""); break;
       case "item.dispatched": say(`${name(ev.actor)} sent ${id} to ${str(d.to) === "any" ? "any runner" : `a ${str(d.to)} runner`}`, ev.actor === owner ? "you" : ""); break;
@@ -171,7 +178,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         break;
       case "item.abandoned":
         if (th) { th.end = pos; th.ending = "closed"; }
-        say(`${name(ev.actor)} closed ${id}${d.note ? `: ${clip(str(d.note), 140)}` : ""}`, ev.actor === owner ? "you" : "");
+        say(`${name(ev.actor)} closed ${id}${d.note && !R ? `: ${clip(str(d.note), 140)}` : ""}`, ev.actor === owner ? "you" : "");
         break;
     }
   }
@@ -192,6 +199,7 @@ export interface DrawOptions {
   compact?: boolean;           // the Decisions page's version: no hashes, no clock
   replaySeconds?: number;      // how long the draw-in takes; 0 draws it at rest
   href?: (thread: Thread) => string;
+  ownerLabel?: string;         // how the owner is named in cards; "you" on the owner's own pages
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -292,7 +300,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
       g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
       cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
     });
-    const holders = th.holds.map((h) => (h.who === owner ? "you" : splitActor(h.who).model || h.who)).join(" → ");
+    const holders = th.holds.map((h) => (h.who === owner ? (o.ownerLabel ?? "you") : splitActor(h.who).model || h.who)).join(" → ");
     const tkey = `${id}-${k}`;
     cards.push({ key: tkey, x: X0 - 4, y, color: c(th.holds[0].who), head: `${th.id} · ${STATE_NAMES[th.state] ?? th.state} · ${holders}`, body: th.title });
     const label = `<text class="g-name" x="${X0 - 12}" y="${y + 4}" text-anchor="end" style="fill:${c(th.holds[0].who)}">${esc(th.id)}</text>`;

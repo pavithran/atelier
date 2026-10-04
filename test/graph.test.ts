@@ -144,3 +144,14 @@ test("a card's text wraps to its lines and says when it was cut", () => {
   assert.deepEqual(wrap("", 10, 2), []);
   assert.ok(wrap("x".repeat(80), 20, 2).every((l) => l.length <= 20));
 });
+
+test("a public story keeps what happened and leaves out what anyone wrote", () => {
+  const s = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER, false, "Demo", { redact: true, ownerLabel: "PAVI" });
+  const text = JSON.stringify(s);
+  assert.ok(!text.includes("Rule 2 filters too early"), "review notes are left out");
+  assert.ok(!text.includes("npm test"), "check commands are left out");
+  assert.ok(s.moments.some((m) => m.text === "glm-5.3 sent t1 back"));
+  assert.ok(s.moments.some((m) => m.text === "PAVI accepted t1"), "the owner is named, not addressed");
+  assert.equal(s.tally.sentBack, 1, "the counts are the same as the private story's");
+  assert.deepEqual(s.tally, buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER).tally);
+});

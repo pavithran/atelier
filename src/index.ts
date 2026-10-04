@@ -2,7 +2,7 @@ import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { cleanTitle, titleOf, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
 import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
@@ -32,7 +32,38 @@ function sameString(a: string, b: string): boolean {
   return diff === 0;
 }
 
-type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string };
+type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string };
+
+// The projects the owner shows publicly at /showcase, by name, comma-separated
+// in the SHOWCASE setting. Unset shows nothing.
+function showcased(env: Env): string[] {
+  return ((env as unknown as Settings).SHOWCASE ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// The public page, read without signing in. It reads only the named projects,
+// builds their stories redacted, and may be cached for a minute.
+async function showcase(env: Env, url: URL): Promise<Response> {
+  // One cached copy per minute, whatever the query string, so the public page
+  // costs at most one set of Ledger reads a minute however often it is asked for.
+  const key = new Request(`${url.origin}/showcase`);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  const names = showcased(env);
+  const owner = ownerActor(env);
+  const stories = (await Promise.all(names.map(async (name) => {
+    try {
+      const L = ledger(env, name);
+      // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
+      const [project, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
+      return buildStory(name, items, events, owner, events.length >= STORY_EVENTS, titleOf(project), { redact: true, ownerLabel: ownerName(env) || "The owner" });
+    } catch { return null; }
+  }))).filter((s): s is NonNullable<typeof s> => s !== null);
+  if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
+  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length));
+  res.headers.set("cache-control", "public, max-age=60");
+  await caches.default.put(key, res.clone());
+  return res;
+}
 
 // The actor that stands for the project owner, and the name the pages use.
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
@@ -535,6 +566,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     try {
+      if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
       if (url.pathname === "/login") {
         if (req.method === "POST") {
           const token = String((await req.formData()).get("token") ?? "");
@@ -548,7 +580,7 @@ export default {
             },
           });
         }
-        return html(renderLogin());
+        return html(renderLogin(undefined, showcased(env).length > 0));
       }
       const how = await authorised(req, env);
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
