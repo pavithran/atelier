@@ -1,0 +1,12 @@
+atelier cloudflare-git/t23 "Hover cards on the graph: each mark and task explains itself on hover or focus, without script"
+accepted head 3f3ce226b587a1963b6ddbd5b171319f9ff093ec
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T17:11:40.839Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T17:11:43.052Z
+2026-10-04T17:07:45.247Z pavi item.created
+2026-10-04T17:07:45.564Z claude-code/opus-5.5 item.claimed
+2026-10-04T17:07:48.321Z claude-code/opus-5.5 fork.created
+2026-10-04T17:11:29.939Z claude-code/opus-5.5 push.observed
+2026-10-04T17:11:40.933Z claude-code/opus-5.5 evidence.observed
+2026-10-04T17:11:43.121Z claude-code/opus-5.5 evidence.observed
+2026-10-04T17:11:43.521Z claude-code/opus-5.5 item.submitted
+2026-10-04T17:14:55.579Z pavi item.accepted
