@@ -4,6 +4,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanSummary } from "./brief";
 import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
@@ -53,16 +54,21 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   if (hit) return hit;
   const names = showcased(env);
   const owner = ownerActor(env);
+  const cutoffs = new Map<string, number | null>();
+  const records: ProjectRecord[] = [];
   const stories = (await Promise.all(names.map(async (name) => {
     try {
       const L = ledger(env, name);
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
       const [project, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
+      cutoffs.set(name, firstTaskAt(events));
+      records.push(project);
       return buildStory(name, items, events, owner, events.length >= STORY_EVENTS, titleOf(project), { redact: true, ownerLabel: ownerName(env) || "The owner" });
     } catch { return null; }
   }))).filter((s): s is NonNullable<typeof s> => s !== null);
   if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
-  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length));
+  const imported = await importedAll(env, records, cutoffs);
+  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length, imported));
   res.headers.set("cache-control", "public, max-age=60");
   // A copy the cache refuses is not an error: the page is still served.
   await caches.default.put(key, res.clone()).catch(() => undefined);
@@ -70,6 +76,36 @@ async function showcase(env: Env, url: URL): Promise<Response> {
 }
 
 // The actor that stands for the project owner, and the name the pages use.
+// Imported history starts where Atelier's own record of tasks starts: the
+// first event about a task. A project with no tasks yet has all its history
+// before Atelier.
+function firstTaskAt(events: LedgerEvent[]): number | null {
+  const first = events.filter((e) => e.itemId).map((e) => e.at).sort()[0];
+  return first ? Math.floor(Date.parse(first) / 1000) : null;
+}
+
+// Each project's imported history, read once per baseline head: the result
+// is cached under the head's commit id, which never changes meaning.
+async function importedFor(env: Env, project: ProjectRecord, cutoff: number | null): Promise<ImportedHistory | null> {
+  try {
+    using repo = await env.ARTIFACTS.get(project.repo);
+    const head = (await repo.log({ limit: 1 }))[0];
+    if (!head) return null;
+    const key = new Request(`https://atelier.internal/imported/${encodeURIComponent(project.repo)}/${head.hash}/${cutoff ?? "all"}`);
+    const hit = await caches.default.match(key).catch(() => undefined);
+    if (hit) return (await hit.json()) as ImportedHistory;
+    const h = await readImported(repo as unknown as LogSource, cutoff);
+    await caches.default.put(key, new Response(JSON.stringify(h), { headers: { "cache-control": "max-age=86400" } })).catch(() => undefined);
+    return h;
+  } catch { return null; }
+}
+
+async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<string, number | null>): Promise<Map<string, ImportedHistory>> {
+  const out = new Map<string, ImportedHistory>();
+  await Promise.all(projects.map(async (p) => { const h = await importedFor(env, p, cutoffs.get(p.name) ?? null); if (h) out.set(p.name, h); }));
+  return out;
+}
+
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
 
@@ -561,9 +597,11 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // The graph reads a project's longer record: every project's on Flow, and
     // only the most recently active project's on Decisions. Studio needs none.
     const owner = ownerActor(env);
+    const cutoffs = new Map<string, number | null>();
     const story = async (v: FloorView) => {
       try {
         const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+        cutoffs.set(v.project.name, firstTaskAt(events));
         return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
       } catch { return null; }
     };
@@ -572,7 +610,8 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const stories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null)
         .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
       const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
-      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete));
+      const imported = await importedAll(env, floorViews.map((v) => v.project), cutoffs);
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported));
     }
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects));
     const lists = await Promise.all(views.map(async v => {

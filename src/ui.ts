@@ -10,6 +10,8 @@ import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
+import { drawImported } from "./import/draw";
+import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { addTally, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
@@ -276,8 +278,20 @@ interface FlowParts { stages: string; columns: string; shown: Story[] }
 
 // The parts Flow and the public showcase share. `where` is the page the replay
 // link reloads; `href` links a task, or nothing on the public page.
-function flowParts(stories: Story[], t: Tally, owner: string, where: string, href?: (s: Story) => (th: { id: string }) => string, who = "You"): FlowParts {
-  const shown = stories.filter((s) => s.threads.length);
+// A project's history before Atelier, read from git: drawn below its
+// threads, framed and labelled as imported, never counted in the tally.
+function importedBlock(h: ImportedHistory | undefined, owner: string, title: string): string {
+  if (!h?.total) return "";
+  const named = h.lanes.filter((l) => l.label !== NO_AGENT).length;
+  return `<div class="imported-box">
+  <div class="imported-head"><h3>Before Atelier · imported from git</h3><span class="meta">${h.total.toLocaleString("en")} commits${h.complete ? "" : " (the most recent part of the history)"}, ${h.attributed.toLocaleString("en")} naming ${plural(named, "agent")}</span></div>
+  <p class="meta">Who took part is read from each commit message's Co-Authored-By and Agent lines. It is what the commits say, not evidence Atelier observed.</p>
+  <div class="stage-scroll">${drawImported(h, owner, title)}</div>
+</div>`;
+}
+
+function flowParts(stories: Story[], t: Tally, owner: string, where: string, href?: (s: Story) => (th: { id: string }) => string, who = "You", imported: Map<string, ImportedHistory> = new Map()): FlowParts {
+  const shown = stories.filter((s) => s.threads.length || imported.get(s.project)?.total);
   const moments = shown
     .flatMap((s) => s.moments.map((m) => ({ ...m, project: s.title })))
     .sort((a, b) => b.at.localeCompare(a.at))
@@ -285,8 +299,9 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   const many = shown.length > 1;
   const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.title)}">
   <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}</span>
-  <a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a></div>
-  <div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>
+  ${s.threads.length ? `<a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
+  ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
+  ${importedBlock(imported.get(s.project), owner, s.title)}
 </section>`).join("");
   const yours = who === "You" ? "your" : `${who}'s`;
   const journey = [
@@ -306,9 +321,9 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   return { stages, columns, shown };
 }
 
-export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
+export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map()): string {
   const t = drawnTotal(stories);
-  const { stages, columns, shown } = flowParts(stories, t, owner, "/flow", (s) => taskHref(s.project));
+  const { stages, columns, shown } = flowParts(stories, t, owner, "/flow", (s) => taskHref(s.project), "You", imported);
   const body = shown.length
     ? `${legendLine(vendorsIn(shown))}${stages}${columns}`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
@@ -331,10 +346,10 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
-export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false): string {
+export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false, imported: Map<string, ImportedHistory> = new Map()): string {
   const total = drawnTotal(stories);
   const who = ownerName || "the owner";
-  const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who);
+  const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who, imported);
   const body = shown.length
     ? `${legendLine(vendorsIn(shown), cap(who))}${stages}${columns}`
     : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
