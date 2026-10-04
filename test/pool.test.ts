@@ -24,15 +24,23 @@ test("an entry is validated, its family derived, and no secret is accepted", () 
     [{ id: "x", harness: "opencode", where: "home", apiKey: "sk" }, /never stores keys/],
     [{ id: "x", harness: "opencode", where: "home", endpoint: "https://user:pass@example.com/v1" }, /user name or password/],
     [{ id: "x", harness: "opencode", where: "home", endpoint: "file:///etc/passwd" }, /http or https/],
-    [{ id: "x", harness: "opencode", where: "home", keychain: "has space" }, /entry name/],
+    [{ id: "x", harness: "opencode", where: "home", keychain: "has space" }, /name of a Keychain entry/],
     [{ id: "has/slash", harness: "opencode", where: "home" }, /not a model id/],
     [{ id: "x", harness: "bash", where: "home" }, /harness must be/],
     [{ id: "x", harness: "codex", where: "moon" }, /home or cloud/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/v1?api_key=abc" }, /query or fragment/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "google", keychain: "AIzaSyD-abcdefghijklmnopqrstuvwxyz012345" }, /never the key itself/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "openai", keychain: "sk-proj-abc" }, /never the key itself/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "deepseek", keychain: "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6" }, /never the key itself/],
+    [{ id: "x", harness: "opencode", where: "cloud" }, /which provider serves/],
+    [{ id: "m".repeat(65), harness: "codex", where: "cloud" }, /not a model id/],
   ] as const) assert.throws(() => cleanEntry(body as Record<string, unknown>, "pavi", AT), why);
 });
 
 test("a status report is one of four states, with what was served", () => {
-  assert.deepEqual(cleanStatus({ state: "available", served: "gemini-3.1-pro-002", detail: "ok\\nfine" }, AT), { state: "available", at: AT, served: "gemini-3.1-pro-002", detail: "ok\\nfine" });
-  assert.deepEqual(cleanStatus({ state: "refused", detail: "not supported\n" }, AT), { state: "refused", at: AT, detail: "not supported" });
-  assert.throws(() => cleanStatus({ state: "great" }, AT), /available, refused, slow or unknown/);
+  assert.deepEqual(cleanStatus({ state: "available", served: "gemini-3.1-pro-002" }, AT, "home:studio"), { state: "available", at: AT, by: "home:studio", served: "gemini-3.1-pro-002" });
+  // Control characters become spaces in what is shown, in the served name too.
+  assert.deepEqual(cleanStatus({ state: "refused", served: "evil\u001b[2Jname", detail: "not\nsupported\u009b" }, AT, "home:studio"),
+    { state: "refused", at: AT, by: "home:studio", served: "evil [2Jname", detail: "not supported" });
+  assert.throws(() => cleanStatus({ state: "great" }, AT, "home:studio"), /available, refused, slow or unknown/);
 });

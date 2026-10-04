@@ -359,7 +359,7 @@ export function renderShowcase(stories: Story[], total: Tally, owner: string, ow
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = ""): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     const r = actors.map((a) => record.get(a)).filter(Boolean).reduce((acc, x) => ({
@@ -367,7 +367,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
       fail: acc.fail + x!.checkFailures, back: acc.back + x!.reviewsRejected,
     }), { claimed: 0, merges: 0, pass: 0, fail: 0, back: 0 });
     const status = m.status
-      ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
+      ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked by ${e(m.status.by ?? "a runner")} ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
       : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
     const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
     return `<li class="model" style="--c:var(--m-${m.where === "home" ? "studio" : m.family})">
@@ -386,7 +386,8 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   };
   const opts = (values: readonly string[]) => values.map((v) => `<option>${e(v)}</option>`).join("");
   return page("Models", `<div class="page-width">
-  <header><h1>Models</h1><p class="lead">${plural(entries.length, "model")} in the pool. The runner on your machine checks each one and reports what it found.</p></header>
+  <header><h1>Models</h1><p class="lead">${plural(entries.length, "model")} in the pool. The runner on your machine checks each one and reports what it found.</p>
+  <p class="meta">Each model's record counts the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? `; ${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted` : ""}.</p></header>
   ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
   ${group("home", "At home", "No home models yet. Add one served by your Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}

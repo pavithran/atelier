@@ -189,8 +189,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ removed: await I.removeModel(id) });
     }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
-      if (!parseRunner(c.req.headers.get("x-atelier-runner"))) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
-      return json(await I.setModelStatus(id, cleanStatus(body, new Date().toISOString())));
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
+      return json(await I.setModelStatus(id, cleanStatus(body, new Date().toISOString(), runner.runner), runner.kind));
     }
     throw new RuleError("not_found", "no such route", 404);
   }
@@ -418,6 +419,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 }
 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
+const MODEL_EVENTS = 1000;
+
 // The Models page, and its two forms: add (or replace) an entry, and remove one.
 async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   const { env, req } = c;
@@ -438,9 +441,11 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const [entries, projects] = await Promise.all([I.models(), I.projects()]);
-  // Each model's record is read from every project's recent events.
+  // Each model's record is read from every project's most recent events;
+  // the page says how many, and which projects could not be read.
+  const unread: string[] = [];
   const events = (await Promise.all(projects.map(async (p) => {
-    try { return (await ledger(env, p.name).events(undefined, 1000)) as unknown as LedgerEvent[]; } catch { return []; }
+    try { return (await ledger(env, p.name).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[]; } catch { unread.push(titleOf(p)); return []; }
   })));
   const record = new Map<string, ActorRecord>();
   for (const evs of events) {
@@ -449,7 +454,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       record.set(actor, k ? Object.fromEntries(Object.entries(k).map(([f, n]) => [f, n + r[f as keyof ActorRecord]])) as unknown as ActorRecord : r);
     }
   }
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error), error ? 400 : 200);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, { events: MODEL_EVENTS, unread }), error ? 400 : 200);
 }
 
 async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {

@@ -299,9 +299,14 @@ atelier models
 A model's family (Claude, GPT, GLM, Gemini, DeepSeek, Qwen and others) is
 recognised from its name, so a new release is coloured correctly on the
 graph the day it appears; a name no family claims is shown as not
-recognised. The home runner reports what it finds for each model, through
-`POST /api/models/ID/status` under its runner name, and the Models page
-shows the latest report beside each model's record.
+recognised. A runner reports what it finds for each model through
+`POST /api/models/ID/status`, naming itself in `X-Atelier-Runner`: a home
+model is reported only by a home runner and a cloud model only by a cloud
+runner, and the Models page shows each report with the runner that made it.
+Changing how a model is reached (its harness, where it runs, provider,
+endpoint or Keychain entry) clears its status until it is checked again.
+An endpoint carrying a query string, or a Keychain entry name that looks
+like a key, is refused.
 
 ## The Studio
 

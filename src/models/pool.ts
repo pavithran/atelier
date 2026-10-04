@@ -16,6 +16,7 @@ export type PoolProvider = (typeof PROVIDERS)[number];
 export interface ModelStatus {
   state: "available" | "refused" | "slow" | "unknown";
   at: string;
+  by: string;                 // the runner that reported it, kind:name
   served?: string;            // the model name the provider reported serving
   detail?: string;
 }
@@ -57,9 +58,15 @@ export function familyOf(model: string): PoolFamily {
 // A model quantised for a local server: its name says how it was packed.
 export const LOCAL_BUILD = /(\d+(_\d+)?bit|mlx|mxfp4|gguf|q\d_k|:studio)/i;
 
-const ID = /^[a-z0-9][a-z0-9._:-]{0,127}$/i;           // must also fit an actor name
+const ID = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;            // as a dispatch names a model (src/dispatch/rules.ts)
 const KEYCHAIN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+
+// What a key looks like, so one pasted where an entry's name belongs is
+// refused rather than stored: the prefixes providers give their keys, or a
+// long run of key characters with no separator a name would have.
+const LOOKS_LIKE_KEY = /^(sk-|sk_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ|Bearer )|^[A-Za-z0-9_+/=]{32,}$/;
 
 // A pool entry from a form or an API body, validated, or a RuleError saying
 // what is wrong. Nothing that could hold a secret is accepted: an endpoint
@@ -73,6 +80,8 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
   if (!HARNESSES.includes(harness)) throw bad(`harness must be one of ${HARNESSES.join(", ")}`);
   const where = str(body.where);
   if (where !== "home" && where !== "cloud") throw bad("where must be home or cloud");
+  // At home, OpenCode means the Studio; in the cloud it has to say who serves it.
+  if (!str(body.provider) && harness === "opencode" && where === "cloud") throw bad("say which provider serves this model in the cloud");
   const provider = (str(body.provider) || (harness === "opencode" ? "ai-studio" : "subscription")) as PoolProvider;
   if (!PROVIDERS.includes(provider)) throw bad(`provider must be one of ${PROVIDERS.join(", ")}`);
   const endpoint = str(body.endpoint);
@@ -81,9 +90,10 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
     try { u = new URL(endpoint); } catch { throw bad("endpoint must be a URL"); }
     if (u.protocol !== "https:" && u.protocol !== "http:") throw bad("endpoint must be http or https");
     if (u.username || u.password) throw bad("an endpoint must not carry a user name or password");
+    if (u.search || u.hash) throw bad("an endpoint must not carry a query or fragment; a key belongs in the Keychain");
   }
   const keychain = str(body.keychain);
-  if (keychain && !KEYCHAIN.test(keychain)) throw bad("keychain must be an entry name such as gemini.API_KEY");
+  if (keychain && (!KEYCHAIN.test(keychain) || LOOKS_LIKE_KEY.test(keychain))) throw bad("keychain must be the name of a Keychain entry, such as gemini.API_KEY, never the key itself");
   const aliases = (Array.isArray(body.aliases) ? body.aliases : str(body.aliases).split(","))
     .map(str).filter(Boolean).slice(0, 10);
   if (aliases.some((a) => !ID.test(a))) throw bad("an alias must be a model id");
@@ -97,10 +107,14 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
   };
 }
 
-export function cleanStatus(body: Record<string, unknown>, at: string): ModelStatus {
+export function cleanStatus(body: Record<string, unknown>, at: string, by: string): ModelStatus {
   const state = str(body.state);
   if (!["available", "refused", "slow", "unknown"].includes(state)) throw new RuleError("bad_status", "state must be available, refused, slow or unknown", 400);
-  const served = str(body.served).slice(0, 128);
-  const detail = str(body.detail).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 300);
-  return { state: state as ModelStatus["state"], at, ...(served ? { served } : {}), ...(detail ? { detail } : {}) };
+  const served = plain(str(body.served)).trim().slice(0, 128);
+  const detail = plain(str(body.detail)).trim().slice(0, 300);
+  return { state: state as ModelStatus["state"], at, by, ...(served ? { served } : {}), ...(detail ? { detail } : {}) };
 }
+
+// The fields a status was observed under: change one and the status no
+// longer describes the entry.
+export const OBSERVED_UNDER = ["harness", "where", "provider", "endpoint", "keychain"] as const;
