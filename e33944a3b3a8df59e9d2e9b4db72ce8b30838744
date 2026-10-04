@@ -1,0 +1,19 @@
+atelier cloudflare-git/t21 "Show the work as a living graph on atelier.zone: replay, flow and tally, server-drawn"
+accepted head 8efc75d4cc10c989bed0ad24331f53fd9b504569
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T16:54:13.168Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T16:54:15.198Z
+REVIEW approve — zcode/glm-5.3: Second review: all eight findings fixed; escaping, sign-in and CSP still clean. Minor: released tasks drawn as live; stage-less projects in totals; resting sheet lacks the cut note; DESIGN.md palette wording.
+2026-10-04T16:41:47.688Z pavi item.created
+2026-10-04T16:41:50.071Z claude-code/opus-5.5 item.claimed
+2026-10-04T16:41:53.777Z claude-code/opus-5.5 fork.created
+2026-10-04T16:48:38.945Z claude-code/opus-5.5 push.observed
+2026-10-04T16:48:49.093Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:48:50.949Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:48:51.322Z claude-code/opus-5.5 item.submitted
+2026-10-04T16:53:07.950Z zcode/glm-5.3 review.rejected
+2026-10-04T16:54:03.286Z claude-code/opus-5.5 push.observed
+2026-10-04T16:54:13.247Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:54:15.243Z claude-code/opus-5.5 evidence.observed
+2026-10-04T16:54:15.684Z claude-code/opus-5.5 item.submitted
+2026-10-04T17:04:58.550Z zcode/glm-5.3 review.approved
+2026-10-04T17:04:58.989Z pavi item.accepted
