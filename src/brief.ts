@@ -112,7 +112,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   // The sentence follows the recommendation, so the heading never contradicts it.
   const subject = `${item.id} ${rev}: ${title}.`;
   const decided =
-    item.state === "merged" || item.state === "abandoned" ? `${item.id} is ${stateLabel[item.state].toLowerCase()} ${rev}: ${title}.`
+    item.state === "merged" || item.state === "abandoned" ? `Nothing to decide: ${item.id} is ${stateLabel[item.state].toLowerCase()} ${rev}: ${title}.`
     : recommendation.verdict === "merge" ? `Merge ${subject}`
     : recommendation.verdict === "send back" ? `Send ${item.id} back ${rev}: ${title}.`
     : recommendation.verdict === "review" ? `Review ${subject}`
@@ -141,7 +141,7 @@ interface Picture {
 // accept when the gate is ready; merge when accepted; send back when a review
 // at this head rejects or a required check failed; review when only an
 // independent approval of a protected change is missing; wait while checks are
-// pending; decide otherwise.
+// pending; decide otherwise. A closed task has nothing to decide.
 function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   const { item, gate } = d;
   const state = item.state === "claimed" ? "in progress" : stateLabel[item.state].toLowerCase();
@@ -160,18 +160,25 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
       reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.` : "The project requires no checks, and nothing blocks it.",
     };
   }
-  const against = [
-    ...p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`),
-    ...p.failed.map((c) => `\`${c.claim}\` failed at this revision`),
-  ];
-  if (against.length) return { verdict: "send back", reason: `${upper(against.join(" and "))}.` };
-  if (gate.needsAssessor && !p.pending.length) {
-    return { verdict: "review", reason: "This revision touches a protected path and needs an approval from a different model or the project owner." };
+  // The order is the page's: a failed check comes first, then a missing
+  // independent approval, which the owner can give or refuse, then a rejection.
+  const asked = p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`);
+  const failedChecks = p.failed.map((c) => `\`${c.claim}\` failed at this revision`);
+  if (failedChecks.length) return { verdict: "send back", reason: `${upper([...asked, ...failedChecks].join(" and "))}.` };
+  if (gate.needsAssessor) {
+    const also = [
+      ...asked,
+      ...p.pending.map((c) => `\`${c.claim}\` is also not yet observed at this revision`),
+    ];
+    return {
+      verdict: "review",
+      reason: `This revision touches a protected path and needs an approval from a different model or the project owner${also.length ? `; ${also.join("; ")}` : ""}.`,
+    };
   }
+  if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };
   const waiting = [
     ...p.pending.map((c) => `\`${c.claim}\` to be observed at this revision`),
-    ...(gate.needsAssessor ? ["an approval of this revision from a different model or the project owner"] : []),
-    ...(p.unmeasured && !p.pending.length ? ["the changed paths to be measured"] : []),
+        ...(p.unmeasured && !p.pending.length ? ["the changed paths to be measured"] : []),
   ];
   if (waiting.length) return { verdict: "wait", reason: `Waiting for ${waiting.join(" and ")}.` };
   return { verdict: "decide", reason: `The record does not settle it: ${(gate.blockers[0] ?? "no blocker is recorded").replace(/[.!?]+$/, "")}.` };

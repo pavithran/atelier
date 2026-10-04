@@ -631,7 +631,7 @@ ${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a></nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
-  <p class="meta">${decision.passed} of ${view.checks.length} required checks passed at this revision.${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
+  <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : "This project requires no checks."}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
   ${checkRows}${!view.checks.length ? '<p class="meta">No required checks are configured.</p>' : ""}${reports}${reviews}${blockers}
 </section>
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>

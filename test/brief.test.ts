@@ -64,7 +64,7 @@ test("the decided sentence follows the recommendation", () => {
   assert.equal(briefFor(detail({ evidence: [] }), []).decided, "Wait on t21 at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ item: { state: "claimed" } }), []).decided, "Wait on t21 at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ item: { head: null }, policy: { checks: [], protected: [] }, evidence: [] }), []).decided, "Decide t21 with nothing pushed: Fix the thing.");
-  assert.match(briefFor(detail({ item: { state: "merged" } }), []).decided, /^t21 is merged at/);
+  assert.match(briefFor(detail({ item: { state: "merged" } }), []).decided, /^Nothing to decide: t21 is merged at/);
 });
 
 test("with two rejections and scope flags, the flags and one rejection line stay and reports go", () => {
@@ -111,15 +111,36 @@ test("review: a protected path needs an assessor and none has approved this revi
   assert.ok(b.evidence.includes("It touches a protected path and no different model or the project owner has approved this revision."));
 });
 
-test("a protected path with a check still pending waits, and the heading says so", () => {
+test("a protected path with a check still pending is a review, naming the pending check", () => {
   const d = detail({
     policy: { checks: ["npm test", "npm run lint"], protected: ["AGENTS.md"] },
     evidence: [pass({ changedPaths: ["AGENTS.md"] })],
   });
   const b = briefFor(d, []);
-  assert.equal(b.recommendation.verdict, "wait");
-  assert.match(b.decided, /^Wait on t21/);
-  assert.match(b.recommendation.reason, /`npm run lint` to be observed.*approval of this revision/);
+  assert.equal(b.recommendation.verdict, "review");
+  assert.match(b.decided, /^Review t21 at aaaaaaaa/);
+  assert.match(b.recommendation.reason, /needs an approval from a different model or the project owner; `npm run lint` is also not yet observed at this revision\.$/);
+});
+
+test("a protected path with a rejection is still a review, as the page's banner says", () => {
+  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })], reviews: [rev({ approve: false })] }), []);
+  assert.equal(b.recommendation.verdict, "review");
+  assert.match(b.decided, /^Review t21/);
+  assert.match(b.recommendation.reason, /; gpt-5\.5 asked for changes at this revision\.$/);
+});
+
+test("a failed check comes before a missing approval, as the page's banner says", () => {
+  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] }), pass({ passed: false, at: "2026-10-03T12:01:00.000Z" })] }), []);
+  assert.equal(b.recommendation.verdict, "send back");
+  assert.match(b.decided, /^Send t21 back/);
+});
+
+test("a merged or closed task has nothing to decide", () => {
+  for (const state of ["merged", "abandoned"] as const) {
+    const b = briefFor(detail({ item: { state } }), []);
+    assert.equal(b.recommendation.verdict, "decide");
+    assert.match(b.decided, new RegExp(`^Nothing to decide: t21 is ${state === "merged" ? "merged" : "closed"} at aaaaaaaa`));
+  }
 });
 
 test("an approval at an older head does not count for this revision", () => {

@@ -151,6 +151,17 @@ it('the brief tags a rejected revision as send back and a pending one as wait',(
  expect(brief).toContain('Wait on t1 at aaaaaaaa');
  expect(brief).not.toContain('older revision');
 });
+it('a project with no required checks says so instead of counting zero of zero',()=>{
+ const d=detail();d.policy={checks:[],protected:[]};d.evidence=[];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('This project requires no checks.');expect(html).not.toContain('0 of 0');
+});
+it('banner, brief heading and tag name one ask for a protected revision with a rejection',()=>{
+ const d=detail();d.reviews=[{itemId:'t1',head,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
+ const html=renderItem(project,d,'PAVI',null);
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(html).toContain('Your review is needed');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
+});
 it('a protected revision awaiting an assessor shows a review tag under a review heading',()=>{
  const html=renderItem(project,detail(),'PAVI',null);
  const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
