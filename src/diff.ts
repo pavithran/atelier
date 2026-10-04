@@ -191,8 +191,12 @@ function differing(a: Entry[] | null, b: Entry[] | null): [Entry | undefined, En
 
 async function changedLeaves(r: Reader, base: string | null, head: string | null, prefix: string, out: [Leaf | null, Leaf | null][], cap: number) {
   if (out.length > cap) return;
-  // The listings are passed straight to differing() and never held here.
-  const changed = differing(...(await Promise.all([base ? r.tree(base) : [], head ? r.tree(head) : []])));
+  // The listings are passed straight to differing() and never held here, and
+  // a level keeps only as many changed entries as can still be listed: one
+  // more than the cap's remainder, so a cut is still seen as one.
+  let changed = differing(...(await Promise.all([base ? r.tree(base) : [], head ? r.tree(head) : []])));
+  const room = cap - out.length + 1;
+  if (changed.length > room) changed = changed.slice(0, room);
   for (const [l, rt, name] of changed) {
     if (out.length > cap) return;
     const path = prefix + name;
