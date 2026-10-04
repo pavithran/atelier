@@ -1,0 +1,19 @@
+atelier cloudflare-git/t37 "Public showcase: a read-only /showcase of chosen projects' graphs and tallies, no diffs, notes or forms, for judges"
+accepted head bb407fe932bcc3863affcf346c4f3941d0cbf9d2
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T17:49:02.279Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T17:49:04.496Z
+REVIEW approve — zcode/glm-5.3: Second review: fixes hold; private pages byte-identical; cache key has no per-user content. Minor: guard caches.default.put; lower-case 'the owner' mid-sentence; README: removal takes up to a minute; route test should draw a task.
+2026-10-04T17:31:06.199Z pavi item.created
+2026-10-04T17:31:25.226Z claude-code/opus-5.5 item.claimed
+2026-10-04T17:31:27.906Z claude-code/opus-5.5 fork.created
+2026-10-04T17:35:02.602Z claude-code/opus-5.5 push.observed
+2026-10-04T17:35:14.536Z claude-code/opus-5.5 evidence.observed
+2026-10-04T17:35:16.546Z claude-code/opus-5.5 evidence.observed
+2026-10-04T17:35:16.950Z claude-code/opus-5.5 item.submitted
+2026-10-04T17:48:08.024Z zcode/glm-5.3 review.approved
+2026-10-04T17:48:50.651Z claude-code/opus-5.5 push.observed
+2026-10-04T17:49:02.357Z claude-code/opus-5.5 evidence.observed
+2026-10-04T17:49:04.559Z claude-code/opus-5.5 evidence.observed
+2026-10-04T17:49:04.934Z claude-code/opus-5.5 item.submitted
+2026-10-04T18:00:33.901Z zcode/glm-5.3 review.approved
+2026-10-04T18:08:59.811Z pavi item.accepted
