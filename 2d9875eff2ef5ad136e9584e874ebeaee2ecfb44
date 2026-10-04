@@ -1,0 +1,22 @@
+atelier cloudflare-git/t9 "Make Atelier decision-centered with reliable completion and recovery"
+accepted head a049dcba412340b48d0509302960764c9dc0c235
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T15:06:24.708Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T15:06:27.097Z
+REPORTED Rendered every page with test/preview.mjs and inspected them in a browser: Studio and Decisions at 1440 px in light and dark and at 390 px light, the task page with checks run in a Cloudflare container, on the agent's machine, and on the agent's machine under sandbox-only. No horizontal page overflow at 390 px; badges stay one line (25 px); the trust line names where checks ran; a handoff shows as a change of band. Not verified: the deployed Worker, which still runs the pre-t9 code. — claude-code/opus-5.5 2026-10-04T15:06:37.080Z
+REVIEW approve — pavi: Approved by PAVI in chat, 2026-10-04.
+2026-10-04T00:15:50.022Z codex/gpt-6 item.created
+2026-10-04T00:16:06.723Z codex/gpt-6 item.claimed
+2026-10-04T00:16:09.710Z codex/gpt-6 fork.created
+2026-10-04T00:53:18.047Z codex/gpt-6 push.observed
+2026-10-04T00:53:45.882Z codex/gpt-6 evidence.observed
+2026-10-04T00:53:47.758Z codex/gpt-6 evidence.observed
+2026-10-04T00:53:55.360Z codex/gpt-6 item.submitted
+2026-10-04T14:56:18.568Z claude-code/opus-5.5 review.rejected
+2026-10-04T14:56:37.842Z pavi item.handoff
+2026-10-04T15:06:13.732Z claude-code/opus-5.5 push.observed
+2026-10-04T15:06:25.065Z claude-code/opus-5.5 evidence.observed
+2026-10-04T15:06:27.149Z claude-code/opus-5.5 evidence.observed
+2026-10-04T15:06:37.081Z claude-code/opus-5.5 evidence.reported
+2026-10-04T15:06:37.400Z claude-code/opus-5.5 item.submitted
+2026-10-04T15:12:34.447Z pavi review.approved
+2026-10-04T15:12:34.735Z pavi item.accepted
