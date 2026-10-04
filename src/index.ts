@@ -1,8 +1,8 @@
 import { itemDiff, type ItemDiff } from "./diff";
-import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
+import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { cleanTitle, titleOf, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
@@ -34,7 +34,39 @@ function sameString(a: string, b: string): boolean {
   return diff === 0;
 }
 
-type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string };
+type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string };
+
+// The projects the owner shows publicly at /showcase, by name, comma-separated
+// in the SHOWCASE setting. Unset shows nothing.
+function showcased(env: Env): string[] {
+  return ((env as unknown as Settings).SHOWCASE ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// The public page, read without signing in. It reads only the named projects,
+// builds their stories redacted, and may be cached for a minute.
+async function showcase(env: Env, url: URL): Promise<Response> {
+  // One cached copy per minute, whatever the query string, so the public page
+  // costs at most one set of Ledger reads a minute however often it is asked for.
+  const key = new Request(`${url.origin}/showcase`);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  const names = showcased(env);
+  const owner = ownerActor(env);
+  const stories = (await Promise.all(names.map(async (name) => {
+    try {
+      const L = ledger(env, name);
+      // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
+      const [project, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
+      return buildStory(name, items, events, owner, events.length >= STORY_EVENTS, titleOf(project), { redact: true, ownerLabel: ownerName(env) || "The owner" });
+    } catch { return null; }
+  }))).filter((s): s is NonNullable<typeof s> => s !== null);
+  if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
+  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length));
+  res.headers.set("cache-control", "public, max-age=60");
+  // A copy the cache refuses is not an error: the page is still served.
+  await caches.default.put(key, res.clone()).catch(() => undefined);
+  return res;
+}
 
 // The actor that stands for the project owner, and the name the pages use.
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
@@ -174,29 +206,27 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     const repo = repoName(project);
-    // A title is kept when init is run again without one, and cleared by an empty one.
-    const kept = await L.project().then((p) => p.title, () => undefined);
-    const title = body.title === undefined ? kept : cleanTitle(body.title);
-    const record: ProjectRecord = {
-      name: project,
-      ...(title ? { title } : {}),
-      repo,
-      policy: {
-        checks: asStrings(body.checks),
-        protected: asStrings(body.protected),
-        eligible: asStrings(body.eligible),
-        refuseOverlap: Boolean(body.refuseOverlap),
-        sandboxOnly: Boolean(body.sandboxOnly),
-        ...(body.approval ? { approval: String(body.approval).slice(0, 500) } : {}),
-      },
-      createdAt: new Date().toISOString(),
+    // Running init again changes only what it is given; the Ledger merges it
+    // into the current record in one step (initProject). Only reset: true
+    // starts over from the defaults.
+    if (body.reset !== undefined && typeof body.reset !== "boolean") throw new RuleError("bad_reset", "reset must be true or false", 400);
+    const has = (k: string) => body[k] !== undefined;
+    const init: ProjectInit = {
+      name: project, repo, reset: body.reset === true,
+      ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("checks") ? { checks: asStrings(body.checks) } : {}),
+      ...(has("protected") ? { protected: asStrings(body.protected) } : {}),
+      ...(has("eligible") ? { eligible: asStrings(body.eligible) } : {}),
+      ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
     };
     try {
       await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: body.defaultBranch ?? "main" });
     } catch (err) {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
-    await L.setProject(record, actor);
+    const record = await L.initProject(init, actor);
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write") });
   }
@@ -351,7 +381,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
       const history = await baseline.log({limit:1000});
       const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      return json(await L.merged(id, actor, merge, observed));
+      return json(await L.merged(id, actor, merge, observed, item.acceptedHead));
+    }
+    case "landing": {
+      requireOwner(env, actor);
+      if (body.cancel === true) {
+        // A merge already on the baseline cannot be cancelled: running the
+        // merge again records it.
+        const item = await L.item(id);
+        const p = await L.project();
+        using baseline = await env.ARTIFACTS.get(p.repo);
+        const landed = (await baseline.log({ limit: 1000 })).some((c) => c.parents.includes(item.acceptedHead ?? "-"));
+        if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
+        return json(await L.cancelLanding(id, actor));
+      }
+      return json(await L.beginLanding(id, actor, String(body.head ?? "")));
     }
     case "abandon": {
       requireOwner(env, actor);
@@ -490,7 +534,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0 || ["projects", "history", "studio", "flow"].includes(parts[0])) {
+  if (parts.length === 0 || ["decisions", "projects", "history", "studio", "flow"].includes(parts[0])) {
     const projects = await index(env).projects();
     const views: ProjectView[] = await Promise.all(projects.map(async project => {
       try { return {project, items: await ledger(env,project.name).items()}; }
@@ -530,6 +574,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     }));
     const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
     const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
+    // Signed in, / is Decisions while something waits on the owner, and Flow
+    // when nothing does. /decisions is always Decisions.
+    if (parts.length === 0 && !entries.length && !c.url.search) return Response.redirect(new URL("/flow", c.url).toString(), 303);
     const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
     const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
     const project = projects.find(p=>p.name===projectName);
@@ -589,6 +636,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     try {
+      if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
       if (url.pathname === "/login") {
         if (req.method === "POST") {
           const token = String((await req.formData()).get("token") ?? "");
@@ -602,7 +650,7 @@ export default {
             },
           });
         }
-        return html(renderLogin());
+        return html(renderLogin(undefined, showcased(env).length > 0));
       }
       const how = await authorised(req, env);
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
@@ -614,7 +662,9 @@ export default {
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         return await api({ env, req, url, actor, body }, parts.slice(1));
       }
-      if (!how) return Response.redirect(new URL("/login", url).toString(), 303);
+      // The front door: a visitor who is not signed in sees the public showcase
+      // when there is one, and is otherwise asked to sign in.
+      if (!how) return Response.redirect(new URL(parts.length === 0 && showcased(env).length ? "/showcase" : "/login", url).toString(), 303);
       return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);

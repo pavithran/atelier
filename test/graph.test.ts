@@ -108,6 +108,41 @@ test("the drawing escapes what agents wrote and links each task", () => {
   assert.match(svg, /--c:var\(--m-anthropic\)/);
 });
 
+test("a released task ends on its thread, closed and not live", () => {
+  seq = 0;
+  const evs = [
+    ev("t3", "codex/gpt-6", "item.claimed"),
+    ev("t3", "codex/gpt-6", "push.observed", { head: "eeeeeeee55" }),
+    ev("t3", OWNER, "item.released", { from: "codex/gpt-6", note: "stalled" }),
+  ].reverse();
+  const s = buildStory("demo", [item("t3", "open")], evs, OWNER);
+  assert.equal(s.threads[0].ending, "released");
+  assert.ok(s.threads[0].end !== null);
+  const svg = drawStory(s, OWNER);
+  assert.match(svg, /g-cap/, "a released task is capped like a closed one");
+  assert.match(svg, /g-task closed/);
+  assert.doesNotMatch(svg, /g-task[^"]*live/);
+});
+
+test("a failed claim ends the thread the same way as a release", () => {
+  seq = 0;
+  const evs = [
+    ev("t4", "zcode/glm-5.3", "item.claimed"),
+    ev("t4", "zcode/glm-5.3", "item.claim_failed", { reason: "the fork could not be created" }),
+  ].reverse();
+  const [t4] = buildStory("demo", [item("t4", "open")], evs, OWNER).threads;
+  assert.equal(t4.ending, "released");
+});
+
+test("an open task with no end on its record is not live either", () => {
+  seq = 0;
+  const evs = [ev("t5", "codex/gpt-6", "item.claimed")].reverse();
+  const s = buildStory("demo", [item("t5", "open")], evs, OWNER);
+  assert.ok(s.threads[0].end !== null, "the thread ends where its record ends");
+  assert.equal(s.threads[0].ending, "released");
+  assert.doesNotMatch(drawStory(s, OWNER), /g-task[^"]*live/);
+});
+
 test("an empty project draws an empty story", () => {
   const s = buildStory("empty", [], [], OWNER);
   assert.equal(s.threads.length, 0);
@@ -143,4 +178,15 @@ test("a card's text wraps to its lines and says when it was cut", () => {
   assert.deepEqual(wrap("aaaa bbbb cccc dddd eeee", 9, 2), ["aaaa bbbb", "cccc…"]);
   assert.deepEqual(wrap("", 10, 2), []);
   assert.ok(wrap("x".repeat(80), 20, 2).every((l) => l.length <= 20));
+});
+
+test("a public story keeps what happened and leaves out what anyone wrote", () => {
+  const s = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER, false, "Demo", { redact: true, ownerLabel: "PAVI" });
+  const text = JSON.stringify(s);
+  assert.ok(!text.includes("Rule 2 filters too early"), "review notes are left out");
+  assert.ok(!text.includes("npm test"), "check commands are left out");
+  assert.ok(s.moments.some((m) => m.text === "glm-5.3 sent t1 back"));
+  assert.ok(s.moments.some((m) => m.text === "PAVI accepted t1"), "the owner is named, not addressed");
+  assert.equal(s.tally.sentBack, 1, "the counts are the same as the private story's");
+  assert.deepEqual(s.tally, buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER).tally);
 });

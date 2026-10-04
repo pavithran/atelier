@@ -346,3 +346,77 @@ it("a claim belongs to the runner that made it; the same agent name from another
   expect(adopted.runner).toBe("home:laptop");
   await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
 });
+
+it("an init is merged into the project in one step and keeps every field it does not name", async () => {
+  const { mergeProject } = await import("../src/ledger");
+  const base = { name: "m", repo: "m", reset: false };
+  const full = mergeProject(null, { ...base, title: "T", checks: ["npm test"], protected: ["src/rules.ts"], eligible: ["claude"], refuseOverlap: true, sandboxOnly: true, approval: "PAVI, today" }, "2026-10-04T00:00:00Z");
+  // A title-only init keeps checks, protection, eligibility, overlap, sandbox and approval.
+  expect(mergeProject(full, { ...base, title: "U" }, "later")).toEqual({ ...full, title: "U", revision: 2 });
+  // An explicit null clears; reset starts from the defaults.
+  expect(mergeProject(full, { ...base, title: null, approval: null }, "later")).toEqual({ ...full, revision: 2, title: undefined, policy: { ...full.policy, approval: undefined } } as never);
+  // reset starts the policy over and keeps the project's identity.
+  const reset = mergeProject(full, { ...base, reset: true }, "later");
+  expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], eligible: [], refuseOverlap: false, sandboxOnly: false });
+  expect([reset.title, reset.createdAt, reset.revision]).toEqual(["T", full.createdAt, 2]);
+  // The index keeps the newest copy, whatever order two inits register in.
+  const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await I.registerProject({ ...full, name: "ordered", revision: 3, title: "newer" });
+  await I.registerProject({ ...full, name: "ordered", revision: 2, title: "older" });
+  expect((await I.projects()).find((p) => p.name === "ordered")?.title).toBe("newer");
+  // Through the Durable Object: a protection change made between two inits survives a title-only init.
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:merge-once"));
+  await L.initProject({ ...base, name: "merge-once", repo: "merge-once", checks: ["npm test"] }, "owner");
+  await L.initProject({ ...base, name: "merge-once", repo: "merge-once", protected: ["src/index.ts"] }, "owner");
+  const after = await L.initProject({ ...base, name: "merge-once", repo: "merge-once", title: "Kept" }, "owner");
+  expect(after.policy).toMatchObject({ checks: ["npm test"], protected: ["src/index.ts"] });
+  expect(after.title).toBe("Kept");
+});
+
+it("a push to an accepted task withdraws the acceptance, and only its owner can push", async () => {
+  const L = await setup("reopen");
+  await L.newItem("Conflicts on merge", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "reopen--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  expect(await L.item("t1")).toMatchObject({ state: "accepted", acceptedHead: H1 });
+  // The merge conflicted; the owner rebases and pushes a new revision.
+  const reopened = await L.recordPush("t1", A, H2, H2);
+  expect(reopened).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
+  const last = ((await L.events("t1")) as unknown as { kind: string; data: unknown }[]).find((e) => e.kind === "push.observed");
+  expect(last?.data).toMatchObject({ head: H2, approvalInvalidated: true });
+  await refusal(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null), "not_owner", /does not own/);
+});
+
+it("a merge holds a landing lease: no push over the revision being merged, and the record names that revision", async () => {
+  const L = await setup("landing");
+  await L.newItem("Land me", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "landing--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  // Only the task's owner may push to an accepted task.
+  await refusal(L.recordPush("t1", "codex/someone-else", H2, null), "not_owner", /does not own/);
+  await refusal(L.beginLanding("t1", "owner", H2), "acceptance_changed", /no longer accepted at bbbbbbbb/);
+  await L.beginLanding("t1", "owner", H1);
+  // While landing, the owner's push is refused and a push event changes nothing.
+  await refusal(L.recordPush("t1", A, H2, H2), "landing", /being merged at aaaaaaaa/);
+  expect(await L.observePush("t1", H2, H1)).toMatchObject({ state: "accepted", head: H1, acceptedHead: H1 });
+  // The lease has no expiry: only the owner can end it, and then a push is taken again.
+  await refusal(L.cancelLanding("t1", A), "not_project_owner", /only the project owner/);
+  await L.cancelLanding("t1", "owner");
+  expect(await L.recordPush("t1", A, H2, H2)).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  await L.beginLanding("t1", "owner", H1);
+  // The merge record must name the revision its commit was verified against.
+  await refusal(L.merged("t1", "owner", "c".repeat(40), true, H2), "acceptance_changed", /accepted again/);
+  expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
+});
