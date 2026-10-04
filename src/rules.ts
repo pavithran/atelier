@@ -1,3 +1,4 @@
+import type { Dispatch } from "./dispatch/rules";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -16,6 +17,8 @@ export interface Item {
   createdAt: string;
   updatedAt: string;
   lastPushAt: string | null;
+  dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
+  runner?: string | null;     // the runner that holds the claim, if a runner claimed it
 }
 
 // Observed: Atelier ran it itself, in a clean clone, at the exact head.
@@ -61,7 +64,10 @@ export interface ProjectPolicy {
 // OWNER_ACTOR; "owner" is the default.
 export const DEFAULT_OWNER = "owner";
 
-const ACTOR = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/i;
+// harness/model. A model may carry a ":profile" suffix, as the AI Studio's
+// oMLX profile ids do; the harness may not, so a runner name (kind:name) and
+// an actor never read alike.
+const ACTOR = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._:-]*)?$/i;
 
 export function validActor(actor: string): boolean {
   return ACTOR.test(actor);

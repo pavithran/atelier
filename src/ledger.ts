@@ -3,6 +3,7 @@ import {
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
+import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -56,6 +57,10 @@ export class Ledger extends DurableObject<Env> {
         actor TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
       );
     `);
+    // Added after the first deploy; existing ledgers gain the column once.
+    const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
+    if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
+    if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
   }
 
   // ── index instance ───────────────────────────────────────────────────────
@@ -109,13 +114,55 @@ export class Ledger extends DurableObject<Env> {
     return (row?.token_id as string | null) ?? null;
   }
 
-  claim(id: string, actor: string): { item: Item; needsFork: boolean } {
+  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null): { item: Item; needsFork: boolean } {
     const item = this.item(id);
+    assertDispatchedClaim(item, actor, runner);
     assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner);
-    if (item.owner === actor) return { item, needsFork: !item.fork };
-    this.update(id, { owner: actor, state: "claimed" });
-    this.log(id, actor, "item.claimed", {});
+    if (item.owner === actor) {
+      // Re-claiming refreshes the write token, so it is allowed only from where
+      // the claim is held: two runners offering the same agent and model share
+      // an actor name, and the second must not take over the first's fork.
+      const held = item.runner ?? null, asking = runner?.runner ?? null;
+      if (held && held !== asking) {
+        throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
+      }
+      // After a handoff the new owner holds no runner yet; the first runner to
+      // claim as that owner takes the claim, and any other is refused above.
+      if (!held && asking) this.update(id, { owner: actor, runner: asking });
+      return { item: this.item(id), needsFork: !item.fork };
+    }
+    this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null });
+    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {});
     return { item: this.item(id), needsFork: !item.fork };
+  }
+
+  // The project owner puts an open task in the queue for a kind of runner.
+  // Only the owner, for now; an orchestrator with an approved plan comes later.
+  dispatch(id: string, actor: string, input: Record<string, unknown>): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
+    const item = this.item(id);
+    assertDispatchable(item);
+    const d = makeDispatch(input, actor, new Date().toISOString());
+    this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note });
+    return this.item(id);
+  }
+
+  undispatch(id: string, actor: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner withdraws a dispatch", 403);
+    const item = this.item(id);
+    if (!item.dispatch || item.state !== "open") throw new RuleError("not_dispatched", `${id} is not waiting for a runner`);
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, new Date().toISOString(), id);
+    this.log(id, actor, "item.undispatched", {});
+    return this.item(id);
+  }
+
+  // Open tasks waiting for a runner, oldest dispatch first. Not named queue():
+  // that is a reserved handler name, which Durable Object RPC will not call.
+  waiting(): Item[] {
+    return this.items()
+      .filter((i) => i.state === "open" && !i.owner && i.dispatch)
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
   }
 
   // A failed fork must not leave an owner holding nothing.
@@ -284,6 +331,8 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private update(id: string, fields: Record<string, string | null>): void {
+    // A change of owner always ends the previous holder's runner.
+    if ("owner" in fields && !("runner" in fields)) fields = { ...fields, runner: null };
     const keys = Object.keys(fields);
     const set = keys.map((k) => `${k} = ?`).join(", ");
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), new Date().toISOString(), id);
@@ -311,5 +360,7 @@ function toItem(r: Row): Item {
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
     lastPushAt: (r.last_push_at as string | null) ?? null,
+    dispatch: r.dispatch ? (JSON.parse(r.dispatch as string) as Dispatch) : null,
+    runner: (r.runner as string | null) ?? null,
   };
 }

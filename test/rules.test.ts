@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
-  assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap,
+  assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap, validActor,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
 
@@ -225,4 +225,11 @@ test("push notices admit only valid branch updates in the configured namespace",
   const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'project--t1'},payload:{ref:'refs/heads/main',after:H1}};
   assert.deepEqual(pushNotice(notice),{repo:'project--t1',ref:'refs/heads/main',after:H1});
   for(const bad of [null,{}, {...notice,type:'other'}, {...notice,source:{...notice.source,namespace:'other'}},{...notice,payload:{ref:'refs/tags/v1',after:H1}},{...notice,payload:{ref:'refs/heads/main',after:'0'.repeat(40)}}])assert.equal(pushNotice(bad),null);
+});
+
+test("actor names allow a :profile suffix on the model, never on the harness", () => {
+  assert.ok(validActor("opencode/Qwen3-Coder-Next-4bit:studio-code"));
+  assert.ok(validActor("pavi"));
+  assert.equal(validActor("open:code/glm"), false);
+  assert.equal(validActor("opencode/mlx-community/Qwen3"), false);
 });

@@ -112,10 +112,10 @@ function itemArg(i = 1) {
   return id;
 }
 
-async function call(method, path, body, as) {
+async function call(method, path, body, as, extra = {}) {
   const res = await fetch(server() + "/api" + path, {
     method,
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -368,7 +368,7 @@ const commands = {
     const name = project();
     const id = itemArg();
     const as = actor();
-    const r = await call("POST", `${I(name, id)}/claim`, {}, as);
+    const r = await call("POST", `${I(name, id)}/claim`, {}, as, args.runner && args.runner !== true ? { "x-atelier-runner": String(args.runner) } : {});
     const dir = workspacePath(name, id);
     const fresh = !existsSync(join(dir, ".git"));
     if (fresh) {
@@ -641,6 +641,39 @@ const commands = {
     console.log(`${name}: each merge now pushes refs/notes/atelier to ${remote}. The merged branch is never pushed.`);
   },
 
+  // The project owner queues an open task for a kind of runner.
+  async dispatch() {
+    const name = project(), id = itemArg();
+    const item = await call("POST", `${I(name, id)}/dispatch`, {
+      to: args.to === true ? undefined : args.to,
+      agent: args.agent === true ? undefined : args.agent,
+      model: args.model === true ? undefined : args.model,
+      note: args.note === true ? undefined : args.note,
+    }, OWNER);
+    const d = item.dispatch;
+    console.log(`${id} is waiting for ${d.to === "any" ? "any runner" : `a ${d.to} runner`}${d.agent ? `, ${d.agent}` : ""}${d.model ? ` with ${d.model}` : ""}.`);
+  },
+
+  async undispatch() {
+    const name = project(), id = itemArg();
+    await call("POST", `${I(name, id)}/undispatch`, {}, OWNER);
+    console.log(`${id} is no longer waiting for a runner.`);
+  },
+
+  // Everything waiting for a runner, across projects, oldest first.
+  async queue() {
+    const res = await fetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER } });
+    if (!res.ok) die(`queue: ${res.status} ${(await res.text()).slice(0, 200)}`);
+    const incomplete = res.headers.get("x-atelier-incomplete");
+    if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
+    const queued = await res.json();
+    if (!queued.length) return console.log("Nothing is waiting for a runner.");
+    for (const { project, item } of queued) {
+      const d = item.dispatch;
+      console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}  ${item.title}`);
+    }
+  },
+
   async owners() {
     const name = project();
     const live = await call("GET", `${P(name)}/owners`, undefined, actor(OWNER));
@@ -687,9 +720,10 @@ item with exactly one owner. Never edit the project checkout directly.
 
 Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
-Agents     claim ID --as H/M · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
+Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
+           dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Local      gc [--project NAME] [--dry-run | --apply]
 Docs       guide   (paste into a project's AGENTS.md)
 

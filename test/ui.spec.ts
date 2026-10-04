@@ -37,3 +37,15 @@ it('approval and acceptance require visible changes at the recorded revision',()
   expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
  }
 });
+
+it('the dispatch and withdraw forms carry the revision, as every other form does', () => {
+  const d = detail();
+  d.item.state = 'open'; d.item.owner = null;
+  const send = renderItem(project, d, 'PAVI', null);
+  const sendForm = send.slice(send.indexOf('action="/ui/example/t1/dispatch"'));
+  expect(sendForm.slice(0, 200)).toContain(`name="head" value="${head}"`);
+  d.item.dispatch = { to: 'home', agent: null, model: null, by: 'pavi', at: time, note: '' };
+  const wait = renderItem(project, d, 'PAVI', null);
+  const withdraw = wait.slice(wait.indexOf('action="/ui/example/t1/undispatch"'));
+  expect(withdraw.slice(0, 200)).toContain(`name="head" value="${head}"`);
+});

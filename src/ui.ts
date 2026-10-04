@@ -8,6 +8,7 @@ import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
+import { describe as describeDispatch } from "./dispatch/rules";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -145,6 +146,7 @@ export function renderInbox(
   projectViews: ProjectView[] = [],
   floor?: Floor,
   now = new Date(),
+  queued: { project: ProjectRecord; item: Item }[] = [],
 ): string {
   const groups = new Map<string, InboxEntry[]>();
   for (const x of entries) {
@@ -176,6 +178,8 @@ export function renderInbox(
   <h2 class="section-title">Needs your attention</h2>
   ${rows ? `<ul class="decision-list">${rows}</ul>` : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
   ${workingList}
+  ${queued.length ? `<h2 class="section-title">Waiting for a runner</h2><ul class="decision-list">${queued.map(({ project, item }) =>
+    `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("studio")}<span><strong>${e(item.title)}</strong><span class="meta">${e(project.name)} · ${e(item.id)} · for ${e(describeDispatch(item.dispatch!))}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>` : ""}
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
   ${!projects.length ? '<div class="empty"><h3>Bring your first project.</h3><p>In its checkout, run <code>atelier init</code> to register it.</p></div>' : ""}
 </section>`;
@@ -401,13 +405,29 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
       <p class="meta">This merges the approved revision and records the result. It does not deploy.</p></div>`
     : "";
 
+  // An open task can be sent to a runner; a queued one shows who it waits for.
+  const dispatchBox = item.state === "open" && !item.owner
+    ? item.dispatch
+      ? `<div class="notice" role="status"><h3>Waiting for ${e(describeDispatch(item.dispatch))}</h3>
+        <p>Sent by ${e(item.dispatch.by)} ${when(item.dispatch.at)}${item.dispatch.note ? `: ${e(item.dispatch.note)}` : ""}. The first matching runner to ask for work claims it.</p>
+        <form method="post" action="${action("undispatch")}">${revision}<button>Withdraw</button></form></div>`
+      : `<details class="request-changes dispatch-form"><summary>Send to an agent</summary>
+        <form class="stack" method="post" action="${action("dispatch")}">${revision}
+          <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Studio)</option><option value="cloud">Cloud runner</option></select></label>
+          <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option></select></label>
+          <label>Model <span class="meta">optional, as the runner names it</span><input type="text" name="model" placeholder="e.g. glm-5.3-flash"></label>
+          <label>Note for the agent <span class="meta">optional</span><input type="text" name="note" maxlength="500"></label>
+          <button class="primary">Send</button>
+        </form></details>`
+    : "";
+
   const header = `<header class="review-header">
   <p class="context">${e(p.name)} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
   <h2>${e(item.title)}</h2>
   <p class="review-description">${e(decision.detail)}</p>
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
-  <div class="actions">${approve}${accept}${reject}</div>
+  <div class="actions">${approve}${accept}${reject}${dispatchBox}</div>
   ${merge}
   <p class="meta revision">Revision <code>${short(item.head)}</code>${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
