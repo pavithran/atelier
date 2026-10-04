@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { landingJournal, landingLock } from "./landing.mjs";
+import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 
 const HOME = homedir();
@@ -382,7 +383,10 @@ const commands = {
     for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch: r.workspace.defaultBranch })) {
       git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
     }
+    // Commit as the project's checkout does, not as this machine's global identity.
+    const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
     console.log(`${id} is yours, ${as}. Work here:\n  cd ${JSON.stringify(dir)}`);
+    if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, as in the project checkout.`);
     console.log(`Write token expires ${r.workspace.expiresAt}; run \`atelier claim ${id}\` again to refresh it.`);
     console.log(`Then: commit → atelier push → atelier check → atelier submit`);
   },
