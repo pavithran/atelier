@@ -20,6 +20,7 @@ export interface LedgerEvent {
 }
 
 export interface ProjectRecord {
+  revision?: number;      // one more on every init; the index keeps the newest copy
   name: string;           // the key: storage, links, commands
   title?: string;         // what people read; the name when absent
   repo: string;
@@ -47,11 +48,14 @@ export interface ProjectInit {
 
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 
+// `reset` starts the policy over; the project's identity (its title, when the
+// init does not name one, and when it was created) is kept either way.
 export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: string): ProjectRecord {
-  const p = current?.policy;
+  const p = i.reset ? undefined : current?.policy;
   const title = i.title === undefined ? current?.title : i.title ?? undefined;
   const approval = i.approval === undefined ? p?.approval : i.approval ?? undefined;
   return {
+    revision: (current?.revision ?? 0) + 1,
     name: i.name,
     ...(title ? { title } : {}),
     repo: i.repo,
@@ -104,7 +108,11 @@ export class Ledger extends DurableObject<Env> {
 
   // ── index instance ───────────────────────────────────────────────────────
 
+  // Two inits finishing out of order must not leave the older copy listed.
   registerProject(record: ProjectRecord): void {
+    const row = this.sql.exec(`SELECT json FROM projects WHERE name = ?`, record.name).toArray()[0];
+    const held = row ? (JSON.parse(row.json as string) as ProjectRecord).revision ?? 0 : -1;
+    if ((record.revision ?? 0) < held) return;
     this.sql.exec(`INSERT OR REPLACE INTO projects (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
   }
 
@@ -118,7 +126,7 @@ export class Ledger extends DurableObject<Env> {
   // runs one call at a time, so no other init can change the project between
   // the read and the write.
   initProject(init: ProjectInit, actor: string): ProjectRecord {
-    const row = init.reset ? undefined : this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, new Date().toISOString());
     this.setProject(record, actor);
     return record;

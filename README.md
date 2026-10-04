@@ -177,7 +177,7 @@ Running `atelier init` again changes only what it names: `--title` changes the
 title, `--check` replaces the required checks, `--protect` replaces the
 protected paths (with the defaults), and everything not named keeps its value.
 `atelier init --reset` rebuilds the policy from the options given and the
-defaults, as a first init does.
+defaults, as a first init does; the project's title and creation date are kept.
 
 ## Local cache cleanup
 
