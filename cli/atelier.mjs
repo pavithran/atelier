@@ -312,6 +312,8 @@ const commands = {
       refuseOverlap: cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]),
       sandboxOnly: Boolean(args["sandbox-only"]),
       approval: args.approval === true ? undefined : args.approval,
+      // Omitted keeps the current title; --title "" clears it.
+      ...(args.title === undefined ? {} : { title: args.title === true ? "" : args.title }),
       defaultBranch: branch,
     }, OWNER);
     git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
@@ -319,7 +321,7 @@ const commands = {
     cfg.projects[name] = { ...cfg.projects[name], path: top, branch };
     saveConfig(cfg);
     const pol = r.project.policy;
-    console.log(`${name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
+    console.log(`${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
     if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
@@ -718,7 +720,7 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
 Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject

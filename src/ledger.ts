@@ -20,7 +20,8 @@ export interface LedgerEvent {
 }
 
 export interface ProjectRecord {
-  name: string;
+  name: string;           // the key: storage, links, commands
+  title?: string;         // what people read; the name when absent
   repo: string;
   policy: ProjectPolicy;
   createdAt: string;
