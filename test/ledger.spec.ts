@@ -386,7 +386,7 @@ it("a push to an accepted task withdraws the acceptance, and only its owner can 
   // The merge conflicted; the owner rebases and pushes a new revision.
   const reopened = await L.recordPush("t1", A, H2, H2);
   expect(reopened).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
-  const last = (await L.events("t1")).find((e) => e.kind === "push.observed");
+  const last = ((await L.events("t1")) as unknown as { kind: string; data: unknown }[]).find((e) => e.kind === "push.observed");
   expect(last?.data).toMatchObject({ head: H2, approvalInvalidated: true });
   await refusal(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null), "not_owner", /does not own/);
 });
