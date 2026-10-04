@@ -9,7 +9,7 @@ import type { ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { describe as describeDispatch } from "./dispatch/rules";
-import { drawStory, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { addTally, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -265,6 +265,10 @@ function restingGraph(s: Story, owner: string): string {
 const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
   m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : `var(--m-${vendorFor(m.actor, owner)})`;
 
+// A page's numbers count only the projects whose threads it draws, so the
+// headline and the picture agree. Callers' totals are not used.
+const drawnTotal = (stories: Story[]) => stories.filter((s) => s.threads.length).reduce((acc, s) => addTally(acc, s.tally), emptyTally());
+
 interface FlowParts { stages: string; columns: string; shown: Story[] }
 
 // The parts Flow and the public showcase share. `where` is the page the replay
@@ -299,8 +303,8 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   return { stages, columns, shown };
 }
 
-export function renderFlow(stories: Story[], total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
-  const t = total;
+export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
+  const t = drawnTotal(stories);
   const { stages, columns, shown } = flowParts(stories, t, owner, "/flow", (s) => taskHref(s.project));
   const body = shown.length
     ? `${legendLine(vendorsIn(shown))}${stages}${columns}`
@@ -324,7 +328,8 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
-export function renderShowcase(stories: Story[], total: Tally, owner: string, ownerName: string | null, unavailable = false): string {
+export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false): string {
+  const total = drawnTotal(stories);
   const who = ownerName || "the owner";
   const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who);
   const body = shown.length

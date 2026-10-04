@@ -73,6 +73,21 @@ it('decisions at rest show the latest graph, and the old resting sheet when ther
  expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:s,owner:'pavi'})).toContain('See the whole flow');
  expect(renderInbox([],[project],'PAVI')).toContain('Space to focus.');
 });
+it('the flow headline counts only the projects whose threads are drawn',()=>{
+ const s1=story();
+ const hollow=buildStory('hollow',[{...detail().item,id:'t9',state:'merged'}],[
+  ev(1,'t9','pavi','item.accepted'),ev(2,'t9','pavi','item.accepted')].reverse(),'pavi');
+ expect(hollow.threads.length).toBe(0);
+ const html=renderFlow([s1,hollow],hollow.tally,'pavi','PAVI');
+ expect(html).toContain('You made 1 decision.');
+ expect(html).toContain('2 agents did the other 2 moves');
+});
+it('a cut record says so where the graph rests',()=>{
+ const partial=buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
+  ev(1,'t1','codex/gpt-6','item.claimed')].reverse(),'pavi',true);
+ expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:partial,owner:'pavi'}))
+  .toContain('the most recent part of the record');
+});
 it('the flow route is served behind sign-in, under a policy that allows only the fonts',async()=>{
  const TOKEN='flow-test-token';
  const testEnv={...env,ATELIER_TOKEN:TOKEN} as typeof env;
