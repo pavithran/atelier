@@ -1,0 +1,14 @@
+atelier cloudflare-git/t62 "Fix: browsing asks Artifacts for the log without a ref at the head (ref HEAD returns nothing live), so every browse page said the repository had no commits"
+accepted head dd0c7d639f0014147260fe9390207f3a9248fade
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T20:27:24.203Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T20:27:27.222Z
+REVIEW approve — codex/gpt-6-astra: Head lookup omits the ref; every Artifacts log caller uses no ref or a commit id; ?at= still resolves; reverting the fix makes the route test fail.
+2026-10-04T20:25:39.274Z pavi item.created
+2026-10-04T20:25:40.498Z claude-code/opus-5.5 item.claimed
+2026-10-04T20:25:43.027Z claude-code/opus-5.5 fork.created
+2026-10-04T20:27:12.258Z claude-code/opus-5.5 push.observed
+2026-10-04T20:27:24.262Z claude-code/opus-5.5 evidence.observed
+2026-10-04T20:27:27.290Z claude-code/opus-5.5 evidence.observed
+2026-10-04T20:27:27.722Z claude-code/opus-5.5 item.submitted
+2026-10-04T20:28:02.314Z codex/gpt-6-astra review.approved
+2026-10-04T20:29:36.726Z pavi item.accepted
