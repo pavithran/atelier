@@ -4,7 +4,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanSummary } from "./brief";
 import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
-import { readImported, type ImportedHistory, type LogSource } from "./import/history";
+import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
@@ -61,7 +61,7 @@ async function showcase(env: Env, url: URL): Promise<Response> {
       const L = ledger(env, name);
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
       const [project, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
-      cutoffs.set(name, firstTaskAt(events));
+      cutoffs.set(name, firstTaskAt(items));
       records.push(project);
       return buildStory(name, items, events, owner, events.length >= STORY_EVENTS, titleOf(project), { redact: true, ownerLabel: ownerName(env) || "The owner" });
     } catch { return null; }
@@ -73,15 +73,6 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   // A copy the cache refuses is not an error: the page is still served.
   await caches.default.put(key, res.clone()).catch(() => undefined);
   return res;
-}
-
-// The actor that stands for the project owner, and the name the pages use.
-// Imported history starts where Atelier's own record of tasks starts: the
-// first event about a task. A project with no tasks yet has all its history
-// before Atelier.
-function firstTaskAt(events: LedgerEvent[]): number | null {
-  const first = events.filter((e) => e.itemId).map((e) => e.at).sort()[0];
-  return first ? Math.floor(Date.parse(first) / 1000) : null;
 }
 
 // Each project's imported history, read once per baseline head: the result
@@ -109,6 +100,7 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
 
+// The actor that stands for the project owner, and the name the pages use.
 function ownerActor(env: Env): string {
   return (env as unknown as Settings).OWNER_ACTOR || DEFAULT_OWNER;
 }
@@ -601,7 +593,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const story = async (v: FloorView) => {
       try {
         const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-        cutoffs.set(v.project.name, firstTaskAt(events));
+        cutoffs.set(v.project.name, firstTaskAt(v.items));
         return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
       } catch { return null; }
     };
