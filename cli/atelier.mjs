@@ -305,13 +305,19 @@ const commands = {
     if (cp && (!args.approval || args.approval === true)) {
       die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
     }
-    const protect = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
+    // Only what this command names is sent; the server keeps everything else
+    // as it is. --reset starts the policy over from these options and the
+    // defaults. A ControlPlane project always sends the policy ControlPlane holds.
+    const reset = args.reset === true;
+    const policy = {};
+    if (args.multi.check || reset) policy.checks = args.multi.check ?? [];
+    if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
+    if (cp) policy.eligible = cp.eligible ?? [];
+    if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]);
+    if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = Boolean(args["sandbox-only"]);
     const r = await call("PUT", P(name), {
-      checks: args.multi.check ?? [],
-      protected: protect,
-      eligible: cp?.eligible ?? [],
-      refuseOverlap: cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]),
-      sandboxOnly: Boolean(args["sandbox-only"]),
+      ...policy,
+      ...(reset ? { reset: true } : {}),
       approval: args.approval === true ? undefined : args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title === true ? "" : args.title }),
@@ -734,7 +740,7 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
 Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject

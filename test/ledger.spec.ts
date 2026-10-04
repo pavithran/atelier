@@ -346,3 +346,29 @@ it("a claim belongs to the runner that made it; the same agent name from another
   expect(adopted.runner).toBe("home:laptop");
   await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
 });
+
+it("an init is merged into the project in one step and keeps every field it does not name", async () => {
+  const { mergeProject } = await import("../src/ledger");
+  const base = { name: "m", repo: "m", reset: false };
+  const full = mergeProject(null, { ...base, title: "T", checks: ["npm test"], protected: ["src/rules.ts"], eligible: ["claude"], refuseOverlap: true, sandboxOnly: true, approval: "PAVI, today" }, "2026-10-04T00:00:00Z");
+  // A title-only init keeps checks, protection, eligibility, overlap, sandbox and approval.
+  expect(mergeProject(full, { ...base, title: "U" }, "later")).toEqual({ ...full, title: "U", revision: 2 });
+  // An explicit null clears; reset starts from the defaults.
+  expect(mergeProject(full, { ...base, title: null, approval: null }, "later")).toEqual({ ...full, revision: 2, title: undefined, policy: { ...full.policy, approval: undefined } } as never);
+  // reset starts the policy over and keeps the project's identity.
+  const reset = mergeProject(full, { ...base, reset: true }, "later");
+  expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], eligible: [], refuseOverlap: false, sandboxOnly: false });
+  expect([reset.title, reset.createdAt, reset.revision]).toEqual(["T", full.createdAt, 2]);
+  // The index keeps the newest copy, whatever order two inits register in.
+  const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await I.registerProject({ ...full, name: "ordered", revision: 3, title: "newer" });
+  await I.registerProject({ ...full, name: "ordered", revision: 2, title: "older" });
+  expect((await I.projects()).find((p) => p.name === "ordered")?.title).toBe("newer");
+  // Through the Durable Object: a protection change made between two inits survives a title-only init.
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:merge-once"));
+  await L.initProject({ ...base, name: "merge-once", repo: "merge-once", checks: ["npm test"] }, "owner");
+  await L.initProject({ ...base, name: "merge-once", repo: "merge-once", protected: ["src/index.ts"] }, "owner");
+  const after = await L.initProject({ ...base, name: "merge-once", repo: "merge-once", title: "Kept" }, "owner");
+  expect(after.policy).toMatchObject({ checks: ["npm test"], protected: ["src/index.ts"] });
+  expect(after.title).toBe("Kept");
+});

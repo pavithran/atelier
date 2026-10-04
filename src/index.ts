@@ -1,5 +1,5 @@
 import { itemDiff, type ItemDiff } from "./diff";
-import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
+import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
@@ -203,29 +203,27 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     const repo = repoName(project);
-    // A title is kept when init is run again without one, and cleared by an empty one.
-    const kept = await L.project().then((p) => p.title, () => undefined);
-    const title = body.title === undefined ? kept : cleanTitle(body.title);
-    const record: ProjectRecord = {
-      name: project,
-      ...(title ? { title } : {}),
-      repo,
-      policy: {
-        checks: asStrings(body.checks),
-        protected: asStrings(body.protected),
-        eligible: asStrings(body.eligible),
-        refuseOverlap: Boolean(body.refuseOverlap),
-        sandboxOnly: Boolean(body.sandboxOnly),
-        ...(body.approval ? { approval: String(body.approval).slice(0, 500) } : {}),
-      },
-      createdAt: new Date().toISOString(),
+    // Running init again changes only what it is given; the Ledger merges it
+    // into the current record in one step (initProject). Only reset: true
+    // starts over from the defaults.
+    if (body.reset !== undefined && typeof body.reset !== "boolean") throw new RuleError("bad_reset", "reset must be true or false", 400);
+    const has = (k: string) => body[k] !== undefined;
+    const init: ProjectInit = {
+      name: project, repo, reset: body.reset === true,
+      ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("checks") ? { checks: asStrings(body.checks) } : {}),
+      ...(has("protected") ? { protected: asStrings(body.protected) } : {}),
+      ...(has("eligible") ? { eligible: asStrings(body.eligible) } : {}),
+      ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
     };
     try {
       await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: body.defaultBranch ?? "main" });
     } catch (err) {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
-    await L.setProject(record, actor);
+    const record = await L.initProject(init, actor);
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write") });
   }
