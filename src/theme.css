@@ -3,6 +3,132 @@
   color-scheme: dark;
 
   /* Structure */
+  --shell: #0a0e13;
+  --shell-rgb: 10,14,19;
+  --surface: #07090c;
+  --surface-rgb: 7,9,12;
+  --surface-raised: #0c1015;
+  --surface-raised-rgb: 12,16,21;
+  --inset: #121a24;
+  --line: #1c232c;
+  --line-bright: #2c3744;
+  --lift-rgb: 255,255,255;
+  --shadow-rgb: 0,0,0;
+
+  /* Text */
+  --text: #eef2f5;
+  --text-rgb: 238,242,245;
+  --text-bright: #ffffff;
+  --text-muted: #8f9cab;
+  --text-dim: #7d8a98;
+
+  /* Signal */
+  --signal: #ffd166;
+  --signal-rgb: 255,209,102;
+  --signal-hot: #ffdf8f;
+  --signal-hot-rgb: 255,223,143;
+  --signal-bright: #fff0c7;
+  --signal-deep-rgb: 38,31,12;
+  --wire: #6b5a2c;
+  --wire-frozen: #5a5034;
+  --wire-captured: #6b5a2c;
+  --wire-offline: #2c3744;
+
+  /* Observed */
+  --observed: #5fe08f;
+  --observed-rgb: 95,224,143;
+  --observed-deep-rgb: 40,110,70;
+  --observed-line: #24553a;
+
+  /* Caution */
+  --caution: #ffb547;
+  --caution-rgb: 255,181,71;
+  --caution-bright: #ffd08a;
+  --caution-line: #5e4520;
+  --warning: #ffb547;
+  --warning-rgb: 255,181,71;
+
+  /* Fault */
+  --fault: #ff4d74;
+  --fault-rgb: 255,77,116;
+
+  /* Accent */
+  --music-accent: #ffd166;
+  --music-accent-rgb: 255,209,102;
+  --music-accent-line: #6b5a2c;
+  --on-accent: #07090c;
+
+  /* Material */
+  --texture-blend: normal;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    /* Structure */
+    --shell: #ebe8df;
+    --shell-rgb: 235,232,223;
+    --surface: #f6f4ee;
+    --surface-rgb: 246,244,238;
+    --surface-raised: #eeebe2;
+    --surface-raised-rgb: 238,235,226;
+    --inset: #e4e0d5;
+    --line: #cfcabd;
+    --line-bright: #a39d8f;
+    --lift-rgb: 20,24,29;
+    --shadow-rgb: 20,24,29;
+
+    /* Text */
+    --text: #14181d;
+    --text-rgb: 20,24,29;
+    --text-bright: #05070a;
+    --text-muted: #4b5562;
+    --text-dim: #55606d;
+
+    /* Signal */
+    --signal: #7a5600;
+    --signal-rgb: 122,86,0;
+    --signal-hot: #6b4b00;
+    --signal-hot-rgb: 107,75,0;
+    --signal-bright: #3d2b00;
+    --signal-deep-rgb: 250,238,205;
+    --wire: #c9ad6a;
+    --wire-frozen: #c2b28a;
+    --wire-captured: #c9ad6a;
+    --wire-offline: #cfcabd;
+
+    /* Observed */
+    --observed: #1d6b3c;
+    --observed-rgb: 29,107,60;
+    --observed-deep-rgb: 205,232,214;
+    --observed-line: #9cc9ad;
+
+    /* Caution */
+    --caution: #7d4d00;
+    --caution-rgb: 125,77,0;
+    --caution-bright: #5c3900;
+    --caution-line: #d8b98a;
+    --warning: #7d4d00;
+    --warning-rgb: 125,77,0;
+
+    /* Fault */
+    --fault: #b0173f;
+    --fault-rgb: 176,23,63;
+
+    /* Accent */
+    --music-accent: #7a5600;
+    --music-accent-rgb: 122,86,0;
+    --music-accent-line: #c9ad6a;
+    --on-accent: #fffaf0;
+
+    /* Material */
+    --texture-blend: multiply;
+  }
+}
+:root[data-theme="graphite"] {
+  color-scheme: dark;
+
+  /* Structure */
   --shell: #111311;
   --shell-rgb: 17,19,17;
   --surface: #171916;
@@ -62,7 +188,7 @@
   --texture-blend: multiply;
 }
 @media (prefers-color-scheme: light) {
-  :root {
+  :root[data-theme="graphite"] {
     color-scheme: light;
 
     /* Structure */
@@ -419,7 +545,8 @@
   --curve-breathe: cubic-bezier(0.65, 0, 0.35, 1);
 
   /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-serif: Georgia, "Times New Roman", serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: "Bricolage Grotesque", "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }

@@ -4,10 +4,18 @@
 
 Every colour, face, radius, spacing step and duration comes from the
 portfolio design set, `ai-projects-design`, copied into `src/theme.css` by
-`bin/sync-theme`. `src/layout.css` arranges those tokens and defines no colour
-of its own; it names three of them for their part here: the page is
-`--surface`, a raised sheet is `--surface-raised`, and a selected row is
-`--inset`. Light and dark follow the Graphite theme. To change how Atelier
+`bin/sync-theme`. Atelier uses the set's Night theme, its default since
+version 4.0.0; light and dark follow the device. The faces are the set's
+default stacks: IBM Plex Sans, IBM Plex Mono, and Bricolage Grotesque for
+display, loaded from Google Fonts, which the content security policy allows
+and nothing else.
+
+`src/layout.css` arranges those tokens. It defines colour only where the set
+has no role: one colour per family of agent (`--m-anthropic`, `--m-openai`,
+`--m-zai`, `--m-studio`, `--m-google`, `--m-other`, `--m-owner`) and the main
+line (`--main-line`), each with a darker daylight value. It names three
+tokens for their part here: the page is `--surface`, a raised sheet is
+`--surface-raised`, and a selected row is `--inset`. To change how Atelier
 looks, change the tokens in `ai-projects-design`, not this project.
 
 ## What the pages are for
