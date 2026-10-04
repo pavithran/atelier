@@ -24,6 +24,7 @@ export interface ImportedHistory {
 }
 
 export const NO_AGENT = "No agent named";
+const NAME_LIMIT = 40;
 
 // The agents a commit message names. Variants of one model, such as
 // "(1M context)", are one lane; an email address is not part of a name.
@@ -32,12 +33,27 @@ export function agentsIn(message: string): string[] {
   for (const line of message.split("\n")) {
     const m = /^\s*(?:Co-Authored-By|Agent)\s*:\s*(.+?)\s*$/i.exec(line);
     if (!m) continue;
-    const name = m[1].replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
+    // The name ends at the email address, and what follows it is not a name;
+    // anything else in angle brackets goes too. Invisible and direction-changing
+    // characters go, as in a project title, because the name is drawn on
+    // public pages.
+    const name = m[1].replace(/<[^<>]*@[^<>]*>.*$/, "").replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ")
+      .replace(/\s+/g, " ").trim().slice(0, NAME_LIMIT).trim();
     // A human co-author is a person, not an agent: keep only names that
     // read as a model or an agent harness and model.
     if (name && (/\//.test(name) || /\d/.test(name) || /^(claude|gpt|codex|gemini|glm|deepseek|qwen|opus|sonnet|haiku|fable)\b/i.test(name))) names.add(name);
   }
   return [...names];
+}
+
+// Imported history ends where Atelier's own record of tasks starts: the first
+// task created. The item list is complete, unlike a window of recent events,
+// so a long record never moves the cutoff into Atelier's own work. A project
+// with no tasks yet has all its history before Atelier.
+export function firstTaskAt(items: { createdAt: string }[]): number | null {
+  const first = items.map((i) => i.createdAt).sort()[0];
+  return first ? Math.floor(Date.parse(first) / 1000) : null;
 }
 
 // Commits before `cutoff` (unix seconds), newest first as git logs them.

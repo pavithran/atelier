@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentsIn, buildImported, readImported, NO_AGENT } from "../src/import/history.ts";
+import { agentsIn, buildImported, firstTaskAt, readImported, NO_AGENT } from "../src/import/history.ts";
 import { drawImported } from "../src/import/draw.ts";
 
-test("agents are read from Co-Authored-By and Agent lines; variants of one model are one name", () => {
+test("agents are read from Co-Authored-By and Agent lines; a parenthesised variant of one name is that name", () => {
   assert.deepEqual(agentsIn("Fix it\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"), ["Claude Opus 4.7"]);
   assert.deepEqual(agentsIn("x\n\nAgent: codex/gpt-6-astra\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"), ["codex/gpt-6-astra", "Claude Opus 5.5"]);
   assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Jane Doe <jane@example.com>"), [], "a person is not an agent");
@@ -37,11 +37,26 @@ test("the log is read in pages of 1,000 up to the limit, and says whether it rea
   assert.deepEqual([cut.total, cut.complete], [2000, false]);
 });
 
-test("the drawing escapes agent names and shows no commit messages", () => {
+test("the drawing escapes agent names and draws only names, counts and times", () => {
   const h = buildImported([c("a", 100, "secret subject\n\nCo-Authored-By: Claude \"Opus\" & 9 <x>"), c("b", 200, "another secret")], null, true);
   const svg = drawImported(h, "pavi", "Demo");
   assert.match(svg, /Claude &quot;Opus&quot; &amp; 9/);
   assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude <b>Opus</b> 9 <x>"), ["Claude Opus 9"], "anything in angle brackets is dropped with the email");
   assert.ok(!svg.includes("secret subject") && !svg.includes("another secret"));
   assert.equal(drawImported(buildImported([], null, true), "pavi", "Demo"), "");
+});
+
+test("a name ends at its email, loses invisible and direction-changing characters, and is capped", () => {
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude Opus 5.5 <a@b.c> do not publish"), ["Claude Opus 5.5"]);
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude\u202e Opus\u200b 5.5 <a@b.c>"), ["Claude Opus 5.5"]);
+  const [long] = agentsIn(`x\n\nAgent: codex/${"g".repeat(1200)}`);
+  assert.equal(long.length, 40);
+  const svg = drawImported(buildImported([c("a", 1, `x\n\nAgent: codex/${"g".repeat(60)}`)], null, true), "pavi", "Demo");
+  assert.match(svg, /…<title>codex\/g+<\/title>/, "a long name is cut in the lane and shown whole on hover");
+  assert.match(svg, /aria-label="Demo before Atelier: 1 commit, 1 naming an agent"/);
+});
+
+test("the cutoff is the first task created, however long the event record", () => {
+  assert.equal(firstTaskAt([]), null);
+  assert.equal(firstTaskAt([{ createdAt: "2026-10-02T00:00:00Z" }, { createdAt: "2026-09-30T12:00:00Z" }]), Date.parse("2026-09-30T12:00:00Z") / 1000);
 });
