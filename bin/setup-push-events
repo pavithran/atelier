@@ -1,0 +1,77 @@
+#!/bin/sh
+# Connect Artifacts push events to this Worker's queue consumer. Prints what
+# the release needs and, with --apply, creates the queues. It never deploys and
+# never edits wrangler.jsonc: the consumer is release configuration, printed
+# here for a person to paste in.
+set -eu
+
+queue="atelier-push-events"
+dead_letter="${queue}-dead-letter"
+namespace="atelier"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage: bin/setup-push-events [--apply]
+
+Prints the commands and configuration that connect Artifacts push events to
+the Worker's queue consumer. Without --apply nothing is run.
+
+  --apply    create the queues; still no deploy
+  --dry-run  print only (the default)
+  -h, --help print this
+EOF
+}
+
+apply=0
+for arg in "$@"; do
+  case "$arg" in
+    --apply) apply=1 ;;
+    --dry-run) apply=0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'unknown argument: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+printf 'Artifacts push events: queue %s, dead-letter queue %s, namespace %s.\n' "$queue" "$dead_letter" "$namespace"
+if [ "$apply" -eq 1 ]; then
+  printf 'Applying: creating the two queues. Nothing is deployed by this script.\n'
+else
+  printf 'Dry run: printing only. Re-run with --apply to create the two queues.\n'
+fi
+
+step() {
+  printf '\n$ %s\n' "$*"
+  if [ "$apply" -eq 1 ]; then (cd "$root" && "$@"); fi
+}
+
+step npx wrangler queues create "$queue"
+step npx wrangler queues create "$dead_letter"
+
+cat <<EOF
+
+Consumer configuration
+  Add this to wrangler.jsonc, alongside the other top-level keys:
+
+    "queues": { "consumers": [{ "queue": "$queue", "max_batch_size": 10, "max_retries": 5, "dead_letter_queue": "$dead_letter" }] }
+
+  The consumer in src/index.ts reads nothing until that configuration is
+  released, and releasing it is a deploy, which this script does not run.
+
+Subscriptions
+  Events reach the queue only through a subscription, and a repository-level
+  subscription selects one repository. Every item's workspace is a separate
+  fork repository under the $namespace namespace, so each fork needs its own
+  subscription: a push to a fork without one is never seen, and only the CLI's
+  own push observation covers it.
+
+  TODO: create one repository subscription per fork. The installed wrangler
+  (4.147.0) has the command
+
+    npx wrangler queues subscription create $queue --source artifacts.repo --events cf.artifacts.repo.pushed
+
+  but no flag for a subscription's namespace or repository, so it cannot
+  select one repository and this script does not run it. Create each
+  subscription in the Cloudflare dashboard or through the API, with namespace
+  $namespace and that repository's name.
+EOF

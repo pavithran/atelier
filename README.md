@@ -283,13 +283,26 @@ ignores unrelated branches and duplicate events, and retries failed reads.
 A new push invalidates acceptance and evidence for the previous revision.
 The CLI's push observation remains available when event delivery is delayed.
 
-Before enabling this in production, provision a queue and dead-letter queue,
-subscribe the intended Artifacts repositories' push events to it, and add a
-consumer to the release configuration:
+`bin/setup-push-events` prints what provisioning needs and nothing else. With
+`--apply` it creates two queues, `atelier-push-events` and its dead-letter
+queue `atelier-push-events-dead-letter`, and runs nothing more: it never
+deploys the Worker and never edits `wrangler.jsonc`.
+
+The consumer belongs in the release configuration. Add this to
+`wrangler.jsonc`, alongside the other top-level keys, then deploy:
 
 ```json
-{"queues":{"consumers":[{"queue":"atelier-events","max_batch_size":10,"max_retries":5,"dead_letter_queue":"atelier-events-dead-letter"}]}}
+"queues": { "consumers": [{ "queue": "atelier-push-events", "max_batch_size": 10, "max_retries": 5, "dead_letter_queue": "atelier-push-events-dead-letter" }] }
 ```
+
+Events reach the queue only through a subscription, and a repository-level
+subscription selects one repository. Every item's workspace is a separate fork
+repository, so each fork needs its own subscription under the `atelier`
+namespace; a fork without one has no event delivery, and only the CLI's push
+observation covers it. The installed wrangler (4.147.0) has no flag for a
+subscription's namespace or repository, so create those subscriptions in the
+Cloudflare dashboard or through the API. `bin/setup-push-events` prints this
+as a TODO rather than guessing at a command.
 
 Queue provisioning, subscription creation, and deployment are release actions;
 adding the consumer handler alone does not activate event delivery. See
