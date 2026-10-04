@@ -36,7 +36,7 @@ In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths. |
+| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths, and an optional display title. |
 | `atelier new "title" --scope 'src/**'` | anyone | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/`. |
 | `atelier push` | the item's owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
@@ -108,9 +108,11 @@ Trusted, and stated here so nobody assumes otherwise:
   evidence. Cloudflare container checks execute on the server and are
   available with `--sandbox`; `sandboxOnly` policy requires that evidence.
   The container integration still needs deployment and a live runtime check.
-- **Merging happens locally.** The Artifacts binding has no merge operation,
-  and the iCloud checkout is the source of truth, so `atelier merge` merges
-  with the local git.
+- **Merging happens locally.** The Artifacts binding and REST API can read
+  repositories (commits, trees, blobs, files, a first-parent log) but cannot
+  write. The only way to write is a git push with a write token, so Atelier
+  merges in git on the owner's machine and pushes. The iCloud checkout is the
+  source of truth.
 
 ## Setup
 
@@ -164,7 +166,7 @@ atelier login --server https://atelier.example.workers.dev
 ```
 
 ```bash
-atelier init --check "npm test" --protect AGENTS.md --protect "wrangler.*"
+atelier init --title "My project" --check "npm test" --protect AGENTS.md --protect "wrangler.*"
 ```
 
 Run `init` inside the project checkout. `atelier guide` prints the
