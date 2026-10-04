@@ -263,6 +263,22 @@ A runner's name is declared, like every actor's; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits.
 
+## The public showcase
+
+`/showcase` is the one page anyone can read without signing in. It shows the
+projects the owner names, as the Flow page draws them: each task's thread,
+who held it, its checks, reviews and decisions, and the tally. It leaves out
+what anyone wrote (review notes, reports, check commands and closing notes),
+the diffs, every form and every link into the signed-in pages. Nothing is
+shown until the owner names a project:
+
+```text
+printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
+```
+
+`SHOWCASE` takes project names separated by commas; deleting it hides the
+page again. The page may be cached for a minute.
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
