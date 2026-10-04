@@ -2,8 +2,9 @@ import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
+import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
 export { CheckRunner, Egress, Ledger };
@@ -34,6 +35,9 @@ function sameString(a: string, b: string): boolean {
 type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string };
 
 // The actor that stands for the project owner, and the name the pages use.
+// How much of a project's record the graph reads; a longer record is drawn from its most recent part.
+const STORY_EVENTS = 3000;
+
 function ownerActor(env: Env): string {
   return (env as unknown as Settings).OWNER_ACTOR || DEFAULT_OWNER;
 }
@@ -69,7 +73,7 @@ const html = (body: string, status = 200) =>
       "cache-control": "no-store",
       "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; form-action 'self'; base-uri 'none'",
     },
   });
 
@@ -432,7 +436,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0 || ["projects", "history", "studio"].includes(parts[0])) {
+  if (parts.length === 0 || ["projects", "history", "studio", "flow"].includes(parts[0])) {
     const projects = await index(env).projects();
     const views: ProjectView[] = await Promise.all(projects.map(async project => {
       try { return {project, items: await ledger(env,project.name).items()}; }
@@ -448,6 +452,22 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       catch { v.unavailable = true; return null; }
     }))).filter((v): v is FloorView => v !== null);
     const floor = buildFloor(floorViews, now);
+    // The graph reads a project's longer record: every project's on Flow, and
+    // only the most recently active project's on Decisions. Studio needs none.
+    const owner = ownerActor(env);
+    const story = async (v: FloorView) => {
+      try {
+        const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+        return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS);
+      } catch { return null; }
+    };
+    const recent = (v: FloorView) => v.events[0]?.at ?? "";
+    if (parts[0] === "flow") {
+      const stories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null)
+        .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
+      const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete));
+    }
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable)));
     const lists = await Promise.all(views.map(async v => {
       if (v.unavailable) return [];
@@ -466,7 +486,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const selectedItem = await L.item(task);
       selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
     }
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued));
+    const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
+    const latest = busiest && !selected ? await story(busiest) : null;
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined));
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);

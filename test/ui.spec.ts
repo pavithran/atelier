@@ -49,3 +49,41 @@ it('the dispatch and withdraw forms carry the revision, as every other form does
   const withdraw = wait.slice(wait.indexOf('action="/ui/example/t1/undispatch"'));
   expect(withdraw.slice(0, 200)).toContain(`name="head" value="${head}"`);
 });
+
+// ── flow ──
+import {env} from 'cloudflare:workers';
+import worker from '../src/index.ts';
+import {renderFlow} from '../src/ui';
+import {buildStory} from '../src/graph';
+const ev=(seq:number,itemId:string,actor:string,kind:string,data:Record<string,unknown>={})=>({seq,itemId,at:`2026-10-04T10:0${seq}:00.000Z`,actor,kind,data});
+const story=()=>buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
+ ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','claude-code/opus-5.5','review.rejected',{note:'<img src=x>'}),
+ ev(3,'t1','pavi','item.accepted'),ev(4,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi');
+it('the flow tells who did what, escapes what agents wrote, and links each task',()=>{
+ const s=story();
+ const html=renderFlow([s],s.tally,'pavi','PAVI');
+ expect(html).toContain('You made 1 decision.');
+ expect(html).toContain('2 agents did the other 2 moves, and sent work back 1 time.');
+ expect(html).toContain('href="/p/example/t1"');
+ expect(html).not.toContain('<img src=x>');
+ expect(html).toContain('data-theme="night"');
+});
+it('decisions at rest show the latest graph, and the old resting sheet when there is none',()=>{
+ const s=story();
+ expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:s,owner:'pavi'})).toContain('See the whole flow');
+ expect(renderInbox([],[project],'PAVI')).toContain('Space to focus.');
+});
+it('the flow route is served behind sign-in, under a policy that allows only the fonts',async()=>{
+ const TOKEN='flow-test-token';
+ const testEnv={...env,ATELIER_TOKEN:TOKEN} as typeof env;
+ const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const out=await worker.fetch(new Request('https://atelier.test/flow',{redirect:'manual'}),testEnv);
+ expect(out.status).not.toBe(200);
+ const res=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:`atelier=${hex}`}}),testEnv);
+ expect(res.status).toBe(200);
+ expect(await res.text()).toContain('<title>Flow · Atelier</title>');
+ const csp=res.headers.get('content-security-policy')!;
+ expect(csp).toContain("default-src 'none'");
+ expect(csp).toContain('font-src https://fonts.gstatic.com');
+ expect(csp).not.toContain('script-src');
+});
