@@ -1,0 +1,29 @@
+atelier cloudflare-git/t52 "Fix: atelier init again keeps the project's checks, protected paths and other policy unless flags change them, as it keeps the title; --reset to start over"
+accepted head ff2ee14a7f08bf7f776d4c25e5b44d49c8356c85
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T18:28:20.682Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T18:28:22.861Z
+REVIEW approve — codex/gpt-6-astra: Fourth review: reset keeps title and createdAt; absent keeps, null clears; revision ordering protects the index copy; ControlPlane policy still sent in full. Non-blocking: tests are sequential; atomicity rests on the synchronous Durable Object method.
+2026-10-04T18:00:21.195Z pavi item.created
+2026-10-04T18:11:07.004Z claude-code/opus-5.5 item.claimed
+2026-10-04T18:11:09.401Z claude-code/opus-5.5 fork.created
+2026-10-04T18:16:21.084Z claude-code/opus-5.5 push.observed
+2026-10-04T18:16:31.550Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:16:33.477Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:16:33.845Z claude-code/opus-5.5 item.submitted
+2026-10-04T18:18:30.859Z codex/gpt-6-astra review.rejected
+2026-10-04T18:18:44.396Z claude-code/opus-5.5 push.observed
+2026-10-04T18:18:55.529Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:18:57.587Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:18:58.043Z claude-code/opus-5.5 item.submitted
+2026-10-04T18:21:58.930Z codex/gpt-6-astra review.rejected
+2026-10-04T18:22:45.729Z claude-code/opus-5.5 push.observed
+2026-10-04T18:22:56.762Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:22:58.899Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:22:59.278Z claude-code/opus-5.5 item.submitted
+2026-10-04T18:27:06.957Z codex/gpt-6-astra review.rejected
+2026-10-04T18:28:09.292Z claude-code/opus-5.5 push.observed
+2026-10-04T18:28:20.737Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:28:22.931Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:28:23.356Z claude-code/opus-5.5 item.submitted
+2026-10-04T18:32:16.681Z codex/gpt-6-astra review.approved
+2026-10-04T18:38:49.072Z pavi item.accepted
