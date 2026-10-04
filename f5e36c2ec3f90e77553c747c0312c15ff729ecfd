@@ -1,0 +1,25 @@
+atelier cloudflare-git/t5 "Add atelier gc to remove merged workspaces and stale check clones"
+accepted head 7702a24ec15e74a4dfbbe55e861ffa655e02287b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6 2026-10-03T23:02:41.336Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6 2026-10-03T23:02:43.214Z
+REVIEW approve — pavi: PAVI authorized approval, acceptance, and merge in this chat after the status report for 7702a24e. Both required checks passed. The additional README, policy, and test paths support the cleanup behavior. Recorded by Codex on PAVI’s instruction; this is owner approval, not an independent model review.
+2026-10-03T22:29:34.524Z pavi item.created
+2026-10-03T22:45:15.784Z codex/gpt-5.5 item.claimed
+2026-10-03T22:45:18.136Z codex/gpt-5.5 fork.created
+2026-10-03T22:53:47.780Z pavi item.handoff
+2026-10-03T23:02:19.036Z codex/gpt-6 push.observed
+2026-10-03T23:02:41.382Z codex/gpt-6 evidence.observed
+2026-10-03T23:02:43.264Z codex/gpt-6 evidence.observed
+2026-10-03T23:02:50.233Z codex/gpt-6 item.submitted
+2026-10-04T00:09:22.425Z pavi review.approved
+2026-10-04T00:09:22.663Z pavi item.accepted
+
+Moved from 7fb0d960c338807db60e083a500d30e5529f9d76 on 2026-10-04: this history was rewritten before its first public push to replace a personal email address with the GitHub noreply address. Hashes named above that are listed in the mapping below refer to the pre-rewrite commits.
+  2d9875eff2ef -> 2f895e991ac6
+  a049dcba4123 -> 6c0202cddbfd
+  e401c12f3200 -> 08a672915b62
+  da846ab717cb -> 256df4b2d635
+  8c44da715a17 -> 071144431431
+  9405a57dc7e2 -> 8aa55b81903b
+  7fb0d960c338 -> f5e36c2ec3f9
+  7702a24ec15e -> 7df8856f4028
