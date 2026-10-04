@@ -2,8 +2,9 @@ import { itemDiff, type ItemDiff } from "./diff";
 import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
+import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
 export { CheckRunner, Egress, Ledger };
@@ -69,7 +70,7 @@ const html = (body: string, status = 200) =>
       "cache-control": "no-store",
       "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; form-action 'self'; base-uri 'none'",
     },
   });
 
@@ -432,7 +433,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0 || ["projects", "history", "studio"].includes(parts[0])) {
+  if (parts.length === 0 || ["projects", "history", "studio", "flow"].includes(parts[0])) {
     const projects = await index(env).projects();
     const views: ProjectView[] = await Promise.all(projects.map(async project => {
       try { return {project, items: await ledger(env,project.name).items()}; }
@@ -444,10 +445,17 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const now = new Date();
     const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
-      try { return { ...v, events: (await ledger(env, v.project.name).events(undefined, 400)) as unknown as LedgerEvent[] }; }
+      try { return { ...v, events: (await ledger(env, v.project.name).events(undefined, 5000)) as unknown as LedgerEvent[] }; }
       catch { v.unavailable = true; return null; }
     }))).filter((v): v is FloorView => v !== null);
     const floor = buildFloor(floorViews, now);
+    // The graph reads each project's whole record, newest project first.
+    const owner = ownerActor(env);
+    const stories = floorViews.map((v) => buildStory(v.project.name, v.items, v.events, owner))
+      .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
+    if (parts[0] === "flow") {
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), views.some((v) => v.unavailable)));
+    }
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable)));
     const lists = await Promise.all(views.map(async v => {
       if (v.unavailable) return [];
@@ -466,7 +474,8 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const selectedItem = await L.item(task);
       selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
     }
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued));
+    const latest = stories.find((s) => s.threads.length);
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest && { story: latest, owner }));
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);

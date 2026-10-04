@@ -9,6 +9,7 @@ import type { ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { describe as describeDispatch } from "./dispatch/rules";
+import { drawStory, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -31,6 +32,7 @@ const ICONS: Record<string, string> = {
   studio: '<path d="M3 20h18M5 20V9l7-5 7 5v11M9 20v-6h6v6"/>',
   projects: '<path d="M3 6h7l2 3h9v11H3V6Z"/>',
   history: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/>',
+  flow: '<path d="M3 6h18"/><path d="M6 6c3 0 2 6 5 6h7c3 0 2-6 5-6M6 6c3 0 2 12 5 12h4"/>',
   arrow: '<path d="m9 6 6 6-6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 11.5 3.3 3.3 0 0 0 7 18Z"/>',
@@ -41,17 +43,22 @@ const icon = (name: string) =>
 
 const NAV: [string, string, string][] = [
   ["Decisions", "/", "decisions"],
+  ["Flow", "/flow", "flow"],
   ["Studio", "/studio", "studio"],
   ["Projects", "/projects", "projects"],
   ["History", "/history", "history"],
 ];
 
+const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
+
 function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark">${refreshSeconds ? `\n<meta http-equiv="refresh" content="${refreshSeconds}">` : ""}
+<meta name="color-scheme" content="dark">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="${FONTS}">${refreshSeconds ? `\n<meta http-equiv="refresh" content="${refreshSeconds}">` : ""}
 <title>${e(title)} · Atelier</title><style>${theme}\n${layout}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <aside class="rail">
@@ -147,6 +154,7 @@ export function renderInbox(
   floor?: Floor,
   now = new Date(),
   queued: { project: ProjectRecord; item: Item }[] = [],
+  latest?: { story: Story; owner: string },
 ): string {
   const groups = new Map<string, InboxEntry[]>();
   for (const x of entries) {
@@ -185,8 +193,104 @@ export function renderInbox(
 </section>`;
   const sheet = selected
     ? `<section class="review-sheet" id="review" aria-label="Selected task">${reviewBody(selected)}</section>`
-    : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
+    : latest?.story.threads.length
+      ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
+      : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
   return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName);
+}
+
+// ── flow ───────────────────────────────────────────────────────────────────
+// The work as a graph, with the tally that says who did what. Numbers here are
+// counted from the Ledger's events by graph.ts; nothing is estimated.
+
+const taskHref = (project: string) => (th: { id: string }) => href("p", project, th.id);
+const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+function legendLine(vendors: Vendor[]): string {
+  const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
+    .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`);
+  return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}<li><i style="--c:var(--fault)"></i>sent back</li></ul>`;
+}
+
+function vendorsIn(stories: Story[]): Vendor[] {
+  return [...new Set(stories.flatMap((s) => Object.keys(s.tally.byVendor) as Vendor[]))];
+}
+
+function tallyBlock(t: Tally): string {
+  const total = t.agentMoves + t.decisions || 1;
+  const bar = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
+    .map(([v]) => `<span style="--c:var(--m-${v});width:${((t.byVendor[v]! / total) * 100).toFixed(2)}%"></span>`).join("")
+    + `<span style="--c:var(--m-owner);width:${((t.decisions / total) * 100).toFixed(2)}%"></span>`;
+  return `<div class="tally"><div class="tally-bar" aria-hidden="true">${bar}</div><dl>
+  <div><dt>agent moves</dt><dd>${t.agentMoves}</dd></div>
+  <div class="you"><dt>your decisions</dt><dd>${t.decisions}</dd></div>
+  <div class="cloud"><dt>checks Atelier ran itself${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}</dt><dd>${t.checks}</dd></div>
+  <div class="catch"><dt>times a model sent work back</dt><dd>${t.sentBack}</dd></div>
+</dl></div>`;
+}
+
+function headline(t: Tally): string {
+  const agents = t.agents.length;
+  return `<span class="you">You made ${plural(t.decisions, "decision")}.</span> <span class="them">${
+    agents ? `${plural(agents, "agent")} did the other ${t.agentMoves} moves${t.sentBack ? `, and sent work back ${plural(t.sentBack, "time")}` : ""}.` : "No agent has started yet."}</span>`;
+}
+
+function restingGraph(s: Story, owner: string): string {
+  const t = s.tally;
+  return `<div class="resting-graph">
+  <span class="kicker">${e(s.project)} · the work so far</span>
+  <h2><span class="you">You made ${plural(t.decisions, "decision")}.</span> ${plural(t.agents.length, "agent")} made ${t.agentMoves} moves.</h2>
+  <p>Nothing is waiting on you. Each thread is a task an agent took off main; it flows back only when you accept it.</p>
+  ${legendLine(Object.keys(t.byVendor) as Vendor[])}
+  <div class="stage-scroll">${drawStory(s, owner, { compact: true, replaySeconds: 6, href: taskHref(s.project) })}</div>
+  <a href="/flow">See the whole flow</a>
+</div>`;
+}
+
+const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
+  m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : `var(--m-${vendorFor(m.actor, owner)})`;
+
+export function renderFlow(stories: Story[], total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
+  const shown = stories.filter((s) => s.threads.length);
+  const moments = shown
+    .flatMap((s) => s.moments.map((m) => ({ ...m, project: s.project })))
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .slice(0, 14);
+  const many = shown.length > 1;
+  const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.project)}">
+  <div class="stage-head"><h2>${e(s.project)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}</span>
+  <a class="replay" href="/flow?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a></div>
+  <div class="stage-scroll">${drawStory(s, owner, { href: taskHref(s.project) })}</div>
+</section>`).join("");
+  const t = total;
+  const journey = [
+    ["Planned", "You describe an outcome; it becomes a task with a scope.", `${plural(t.planned, "task")} planned`, "var(--main-line)"],
+    ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
+    ["Worked", "The agent commits and pushes to its fork, never to your checkout.", `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
+    ["Checked", "Atelier runs the project's checks itself, in a Cloudflare container, on the exact revision.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
+    ["Reviewed", "Changes to protected files need a model from another family, or you.", `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
+    ["Decided", "You see the diff, the evidence and the reviews, and accept one revision.", `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
+    ["Merged", "It merges into main on your machine, with its whole history attached as a git note.", `${t.merges} merged`, "var(--main-line)"],
+  ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
+
+  const body = shown.length
+    ? `${legendLine(vendorsIn(shown))}${stages}
+<div class="flow-cols">
+  <section aria-label="What happened"><h2>What happened</h2><ol class="moments">${moments.map((m) =>
+    `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(m.at.slice(5, 10).replace("-", "/"))} ${e(m.at.slice(11, 16))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>
+  <section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol></section>
+</div>`
+    : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
+  return page("Flow", `<div class="page-width flow">
+  <header class="flow-hero">
+    <div><span class="kicker">Atelier · every project · from the ledger</span>
+      <h1>${headline(t)}</h1>
+      <p class="lead">Each coloured thread is a task an agent took off main: its pushes, the checks Atelier ran itself, the reviews from other models, and your decision. Hover a mark for what happened; select a task to open it.</p></div>
+    ${tallyBlock(t)}
+  </header>
+  ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
+  ${body}
+</div>`, "Flow", ownerName);
 }
 
 // ── studio ─────────────────────────────────────────────────────────────────
