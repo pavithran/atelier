@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import { landingJournal, landingLock } from "./landing.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
+import { formatStatus } from "./status.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -690,6 +691,19 @@ const commands = {
     for (const x of entries) console.log(`${x.kind.toUpperCase().padEnd(8)} ${x.project}/${x.itemId}  ${x.title}\n         ${x.reason}`);
   },
 
+  // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
+  async status() {
+    const known = await call("GET", "/projects", undefined, OWNER);
+    const chosen = args.project ? known.filter((p) => p.name === args.project) : known;
+    if (args.project && !chosen.length) die(`no project named ${args.project}`);
+    const inbox = await call("GET", "/inbox", undefined, OWNER);
+    const views = await Promise.all(chosen.map(async (p) => {
+      const { items } = await call("GET", P(p.name), undefined, OWNER);
+      return { name: p.name, title: p.title, items, inbox };
+    }));
+    console.log(formatStatus(views));
+  },
+
   async open() {
     spawnSync("open", [server()]);
   },
@@ -721,7 +735,7 @@ item with exactly one owner. Never edit the project checkout directly.
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
 Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] · publish\n           notes-remote [REMOTE | --off]
-Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · open
+Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
 Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] · push · update · check [--sandbox | -- CMD] · report "…" · submit
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
