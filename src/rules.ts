@@ -1,3 +1,4 @@
+import type { Dispatch } from "./dispatch/rules";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -16,6 +17,7 @@ export interface Item {
   createdAt: string;
   updatedAt: string;
   lastPushAt: string | null;
+  dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
 }
 
 // Observed: Atelier ran it itself, in a clean clone, at the exact head.

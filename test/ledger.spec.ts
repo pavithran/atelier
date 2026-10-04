@@ -277,3 +277,49 @@ it("HTTP review and acceptance preserve the displayed revision through successfu
  expect(await L.item('t1')).toMatchObject({state:'accepted',acceptedHead:H1});
  expect((await L.reviewsFor('t1'))[0].head).toBe(H1);
 });
+
+it("dispatch queues an open task for a kind of runner, and only a matching runner claims it", async () => {
+  const L = await setup("dispatch-flow");
+  const item = await L.newItem("Tidy the guide", ["docs/**"], "owner");
+  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the project owner dispatches/);
+
+  const queued = await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "small task" });
+  expect(queued.dispatch).toMatchObject({ to: "home", agent: "opencode", model: "glm-5.3-flash", by: "owner", note: "small task" });
+  expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
+
+  const home = { runner: "home:studio", kind: "home" as const };
+  await refusal(L.claim(item.id, A), "dispatched", /waiting for a home runner/);
+  await refusal(L.claim(item.id, "opencode/glm-5.3-flash", { runner: "cloud:atelier", kind: "cloud" }), "wrong_runner", /for a home runner/);
+  await refusal(L.claim(item.id, "claude-code/opus-5.5", home), "wrong_agent", /asks for opencode/);
+
+  const { item: claimed } = await L.claim(item.id, "opencode/glm-5.3-flash", home);
+  expect(claimed).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash" });
+  expect(await L.waiting()).toEqual([]);
+  const events = (await L.events(item.id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "item.claimed")?.data).toEqual({ runner: "home:studio" });
+  await refusal(L.dispatch(item.id, "owner", {}), "not_open", /owned by opencode/);
+
+  // A runner that gives up releases the task, and it waits in the queue again.
+  await L.release(item.id, "opencode/glm-5.3-flash", "out of time");
+  expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
+
+  await L.undispatch(item.id, "owner");
+  expect(await L.waiting()).toEqual([]);
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", /not waiting for a runner/);
+  // Withdrawn, it is an ordinary open task again.
+  const { item: byHand } = await L.claim(item.id, A);
+  expect(byHand.owner).toBe(A);
+  expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.dispatched", "item.undispatched", "item.released"]));
+});
+
+it("the queue lists the oldest dispatch first and skips tasks that are not open", async () => {
+  const L = await setup("dispatch-order");
+  const first = await L.newItem("First", ["a/**"], "owner");
+  const second = await L.newItem("Second", ["b/**"], "owner");
+  await L.dispatch(first.id, "owner", { to: "any" });
+  await new Promise((ok) => setTimeout(ok, 5));
+  await L.dispatch(second.id, "owner", { to: "cloud" });
+  expect((await L.waiting()).map((i) => i.id)).toEqual([first.id, second.id]);
+  await L.claim(first.id, "codex/gpt-6", { runner: "cloud:atelier", kind: "cloud" });
+  expect((await L.waiting()).map((i) => i.id)).toEqual([second.id]);
+});

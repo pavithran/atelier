@@ -236,6 +236,29 @@ revision. A stale page must be refreshed. Each reviewer's latest verdict
 at a revision replaces their earlier verdict; another reviewer's rejection
 still blocks acceptance.
 
+## Dispatch
+
+The project owner can send an open task to a kind of runner instead of
+waiting for an agent to choose it: `atelier dispatch t11 --to home --agent
+opencode --model glm-5.3-flash`, or "Send to an agent" on the task's page.
+`--to` is `home` (an `atelier runner` on one of your machines), `cloud` (a
+Cloudflare container) or `any`; the agent and model are optional.
+
+Runners are not sent work. A runner asks for it, describing what it can run,
+with `POST /api/queue` and a body such as
+`{"runner": "home:studio", "agents": [{"agent": "opencode", "models": ["glm-5.3-flash"]}]}`.
+Atelier answers with the waiting tasks it may take, across every project,
+oldest first, each with the name to claim under. The runner then claims
+through the ordinary atomic claim with the header `X-Atelier-Runner`; a
+dispatched task refuses any claim from a different kind of runner, agent or
+model, and refuses a claim with no runner at all until the owner withdraws
+the dispatch. A runner that gives up releases the task, and it waits in the
+queue again. `atelier queue` lists everything waiting.
+
+A runner's name is declared, like every actor's; what a dispatch guarantees
+is that the task goes to the first matching runner that asks, and to no one
+else, while it waits.
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,

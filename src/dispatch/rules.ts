@@ -1,0 +1,103 @@
+// Dispatch: the project owner (and, later, an orchestrator holding an approved
+// plan) puts an open task in a queue for a kind of runner. Runners do not get
+// work pushed to them; they ask for it, describing what they can run, and then
+// claim it through the ordinary atomic claim. A runner at home therefore only
+// ever makes outgoing requests, and every runner's work is judged the same way.
+
+import { RuleError, type Item } from "../rules.ts";
+
+export type RunnerKind = "cloud" | "home";
+export const RUNNER_KINDS: RunnerKind[] = ["cloud", "home"];
+
+export interface Dispatch {
+  to: RunnerKind | "any";
+  agent: string | null;   // an agent harness family, e.g. "claude-code", "codex", "opencode"; null for any
+  model: string | null;   // a model id as the runner names it; null for the runner's choice
+  by: string;
+  at: string;
+  note: string;
+}
+
+// What a runner says it can run when it asks for work.
+export interface RunnerOffer {
+  runner: string;          // "home:studio", "cloud:atelier"
+  kind: RunnerKind;
+  agents: { agent: string; models: string[] }[];
+}
+
+export interface Assignment {
+  agent: string;
+  model: string;
+  actor: string;           // the name the runner claims under: agent/model
+}
+
+const NAME = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
+
+export function parseRunner(header: string | null): { runner: string; kind: RunnerKind } | null {
+  if (!header) return null;
+  const [kind, name] = header.split(":");
+  if (!RUNNER_KINDS.includes(kind as RunnerKind) || !name || !NAME.test(name)) {
+    throw new RuleError("bad_runner", `"${header}" is not a runner; use cloud:NAME or home:NAME`, 400);
+  }
+  return { runner: header, kind: kind as RunnerKind };
+}
+
+export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown }, by: string, at: string): Dispatch {
+  const to = String(input.to ?? "any");
+  if (to !== "any" && !RUNNER_KINDS.includes(to as RunnerKind)) {
+    throw new RuleError("bad_dispatch", `send to cloud, home or any, not "${to}"`, 400);
+  }
+  const optional = (v: unknown, what: string) => {
+    if (v === undefined || v === null || v === "") return null;
+    const s = String(v);
+    if (!NAME.test(s)) throw new RuleError("bad_dispatch", `"${s}" is not a valid ${what}`, 400);
+    return s;
+  };
+  return {
+    to: to as Dispatch["to"],
+    agent: optional(input.agent, "agent"),
+    model: optional(input.model, "model"),
+    by, at,
+    note: String(input.note ?? "").slice(0, 500),
+  };
+}
+
+export function assertDispatchable(item: Item): void {
+  if (item.state !== "open" || item.owner) {
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
+  }
+}
+
+// The agent and model a runner should use for a dispatch, or null if it cannot.
+export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
+  if (d.to !== "any" && d.to !== offer.kind) return null;
+  for (const { agent, models } of offer.agents) {
+    if (d.agent && agent !== d.agent) continue;
+    const model = d.model ? (models.includes(d.model) ? d.model : null) : models[0] ?? null;
+    if (model) return { agent, model, actor: `${agent}/${model}` };
+  }
+  return null;
+}
+
+// A dispatched task may be claimed only by a matching runner, under a name
+// that matches the agent and model asked for. An undispatched task is claimed
+// as before, by anyone eligible.
+export function assertDispatchedClaim(item: Item & { dispatch?: Dispatch | null }, actor: string, runner: { runner: string; kind: RunnerKind } | null): void {
+  const d = item.dispatch;
+  if (!d || item.state !== "open") return;
+  if (!runner) {
+    throw new RuleError("dispatched", `${item.id} is waiting for a ${d.to === "any" ? "" : `${d.to} `}runner; withdraw the dispatch to claim it by hand`);
+  }
+  if (d.to !== "any" && d.to !== runner.kind) {
+    throw new RuleError("wrong_runner", `${item.id} is for a ${d.to} runner, not ${runner.runner}`, 403);
+  }
+  const [harness, model] = actor.split("/");
+  if (d.agent && harness !== d.agent) throw new RuleError("wrong_agent", `${item.id} asks for ${d.agent}, not ${harness}`, 403);
+  if (d.model && model !== d.model) throw new RuleError("wrong_model", `${item.id} asks for ${d.model}, not ${model ?? "no model"}`, 403);
+}
+
+export function describe(d: Dispatch): string {
+  const where = d.to === "any" ? "any runner" : `a ${d.to} runner`;
+  const what = d.agent ? `${d.agent}${d.model ? ` with ${d.model}` : ""}` : d.model ? d.model : "its choice of agent";
+  return `${where}, ${what}`;
+}

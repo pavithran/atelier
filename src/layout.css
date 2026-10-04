@@ -231,6 +231,8 @@ input, textarea {
   width: 100%; min-width: 0; padding: 11px var(--space-md); min-height: var(--ctl-h); background: var(--sheet);
   border: 1px solid var(--line-bright); border-radius: var(--radius-small); color: var(--text); caret-color: var(--signal-hot);
 }
+select { font: inherit; padding: 10px var(--space-md); min-height: var(--ctl-h); background: var(--sheet); border: 1px solid var(--line-bright); border-radius: var(--radius-small); color: var(--text); }
+.dispatch-form[open] { flex-basis: 100%; }
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
 textarea { resize: vertical; }
 .danger { color: var(--fault); }

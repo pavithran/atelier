@@ -4,6 +4,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
+import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
 export { CheckRunner, Egress, Ledger };
 
@@ -136,6 +137,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const m = req.method;
 
   if (parts[0] === "inbox" && m === "GET") return json(await inbox(env));
+  // The queue across every project. GET lists it for the owner; a runner POSTs
+  // what it can run and gets back the tasks it may claim, with the name to claim under.
+  if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
+    const offer = m === "POST" ? runnerOffer(body) : null;
+    const projects = await index(env).projects();
+    const lists = await Promise.all(projects.map(async (p) => {
+      try { return (await ledger(env, p.name).waiting()).map((item) => ({ project: p.name, item })); }
+      catch { return []; }
+    }));
+    const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
+    if (!offer) return json(queued);
+    return json(queued.flatMap(({ project, item }) => {
+      const a = item.dispatch ? assign(item.dispatch, offer) : null;
+      return a ? [{ project, item, ...a }] : [];
+    }));
+  }
   if (parts[0] !== "projects") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 1 && m === "GET") return json(await index(env).projects());
 
@@ -198,7 +215,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   switch (verb) {
     case "claim": {
-      const { item, needsFork } = await L.claim(id, actor);
+      const { item, needsFork } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")));
       const p = await L.project();
       let fork = item.fork;
       if (needsFork) {
@@ -272,6 +289,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
       return json({ runId, state }, 202);
     }
+    case "dispatch":
+      return json(await L.dispatch(id, actor, body));
+    case "undispatch":
+      return json(await L.undispatch(id, actor));
     case "review": {
       const item = await L.item(id);
       assertRevision(item, String(body.head ?? ""));
@@ -340,6 +361,21 @@ async function diffFor(env: Env, baselineRepo: string, fork: string | null): Pro
   }
 }
 
+function runnerOffer(body: Record<string, unknown>): RunnerOffer {
+  const r = parseRunner(typeof body.runner === "string" ? body.runner : null);
+  if (!r) throw new RuleError("bad_runner", "say which runner is asking, e.g. home:studio", 400);
+  const agents = Array.isArray(body.agents) ? body.agents : [];
+  return {
+    runner: r.runner, kind: r.kind,
+    agents: agents.flatMap((a) => {
+      const x = a as { agent?: unknown; models?: unknown };
+      return typeof x.agent === "string" && Array.isArray(x.models)
+        ? [{ agent: x.agent, models: x.models.filter((m): m is string => typeof m === "string") }]
+        : [];
+    }),
+  };
+}
+
 async function inbox(env: Env) {
   const projects = await index(env).projects();
   const now = new Date().toISOString();
@@ -374,7 +410,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     if (before.head) assertRevision(before, expected);
     if (["accept", "approve", "reject"].includes(verb)) await verifyRevision(env, project, id, expected);
     const oldToken = await L.tokenId(id);
-    if (verb === "accept") await L.accept(id, owner, expected);
+    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+    else if (verb === "undispatch") await L.undispatch(id, owner);
+    else if (verb === "accept") await L.accept(id, owner, expected);
     else if (verb === "abandon") await L.abandon(id, owner, note);
     else if (verb === "release") await L.release(id, owner, note);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note);
@@ -411,6 +449,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       catch { v.unavailable = true; return []; }
     }));
     const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
+    const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
     const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
     const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
     const project = projects.find(p=>p.name===projectName);
@@ -421,7 +460,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const selectedItem = await L.item(task);
       selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
     }
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now));
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued));
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
