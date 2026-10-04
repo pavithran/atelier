@@ -239,16 +239,29 @@ export class Ledger extends DurableObject<Env> {
 
   // The worker has already read the fork's head from Artifacts; what is logged
   // here is what Atelier saw, not what the agent said it pushed.
+  // An accepted task can still take a new revision, as when its merge
+  // conflicts and the owner rebases: the push withdraws the acceptance, and
+  // the task is back in progress until it is checked and submitted again.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null): Item {
     const item = this.item(id);
-    assertLive(item);
+    if (item.state !== "accepted") assertLive(item);
     assertOwner(item, actor);
+    const landing = this.landing(id);
+    if (item.state === "accepted" && landing && item.head !== observedHead) {
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)}; push again once it has landed`, 409);
+    }
     if (item.head === observedHead) return item;
     const now = new Date().toISOString();
-    this.update(id, { head: observedHead, last_push_at: now, state: item.state === "submitted" ? "submitted" : "claimed" });
+    const reopened = item.state === "accepted";
+    this.update(id, {
+      head: observedHead, last_push_at: now,
+      state: item.state === "submitted" ? "submitted" : "claimed",
+      ...(reopened ? { accepted_head: null } : {}),
+    });
     this.log(id, actor, "push.observed", {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
+      ...(reopened ? { approvalInvalidated: true } : {}),
     });
     return this.item(id);
   }
@@ -256,6 +269,9 @@ export class Ledger extends DurableObject<Env> {
   observePush(id: string, observedHead: string, expectedHead: string | null): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
+    // While the accepted revision is landing, a push to the fork does not
+    // change what is merged; it is left for after the merge.
+    if (item.state === "accepted" && this.landing(id)) return item;
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
       state: item.state === "accepted" ? "submitted" : item.state });
@@ -326,12 +342,45 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  merged(id: string, actor: string, mergeCommit: string, observed: boolean): Item {
+  // A merge lands the accepted revision under a lease: while it is held,
+  // the task's owner cannot push a new revision over the one being merged.
+  // It has no expiry, because a merge may have published the revision even
+  // if it never recorded it. Recording the merge ends it; the project owner
+  // can cancel it only while the merge is not on the baseline (see the
+  // landing route), and running the merge again resumes it.
+  private landing(id: string): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing:${id}`).toArray()[0];
+    return row ? (JSON.parse(row.value as string) as { head: string }).head : null;
+  }
+
+  cancelLanding(id: string, actor: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
+    return this.item(id);
+  }
+
+  beginLanding(id: string, actor: string, head: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    const item = this.item(id);
+    if (item.state !== "accepted" || item.acceptedHead !== head) {
+      throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify({ head, at: Date.now() }));
+    return item;
+  }
+
+  merged(id: string, actor: string, mergeCommit: string, observed: boolean, acceptedHead?: string | null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
     const item = this.item(id);
     if (item.state === "merged" && this.events(id).some((e) => e.kind === "item.merged" && e.data.mergeCommit === mergeCommit)) return item;
     if (!observed) throw new RuleError("unverified_merge", "merge commit is not on the baseline");
     if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}`);
+    // The merge commit was verified against one accepted revision; if the
+    // acceptance has moved since, this record would name the wrong one.
+    if (acceptedHead !== undefined && item.acceptedHead !== acceptedHead) {
+      throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409);
+    }
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
     this.update(id, { state: "merged", owner: null });
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed });
     return this.item(id);

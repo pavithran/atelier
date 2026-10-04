@@ -98,6 +98,28 @@ it("only the project owner can init, reset or not", async () => {
   expect(res.status).toBe(403);
 });
 
+it("a merge's lease cannot be cancelled once the merge is on the baseline", async () => {
+  const name = "cancel-landing";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  const H1 = "a".repeat(40), H0 = "0".repeat(40), M = "c".repeat(40);
+  await L.newItem("Land", [], "owner"); await L.claim("t1", "claude-code/opus-5.5"); await L.setFork("t1", `${name}--t1`, H0, "claude-code/opus-5.5");
+  await L.recordPush("t1", "claude-code/opus-5.5", H1, H1);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "claude-code/opus-5.5", at: new Date().toISOString(), changedPaths: ["README.md"] } as never);
+  await L.submit("t1", "claude-code/opus-5.5"); await L.accept("t1", "owner", H1); await L.beginLanding("t1", "owner", H1);
+  let published = false;
+  const ARTIFACTS = { get: async () => ({ log: async () => (published ? [{ hash: M, parents: [H0, H1] }] : [{ hash: H0, parents: [] }]), [Symbol.dispose]() {} }) } as unknown as Artifacts;
+  const cancel = () => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/landing`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  published = true;
+  const refused = await cancel();
+  expect(refused.status).toBe(409);
+  expect(((await refused.json()) as { error: string }).error).toBe("landed");
+  published = false;
+  expect((await cancel()).status).toBe(200);
+});
+
 // The Artifacts calls a PUT makes, stubbed so the route runs to completion here.
 const artifacts = {
   create: async () => {},
