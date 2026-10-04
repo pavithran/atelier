@@ -174,16 +174,27 @@ type Leaf = { path: string; hash: string; mode: string };
 
 // Paths whose entry differs between two trees, descending only into subtrees
 // whose hashes differ.
+// The entries that differ between two directory listings, and nothing else:
+// the listings are dropped before any recursion, so a deep tree holds only
+// the changed names of each ancestor, never their whole directories.
+function differing(a: Entry[] | null, b: Entry[] | null): [Entry | undefined, Entry | undefined, string][] {
+  const left = new Map((a ?? []).map((e) => [e.name, e]));
+  const out: [Entry | undefined, Entry | undefined, string][] = [];
+  for (const rt of b ?? []) {
+    const l = left.get(rt.name);
+    left.delete(rt.name);
+    if (!(l && l.hash === rt.hash && l.mode === rt.mode)) out.push([l, rt, rt.name]);
+  }
+  for (const [name, l] of left) out.push([l, undefined, name]);
+  return out.sort((x, y) => (x[2] < y[2] ? -1 : x[2] > y[2] ? 1 : 0));
+}
+
 async function changedLeaves(r: Reader, base: string | null, head: string | null, prefix: string, out: [Leaf | null, Leaf | null][], cap: number) {
   if (out.length > cap) return;
-  const [a, b] = await Promise.all([base ? r.tree(base) : [], head ? r.tree(head) : []]);
-  const left = new Map((a ?? []).map((e) => [e.name, e]));
-  const right = new Map((b ?? []).map((e) => [e.name, e]));
-  const names = [...new Set([...left.keys(), ...right.keys()])].sort();
-  for (const name of names) {
+  // The listings are passed straight to differing() and never held here.
+  const changed = differing(...(await Promise.all([base ? r.tree(base) : [], head ? r.tree(head) : []])));
+  for (const [l, rt, name] of changed) {
     if (out.length > cap) return;
-    const l = left.get(name), rt = right.get(name);
-    if (l && rt && l.hash === rt.hash && l.mode === rt.mode) continue;
     const path = prefix + name;
     const lTree = l?.type === "tree", rTree = rt?.type === "tree";
     if (lTree || rTree) {
