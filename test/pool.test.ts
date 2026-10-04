@@ -33,7 +33,7 @@ test("an entry is validated, its family derived, and no secret is accepted", () 
     [{ id: "x", harness: "opencode", where: "cloud", provider: "openai", keychain: "sk-proj-abc" }, /never the key itself/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "deepseek", keychain: "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6" }, /never the key itself/],
     [{ id: "x", harness: "opencode", where: "cloud" }, /which provider serves/],
-    [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/v1/sk-123/chat" }, /path looks like it carries a key/],
+    [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/v1/sk-proj-AbC123xyzQrS456/chat" }, /path looks like it carries a key/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://api.example.com/k/AbCdEfGhIjKlMnOpQrStUvWxYz012345/v1" }, /path looks like it carries a key/],
     [{ id: "x", harness: "opencode", where: "cloud", provider: "google", keychain: "my.sk-proj-abc.entry" }, /never the key itself/],
     [{ id: "x", harness: "zcode", where: "cloud", keychain: "0f3a9c2b7d4e1f6a8b5c3d2e1f0a9b8c.Xy7Zq2Lm9Np4Rs6T" }, /never the key itself/],
@@ -51,8 +51,11 @@ test("a status report is one of four states, with what was served", () => {
   // A key echoed back in an error is removed before it is stored or shown.
   assert.equal(cleanStatus({ state: "refused", detail: "invalid key sk-proj-AbC123xyz for model; also 0f3a9c2b7d4e1f6a8b5c3d2e1f0a9b8c.Xy7Zq2Lm9Np4Rs6T" }, AT, "home:studio").detail,
     "invalid key [key removed] for model; also [key removed]");
+  // Ordinary words are left alone in a report.
+  assert.equal(cleanStatus({ state: "refused", detail: "task-model flask_app ask-me: rate limited" }, AT, "home:studio").detail, "task-model flask_app ask-me: rate limited");
+  assert.equal(cleanStatus({ state: "refused", detail: "bad key hf_ABCDEF1234567890abcd" }, AT, "home:studio").detail, "bad key [key removed]");
   // Names that are not keys pass: model names, entry names, endpoints.
-  for (const fine of ["gemini.API_KEY", "ai-studio.OMLX_API_KEY", "deepseek.API_KEY"]) assert.doesNotThrow(() => cleanEntry({ id: "x", harness: "codex", where: "cloud", keychain: fine }, "pavi", AT));
-  for (const fine of ["https://api.deepseek.com/v1", "https://generativelanguage.googleapis.com/v1beta/openai", "https://openrouter.ai/api/v1", "http://10.0.0.110:8000/v1"])
+  for (const fine of ["gemini.API_KEY", "ai-studio.OMLX_API_KEY", "deepseek.API_KEY", "flask_app", "task-runner.KEY", "desk_top.API"]) assert.doesNotThrow(() => cleanEntry({ id: "x", harness: "codex", where: "cloud", keychain: fine }, "pavi", AT));
+  for (const fine of ["https://api.deepseek.com/v1", "https://generativelanguage.googleapis.com/v1beta/openai", "https://openrouter.ai/api/v1", "http://10.0.0.110:8000/v1", "https://api.example.com/ask-me/v1", "https://x.test/task-model/v1"])
     assert.doesNotThrow(() => cleanEntry({ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: fine }, "pavi", AT));
 });

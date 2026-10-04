@@ -66,7 +66,10 @@ const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 // What a key looks like, so one pasted where an entry's name belongs is
 // refused rather than stored: the prefixes providers give their keys, or a
 // long run of key characters with no separator a name would have.
-const KEY_PREFIX = /(sk-|sk_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ|Bearer )/;
+// A provider's key prefix, only at the start of a word and followed by at
+// least eight key characters, so "task-model", "flask_app" and "/ask-me/"
+// are not taken for keys.
+const KEY_PREFIX = /(?<![A-Za-z0-9])(?:sk-|sk_|hf_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ)[A-Za-z0-9_\-.]{8,}|Bearer [A-Za-z0-9._\-]{8,}/;
 // A long run of letters and digits, mixing both, as random keys are and
 // names are not; some keys join two such runs with a dot (id.secret).
 const KEY_RUN = /[A-Za-z0-9]*(?:[A-Za-z][A-Za-z0-9]*[0-9]|[0-9][A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]*/g;
@@ -81,7 +84,7 @@ const keyInPath = (path: string) => path.split("/").some((seg) => LOOKS_LIKE_KEY
 const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 
 export function redactKeys(s: string): string {
-  return s.replace(new RegExp(`${KEY_PREFIX.source}\\S*`, "g"), "[key removed]")
+  return s.replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
     .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));
 }
 
