@@ -319,7 +319,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.detail(id));
     }
     case "submit":
-      return json(await L.submit(id, actor, cleanSummary(body.summary)));
+      // A missing summary is fine; one that is not text or has none left after cleaning is refused.
+      const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
+      if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
+      return json(await L.submit(id, actor, summary));
     case "handoff": {
       const to = String(body.to ?? "");
       const before = await L.item(id);

@@ -73,11 +73,19 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   if (reviews.length) {
     lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${modelOf(r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.` });
   }
-  if (rejections.length) {
-    // Rejections at the current head: the ledger records no push since, because a push changes the head.
-    const latest = [...rejections].sort((a, b) => a.at.localeCompare(b.at)).pop()!;
-    const who = [...new Set(rejections.map((r) => modelOf(r.by)))].join(" and ");
-    lines.push({ rank: 0, text: `${who} asked for changes and no push is recorded since.${latest.note ? ` Note: ${clip(latest.note, 120)}` : ""}` });
+  // A rejection is answered when a push was observed after it, as the stuck
+  // rules read it; the head alone cannot say, since a head can return.
+  const pushed = events
+    .filter((ev) => ev.itemId === item.id && ev.kind === "push.observed")
+    .map((ev) => ev.at)
+    .sort()
+    .pop() ?? item.lastPushAt;
+  const unanswered = rejections.filter((r) => !(pushed && pushed > r.at));
+  if (unanswered.length) {
+    const models = [...new Set(unanswered.map((r) => modelOf(r.by)))];
+    const who = models.length > 1 ? `${models.length} models (${models.join(", ")})` : models[0];
+    const note = [...unanswered].sort((a, b) => a.at.localeCompare(b.at)).reverse().find((r) => r.note.trim())?.note.trim();
+    lines.push({ rank: 0, text: `${who} asked for changes and no push is recorded since.${note ? ` Note: ${clip(note, 120)}` : ""}` });
   }
   if (gate.outOfScope.length) {
     const shown = gate.outOfScope.slice(0, 3).join(", ");
@@ -136,7 +144,10 @@ function recommend({ item, gate }: Detail, p: Picture): Brief["recommendation"] 
     return { verdict: "wait", reason: `The task is ${stateLabel[item.state].toLowerCase()} and has not been submitted for a decision.` };
   }
   if (gate.ready) {
-    return { verdict: "accept", reason: `${p.passed} of ${plural(p.total, "required check")} passed at this revision and nothing blocks it.` };
+    return {
+      verdict: "accept",
+      reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.` : "The project requires no checks, and nothing blocks it.",
+    };
   }
   const against = [
     ...p.rejections.map((r) => `${modelOf(r.by)} asked for changes at this revision`),

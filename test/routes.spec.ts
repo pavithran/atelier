@@ -58,3 +58,20 @@ it("a claim on a dispatched task is refused without the right runner header", as
   expect(((await wrong.json()) as { error: string }).error).toBe("wrong_runner");
   expect((await claim("opencode/glm-5.3-flash", "laptop")).status).toBe(400);
 });
+
+it("the submit route refuses a blank or non-text summary, and accepts a missing one", async () => {
+  await project("routes-summary");
+  const A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40);
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-summary"));
+  await L.newItem("Summary refusals", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "routes-summary--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  for (const summary of ["", "   \n", 42, ["x"], null]) {
+    const res = await call("POST", "/projects/routes-summary/items/t1/submit", A, { summary });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("a summary must be text with something in it");
+  }
+  expect(((await L.events("t1")) as unknown as { kind: string }[]).some((e) => e.kind === "item.submitted")).toBe(false);
+  expect((await call("POST", "/projects/routes-summary/items/t1/submit", A, {})).status).toBe(200);
+});

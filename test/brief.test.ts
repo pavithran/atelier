@@ -32,7 +32,7 @@ test("accept: the gate is ready, and the decision names the action and revision"
   const b = briefFor(detail(), []);
   assert.equal(b.recommendation.verdict, "accept");
   assert.equal(b.decided, "Accept t21 at aaaaaaaa: Fix the thing.");
-  assert.match(b.recommendation.reason, /1 of 1 required check passed/);
+  assert.match(b.recommendation.reason, /^1 of 1 required checks passed at this revision/);
   assert.deepEqual(b.evidence, ["Required checks at this revision: 1 passed in a Cloudflare container."]);
 });
 
@@ -81,7 +81,7 @@ test("with two rejections and scope flags, the flags and one rejection line stay
   const b = briefFor(d, []);
   assert.equal(b.evidence.length, 5);
   assert.equal(b.evidence.filter((l) => l.includes("asked for changes and no push is recorded since")).length, 1);
-  assert.ok(b.evidence.some((l) => l.startsWith("gpt-5.5 and glm-5.3 asked for changes") && l.includes("Note: second")));
+  assert.ok(b.evidence.some((l) => l.startsWith("2 models (gpt-5.5, glm-5.3) asked for changes") && l.includes("Note: second")));
   assert.ok(b.evidence.some((l) => l.startsWith("Changes outside the task's scope")));
   assert.ok(b.evidence.some((l) => l.includes("protected path")));
   assert.ok(b.evidence.some((l) => l.startsWith("Required checks")));
@@ -124,6 +124,33 @@ test("decide: only a blocker that is not a check, a review or a measurement rema
   const open = briefFor(detail({ item: { head: null }, policy: { checks: [], protected: [] }, evidence: [] }), []);
   assert.equal(open.recommendation.verdict, "decide");
   assert.match(open.recommendation.reason, /no verified push/);
+});
+
+test("accept with no required checks says the project requires none", () => {
+  const b = briefFor(detail({ policy: { checks: [], protected: [] }, evidence: [pass()] }), []);
+  assert.equal(b.recommendation.verdict, "accept");
+  assert.equal(b.recommendation.reason, "The project requires no checks, and nothing blocks it.");
+});
+
+const push = (seq: number, at: string, head: string): LedgerEvent => ({ seq, itemId: "t21", at, actor: "claude-code/opus-5.5", kind: "push.observed", data: { head } });
+
+test("a rejection is answered by any push observed after it, even if the head returns", () => {
+  const rejected = { reviews: [rev({ approve: false, note: "fix it", at: "2026-10-03T12:05:00.000Z" })] };
+  const asked = (b: ReturnType<typeof briefFor>) => b.evidence.some((l) => l.includes("no push is recorded since"));
+  assert.ok(asked(briefFor(detail(rejected), [push(1, "2026-10-03T12:00:00.000Z", H1)])));
+  // Reject at H1, push H2, push back to H1: two pushes after the review.
+  const back = [push(3, "2026-10-03T12:08:00.000Z", H1), push(2, "2026-10-03T12:06:00.000Z", H2), push(1, "2026-10-03T12:00:00.000Z", H1)];
+  const b = briefFor(detail(rejected), back);
+  assert.ok(!asked(b));
+  assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 asked for changes."));
+});
+
+test("several rejections say how many models and quote the newest non-empty note", () => {
+  const b = briefFor(detail({ reviews: [
+    rev({ approve: false, by: "codex/gpt-5.5", note: "older note", at: "2026-10-03T12:01:00.000Z" }),
+    rev({ approve: false, by: "zcode/glm-5.3", note: "  ", at: "2026-10-03T12:02:00.000Z" }),
+  ] }), []);
+  assert.ok(b.evidence.includes("2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note: older note"));
 });
 
 test("scope flags, reports and where checks ran appear, capped at five lines", () => {
