@@ -53,15 +53,10 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   const rev = item.head ? `at ${item.head.slice(0, 8)}` : "with nothing pushed";
   const title = item.title.trim().replace(/[.!?]+$/, "");
 
-  // The action follows the item: merge once accepted, a review when a protected
-  // path still lacks an independent approval, otherwise acceptance.
-  const verb = item.state === "accepted" ? "Merge" : item.state === "submitted" && gate.needsAssessor ? "Review" : "Accept";
-  const decided = item.state === "merged" || item.state === "abandoned"
-    ? `${item.id} is ${stateLabel[item.state].toLowerCase()} ${rev}: ${title}.`
-    : `${verb} ${item.id} ${rev}: ${title}.`;
-
-  // Evidence, in order of weight; the cap drops the report count first.
-  const lines: string[] = [];
+  // Evidence lines carry a rank. Over five, the least important go first: gate
+  // flags and rejections rank highest, then checks, then reviews, then reports.
+  // Lines keep their reading order.
+  const lines: { rank: number; text: string }[] = [];
   if (view.checks.length) {
     const parts: string[] = [];
     for (const where of ["sandbox", "runner"] as const) {
@@ -73,28 +68,48 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
       if (n) parts.push(`${n} failed ${WHERE_LABEL[where]}`);
     }
     if (pending.length) parts.push(`${pending.length} waiting`);
-    lines.push(`Required checks at this revision: ${parts.join(", ")}.`);
+    lines.push({ rank: 1, text: `Required checks at this revision: ${parts.join(", ")}.` });
   }
   if (reviews.length) {
-    lines.push(`Reviews at this revision: ${reviews.map((r) => `${modelOf(r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.`);
+    lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${modelOf(r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.` });
   }
-  for (const r of rejections) {
-    // A rejection at the current head has had no push since: a push changes the head.
-    lines.push(`${modelOf(r.by)} asked for changes and nothing has been pushed since.${r.note ? ` Note: ${clip(r.note, 120)}` : ""}`);
+  if (rejections.length) {
+    // Rejections at the current head: the ledger records no push since, because a push changes the head.
+    const latest = [...rejections].sort((a, b) => a.at.localeCompare(b.at)).pop()!;
+    const who = [...new Set(rejections.map((r) => modelOf(r.by)))].join(" and ");
+    lines.push({ rank: 0, text: `${who} asked for changes and no push is recorded since.${latest.note ? ` Note: ${clip(latest.note, 120)}` : ""}` });
   }
   if (gate.outOfScope.length) {
     const shown = gate.outOfScope.slice(0, 3).join(", ");
-    lines.push(`Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.`);
+    lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
-  if (gate.needsAssessor) lines.push("It touches a protected path and no different model or the project owner has approved.");
-  if (view.reports.length) lines.push(`${plural(view.reports.length, "report")} from agents, not verified.`);
+  if (gate.needsAssessor) lines.push({ rank: 0, text: "It touches a protected path and no different model or the project owner has approved." });
+  if (view.reports.length) lines.push({ rank: 3, text: `${plural(view.reports.length, "report")} recorded, not verified.` });
+  while (lines.length > 5) {
+    let drop = 0;
+    lines.forEach((l, i) => { if (l.rank >= lines[drop].rank) drop = i; });
+    lines.splice(drop, 1);
+  }
+
+  const recommendation = recommend(detail, { passed: passed.length, total: view.checks.length, failed, pending, rejections, unmeasured: view.changedPaths === null && !!item.head });
+
+  // The sentence follows the recommendation, so the heading never contradicts it.
+  const subject = `${item.id} ${rev}: ${title}.`;
+  const decided =
+    item.state === "merged" || item.state === "abandoned" ? `${item.id} is ${stateLabel[item.state].toLowerCase()} ${rev}: ${title}.`
+    : recommendation.verdict === "merge" ? `Merge ${subject}`
+    : recommendation.verdict === "send back" ? `Send ${item.id} back ${rev}: ${title}.`
+    : item.state === "submitted" && gate.needsAssessor ? `Review ${subject}`
+    : recommendation.verdict === "accept" ? `Accept ${subject}`
+    : recommendation.verdict === "wait" ? `Wait on ${subject}`
+    : `Decide ${subject}`;
 
   const submitted = submission(events, item.head);
   return {
     decided,
     summary: submitted?.summary ?? null,
-    evidence: lines.slice(0, 5),
-    recommendation: recommend(detail, { passed: passed.length, total: view.checks.length, failed, pending, rejections, unmeasured: view.changedPaths === null && !!item.head }),
+    evidence: lines.map((l) => l.text),
+    recommendation,
   };
 }
 

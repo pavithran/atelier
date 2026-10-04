@@ -124,6 +124,16 @@ it('the brief renders above the diff, escapes a hostile summary, and tags the ve
  expect(html).toContain('&lt;img src=x onerror=alert(1)&gt; done');
  expect(html).not.toContain('<img src=x');
  expect(html).toContain('Summary from codex/gpt-6');
+ // A summary by another actor at an older head is not shown for this one.
+ d.events=[{seq:2,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'current words'}},
+  {seq:1,itemId:'t1',at:time,actor:'someone/else',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'stale words'}}];
+ const briefOf=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const other=briefOf(renderItem(project,d,'PAVI',null));
+ expect(other).toContain('current words');expect(other).toContain('Summary from codex/gpt-6');
+ expect(other).not.toContain('stale words');expect(other).not.toContain('someone/else');
+ d.events=[{seq:1,itemId:'t1',at:time,actor:'someone/else',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'stale words'}}];
+ const none=briefOf(renderItem(project,d,'PAVI',null));
+ expect(none).not.toContain('stale words');expect(none).not.toContain('Summary from');
  expect(html).toContain('1 passed in a Cloudflare container');
  expect(html).toContain('<span class="tag go">accept</span>');
  expect(html.indexOf('Decision brief')).toBeLessThan(html.indexOf('id="changes"'));
@@ -131,9 +141,13 @@ it('the brief renders above the diff, escapes a hostile summary, and tags the ve
 it('the brief tags a rejected revision as send back and a pending one as wait',()=>{
  const d=detail();
  d.evidence[0].passed=false;
- expect(renderItem(project,d,'PAVI',null)).toContain('<span class="tag bad">send back</span>');
- const w=detail();w.evidence=[];
+ const sent=renderItem(project,d,'PAVI',null);
+ expect(sent).toContain('<span class="tag bad">send back</span>');expect(sent).toContain('Send t1 back at aaaaaaaa');
+ const w=detail();w.evidence=[];w.gate={ready:false,needsAssessor:false,blockers:[],outOfScope:[]};w.item.scope=[];
+ w.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'older revision'}}];
  const html=renderItem(project,w,'PAVI',null);
- expect(html).toContain('<span class="tag ask">wait</span>');
- expect(html).not.toContain('Summary from');
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ expect(brief).toContain('<span class="tag ask">wait</span>');
+ expect(brief).toContain('Wait on t1 at aaaaaaaa');
+ expect(brief).not.toContain('older revision');
 });

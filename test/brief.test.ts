@@ -47,7 +47,7 @@ test("send back: a review at this head rejects", () => {
   assert.equal(b.recommendation.verdict, "send back");
   assert.match(b.recommendation.reason, /gpt-5\.5 asked for changes/);
   assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 asked for changes."));
-  assert.ok(b.evidence.some((l) => l.includes("nothing has been pushed since") && l.includes("tests missing")));
+  assert.ok(b.evidence.some((l) => l.includes("no push is recorded since") && l.includes("tests missing")));
 });
 
 test("send back: a required check failed at this head, and where it ran is named", () => {
@@ -55,6 +55,38 @@ test("send back: a required check failed at this head, and where it ran is named
   assert.equal(b.recommendation.verdict, "send back");
   assert.match(b.recommendation.reason, /`npm test` failed/);
   assert.equal(b.evidence[0], "Required checks at this revision: 1 failed on the agent's machine.");
+});
+
+test("the decided sentence follows the recommendation", () => {
+  assert.equal(briefFor(detail({ reviews: [rev({ approve: false })] }), []).decided, "Send t21 back at aaaaaaaa: Fix the thing.");
+  assert.equal(briefFor(detail({ evidence: [pass({ passed: false })] }), []).decided, "Send t21 back at aaaaaaaa: Fix the thing.");
+  assert.equal(briefFor(detail({ evidence: [] }), []).decided, "Wait on t21 at aaaaaaaa: Fix the thing.");
+  assert.equal(briefFor(detail({ item: { state: "claimed" } }), []).decided, "Wait on t21 at aaaaaaaa: Fix the thing.");
+  assert.equal(briefFor(detail({ item: { head: null }, policy: { checks: [], protected: [] }, evidence: [] }), []).decided, "Decide t21 with nothing pushed: Fix the thing.");
+  assert.match(briefFor(detail({ item: { state: "merged" } }), []).decided, /^t21 is merged at/);
+});
+
+test("with two rejections and scope flags, the flags and one rejection line stay and reports go", () => {
+  const d = detail({
+    policy: { checks: ["npm test"], protected: ["AGENTS.md"] },
+    evidence: [
+      pass({ changedPaths: ["AGENTS.md", "x/1"] }),
+      { itemId: "t21", claim: "fine", grade: "reported", head: H1, passed: null, by: "claude-code/opus-5.5", at: T },
+    ],
+    reviews: [
+      rev({ approve: false, by: "codex/gpt-5.5", note: "first", at: "2026-10-03T12:01:00.000Z" }),
+      rev({ approve: false, by: "zcode/glm-5.3", note: "second", at: "2026-10-03T12:02:00.000Z" }),
+    ],
+  });
+  const b = briefFor(d, []);
+  assert.equal(b.evidence.length, 5);
+  assert.equal(b.evidence.filter((l) => l.includes("asked for changes and no push is recorded since")).length, 1);
+  assert.ok(b.evidence.some((l) => l.startsWith("gpt-5.5 and glm-5.3 asked for changes") && l.includes("Note: second")));
+  assert.ok(b.evidence.some((l) => l.startsWith("Changes outside the task's scope")));
+  assert.ok(b.evidence.some((l) => l.includes("protected path")));
+  assert.ok(b.evidence.some((l) => l.startsWith("Required checks")));
+  assert.ok(b.evidence.some((l) => l.startsWith("Reviews at this revision")));
+  assert.ok(!b.evidence.some((l) => l.includes("report")));
 });
 
 test("a rejection at an older head is answered by the push and does not count", () => {
@@ -109,7 +141,7 @@ test("scope flags, reports and where checks ran appear, capped at five lines", (
   assert.equal(b.evidence[0], "Required checks at this revision: 1 passed in a Cloudflare container, 1 passed on the agent's machine.");
   assert.ok(b.evidence.some((l) => l.startsWith("Changes outside the task's scope: AGENTS.md, x/1, x/2")));
   const calm = briefFor(detail({ evidence: [pass(), { itemId: "t21", claim: "ok", grade: "reported", head: H1, passed: null, by: "a", at: T }] }), []);
-  assert.equal(calm.evidence.at(-1), "1 report from agents, not verified.");
+  assert.equal(calm.evidence.at(-1), "1 report recorded, not verified.");
 });
 
 test("the summary is the latest one for the current head only", () => {
@@ -126,7 +158,7 @@ test("an empty record yields no invented evidence", () => {
   const b = briefFor(d, []);
   assert.deepEqual(b.evidence, []);
   assert.equal(b.summary, null);
-  assert.equal(b.decided, "Accept t21 with nothing pushed: Idle.");
+  assert.equal(b.decided, "Wait on t21 with nothing pushed: Idle.");
 });
 
 test("cleanSummary trims, replaces control characters and caps at 600", () => {

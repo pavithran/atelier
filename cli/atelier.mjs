@@ -106,6 +106,12 @@ function project() {
   die("which project? pass --project NAME, or run inside a registered checkout or workspace");
 }
 
+// --summary takes text; a bare flag or an empty or blank value is refused, not dropped.
+function summaryArg(cmd) {
+  if (args.summary === undefined) return;
+  if (typeof args.summary !== "string" || !args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
+}
+
 function itemArg(i = 1) {
   const id = args._[i] ?? wsConfig("item");
   if (!id) die("which item? pass its id (t3) or run inside its workspace");
@@ -468,8 +474,8 @@ const commands = {
 
   async submit() {
     const name = project(), id = itemArg(), as = actor();
-    if (args.summary === true) die('usage: atelier submit ID --summary "TEXT"');
-    await call("POST", `${I(name, id)}/submit`, args.summary ? { summary: args.summary } : {}, as);
+    summaryArg("submit");
+    await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
@@ -528,7 +534,7 @@ const commands = {
 
   async finish() {
     const name = project(), id = itemArg(), as = actor();
-    if (args.summary === true) die('usage: atelier finish ID --summary "TEXT"');
+    summaryArg("finish");
     if (wsConfig("project") !== name || wsConfig("item") !== id) die("finish must run in this task's claimed workspace");
     const d = await call("GET", I(name,id), undefined, as);
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
