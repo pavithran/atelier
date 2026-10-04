@@ -34,6 +34,7 @@ export const LIMITS = {
   files: 60,             // changed files listed
   blobBytes: 256 * 1024, // larger blobs are listed but not diffed
   diffLines: 20_000,     // old + new lines beyond which a file is not diffed
+  treeReads: 1_000,      // directories read for one diff; deeper changes are not listed
   context: 3,
 };
 
@@ -199,10 +200,17 @@ async function changedLeaves(r: Reader, base: string | null, head: string | null
 
 const decoder = new TextDecoder();
 
+const OUT_OF_READS = new Error("diff tree read budget reached");
+
 export async function treeDiff(r: Reader, baseTree: string, headTree: string, limits = LIMITS): Promise<{ files: FileChange[]; truncated: boolean }> {
   const pairs: [Leaf | null, Leaf | null][] = [];
-  await changedLeaves(r, baseTree, headTree, "", pairs, limits.files);
-  const truncated = pairs.length > limits.files;
+  // A diff reads at most limits.treeReads directories; what lies beyond is
+  // left unlisted and the diff is marked truncated.
+  let reads = 0;
+  const bounded: Reader = { tree: (h) => { if (++reads > limits.treeReads) throw OUT_OF_READS; return r.tree(h); }, blob: r.blob };
+  let outOfReads = false;
+  await changedLeaves(bounded, baseTree, headTree, "", pairs, limits.files).catch((err) => { if (err !== OUT_OF_READS) throw err; outOfReads = true; });
+  const truncated = outOfReads || pairs.length > limits.files;
   const files = await Promise.all(pairs.slice(0, limits.files).map(async ([l, rt]) => {
     const path = (rt ?? l)!.path;
     if (l?.mode === "160000" || rt?.mode === "160000") return { path, status: "submodule" as FileStatus, added: 0, removed: 0, hunks: [] };

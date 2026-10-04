@@ -405,8 +405,8 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
   if (!path) return notFound("That path");
   if (view === "history") {
     if (!path.length) return notFound("A path");
-    const { commits, complete } = await pathHistory(s, head.hash, path);
-    return html(renderBrowseHistory(w, head, path, commits, complete, ownerName(env)));
+    const { commits, complete, examined } = await pathHistory(s, head.hash, path);
+    return html(renderBrowseHistory(w, head, path, commits, complete, ownerName(env), examined));
   }
   const node = await walk(s, head.treeHash, path);
   if (!node || node.kind === "other") return notFound("That path");

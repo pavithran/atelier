@@ -4,7 +4,7 @@
 // here writes. The functions take a small interface rather than the binding,
 // so the tests drive them with plain objects.
 
-import { LIMITS, treeDiff, type FileChange, type Reader } from "../diff.ts";
+import { LIMITS, treeDiff, type Entry, type FileChange, type Reader } from "../diff.ts";
 
 // The same test git uses: a zero byte in the first 8,000 means binary.
 const isBinary = (bytes: Uint8Array) => bytes.subarray(0, 8000).includes(0);
@@ -63,9 +63,12 @@ export function repoSource(repo: ArtifactsRepo): Source {
 
 // A path from a URL: segments without empty parts, "." or "..". Anything else
 // is refused rather than normalised, so a link means exactly one path.
+// Paths deeper than this are refused: each level costs a read.
+export const PATH_DEPTH = 64;
+
 export function cleanPath(parts: string[]): string[] | null {
   const out = parts.filter((p) => p !== "");
-  return out.some((p) => p === "." || p === ".." || p.includes("\0")) ? null : out;
+  return out.length > PATH_DEPTH || out.some((p) => p === "." || p === ".." || p.includes("\0")) ? null : out;
 }
 
 // Regular and executable files are both files; a symbolic link is shown as
@@ -165,19 +168,18 @@ const HISTORY_BATCH = 10;
 // hash, so directories that did not change cost nothing after the first read.
 // At most HISTORY_CAP commits are examined; `complete` says whether that was
 // the whole history.
-export async function pathHistory(s: Source, ref: string, path: string[], cap = HISTORY_CAP, budget = HISTORY_READS): Promise<{ commits: Commit[]; complete: boolean }> {
+export async function pathHistory(s: Source, ref: string, path: string[], cap = HISTORY_CAP, budget = HISTORY_READS): Promise<{ commits: Commit[]; complete: boolean; examined: number }> {
   const log = await s.log({ ref, limit: cap + 1 });
-  const trees = new Map<string, ReturnType<Reader["tree"]>>();
+  // Only the one entry each tree is asked for is kept, never the whole tree.
+  const found = new Map<string, Promise<Entry | null>>();
   let reads = 0;
-  const cached: Reader = {
-    tree: (h) => {
-      if (!trees.has(h)) {
-        if (++reads > budget) throw OVER_BUDGET;
-        trees.set(h, s.tree(h));
-      }
-      return trees.get(h)!;
-    },
-    blob: s.blob,
+  const entry = (tree: string, name: string) => {
+    const key = `${tree} ${name}`;
+    if (!found.has(key)) {
+      if (++reads > budget) throw OVER_BUDGET;
+      found.set(key, s.tree(tree).then((es) => es?.find((x) => x.name === name) ?? null));
+    }
+    return found.get(key)!;
   };
   // Each commit's entry at the path, located ten commits at a time; the walk
   // stops at the first commit the read budget does not reach.
@@ -185,7 +187,7 @@ export async function pathHistory(s: Source, ref: string, path: string[], cap = 
   let stopped = false;
   for (let i = 0; i < log.length && !stopped; i += HISTORY_BATCH) {
     const batch = await Promise.all(log.slice(i, i + HISTORY_BATCH).map((c) =>
-      locate(cached, c.treeHash, path).catch((err) => { if (err === OVER_BUDGET) return UNKNOWN; throw err; })));
+      locateEntry(entry, c.treeHash, path).catch((err) => { if (err === OVER_BUDGET) return UNKNOWN; throw err; })));
     for (const x of batch) {
       if (x === UNKNOWN) { stopped = true; break; }
       at.push(x as string | null);
@@ -197,7 +199,19 @@ export async function pathHistory(s: Source, ref: string, path: string[], cap = 
   const reachedRoot = at.length === log.length && log.length <= cap && (!last || last.parents.length === 0);
   const decided = Math.min(cap, reachedRoot ? at.length : at.length - 1);
   const commits = log.slice(0, Math.max(0, decided)).filter((_, i) => i + 1 < at.length ? at[i] !== at[i + 1] : at[i] !== null);
-  return { commits, complete: reachedRoot };
+  return { commits, complete: reachedRoot, examined: Math.max(0, decided) };
+}
+
+async function locateEntry(entry: (tree: string, name: string) => Promise<Entry | null>, root: string, path: string[]): Promise<string | null> {
+  let hash = root;
+  for (let i = 0; i < path.length; i++) {
+    const e = await entry(hash, path[i]);
+    if (!e) return null;
+    if (i === path.length - 1) return `${e.mode} ${e.hash}`;
+    if (e.type !== "tree") return null;
+    hash = e.hash;
+  }
+  return hash;
 }
 
 const OVER_BUDGET = new Error("history read budget reached");

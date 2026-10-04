@@ -129,3 +129,23 @@ test("a path's history stops within its read budget and says it is incomplete", 
   const full = await pathHistory(source, "HEAD", ["src", "a.ts"], 100, 100);
   assert.deepEqual(full.commits.map((k) => k.message.split("\n")[0]), ["Second", "First"]);
 });
+
+test("browsing refuses paths beyond its depth, and diffs stop within their read budget", async () => {
+  assert.equal(cleanPath(Array.from({ length: 65 }, (_, i) => `d${i}`)), null);
+  assert.equal(cleanPath(Array.from({ length: 64 }, (_, i) => `d${i}`))?.length, 64);
+  // A chain of 50 nested directories down to one added file.
+  const deep: Record<string, { name: string; mode: string; hash: string; type: string }[]> = {};
+  for (let i = 0; i < 50; i++) deep[h(`n${i}`)] = [{ name: `d${i}`, mode: "40000", hash: h(`n${i + 1}`), type: "tree" }];
+  deep[h("n50")] = [{ name: "leaf.txt", mode: "100644", hash: h("b1"), type: "blob" }];
+  let reads = 0;
+  const r = { tree: async (x: string) => { reads++; return x === h("e0") ? [] : deep[x] ?? null; }, blob: async () => text("one\n") };
+  const { treeDiff } = await import("../src/diff.ts");
+  const capped = await treeDiff(r, h("e0"), h("n0"), { files: 60, blobBytes: 1 << 18, diffLines: 20000, treeReads: 20, context: 3 });
+  assert.equal(capped.truncated, true);
+  assert.ok(reads <= 21, `read ${reads} trees`);
+  const whole = await treeDiff(r, h("e0"), h("n0"));
+  assert.equal(whole.files.length, 1);
+  // History out of budget at once examines nothing, and says so.
+  const none = await pathHistory(source, "HEAD", ["src", "a.ts"], 100, 1);
+  assert.deepEqual([none.examined, none.complete, none.commits.length], [0, false, 0]);
+});

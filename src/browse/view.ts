@@ -79,9 +79,11 @@ export function renderLog(w: Where, head: Commit | null, commits: Commit[], page
   return frame(w, "Log", "log", head, body, ownerName);
 }
 
-export function renderHistory(w: Where, head: Commit, path: string[], commits: Commit[], complete: boolean, ownerName: string | null = null): string {
-  const note = complete ? "Every commit on the first-parent line that changed it." : `Commits that changed it among the most recent ${HISTORY_CAP} on the first-parent line.`;
-  const none = complete ? "No commit on this line changed it." : `No commit among the most recent ${HISTORY_CAP} changed it.`;
+export function renderHistory(w: Where, head: Commit, path: string[], commits: Commit[], complete: boolean, ownerName: string | null = null, examined = HISTORY_CAP): string {
+  const note = complete ? "Every commit on the first-parent line that changed it." : `Commits that changed it among the most recent ${examined} on the first-parent line.`;
+  const none = complete ? "No commit on this line changed it."
+    : examined === 0 ? "This path is too deep, or changed in too many places, to trace here; clone the repository to follow it."
+    : `No commit among the most recent ${examined} changed it.`;
   const body = `${pathCrumbs(w, path)}<p class="meta">${note}</p>${commits.length ? commitRows(w, commits) : `<p class="empty">${none}</p>`}`;
   return frame(w, `History of ${path.join("/")}`, "log", head, body, ownerName);
 }
