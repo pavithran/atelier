@@ -1,5 +1,6 @@
 import {expect,it} from 'vitest';
 import {renderInbox,renderItem,renderProject,renderHistory,type Detail} from '../src/ui';
+import {buildFloor} from '../src/floor';
 import type {ProjectRecord} from '../src/ledger';
 const head='a'.repeat(40),time='2026-10-03T12:00:00Z';
 const project:ProjectRecord={name:'example',repo:'example',policy:{checks:['npm test'],protected:['src/**']},createdAt:time};
@@ -108,11 +109,28 @@ import {cleanTitle,titleOf,renderProjects,renderStudio} from '../src/ui';
 it('a project title is one clean line, and the name stands in when there is none',()=>{
  expect(cleanTitle('  Atelier ')).toBe('Atelier');
  expect(cleanTitle('A\ntwo\u0007line')).toBe('A two line');
+ expect(cleanTitle('A\u202ab\u200bc\u2066d\ufeff')).toBe('A b c d');
  expect(cleanTitle('x'.repeat(200))).toHaveLength(80);
  expect(cleanTitle('')).toBeUndefined();
  expect(cleanTitle(undefined)).toBeUndefined();
  expect(titleOf({name:'cloudflare-git'})).toBe('cloudflare-git');
  expect(titleOf({name:'cloudflare-git',title:'Atelier'})).toBe('Atelier');
+});
+it('invisible characters in a title become spaces, not hidden markup',()=>{
+ const removed:[string,string][]=[['U+0080','\u0080'],['U+009F','\u009f'],['U+00AD','\u00ad'],['U+061C','\u061c'],['U+180E','\u180e'],['U+200E','\u200e'],['U+200F','\u200f'],['U+2060','\u2060'],['U+2061','\u2061'],['U+2062','\u2062'],['U+2063','\u2063'],['U+2064','\u2064']];
+ for(const [name,ch] of removed) expect(cleanTitle('a'+ch+'b'),name).toBe('a b');
+ expect(cleanTitle('a‏b')).toBe('a b');
+});
+it('default ignorable characters in a title become spaces, and an invisible title is no title',()=>{
+ const removed:[string,string][]=[
+  ['U+034F','\u034f'],['U+115F','\u115f'],['U+1160','\u1160'],['U+17B4','\u17b4'],['U+17B5','\u17b5'],
+  ['U+180B','\u180b'],['U+180F','\u180f'],['U+206A','\u206a'],['U+206F','\u206f'],['U+3164','\u3164'],
+  ['U+FE00','\ufe00'],['U+FE0F','\ufe0f'],['U+FFA0','\uffa0'],['U+FFF0','\ufff0'],['U+FFF8','\ufff8'],
+  ['U+1BCA0','\u{1bca0}'],['U+1BCA3','\u{1bca3}'],['U+1D173','\u{1d173}'],['U+1D17A','\u{1d17a}'],
+  ['U+E0000','\u{e0000}'],['U+E0FFF','\u{e0fff}']];
+ for(const [name,ch] of removed) expect(cleanTitle('a'+ch+'b'),name).toBe('a b');
+ expect(cleanTitle('\u034f\ufe00\u{e0000}')).toBeUndefined();
+ expect(cleanTitle('͏'.repeat(80)+'Visible')).toBe('Visible');
 });
 it('pages call a project by its title and link it by its name',()=>{
  const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
@@ -124,7 +142,13 @@ it('pages call a project by its title and link it by its name',()=>{
  expect(page).toContain('action="/ui/cloudflare-git/new"');
  const s=buildStory('cloudflare-git',[],[],'pavi',false,'Atelier');
  expect(s.title).toBe('Atelier');
- expect(renderStudio({benches:[],from:time,to:time},'PAVI',new Date(time),false,[titled])).toContain('Studio');
+ // A bench of the titled project: the lane names it by title, not by name.
+ const benchItem={id:'t1',title:'Fix the lane',scope:[],state:'claimed' as const,owner:'codex/gpt-6',fork:'cloudflare-git--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
+ const floor=buildFloor([{project:titled,items:[benchItem],events:[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.claimed',data:{}}]}],new Date(time));
+ const studio=renderStudio(floor,'PAVI',new Date(time),false,[titled]);
+ expect(studio).toContain('<p class="meta">&lt;Atelier&gt;');
+ expect(studio).not.toContain('<p class="meta">cloudflare-git');
+ expect(studio).not.toContain('<p class="meta">example');
 });
 
 // ── showcase ──

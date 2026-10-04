@@ -298,6 +298,9 @@ const commands = {
 
   // The project owner, in the project's checkout.
   async init() {
+    // A bare --title has no value, like a bare --approval: refuse rather than
+    // silently clear the stored title.
+    if (args.title === true) die('give the title as --title TEXT, or --title "" to clear it');
     const top = git(["rev-parse", "--show-toplevel"]);
     const name = args.name ?? top.split("/").pop();
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
@@ -320,7 +323,7 @@ const commands = {
       ...(reset ? { reset: true } : {}),
       approval: args.approval === true ? undefined : args.approval,
       // Omitted keeps the current title; --title "" clears it.
-      ...(args.title === undefined ? {} : { title: args.title === true ? "" : args.title }),
+      ...(args.title === undefined ? {} : { title: args.title }),
       defaultBranch: branch,
     }, OWNER);
     git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });

@@ -19,9 +19,11 @@ import {
 // forms and commands always use the name.
 export const titleOf = (p: { name: string; title?: string }) => p.title || p.name;
 // A project's display title as stored: one line of plain text, at most 80
-// characters, or nothing.
+// characters, or nothing. No control or zero-width character survives: C0 and
+// C1 controls, U+00AD, U+061C, all Bidi_Control characters and all
+// Default_Ignorable_Code_Point characters are replaced with a space.
 export function cleanTitle(v: unknown): string | undefined {
-  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 80);
   return s || undefined;
 }
 const titleMap = (ps: ProjectRecord[]) => new Map(ps.map((p) => [p.name, titleOf(p)]));
