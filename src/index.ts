@@ -379,7 +379,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
       const history = await baseline.log({limit:1000});
       const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      return json(await L.merged(id, actor, merge, observed));
+      return json(await L.merged(id, actor, merge, observed, item.acceptedHead));
+    }
+    case "landing": {
+      requireOwner(env, actor);
+      if (body.cancel === true) {
+        // A merge already on the baseline cannot be cancelled: running the
+        // merge again records it.
+        const item = await L.item(id);
+        const p = await L.project();
+        using baseline = await env.ARTIFACTS.get(p.repo);
+        const landed = (await baseline.log({ limit: 1000 })).some((c) => c.parents.includes(item.acceptedHead ?? "-"));
+        if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
+        return json(await L.cancelLanding(id, actor));
+      }
+      return json(await L.beginLanding(id, actor, String(body.head ?? "")));
     }
     case "abandon": {
       requireOwner(env, actor);
