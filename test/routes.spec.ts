@@ -90,3 +90,10 @@ it("init again changes only what it names, and --reset starts over", async () =>
   }), { ...testEnv, ARTIFACTS } as typeof env);
   expect((await fresh.json() as { project: { policy: unknown } }).project.policy).toMatchObject({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"] });
 });
+
+it("only the project owner can init, reset or not", async () => {
+  const res = await worker.fetch(new Request("https://atelier.test/api/projects/kept", {
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "codex/gpt-6-astra", "content-type": "application/json" }, body: JSON.stringify({ reset: true }),
+  }), testEnv);
+  expect(res.status).toBe(403);
+});

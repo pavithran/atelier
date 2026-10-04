@@ -29,6 +29,44 @@ export interface ProjectRecord {
 
 type Row = Record<string, SqlStorageValue>;
 
+// What an init asks for. A field present replaces the project's current
+// value; a field absent keeps it. `reset` starts from the defaults, as a
+// first init does. `title: null` clears the title.
+export interface ProjectInit {
+  name: string;
+  repo: string;
+  reset: boolean;
+  title?: string | null;
+  checks?: string[];
+  protected?: string[];
+  eligible?: string[];
+  refuseOverlap?: boolean;
+  sandboxOnly?: boolean;
+  approval?: string | null;
+}
+
+export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+
+export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: string): ProjectRecord {
+  const p = current?.policy;
+  const title = i.title === undefined ? current?.title : i.title ?? undefined;
+  const approval = i.approval === undefined ? p?.approval : i.approval ?? undefined;
+  return {
+    name: i.name,
+    ...(title ? { title } : {}),
+    repo: i.repo,
+    policy: {
+      checks: i.checks ?? p?.checks ?? [],
+      protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
+      eligible: i.eligible ?? p?.eligible ?? [],
+      refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
+      sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
+      ...(approval ? { approval } : {}),
+    },
+    createdAt: current?.createdAt ?? at,
+  };
+}
+
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
 
@@ -75,6 +113,16 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // ── project instance ─────────────────────────────────────────────────────
+
+  // An init, merged into the current record in one step: the Durable Object
+  // runs one call at a time, so no other init can change the project between
+  // the read and the write.
+  initProject(init: ProjectInit, actor: string): ProjectRecord {
+    const row = init.reset ? undefined : this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
+    const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, new Date().toISOString());
+    this.setProject(record, actor);
+    return record;
+  }
 
   setProject(record: ProjectRecord, actor: string): void {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));

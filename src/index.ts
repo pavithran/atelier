@@ -1,5 +1,5 @@
 import { itemDiff, type ItemDiff } from "./diff";
-import { Ledger, type LedgerEvent, type ProjectRecord } from "./ledger";
+import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
@@ -203,39 +203,27 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     const repo = repoName(project);
-    // Running init again changes only what it is given: a field absent from
-    // the body keeps the project's current value, and `reset` rebuilds the
-    // policy from the body and the defaults, as a first init does.
-    // Only "no project yet" means a first init; any other failure stops here,
-    // rather than rebuilding the policy from nothing.
+    // Running init again changes only what it is given; the Ledger merges it
+    // into the current record in one step (initProject). Only reset: true
+    // starts over from the defaults.
     if (body.reset !== undefined && typeof body.reset !== "boolean") throw new RuleError("bad_reset", "reset must be true or false", 400);
-    const current = body.reset === true ? null : await L.project().catch((err) => {
-      if (parseRuleError(err)?.code === "no_project") return null;
-      throw err;
-    });
-    const kept = current?.policy;
-    const given = (k: string) => body[k] !== undefined;
-    const title = body.title === undefined ? current?.title : cleanTitle(body.title);
-    const record: ProjectRecord = {
-      name: project,
-      ...(title ? { title } : {}),
-      repo,
-      policy: {
-        checks: given("checks") || !kept ? asStrings(body.checks) : kept.checks,
-        protected: given("protected") || !kept ? (given("protected") ? asStrings(body.protected) : [...DEFAULT_PROTECTED]) : kept.protected,
-        eligible: given("eligible") || !kept ? asStrings(body.eligible) : kept.eligible ?? [],
-        refuseOverlap: given("refuseOverlap") || !kept ? Boolean(body.refuseOverlap) : Boolean(kept.refuseOverlap),
-        sandboxOnly: given("sandboxOnly") || !kept ? Boolean(body.sandboxOnly) : Boolean(kept.sandboxOnly),
-        ...(given("approval") ? (body.approval ? { approval: String(body.approval).slice(0, 500) } : {}) : kept?.approval ? { approval: kept.approval } : {}),
-      },
-      createdAt: new Date().toISOString(),
+    const has = (k: string) => body[k] !== undefined;
+    const init: ProjectInit = {
+      name: project, repo, reset: body.reset === true,
+      ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("checks") ? { checks: asStrings(body.checks) } : {}),
+      ...(has("protected") ? { protected: asStrings(body.protected) } : {}),
+      ...(has("eligible") ? { eligible: asStrings(body.eligible) } : {}),
+      ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
     };
     try {
       await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: body.defaultBranch ?? "main" });
     } catch (err) {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
-    await L.setProject(record, actor);
+    const record = await L.initProject(init, actor);
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write") });
   }
@@ -406,9 +394,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 }
 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
-// What a project protects when its first init names nothing else.
-const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
-
 async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
   if (!fork) return null;
   try {
