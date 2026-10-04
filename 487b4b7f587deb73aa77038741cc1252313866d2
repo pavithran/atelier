@@ -1,0 +1,12 @@
+atelier cloudflare-git/t10 "Give agent workspaces the checkout's git identity"
+accepted head 33f666e3e3a93b91a41c4e58e816ea7d78e6c227
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T15:24:58.770Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T15:25:01.500Z
+2026-10-04T15:23:49.172Z pavi item.created
+2026-10-04T15:23:49.504Z claude-code/opus-5.5 item.claimed
+2026-10-04T15:23:52.083Z claude-code/opus-5.5 fork.created
+2026-10-04T15:24:41.787Z claude-code/opus-5.5 push.observed
+2026-10-04T15:24:58.842Z claude-code/opus-5.5 evidence.observed
+2026-10-04T15:25:01.548Z claude-code/opus-5.5 evidence.observed
+2026-10-04T15:25:02.341Z claude-code/opus-5.5 item.submitted
+2026-10-04T15:39:38.280Z pavi item.accepted
