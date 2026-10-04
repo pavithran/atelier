@@ -111,3 +111,21 @@ it('pages call a project by its title and link it by its name',()=>{
  expect(s.title).toBe('Atelier');
  expect(renderStudio({benches:[],from:time,to:time},'PAVI',new Date(time),false,[titled])).toContain('Studio');
 });
+
+// ── browsing ──
+import {renderTree,renderBlob,renderCommit,renderLog,codeHref} from '../src/browse/view';
+it('browsing pages escape names and contents and keep links inside the repository',()=>{
+ const head={hash:'a'.repeat(40),treeHash:'b'.repeat(40),message:'<b>Subject</b>\nbody',author:{name:'<A>',email:'a@x'},parents:['c'.repeat(40)],authoredAt:1759600000};
+ const w={project,item:'t1',at:null};
+ const tree=renderTree(w,head,['src'],{kind:'tree',hash:'d'.repeat(40),entries:[{name:'<x>.ts',type:'blob',mode:'100644',hash:'e'.repeat(40)},{name:'lib',type:'tree',mode:'40000',hash:'f'.repeat(40)}]});
+ expect(tree).toContain('&lt;x&gt;.ts');
+ expect(tree).toContain('href="/p/example/t1/code/src/%3Cx%3E.ts"');
+ expect(tree).toContain('href="/p/example/t1/code/src/lib"');
+ expect(tree).not.toContain('<b>Subject</b>');
+ const blob=renderBlob(w,head,['src','a.ts'],{kind:'text',lines:['<script>alert(1)</script>'],bytes:26});
+ expect(blob).toContain('&lt;script&gt;');
+ expect(blob).toContain('href="/p/example/t1/history/src/a.ts"');
+ expect(renderCommit(w,{commit:head,parent:'c'.repeat(40),files:[],truncated:false})).toContain('href="/p/example/t1/commit/'+'c'.repeat(40)+'"');
+ expect(renderLog({project,item:null,at:null},head,[head],1,true)).toContain('href="/p/example/log?page=2"');
+ expect(codeHref({project,item:null,at:'a'.repeat(40)},['a b'])).toBe('/p/example/code/a%20b?at='+'a'.repeat(40));
+});

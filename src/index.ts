@@ -4,6 +4,8 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanTitle, titleOf, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { buildFloor, type FloorView } from "./floor";
+import { cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
+import { codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
@@ -365,6 +367,54 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 }
 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
+// Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
+// /p/P/tN/{code,log,commit,history}/… reads task tN's fork. Null when the
+// path is not a browsing path, so the task page keeps /p/P/tN.
+const VIEWS = new Set(["code", "log", "commit", "history"]);
+const HASH = /^[0-9a-f]{40}$/;
+
+async function browse(env: Env, url: URL, parts: string[]): Promise<Response | null> {
+  const [project, second, ...rest] = parts;
+  const item = VIEWS.has(second) ? null : second;
+  const [view, ...tail] = item ? rest : [second, ...rest];
+  if (!VIEWS.has(view ?? "")) return null;
+  const L = ledger(env, project);
+  const p = await L.project();
+  const repoName = item ? (await L.item(item)).fork : p.repo;
+  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(project)}/${encodeURIComponent(item!)}`), 404);
+  const atParam = url.searchParams.get("at");
+  const at = atParam && HASH.test(atParam) ? atParam : null;
+  const w: Where = { project: p, item, at };
+  using repo = await env.ARTIFACTS.get(repoName);
+  const s = repoSource(repo);
+  const notFound = (what: string) => html(renderError(`${what} is not in this repository.`, codeHref({ ...w, at: null }, [])), 404);
+  if (view === "commit") {
+    const hash = tail[0] ?? "";
+    if (!HASH.test(hash) || tail.length !== 1) return notFound("That commit");
+    const c = await commitChanges(s, hash);
+    return c ? html(renderCommit(w, c, ownerName(env))) : notFound("That commit");
+  }
+  const head = await resolve(s, at ?? "HEAD");
+  if (!head) return html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(project)}`), 404);
+  if (view === "log") {
+    const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), 1000);
+    const { commits, more } = await logPage(s, head.hash, page);
+    return html(renderLog(w, head, commits, page, more, ownerName(env)));
+  }
+  const path = cleanPath(tail);
+  if (!path) return notFound("That path");
+  if (view === "history") {
+    if (!path.length) return null;
+    const { commits, complete } = await pathHistory(s, head.hash, path);
+    return html(renderBrowseHistory(w, head, path, commits, complete, ownerName(env)));
+  }
+  const node = await walk(s, head.treeHash, path);
+  if (!node || node.kind === "other") return notFound("That path");
+  if (node.kind === "tree") return html(renderTree(w, head, path, node, ownerName(env)));
+  const bytes = await s.blob(node.hash);
+  return bytes ? html(renderBlob(w, head, path, viewFile(bytes), ownerName(env))) : notFound("That file");
+}
+
 async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
   if (!fork) return null;
   try {
@@ -497,6 +547,10 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
     return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env)));
+  }
+  if (parts[0] === "p" && parts.length >= 3) {
+    const res = await browse(env, c.url, parts.slice(1));
+    if (res) return res;
   }
   if (parts[0] === "p" && parts.length === 3) {
     const L = ledger(env, parts[1]);

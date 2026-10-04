@@ -62,7 +62,7 @@ const NAV: [string, string, string][] = [
 
 const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
-function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
@@ -437,7 +437,8 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   </dl>`;
   return page(titleOf(p), `<div class="page-width">
   <nav class="breadcrumbs"><a href="/projects">Projects</a> / ${e(titleOf(p))}</nav>
-  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p></header>
+  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p>
+  <nav class="repo-tabs" aria-label="Repository"><a href="${href("p", p.name, "code")}">Code</a><a href="${href("p", p.name, "log")}">Log</a></nav></header>
   <details class="new-task"><summary>Create a task</summary>
     <form method="post" action="${href("ui", p.name, "new")}" class="stack">
       <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
@@ -606,7 +607,7 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
     : "";
 
   return `${header}
-<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a></nav>
+<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${decision.passed} of ${view.checks.length} required checks passed at this revision.${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
@@ -636,7 +637,7 @@ const STATUS: Record<FileChange["status"], [string, string]> = {
 };
 
 // Each line keeps its +, - or space, so the diff reads without colour.
-function renderFile(f: FileChange, open: boolean): string {
+export function renderFile(f: FileChange, open: boolean): string {
   const [label, tone] = STATUS[f.status];
   const counts = f.added || f.removed ? `<span class="counts">+${f.added} −${f.removed}</span>` : "";
   const note = f.status === "binary" ? "Binary file; not shown."
