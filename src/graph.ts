@@ -199,6 +199,7 @@ export interface DrawOptions {
   compact?: boolean;           // the Decisions page's version: no hashes, no clock
   replaySeconds?: number;      // how long the draw-in takes; 0 draws it at rest
   href?: (thread: Thread) => string;
+  ownerLabel?: string;         // how the owner is named in cards; "you" on the owner's own pages
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -299,7 +300,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
       g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
       cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
     });
-    const holders = th.holds.map((h) => (h.who === owner ? "you" : splitActor(h.who).model || h.who)).join(" → ");
+    const holders = th.holds.map((h) => (h.who === owner ? (o.ownerLabel ?? "you") : splitActor(h.who).model || h.who)).join(" → ");
     const tkey = `${id}-${k}`;
     cards.push({ key: tkey, x: X0 - 4, y, color: c(th.holds[0].who), head: `${th.id} · ${STATE_NAMES[th.state] ?? th.state} · ${holders}`, body: th.title });
     const label = `<text class="g-name" x="${X0 - 12}" y="${y + 4}" text-anchor="end" style="fill:${c(th.holds[0].who)}">${esc(th.id)}</text>`;

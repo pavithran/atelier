@@ -120,6 +120,9 @@ it('the showcase is read only: no forms, no links into signed-in pages, and no n
   ev(3,'t1','pavi','item.accepted'),ev(4,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
  const html=renderShowcase([s],s.tally,'pavi','PAVI');
  expect(html).toContain('PAVI made 1 decision.');
+ expect(html).toContain('PAVI&#39;s decisions');
+ expect(html).not.toContain('your decisions');
+ expect(html).not.toMatch(/· you</);
  expect(html).not.toContain('<form');
  expect(html).not.toContain('href="/p/');
  expect(html).not.toContain('secret reviewer note');
@@ -135,7 +138,15 @@ it('the showcase route is public only when the owner names projects, and caches 
  expect(res.status).toBe(200);
  expect(res.headers.get('cache-control')).toBe('public, max-age=60');
  expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
- expect(await res.text()).toContain('Atelier · public showcase');
+ const body=await res.text();
+ expect(body).toContain('Atelier · public showcase');
+ expect(body).toContain('could not be read just now');
+ // A second request inside the minute is the cached copy, whatever its query.
+ const again=await worker.fetch(new Request('https://atelier.test/showcase?replay=x'),{...env,SHOWCASE:'shown'} as typeof env);
+ expect(await again.text()).toBe(body);
+ await caches.default.delete(new Request('https://atelier.test/showcase'));
+ const only=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown'} as typeof env);
+ expect(await only.text()).not.toContain('could not be read just now');
  const login=await worker.fetch(new Request('https://atelier.test/login'),{...env,SHOWCASE:'shown'} as typeof env);
  expect(await login.text()).toContain('href="/showcase"');
 });

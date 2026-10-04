@@ -42,7 +42,12 @@ function showcased(env: Env): string[] {
 
 // The public page, read without signing in. It reads only the named projects,
 // builds their stories redacted, and may be cached for a minute.
-async function showcase(env: Env): Promise<Response> {
+async function showcase(env: Env, url: URL): Promise<Response> {
+  // One cached copy per minute, whatever the query string, so the public page
+  // costs at most one set of Ledger reads a minute however often it is asked for.
+  const key = new Request(`${url.origin}/showcase`);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
   const names = showcased(env);
   const owner = ownerActor(env);
   const stories = (await Promise.all(names.map(async (name) => {
@@ -54,8 +59,9 @@ async function showcase(env: Env): Promise<Response> {
     } catch { return null; }
   }))).filter((s): s is NonNullable<typeof s> => s !== null);
   if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
-  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env)));
+  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length));
   res.headers.set("cache-control", "public, max-age=60");
+  await caches.default.put(key, res.clone());
   return res;
 }
 
@@ -560,7 +566,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     try {
-      if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env);
+      if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
       if (url.pathname === "/login") {
         if (req.method === "POST") {
           const token = String((await req.formData()).get("token") ?? "");

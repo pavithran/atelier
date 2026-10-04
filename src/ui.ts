@@ -219,9 +219,9 @@ export function renderInbox(
 const taskHref = (project: string) => (th: { id: string }) => href("p", project, th.id);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
-function legendLine(vendors: Vendor[]): string {
+function legendLine(vendors: Vendor[], who = "You"): string {
   const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
-    .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`);
+    .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
   return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}<li><i style="--c:var(--fault)"></i>sent back</li></ul>`;
 }
 
@@ -229,14 +229,14 @@ function vendorsIn(stories: Story[]): Vendor[] {
   return [...new Set(stories.flatMap((s) => Object.keys(s.tally.byVendor) as Vendor[]))];
 }
 
-function tallyBlock(t: Tally): string {
+function tallyBlock(t: Tally, who = "You"): string {
   const total = t.agentMoves + t.decisions || 1;
   const bar = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
     .map(([v]) => `<span style="--c:var(--m-${v});width:${((t.byVendor[v]! / total) * 100).toFixed(2)}%"></span>`).join("")
     + `<span style="--c:var(--m-owner);width:${((t.decisions / total) * 100).toFixed(2)}%"></span>`;
   return `<div class="tally"><div class="tally-bar" aria-hidden="true">${bar}</div><dl>
   <div><dt>agent moves</dt><dd>${t.agentMoves}</dd></div>
-  <div class="you"><dt>your decisions</dt><dd>${t.decisions}</dd></div>
+  <div class="you"><dt>${who === "You" ? "your" : e(`${who}'s`)} decisions</dt><dd>${t.decisions}</dd></div>
   <div class="cloud"><dt>checks run on a clean copy${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}</dt><dd>${t.checks}</dd></div>
   <div class="catch"><dt>times a model sent work back</dt><dd>${t.sentBack}</dd></div>
 </dl></div>`;
@@ -277,7 +277,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.title)}">
   <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}</span>
   <a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a></div>
-  <div class="stage-scroll">${drawStory(s, owner, href ? { href: href(s) } : {})}</div>
+  <div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>
 </section>`).join("");
   const yours = who === "You" ? "your" : `${who}'s`;
   const journey = [
@@ -322,11 +322,11 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
-export function renderShowcase(stories: Story[], total: Tally, owner: string, ownerName: string | null): string {
+export function renderShowcase(stories: Story[], total: Tally, owner: string, ownerName: string | null, unavailable = false): string {
   const who = ownerName || "The owner";
   const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who);
   const body = shown.length
-    ? `${legendLine(vendorsIn(shown)).replace(">You<", `>${e(who)}<`)}${stages}${columns}`
+    ? `${legendLine(vendorsIn(shown), who)}${stages}${columns}`
     : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -341,8 +341,9 @@ export function renderShowcase(stories: Story[], total: Tally, owner: string, ow
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>${headline(total, who)}</h1>
       <p class="lead">Atelier is a Git platform for several coding agents working on one codebase at once, built on Cloudflare Workers, Durable Objects and Artifacts. Every task has exactly one owner and its own fork; checks run on a clean copy of the exact revision; protected changes are reviewed by a model from another family; and nothing reaches main until ${e(who)} accepts it. Each coloured thread below is one task. Hover a mark for what happened.</p></div>
-    ${tallyBlock(total)}
+    ${tallyBlock(total, who)}
   </header>
+  ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   ${body}
   <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded.</p>
 </main></body></html>`;
