@@ -3,7 +3,7 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { DEFAULT_OWNER, evidenceAt, latestReviews, modelOf, stateLabel } from "./rules.ts";
+import { DEFAULT_OWNER, evidenceAt, countingReviews, modelOf, stateLabel } from "./rules.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
@@ -49,7 +49,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events): Brief {
   const { item, policy, gate } = detail;
   const view = evidenceAt(policy, detail.evidence, item.head);
-  const reviews = latestReviews(detail.reviews, item.head);
+  const reviews = countingReviews(detail.reviews, item.head, policy, detail.ownerActor ?? DEFAULT_OWNER);
   const rejections = reviews.filter((r) => !r.approve);
   const failed = view.checks.filter((c) => c.grade === "observed" && !c.passed);
   const pending = view.checks.filter((c) => c.grade === "pending");
@@ -99,7 +99,8 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     const shown = gate.outOfScope.slice(0, 3).join(", ");
     lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
-  if (gate.needsAssessor) lines.push({ rank: 0, text: "It touches a protected path and no different model or the project owner has approved this revision." });
+  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Project owner acceptance is required.` });
+  if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: "It touches a protected path and no different model or the project owner has approved this revision." });
   if (view.reports.length) lines.push({ rank: 3, text: `${plural(view.reports.length, "report")} recorded, not verified.` });
   while (lines.length > 5) {
     let drop = 0;
@@ -169,7 +170,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     ];
     return {
       verdict: "review",
-      reason: `This revision touches a protected path and needs an approval from a different model or the project owner${also.length ? `; ${also.join("; ")}` : ""}.`,
+      reason: `${gate.requirement ?? "This revision touches a protected path and needs an approval from a different model or the project owner"}${also.length ? `; ${also.join("; ")}` : ""}.`,
     };
   }
   if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };

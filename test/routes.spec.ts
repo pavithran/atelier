@@ -321,6 +321,23 @@ it("removal counts an open item queued for a runner as live work", async () => {
   expect((await call("DELETE", `/projects/${plain}`, "owner")).status).toBe(200);
 });
 
+it("posted checks preserve missing measurements as null", async () => {
+  const name = "missing-paths";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Paths", [], "owner");
+  await L.claim("t1", "owner");
+  await L.recordPush("t1", "owner", "a".repeat(40), null);
+  for (const changedPaths of [undefined, null, "docs/a.md", {}, [], ["AGENTS.md"]]) {
+    const res = await call("POST", `/projects/${name}/items/t1/evidence`, "owner", {
+      kind: "check", claim: "npm test", head: "a".repeat(40), passed: true, changedPaths,
+    });
+    expect(res.status).toBe(200);
+    const detail = await (await call("GET", `/projects/${name}/items/t1`, "owner")).json() as { evidence: { changedPaths: unknown }[] };
+    expect(detail.evidence.at(-1)?.changedPaths).toEqual(Array.isArray(changedPaths) ? changedPaths : null);
+  }
+});
+
 it("the standing route is readable by any signed-in actor, and by no one else", async () => {
   const name = "standing-route", agent = "codex/gpt-6-astra", head = "a".repeat(40);
   await project(name);

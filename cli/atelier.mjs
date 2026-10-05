@@ -239,12 +239,13 @@ function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git([...auth(token), "clone", "--quiet", remote, dir]);
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
-  let changed = [];
+  let changed;
   if (baseline) {
     git([...auth(baseline.token), "fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir });
     const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
     if (mb.status === 0) {
-      changed = git(["diff", "--name-only", mb.stdout.trim(), "HEAD"], { cwd: dir }).split("\n").filter(Boolean);
+      const diff = git(["diff", "--no-renames", "--name-only", "-z", mb.stdout.trim(), "HEAD"], { cwd: dir, allowFail: true });
+      if (diff.status === 0) changed = diff.stdout.split("\0").filter(Boolean);
     }
   }
   return { dir, changed };
@@ -318,7 +319,15 @@ export function readControlPlane(top) {
     sources.push("project-adapter.v1.json");
     for (const s of adapter.protected_surfaces ?? []) if (s.pattern) protectedPaths.add(s.pattern);
   }
-  return { sources, protected: [...protectedPaths], eligible, refuseOverlap };
+  return {
+    sources, protected: [...protectedPaths], eligible, refuseOverlap,
+    ...(agent ? { agents: agent.agents ?? {} } : {}),
+    ...(exec ? { execution: {
+      allowed_classes: exec.allowed_classes ?? ["direct", "coordinated", "protected"],
+      direct: { enabled: exec.direct?.enabled ?? false, allowed_path_patterns: exec.direct?.allowed_path_patterns ?? [] },
+      protected_path_patterns: exec.protected_path_patterns ?? [],
+    } } : {}),
+  };
 }
 
 export async function refreshControlPlane(top, name, request = call, report = console.log) {
@@ -330,8 +339,12 @@ export async function refreshControlPlane(top, name, request = call, report = co
   }
   if (!cp) return null;
   const before = (await request("GET", P(name), undefined, OWNER)).project.policy;
-  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false };
-  const changes = controlPlaneChanges(before, policy);
+  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
+  // Roles and change classes are compared here too, as whole values with their
+  // keys in a fixed order; the merge guard compares protected paths only.
+  const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
+  const changes = [...controlPlaneChanges(before, policy),
+    ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`)];
   if (changes.length) {
     await request("PUT", P(name), policy, OWNER);
     for (const change of changes) report(`ControlPlane ${change}`);
@@ -339,7 +352,7 @@ export async function refreshControlPlane(top, name, request = call, report = co
   return { before, policy: { ...before, ...policy }, changes };
 }
 
-function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote }) {
+function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass }) {
   const dir = join(cwd, "docs", "control-plane", "landing-receipts");
   if (!existsSync(dir)) return null;
   const template = readJson(join(cwd, "docs", "control-plane", "landing-receipt.v1.json")) ?? {};
@@ -350,7 +363,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
     kind: "control-plane.landing-receipt",
     receipt_id: `atelier-${name}-${id}-${date}`,
     project_id: template.project_id ?? name,
-    execution_class: "coordinated",
+    execution_class: changeClass ?? "coordinated",
     closure: "compact",
     implementation_commit: item.acceptedHead,
     delivery: {
@@ -597,7 +610,11 @@ const commands = {
     const policy = {};
     if (args.multi.check || reset) policy.checks = args.multi.check ?? [];
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
-    if (cp) policy.eligible = cp.eligible ?? [];
+    if (cp) {
+      policy.eligible = cp.eligible ?? [];
+      if (cp.agents) policy.agents = cp.agents;
+      if (cp.execution) policy.execution = cp.execution;
+    }
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]);
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = Boolean(args["sandbox-only"]);
     const r = await call("PUT", P(name), {
@@ -762,7 +779,7 @@ const commands = {
       rmSync(dir, { recursive: true, force: true });
       rmSync(markerPath(dir), { force: true });
     }
-    console.log(`changed: ${changed.join(", ") || "nothing"}`);
+    console.log(changed ? `changed: ${changed.join(", ") || "nothing"}` : "changed: not measured (the comparison with the baseline failed); the gate waits for a check that measures it");
     if (failed) {
       if (doneStep) die("required checks failed", 2);
       process.exit(2);
@@ -908,10 +925,7 @@ const commands = {
       const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
       const pairs = loadPairs(gitDir, name);
       const paired = pairs[baselineHead] ?? die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
-      // The registered branch is compared, whatever is checked out: the line
-  // names that branch, so its head is what it must describe.
-  const head = git(["rev-parse", "--verify", "--quiet", `refs/heads/${p.branch}`], { cwd, allowFail: true }).stdout?.trim();
-  if (!head) return `Checkout: cannot be compared: this checkout has no ${p.branch} branch.`;
+      const head = git(["rev-parse", "HEAD"], { cwd });
       if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
       if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
       let built;
@@ -1020,7 +1034,7 @@ const commands = {
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
-          const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote});
+          const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
           git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd});
           journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});
