@@ -650,3 +650,66 @@ it('the comparison dates follow the owner\'s time zone',async()=>{
   expect(side(html,'before')).toContain('5 Sept to 5 Oct');
  }finally{setTimeZone(undefined);}
 });
+
+// ── where a project stands ──
+async function standingFixture(over:Partial<{approval:string}>={}){
+ const {buildStanding,renderProject}=await import('../src/ui');
+ const p:ProjectRecord={...project,title:'Stand <ing>',policy:{...project.policy,...(over.approval?{approval:over.approval,eligible:['claude'],refuseOverlap:true}:{})}};
+ const at=(m:number)=>`2026-10-04T10:${String(m).padStart(2,'0')}:00.000Z`;
+ const base={fork:null,base:null,head:null,acceptedHead:null,createdAt:at(0),updatedAt:at(30),lastPushAt:null,scope:[]};
+ const items=[
+  {...base,id:'t1',title:'Held <b>task</b>',state:'claimed',owner:'claude-code/opus-5.5'},
+  {...base,id:'t2',title:'Ready task',state:'submitted',owner:'codex/gpt-6',head},
+  {...base,id:'t3',title:'Queued task',state:'open',owner:null,dispatch:{to:'home',agent:'codex',model:'gpt-6',by:'pavi',at:at(5),note:'<i>small</i>'}},
+  ...[4,5,6,7,8,9,10].map((n)=>({...base,id:`t${n}`,title:`Merged ${n}`,state:'merged',owner:null,acceptedHead:head})),
+ ] as never[];
+ const evs=[
+  {seq:1,at:at(1),actor:'codex/gpt-6',kind:'item.claimed',itemId:'t1',data:{}},
+  {seq:2,at:at(2),actor:'pavi',kind:'item.handoff',itemId:'t1',data:{from:'codex/gpt-6',to:'claude-code/opus-5.5',note:'Read <script>x</script> first'}},
+  {seq:3,at:at(3),actor:'claude-code/opus-5.5',kind:'item.submitted',itemId:'t2',data:{head,summary:'Summary <u>text</u>'}},
+  {seq:9,at:at(9),actor:'codex/gpt-6',kind:'item.submitted',itemId:'t10',data:{head,summary:'Merged <u>summary</u>'}},
+  ...[4,5,6,7,8,9,10].map((n,i)=>({seq:10+i,at:at(10+i),actor:'pavi',kind:'item.merged',itemId:`t${n}`,data:{mergeCommit:`${n}`.repeat(40),head}})),
+ ].reverse() as never[];
+ const inbox=[{project:'example',itemId:'t2',title:'Ready task',kind:'accept' as const,reason:'all checks observed passing',weight:100},{project:'example',itemId:'t1',title:'x',kind:'failing' as const,reason:'bad',weight:20}];
+ const d=detail();d.item=items[1] as never;d.item.id='t2';d.events=[evs.find((x:any)=>x.kind==='item.submitted')] as never;
+ d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ return {buildStanding,renderProject,p,items,evs,inbox,details:new Map([['t2',d]]),now:new Date('2026-10-05T12:00:00Z')};
+}
+it('the project page leads with where it stands: held, waiting with a brief, queued, merged and handoff notes',async()=>{
+ const f=await standingFixture();
+ const s=f.buildStanding(f.p,f.items,f.evs,f.inbox,f.details,f.now);
+ const html=f.renderProject(f.p,f.items,[],'PAVI',s);
+ const sec=html.slice(html.indexOf('id="standing"'),html.indexOf('class="new-task"'));
+ expect(html.indexOf('id="standing"')).toBeLessThan(html.indexOf('class="new-task"'));
+ expect(sec).toContain('Held now');expect(sec).toContain('held by claude-code/opus-5.5 since 2026-10-04 10:02 UTC');
+ expect(sec).toContain('Waiting on the owner');expect(sec).toContain('accept: 1 of 1 required checks passed at this revision and nothing blocks it.');
+ expect(sec).not.toContain('bad');expect(sec).toContain('Ready to accept');
+ expect(sec).toContain('Queued for a runner');expect(sec).toContain('for home codex/gpt-6 · sent by pavi');
+ expect(sec).toContain('Last merges');
+ expect((sec.match(/href="\/p\/example\/t(?:4|5|6|7|8|9|10)"/g)||[]).length).toBe(5);
+ expect(sec).toContain('Merged 10');expect(sec).toContain('Merged &lt;u&gt;summary&lt;/u&gt;');
+ expect(sec).toContain('Handoff notes');expect(sec).toContain('codex/gpt-6 to claude-code/opus-5.5');
+ expect(sec).toContain('atelier status --project example');
+ expect(sec).not.toContain('ControlPlane');
+});
+it('the standing section escapes everything a person or agent wrote',async()=>{
+ const f=await standingFixture({approval:'<b>PAVI</b>'});
+ const s=f.buildStanding(f.p,f.items,f.evs,f.inbox,f.details,f.now);
+ const sec=f.renderProject(f.p,f.items,[],'PAVI',s).split('id="standing"')[1].split('class="new-task"')[0];
+ for(const raw of ['<b>task</b>','<script>x</script>','<i>small</i>','<b>PAVI</b>','<u>summary</u>'])expect(sec).not.toContain(raw);
+ for(const esc of ['Held &lt;b&gt;task&lt;/b&gt;','Read &lt;script&gt;x&lt;/script&gt; first','&lt;i&gt;small&lt;/i&gt;','ControlPlane policy, approved: &lt;b&gt;PAVI&lt;/b&gt;'])expect(sec).toContain(esc);
+ expect(sec).toContain('Protected areas: src/**. Eligible agents: claude. Overlapping claims: refused.');
+});
+it('the standing data lists the last five merges newest first, with the agent\'s summary, and empty parts are left out',async()=>{
+ const f=await standingFixture();
+ const s=f.buildStanding(f.p,f.items,f.evs,f.inbox,f.details,f.now);
+ expect(s.merged.map((m)=>m.id)).toEqual(['t10','t9','t8','t7','t6']);
+ expect(s.merged[0].commit).toBe('10'.repeat(40));
+ expect(s.merged[0].line).toBe('Merged <u>summary</u>');expect(s.merged[1].line).toBeNull();
+ expect(s.waiting.map((w)=>w.id)).toEqual(['t2']);
+ expect(s.live.map((l)=>l.id)).toEqual(['t1','t2']);
+ expect(s.handoffs.map((h)=>h.note)).toEqual(['Read <script>x</script> first']);
+ const quiet=f.buildStanding(f.p,[],[],[],new Map(),f.now);
+ expect(f.renderProject(f.p,[],[],'PAVI',quiet)).toContain('Nothing is held, waiting, queued or recently merged.');
+ expect(f.renderProject(f.p,[],[],'PAVI',quiet)).not.toContain('<h3>');
+});

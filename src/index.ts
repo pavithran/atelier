@@ -5,7 +5,7 @@ import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, typ
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type Detail, type ReviewContext, type ProjectView } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
@@ -113,6 +113,21 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
+// How much of a project's record the "where it stands" view reads.
+const STANDING_EVENTS = 1000;
+
+// Where a project stands, from its Ledger: the page and the JSON route share it.
+async function standingOf(env: Env, name: string): Promise<Standing> {
+  const L = ledger(env, name);
+  const now = new Date();
+  const [project, items, events, inbox] = await Promise.all([L.project(), L.items(), L.events(undefined, STANDING_EVENTS) as unknown as Promise<LedgerEvent[]>, L.inbox(now.toISOString())]);
+  const ids = [...new Set(inbox.filter((x) => x.kind !== "failing").map((x) => x.itemId))].slice(0, STANDING_BRIEFS);
+  const details = new Map<string, Detail>();
+  await Promise.all(ids.map(async (id) => {
+    try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line falls back to the inbox reason */ }
+  }));
+  return buildStanding(project, items, events, inbox, details, now);
+}
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;
 
@@ -318,6 +333,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
   }
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
+  if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, project));
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
@@ -746,7 +762,8 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
-    return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env)));
+    const standing = await standingOf(env, parts[1]);
+    return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env), standing));
   }
   if (parts[0] === "p" && parts.length >= 3) {
     const res = await browse(env, c.url, parts.slice(1));
