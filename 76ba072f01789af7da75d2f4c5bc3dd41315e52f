@@ -1,0 +1,19 @@
+atelier cloudflare-git/t56 "Fix: init reuses the project this checkout is already registered as, refuses a name whose baseline repo belongs to another project, and the owner can remove a project (duplicate 'ikon weblog' to remove)"
+accepted head f5cb9d7c12dadff46c99fef0007d9474a00fdd5a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-05T01:09:42.631Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-05T01:09:44.737Z
+REVIEW approve — pavi: Owner approval of the merge-only revision; GLM approved t56's own changes at c6896dde.
+2026-10-04T19:25:34.786Z pavi item.created
+2026-10-05T00:46:19.300Z codex/gpt-6-astra item.claimed
+2026-10-05T00:46:23.945Z codex/gpt-6-astra fork.created
+2026-10-05T00:56:28.387Z codex/gpt-6-astra push.observed
+2026-10-05T00:56:41.789Z codex/gpt-6-astra evidence.observed
+2026-10-05T00:56:43.881Z codex/gpt-6-astra evidence.observed
+2026-10-05T00:56:44.443Z codex/gpt-6-astra item.submitted
+2026-10-05T01:03:17.569Z zcode/glm-5.3 review.approved
+2026-10-05T01:08:38.834Z codex/gpt-6-astra push.observed
+2026-10-05T01:09:42.779Z codex/gpt-6-astra evidence.observed
+2026-10-05T01:09:44.808Z codex/gpt-6-astra evidence.observed
+2026-10-05T01:09:45.329Z codex/gpt-6-astra item.submitted
+2026-10-05T01:09:45.837Z pavi review.approved
+2026-10-05T01:09:46.295Z pavi item.accepted
