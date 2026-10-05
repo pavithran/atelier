@@ -1,0 +1,22 @@
+atelier cloudflare-git/t81 "atelier ops: hand the command to a private operations toolkit (atelier-ops on PATH, or ATELIER_OPS), and say plainly when none is installed"
+accepted head e3b41915cf6fa27f5e25024cb7d51aa839d71a4e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T16:56:30.236Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T16:56:32.385Z
+REVIEW approve — codex/gpt-6-astra: Third round: signals Node will not die of exit 128 + number; empty PATH entries are the current directory; handover before parsing; executables only. No blocking findings.
+2026-10-05T16:34:19.571Z pavi item.created
+2026-10-05T16:34:19.965Z claude-code/opus-5.5 item.claimed
+2026-10-05T16:34:23.012Z claude-code/opus-5.5 fork.created
+2026-10-05T16:45:20.977Z claude-code/opus-5.5 push.observed
+2026-10-05T16:46:26.435Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:46:28.689Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:46:29.367Z claude-code/opus-5.5 item.submitted
+2026-10-05T16:51:13.573Z claude-code/opus-5.5 push.observed
+2026-10-05T16:52:19.225Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:52:21.348Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:52:22.012Z claude-code/opus-5.5 item.submitted
+2026-10-05T16:55:24.381Z claude-code/opus-5.5 push.observed
+2026-10-05T16:56:30.385Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:56:32.471Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:56:33.099Z claude-code/opus-5.5 item.submitted
+2026-10-05T17:07:55.508Z codex/gpt-6-astra review.approved
+2026-10-05T17:07:56.085Z pavi item.accepted
