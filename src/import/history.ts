@@ -24,6 +24,7 @@ export interface ImportedHistory {
 }
 
 export const NO_AGENT = "No agent named";
+const FRESH_ROOT = /^Atelier-Fresh-History: [0-9a-f]{40,64}$/m;
 const NAME_LIMIT = 40;
 
 // The agents a commit message names. Variants of one model, such as
@@ -58,7 +59,9 @@ export function firstTaskAt(items: { createdAt: string }[]): number | null {
 
 // Commits before `cutoff` (unix seconds), newest first as git logs them.
 export function buildImported(commits: ImportedCommit[], cutoff: number | null, complete: boolean): ImportedHistory {
-  const before = commits.filter((c) => cutoff === null || c.committedAt < cutoff).sort((a, b) => a.committedAt - b.committedAt);
+  // A baseline that starts partway through a project's history begins with a
+  // root commit Atelier made (cli/fresh.mjs); it is not the project's work.
+  const before = commits.filter((c) => (cutoff === null || c.committedAt < cutoff) && !FRESH_ROOT.test(c.message)).sort((a, b) => a.committedAt - b.committedAt);
   const lanes = new Map<string, ImportedLane>();
   let attributed = 0;
   for (const c of before) {

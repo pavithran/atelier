@@ -186,7 +186,30 @@ config entry and then returns. It does not rename a server project, update
 its title or policy, or push a baseline. The server refuses a new project
 when its baseline repository belongs to another registered project.
 
-## Owner notifications
+## Projects too large for Artifacts
+
+Artifacts holds at most 1 GB per repository and 32 MB per file. A project
+whose history is larger can join with its recent history only:
+
+```bash
+atelier init --history-since 2026-09-05 --check "…"
+```
+
+The baseline then starts with one commit holding the project as it was at
+the start of that day, followed by each commit on the branch's first-parent
+line since, rebuilt with the same files, authors, dates and messages. The
+project's own history is not pushed and not changed. The checkout keeps the
+pairs of baseline and project commits in `.git/atelier-baseline-map.json`.
+
+`atelier merge` carries an accepted task's commits onto the paired project
+commit, so each has exactly the files the agent committed, then merges them
+as usual, and publishes to the baseline a twin of the merge commit with the
+same files. It refuses when the branch has moved since the baseline last
+matched it; `atelier sync` carries commits made in the checkout outside
+Atelier to the baseline first. Merging and syncing need this checkout, which
+holds the pairs.
+
+
 
 Set `NTFY_TOPIC` to receive an ntfy notification when submission, review or
 check results put a submitted task in the owner's inbox:
