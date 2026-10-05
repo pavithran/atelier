@@ -304,12 +304,12 @@ function drawCard(k: Card, W: number, H: number): string {
   const h = 26 + lines.length * 16;
   const left = k.x + 14 + w > W - 4 ? k.x - 14 - w : k.x + 14;
   const top = Math.min(Math.max(k.y - h / 2, 4), H - h - 4);
-  const g = `<g class="g-card" data-card="${k.key}" style="--c:${k.color}" transform="translate(${r1(left)} ${r1(top)})" aria-hidden="true">`
-    + `<rect width="${r1(w)}" height="${h}" rx="7"/>`
+  // The card repeats what its mark's accessible name says, so it is hidden
+  // from assistive technology; its link is the mark's own, for a pointer.
+  const body = `<rect width="${r1(w)}" height="${h}" rx="7"/>`
     + `<text class="g-card-head" x="12" y="18">${esc(k.head)}</text>`
-    + lines.map((l, i) => `<text class="g-card-body" x="12" y="${36 + i * 16}">${esc(l)}</text>`).join("")
-    + `</g>`;
-  return k.href ? `<a href="${esc(k.href)}">${g}</a>` : g;
+    + lines.map((l, i) => `<text class="g-card-body" x="12" y="${36 + i * 16}">${esc(l)}</text>`).join("");
+  return `<g class="g-card" data-card="${k.key}" style="--c:${k.color}" transform="translate(${r1(left)} ${r1(top)})" aria-hidden="true">${k.href ? `<a href="${esc(k.href)}" tabindex="-1">${body}</a>` : body}</g>`;
 }
 
 export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string {
@@ -404,8 +404,8 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
   }
 
   // One rule per card: show it while its mark or task label is hovered or focused.
-  const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible,[data-card="${k.key}"]:hover) [data-card="${k.key}"]`).join(",");
-  out.push(`<style>${rules ? `${rules}{opacity:1}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
+  const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible,[data-card="${k.key}"]:hover,[data-card="${k.key}"]:focus-within) [data-card="${k.key}"]`).join(",");
+  out.push(`<style>${rules ? `${rules}{opacity:1;visibility:visible;transition-delay:0s}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
   const one = s.threads.length === 1 ? s.threads[0] : null;
   const label = one ? `${one.id}, ${one.title}: its thread, ${one.beads.length} marks` : `${s.title}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`;
   return `<svg class="graph${compact ? " compact" : ""}${o.mini ? " mini" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">${out.join("")}</svg>`;
@@ -419,11 +419,19 @@ const STATE_NAMES: Record<string, string> = {
   open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed",
 };
 
+// A mark with somewhere to go (its commit, its task's checks) is a link, so a
+// keyboard reaches it as a pointer does; one without is focusable all the same.
 function bead(b: Bead, X: number, y: number, d: string, color: string, key: string): string {
+  const mark = beadMark(b, X, y, d, color, key);
+  return b.href ? `<a href="${esc(b.href)}" class="g-bead-link" data-key="${key}">${mark}</a>` : mark;
+}
+
+function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: string): string {
   // Each mark is focusable, so a keyboard reaches the same card a pointer does;
-  // its accessible name is the card's text.
+  // its accessible name is the card's text. A linked mark leaves focus to its link.
   const name = esc(`${b.at.slice(0, 16).replace("T", " ")} UTC, ${BEAD_NAMES[b.kind]}: ${b.label}`);
-  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}" style="--d:${d}${style}" transform="translate(${X} ${y})" data-key="${key}" tabindex="0" role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
+  const focus = b.href ? "" : ' tabindex="0"';
+  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}" style="--d:${d}${style}" transform="translate(${X} ${y})" data-key="${key}"${focus} role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
   switch (b.kind) {
     case "push": return `${open("push")}<path d="M0 -6V6"/></g>`;
     case "pass": return `${open("pass")}<circle r="3.6"/></g>`;

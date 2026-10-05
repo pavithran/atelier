@@ -161,7 +161,8 @@ test("an empty project draws an empty story", () => {
 
 test("every mark and task has a card, shown only while it is pointed at or focused", () => {
   const svg = drawStory(buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER), OWNER);
-  const marks = [...svg.matchAll(/class="g-bead[^"]*"[^>]*data-key="([^"]+)" tabindex="0"/g)].map((m) => m[1]);
+  // A mark is focusable itself, or through the link it sits in.
+  const marks = [...svg.matchAll(/class="g-bead[^"]*"[^>]*data-key="([^"]+)" tabindex="0"|class="g-bead-link" data-key="([^"]+)"/g)].map((m) => m[1] ?? m[2]);
   assert.equal(marks.length, 9, "seven marks on t1, two on t2");
   for (const k of marks) {
     assert.ok(svg.includes(`data-card="${k}"`), `card for ${k}`);
@@ -260,8 +261,11 @@ test("Flow's filters keep only threads active in the window or worked by the fam
 test("a card links to the commit or the task's checks, encoded; a public story has no links", () => {
   const s = buildStory("my project", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
   const svg = drawStory(s, OWNER);
-  assert.ok(svg.includes('<a href="/p/my%20project/t1/commit/aaaaaaaa11">'), "a push links to its commit");
-  assert.ok(svg.includes('<a href="/p/my%20project/t1#checks">'), "a check or review links to the task's checks");
+  assert.ok(svg.includes('<a href="/p/my%20project/t1/commit/aaaaaaaa11" class="g-bead-link"'), "a push mark is a link to its commit, reached by keyboard");
+  assert.ok(svg.includes('<a href="/p/my%20project/t1#checks" class="g-bead-link"'), "a check or review mark links to the task's checks");
+  assert.ok(svg.includes('<a href="/p/my%20project/t1/commit/aaaaaaaa11" tabindex="-1">'), "its card links there too, for a pointer, without a second tab stop");
+  assert.ok(!/class="g-bead-link"[^>]*>\s*<g class="g-bead[^"]*"[^>]*tabindex/.test(svg), "a linked mark is not focusable twice");
+  assert.match(svg, /\[data-card="[^"]+"\]:hover,\[data-card="[^"]+"\]:focus-within\) \[data-card="[^"]+"\]/, "a card stays open while pointed at or holding focus");
   const pub = drawStory(buildStory("my project", [item("t1", "merged")], night(), OWNER, false, "P", { redact: true }), OWNER);
   assert.ok(!pub.includes("/commit/") && !pub.includes("#checks"));
 });
