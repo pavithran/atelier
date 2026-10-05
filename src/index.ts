@@ -384,7 +384,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (check && item.fork && e.head !== (await headOf(env, item.fork))) {
         throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
       }
-      await L.addEvidence(e);
+      await L.addEvidence(e, c.url.origin);
       return json(await L.detail(id));
     }
     case "sandbox": {
@@ -399,6 +399,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         runId, project, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
       };
+      await L.setNotificationOrigin(id, c.url.origin);
       const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
       return json({ runId, state }, 202);
     }
@@ -413,14 +414,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
-      });
+      }, c.url.origin);
       return json(await L.detail(id));
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.
       const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
       if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
-      return json(await L.submit(id, actor, summary));
+      return json(await L.submit(id, actor, summary, c.url.origin));
     case "handoff": {
       const to = String(body.to ?? "");
       const before = await L.item(id);
@@ -646,7 +647,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "release") await L.release(id, owner, note);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note);
     else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() });
+      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin);
     } else return html(renderError("Unknown action."), 400);
     if (verb === "abandon" || verb === "release" || verb === "handoff") {
       await revoke(env, before.fork, oldToken);
