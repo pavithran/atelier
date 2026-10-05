@@ -5,6 +5,33 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { controlPlaneChanges, mergePolicyDecision, readControlPlane, refreshControlPlane } from "../cli/atelier.mjs";
 
+const agents = { codex: { available: true, eligible_roles: ["executor"], preferred_roles: ["planner"] }, claude: { available: false, eligible_roles: ["assessor"] } };
+const execution = { allowed_classes: ["direct", "protected"], direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: ["src/security/**"] };
+
+test("CLI reads roles, preferences and classes without losing protected surfaces", () => {
+  mkdirSync(".cache", { recursive: true });
+  const top = mkdtempSync(resolve(".cache/control-plane-"));
+  const dir = join(top, "docs/control-plane");
+  try {
+    assert.equal(readControlPlane(top), null);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents, authority: { overlapping_claims: "refuse" } }));
+    writeFileSync(join(dir, "execution-policy.v1.json"), JSON.stringify({ ...execution, maintenance_path_rules: [{ paths: ["tools/**"] }] }));
+    writeFileSync(join(dir, "project-adapter.v1.json"), JSON.stringify({ protected_surfaces: [{ pattern: "adapter/**" }] }));
+    const cp = readControlPlane(top);
+    assert.deepEqual(cp.agents, agents);
+    assert.deepEqual(cp.execution, execution);
+    assert.deepEqual(cp.eligible, ["codex"]);
+    assert.equal(cp.refuseOverlap, true);
+    for (const path of ["src/security/**", "tools/**", "adapter/**", "docs/control-plane/**"]) assert.ok(cp.protected.includes(path));
+    rmSync(join(dir, "execution-policy.v1.json"));
+    assert.equal(readControlPlane(top).execution, undefined);
+    writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents: {} }));
+    assert.deepEqual(readControlPlane(top).agents, {});
+  } finally { rmSync(top, { recursive: true, force: true }); }
+});
+
+
 function fixture(run) {
   mkdirSync(".cache", { recursive: true });
   const dir = mkdtempSync(resolve(".cache/control-plane-"));
@@ -32,11 +59,13 @@ test("refresh sends only ControlPlane fields and leaves project settings intact"
   assert.deepEqual(calls.map((c) => c.method), ["GET", "PUT"]);
   assert.equal(calls[1].path, "/projects/example");
   assert.equal(calls[1].actor, "owner");
-  assert.deepEqual(Object.keys(calls[1].body).sort(), ["eligible", "protected", "refuseOverlap"]);
+  assert.deepEqual(Object.keys(calls[1].body).sort(), ["agents", "eligible", "execution", "protected", "refuseOverlap"]);
   assert.deepEqual(stored, { ...original, policy: { ...before, ...calls[1].body } });
   assert.deepEqual(result.before, before);
   assert.deepEqual(result.policy, stored.policy);
-  assert.equal(lines.length, 3);
+  // Three field changes, and the roles and classes the files now name.
+  assert.equal(lines.length, 5);
+  assert.ok(lines.some((line) => line.includes("agents changed")) && lines.some((line) => line.includes("execution changed")));
   assert.ok(lines.every((line) => !line.includes("\n")));
   assert.ok(stored.policy.protected.includes("scripts/**"));
   assert.ok(stored.policy.protected.includes("secrets/**"));
