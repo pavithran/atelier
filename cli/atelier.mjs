@@ -15,6 +15,8 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { redactGitArgs } from "./runner.mjs";
+import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
+export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { landingJournal, landingLock } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
@@ -247,12 +249,20 @@ function readJson(path) {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
 }
 
-function readControlPlane(top) {
+export function readControlPlane(top) {
   const dir = join(top, "docs", "control-plane");
-  const agent = readJson(join(dir, "agent-policy.v1.json"));
-  const exec = readJson(join(dir, "execution-policy.v1.json"));
-  const adapter = readJson(join(dir, "project-adapter.v1.json"));
-  if (!agent && !exec) return null;
+  const read = (name) => {
+    try {
+      const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error(`${name} is empty or is not an object`);
+      return value;
+    }
+    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  };
+  const agent = read("agent-policy.v1.json");
+  const exec = read("execution-policy.v1.json");
+  const adapter = read("project-adapter.v1.json");
+  if (!agent && !exec && !adapter) return null;
   const sources = [];
   const protectedPaths = new Set(["AGENTS.md", "CLAUDE.md", "GLM.md", "docs/control-plane/**", "tools/control-plane/**"]);
   let eligible = null;
@@ -272,6 +282,24 @@ function readControlPlane(top) {
     for (const s of adapter.protected_surfaces ?? []) if (s.pattern) protectedPaths.add(s.pattern);
   }
   return { sources, protected: [...protectedPaths], eligible, refuseOverlap };
+}
+
+export async function refreshControlPlane(top, name, request = call, report = console.log) {
+  let cp;
+  try { cp = readControlPlane(top); }
+  catch (error) {
+    report(`Warning: ControlPlane policy could not be read: ${error.message}. Continuing without a refresh; merge uses the policy recorded at acceptance.`);
+    return { skipped: true, changes: [] };
+  }
+  if (!cp) return null;
+  const before = (await request("GET", P(name), undefined, OWNER)).project.policy;
+  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false };
+  const changes = controlPlaneChanges(before, policy);
+  if (changes.length) {
+    await request("PUT", P(name), policy, OWNER);
+    for (const change of changes) report(`ControlPlane ${change}`);
+  }
+  return { before, policy: { ...before, ...policy }, changes };
 }
 
 function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote }) {
@@ -451,9 +479,10 @@ const commands = {
     // as it is. --reset starts the policy over from these options and the
     // defaults. A ControlPlane project always sends the policy ControlPlane holds.
     const reset = args.reset === true;
+    const protect = args.multi.protect ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
     const policy = {};
     if (args.multi.check || reset) policy.checks = args.multi.check ?? [];
-    if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
+    if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
     if (cp) policy.eligible = cp.eligible ?? [];
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]);
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = Boolean(args["sandbox-only"]);
@@ -489,7 +518,7 @@ const commands = {
       git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
     }
     cfg.projects ??= {};
-    cfg.projects[name] = { ...cfg.projects[name], path: top, branch, ...(since || fresh ? { fresh: true } : {}) };
+    cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
     saveConfig(cfg);
     const pol = r.project.policy;
     console.log(fresh
@@ -747,7 +776,12 @@ const commands = {
   async sync() {
     const name = project();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
-    if (p.fresh !== true) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
+    const refreshed = await refreshControlPlane(cwd, name);
+    if (p.fresh !== true) {
+      if (!refreshed) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
+      if (!refreshed.skipped && !refreshed.changes.length) console.log(`${name}: ControlPlane policy is current.`);
+      return;
+    }
     if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first");
     if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
     const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
@@ -775,11 +809,11 @@ const commands = {
   },
 
   async merge() {
+    const name = project(), id = itemArg();
+    const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
     // Ends an interrupted merge's landing lease, so the task's owner can push
     // again; refused once the merge is on the baseline.
     if (args.cancel === true) {
-      const name = project(), id = itemArg();
-      const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
       const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
       const item = (await call("GET", I(name, id), undefined, OWNER)).item;
       let journal;
@@ -799,7 +833,7 @@ const commands = {
       journal.clear();
       return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
     }
-    const name=project(), id=itemArg();
+    const refreshed = await refreshControlPlane(cwd, name);
     if (args.head !== undefined) {
       if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]] | atelier merge ID --cancel [--discard-local]");
       const d=await call("GET",I(name,id),undefined,OWNER);
@@ -809,7 +843,6 @@ const commands = {
         await call("POST",`${I(name,id)}/accept`,{head:args.head},OWNER);
       }
     }
-    const p=cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd=p.path;
     const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd});
     let unlock;
     try { unlock=landingLock(gitDir); } catch (error) { die(error.message); }
@@ -819,6 +852,11 @@ const commands = {
       if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
       const journal=landingJournal(gitDir,{project:name,item:id,head:item.acceptedHead});
       if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
+      const acceptedPolicy = { ...d.policy, protected: d.acceptanceProtected ?? [] };
+      if (refreshed?.policy) {
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, []);
+        if (decision.warning) console.error(decision.warning);
+      }
       if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
       if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) die(`check out ${p.branch} in ${cwd} first`);
       const base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
@@ -827,6 +865,12 @@ const commands = {
       const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
       git([...auth(ws.token),'fetch','--quiet',ws.remote,item.acceptedHead],{cwd});
       if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
+      if (refreshed?.policy) {
+        if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
+        const paths = git(['diff', '--name-only', '--no-renames', '-z', item.base, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true);
+        if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
+      }
       const local=git(['rev-parse','HEAD'],{cwd});
       const owners=[...new Set(d.events.filter(e=>['item.claimed','item.handoff'].includes(e.kind)).map(e=>e.data.to??e.actor))];
       const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
@@ -1072,7 +1116,7 @@ Setup      login --server URL · login --store · init [--title TEXT] [--check C
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
 Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
+Owner      accept ID · merge ID [--head SHA [--approve]] [--policy-changed-ok] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects remove NAME [--force] · init --name NAME --rename-local
