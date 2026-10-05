@@ -130,16 +130,35 @@ export interface MainPreview {
 
 const MAIN_LOG = 1000;
 
+// The commits on main that the fork point cannot reach, as `git rev-list
+// base..main` counts them, merged side branches included, from a log of main
+// in any order. When the log was cut short and the fork point is not in it,
+// the count is a floor. When the whole log was read and the fork point is not
+// in it, the fork point is not on main and there is no count.
+export function commitsSince(log: { hash: string; parents?: string[] }[], base: string, cut: boolean): { ahead: number | null; capped: boolean } {
+  const byHash = new Map(log.map((c) => [c.hash, c]));
+  if (!byHash.has(base)) return cut ? { ahead: log.length, capped: true } : { ahead: null, capped: false };
+  const reached = new Set<string>();
+  const stack = [base];
+  while (stack.length) {
+    const h = stack.pop()!;
+    if (reached.has(h)) continue;
+    reached.add(h);
+    for (const p of byHash.get(h)?.parents ?? []) if (byHash.has(p)) stack.push(p);
+  }
+  return { ahead: log.length - reached.size, capped: false };
+}
+
 export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, base: string, baseTree: string, headTree: string): Promise<MainPreview | null> {
   using baseline = await artifacts.get(baselineRepo);
   using fork = await artifacts.get(workspaceRepo);
   const log = await baseline.log({ limit: MAIN_LOG });
   const head = log[0];
   if (!head) return null;
-  const at = log.findIndex((c) => c.hash === base);
-  const ahead = at < 0 ? log.length : at;
+  const { ahead, capped } = commitsSince(log, base, log.length >= MAIN_LOG);
+  if (ahead === null) return null;
   const merge = head.hash === base
     ? { clean: true, conflicts: [], both: [], ours: 0, theirs: 0 }
     : await mergeability(repoReader(baseline), repoReader(fork), baseTree, head.treeHash, headTree);
-  return { head: head.hash, ahead, aheadCapped: at < 0, merge };
+  return { head: head.hash, ahead, aheadCapped: capped, merge };
 }
