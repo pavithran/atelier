@@ -57,10 +57,10 @@ export function nextStep(state, result) {
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
 
-export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
-    const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true,
+    const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
       stdio: ["ignore", capture ? "pipe" : "inherit", captureError ? "pipe" : "inherit"] });
     let output = "", stderr = "", error, timedOut = false, stopping = false, closed, escalated = false;
     const kill = (sig) => { try { if (child.pid) process.kill(-child.pid, sig); } catch { /* The group may already have exited. */ } };
