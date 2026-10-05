@@ -1,0 +1,16 @@
+atelier cloudflare-git/t98 "wrap's conflict-marker scan writes the index: a plain git diff refreshes stale stat data and writes .git/index (seen under iCloud), so a refused wrap does not leave the index exactly as the owner had it; run the scan's git calls with --no-optional-locks"
+accepted head fb23b84622f453b16565eb6bb7dd3f65b585b42e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T21:56:29.518Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T21:56:32.096Z
+REVIEW approve — opencode/glm-5.3:
+REVIEW approve — pavi: glm-5.3 approved; suite passes; the refusal tests pass under iCloud.
+2026-10-05T21:53:34.940Z pavi item.created
+2026-10-05T21:53:35.793Z claude-code/opus-5.5 item.claimed
+2026-10-05T21:53:40.381Z claude-code/opus-5.5 fork.created
+2026-10-05T21:55:20.794Z claude-code/opus-5.5 push.observed
+2026-10-05T21:56:29.779Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:56:32.201Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:56:32.828Z claude-code/opus-5.5 item.submitted
+2026-10-05T22:03:35.348Z opencode/glm-5.3 review.approved
+2026-10-05T22:03:35.942Z pavi review.approved
+2026-10-05T22:03:36.623Z pavi item.accepted
