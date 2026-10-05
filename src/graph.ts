@@ -235,7 +235,7 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
 // Hover cards. A card is drawn last, above every thread, and shown by CSS
-// when its mark is hovered or focused: :has() ties the two together, since
+// while the pointer hovers over its mark, or its mark has focus: :has() ties the two together, since
 // SVG has no z-index and the pages carry no script. Each drawing gets its own
 // id prefix so two graphs on a page never share a card.
 let drawings = 0;
@@ -367,7 +367,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
       + `<text x="${r1(hx)}" y="${TOP - 18}" text-anchor="end"><tspan class="g-note-verdict">${esc(o.note.verdict)}</tspan> · ${esc(text)}</text></g>`);
   }
 
-  // One rule per card: show it while its mark or task label is hovered or focused.
+  // One rule per card: show it while the pointer hovers over its mark or task label, or either has focus.
   const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible) [data-card="${k.key}"]`).join(",");
   out.push(`<style>${rules ? `${rules}{opacity:1}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
   const one = s.threads.length === 1 ? s.threads[0] : null;
