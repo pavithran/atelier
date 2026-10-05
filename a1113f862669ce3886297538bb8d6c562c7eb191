@@ -1,0 +1,19 @@
+atelier cloudflare-git/t49 "Visual: the task page draws its own thread with the brief on it; Decisions shows waiting decisions as cards with mini-threads and verdict edges"
+accepted head 56c96c0d23c5532730b4e9e82ac6a029912a1a91
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-05T01:46:50.393Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-05T01:46:52.480Z
+REVIEW approve — pavi: Owner approval of the merge-only revision; Codex approved t49's own changes at 568c461d.
+2026-10-04T17:57:35.894Z pavi item.created
+2026-10-05T01:17:30.260Z claude-code/sonnet-5.5 item.claimed
+2026-10-05T01:17:32.491Z claude-code/sonnet-5.5 fork.created
+2026-10-05T01:29:52.327Z claude-code/sonnet-5.5 push.observed
+2026-10-05T01:30:56.377Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T01:30:58.459Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T01:30:58.995Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T01:44:29.587Z codex/gpt-6-astra review.approved
+2026-10-05T01:45:46.289Z claude-code/sonnet-5.5 push.observed
+2026-10-05T01:46:50.469Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T01:46:52.527Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T01:46:53.048Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T01:46:53.560Z pavi review.approved
+2026-10-05T01:46:53.950Z pavi item.accepted
