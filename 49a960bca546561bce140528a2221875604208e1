@@ -1,0 +1,21 @@
+atelier cloudflare-git/t68 "Showcase: a before-and-with comparison near the top (a project's imported history beside Atelier's observed record), and an imported-only project's header says so instead of 0 tasks"
+accepted head c8d29a48122f766fa7d489d2102b9fd3e8409ce2
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T01:50:57.236Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T01:50:59.503Z
+2026-10-05T01:35:27.308Z pavi item.created
+2026-10-05T01:35:27.640Z claude-code/opus-5.5 item.claimed
+2026-10-05T01:35:32.418Z claude-code/opus-5.5 fork.created
+2026-10-05T01:38:42.904Z claude-code/opus-5.5 push.observed
+2026-10-05T01:39:47.452Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:39:49.452Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:39:49.990Z claude-code/opus-5.5 item.submitted
+2026-10-05T01:43:21.819Z claude-code/opus-5.5 push.observed
+2026-10-05T01:44:25.745Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:44:27.821Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:44:28.667Z claude-code/opus-5.5 item.submitted
+2026-10-05T01:48:44.581Z codex/gpt-6-astra review.approved
+2026-10-05T01:49:52.163Z claude-code/opus-5.5 push.observed
+2026-10-05T01:50:57.575Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:50:59.557Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:51:00.121Z claude-code/opus-5.5 item.submitted
+2026-10-05T01:51:00.677Z pavi item.accepted
