@@ -411,7 +411,8 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
     [409, "POST", "/projects/p/items/t1/release", 1],
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
-      tokenActor: undefined,
+      // No agent token here: the actor is never looked up.
+      tokenActor: undefined, resolveTokenActor: async () => {},
       server: () => "https://unused", apiToken: () => "unused",
       fetch: async () => ({ ok: false, status, text: async () => JSON.stringify({ error: "refused", detail: "reason" }) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
@@ -677,7 +678,8 @@ test("CLI marks network and server failures distinctly from task errors", async 
     ...[500, 503, 408, 429].map((status) => async () => ({ ok: false, status, text: async () => '{"error":"unavailable"}' })),
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
-      tokenActor: undefined,
+      // No agent token here: the actor is never looked up.
+      tokenActor: undefined, resolveTokenActor: async () => {},
       server: () => "https://unused", apiToken: () => "unused", fetch,
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });

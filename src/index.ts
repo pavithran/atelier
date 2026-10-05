@@ -1,3 +1,4 @@
+import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
@@ -470,6 +471,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.undispatch(id, actor));
     case "review": {
       const item = await L.item(id);
+      assertReviewAllowed(item, !!c.token);
       assertRevision(item, String(body.head ?? ""));
       if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
       await L.addReview({

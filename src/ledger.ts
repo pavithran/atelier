@@ -2,6 +2,7 @@ import { type AgentToken } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
+  assertHandoffTarget, assertReviewAllowed, pushActors,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
@@ -255,11 +256,12 @@ export class Ledger extends DurableObject<Env> {
   item(id: string): Item {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("no_item", `no item ${id}`, 404);
-    return toItem(row);
+    const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`, id).toArray();
+    return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
   }
 
   items(): Item[] {
-    return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem);
+    return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map((row) => this.item(row.id as string));
   }
 
   tokenId(id: string): string | null {
@@ -430,6 +432,7 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     if (!policy.agents) assertEligible(r.by, policy, this.owner);
     const item = this.item(r.itemId);
+    assertReviewAllowed(item, proved);
     if (item.state !== "accepted") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
     if (item.owner === r.by) throw new RuleError("self_review", "an owner cannot review their own item", 403);
@@ -460,7 +463,7 @@ export class Ledger extends DurableObject<Env> {
   handoff(id: string, from: string, to: string, note: string, proved = false): Item {
     const item = this.item(id);
     if (from !== this.owner) assertOwner(item, from);
-    if (!validActor(to)) throw new RuleError("bad_actor", `"${to}" is not harness/model`, 400);
+    assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     this.update(id, { owner: to, state: "claimed" });
