@@ -1,0 +1,29 @@
+atelier cloudflare-git/t43 "Per-agent tokens: each agent gets its own scoped token, so an actor's name is proved, not declared"
+accepted head 60e51ac89daf2bf255f7aa12c0e3d0a0dd11fc6d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-05T20:51:06.063Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-05T20:51:08.727Z
+REVIEW approve — pavi: sonnet-5.5 approved e12a0a41 after probing; since then a clean merge of main. Suites pass with and without an agent token; typecheck passes.
+2026-10-04T17:31:07.866Z pavi item.created
+2026-10-05T18:07:17.104Z codex/gpt-6-astra item.claimed
+2026-10-05T18:07:23.433Z codex/gpt-6-astra fork.created
+2026-10-05T18:22:20.859Z codex/gpt-6-astra push.observed
+2026-10-05T18:23:30.151Z codex/gpt-6-astra evidence.observed
+2026-10-05T18:23:32.875Z codex/gpt-6-astra evidence.observed
+2026-10-05T18:23:33.523Z codex/gpt-6-astra item.submitted
+2026-10-05T19:13:20.284Z zcode/glm-5.3 review.rejected
+2026-10-05T19:29:52.735Z codex/gpt-6-astra push.observed
+2026-10-05T19:31:01.922Z codex/gpt-6-astra evidence.observed
+2026-10-05T19:31:04.307Z codex/gpt-6-astra evidence.observed
+2026-10-05T19:31:05.056Z codex/gpt-6-astra item.submitted
+2026-10-05T19:49:00.667Z zcode/glm-5.3 review.rejected
+2026-10-05T20:02:45.025Z codex/gpt-6-astra push.observed
+2026-10-05T20:04:00.009Z codex/gpt-6-astra evidence.observed
+2026-10-05T20:04:02.980Z codex/gpt-6-astra evidence.observed
+2026-10-05T20:04:03.936Z codex/gpt-6-astra item.submitted
+2026-10-05T20:47:46.238Z claude-code/sonnet-5.5 review.approved
+2026-10-05T20:49:58.259Z codex/gpt-6-astra push.observed
+2026-10-05T20:51:06.274Z codex/gpt-6-astra evidence.observed
+2026-10-05T20:51:08.836Z codex/gpt-6-astra evidence.observed
+2026-10-05T20:51:09.425Z codex/gpt-6-astra item.submitted
+2026-10-05T20:51:10.162Z pavi review.approved
+2026-10-05T20:51:10.830Z pavi item.accepted
