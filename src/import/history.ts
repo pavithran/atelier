@@ -4,6 +4,8 @@
 // "Co-Authored-By:" and "Agent:" lines, or to no agent. This is what the
 // commits claim, not evidence Atelier observed, and the pages say so.
 
+import { TEXT_CONTROLS } from "../text.ts";
+
 export interface ImportedCommit { hash: string; message: string; committedAt: number }
 
 export interface ImportedLane {
@@ -48,7 +50,7 @@ export function agentsIn(message: string): string[] {
     const before = email ? m[1].slice(0, email.index) : m[1];
     const side = email && !before.replace(/<[^>]*>/g, "").trim() ? m[1].slice(email.index + email[0].length) : before;
     const name = side.replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ")
+      .replace(TEXT_CONTROLS, " ")
       .replace(/\s+/g, " ").trim();
     // A human co-author is a person, not an agent: keep only names that
     // read as a model or an agent harness and model. The whole name is
@@ -77,7 +79,7 @@ export function normaliseAgentName(name: string): string {
   let norm = s.toLowerCase().trim().replace(/\s+/g, "-");
   norm = norm.replace(/^claude-(opus|sonnet|haiku|fable)/, "$1");
   if (!/\d/.test(norm)) {
-    if (norm === "codex" || norm === "claude-code" || norm === "zcode" || norm === "opencode" || norm === "gemini-cli") {
+    if (norm === "codex" || norm === "claude-code" || norm === "zcode" || norm === "opencode" || norm === "gemini-cli" || norm === "antigravity") {
       return `${norm}, model not recorded`;
     }
     return `${norm}, version not recorded`;

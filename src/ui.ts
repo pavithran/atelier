@@ -4,6 +4,7 @@ import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Colours, type, spacing and radii come from the portfolio theme (theme.css);
 // layout.css only arranges them.
 
+import { TEXT_CONTROLS } from "./text.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
@@ -31,7 +32,7 @@ export const titleOf = (p: { name: string; title?: string }) => p.title || p.nam
 // C1 controls, U+00AD, U+061C, all Bidi_Control characters and all
 // Default_Ignorable_Code_Point characters are replaced with a space.
 export function cleanTitle(v: unknown): string | undefined {
-  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  const s = String(v ?? "").replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim().slice(0, 80);
   return s || undefined;
 }
 const titleMap = (ps: ProjectRecord[]) => new Map(ps.map((p) => [p.name, titleOf(p)]));
@@ -865,7 +866,7 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
   if (!events.length) return '<p class="empty">No activity recorded yet.</p>';
   return `<ol class="timeline">${events.map((v) => `<li><span class="timeline-dot"></span><div>
     <strong>${e(v.kind.replaceAll(".", " ").replaceAll("_", " "))}</strong>${withItem && v.itemId ? ` · ${e(v.itemId)}` : ""}
-    <p class="meta">${e(v.actor)} · ${when(v.at)}</p>
+    <p class="meta">${e(v.actor)}${v.proved ? " · token proved" : ""} · ${when(v.at)}</p>
     <details><summary>Details</summary><pre>${e(JSON.stringify(v.data, null, 2))}</pre></details></div></li>`).join("")}</ol>`;
 }
 
@@ -958,7 +959,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
       : `<details class="request-changes dispatch-form"><summary>Send to an agent</summary>
         <form class="stack" method="post" action="${action("dispatch")}">${revision}
           <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Studio)</option><option value="cloud">Cloud runner</option></select></label>
-          <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option></select></label>
+          <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option><option value="antigravity">Antigravity (Gemini)</option><option value="gemini-cli">Gemini CLI</option></select></label>
           <label>Model <span class="meta">optional, as the runner names it</span><input type="text" name="model" placeholder="e.g. glm-5.3-flash"></label>
           <label>Note for the agent <span class="meta">optional</span><input type="text" name="note" maxlength="500"></label>
           <button class="primary">Send</button>

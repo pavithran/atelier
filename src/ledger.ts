@@ -1,7 +1,9 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
+import { type AgentToken } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
+  assertHandoffTarget, assertReviewAllowed, pushActors,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
@@ -16,6 +18,7 @@ import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch,
 
 export interface LedgerEvent {
   seq: number;
+  proved?: true;
   itemId: string | null;
   at: string;
   actor: string;
@@ -104,6 +107,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
@@ -125,6 +129,8 @@ export class Ledger extends DurableObject<Env> {
         actor TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
       );
     `);
+    const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
+    if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
@@ -132,6 +138,34 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // ── index instance ───────────────────────────────────────────────────────
+
+  putAgentToken(token: AgentToken): void {
+    this.sql.exec(`INSERT INTO agent_tokens (id, hash, json) VALUES (?, ?, ?)`, token.id, token.hash, JSON.stringify(token));
+    this.log(null, this.owner, "token.issued", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
+  }
+
+  agentToken(hash: string): AgentToken | null {
+    const row = this.sql.exec(`SELECT json FROM agent_tokens WHERE hash = ?`, hash).toArray()[0];
+    return row ? JSON.parse(row.json as string) : null;
+  }
+
+  agentTokens(): Omit<AgentToken, "hash">[] {
+    return this.sql.exec(`SELECT json FROM agent_tokens ORDER BY id`).toArray().map((row) => {
+      const { hash, ...record } = JSON.parse(row.json as string) as AgentToken;
+      return record;
+    });
+  }
+
+  revokeAgentToken(id: string): boolean {
+    const row = this.sql.exec(`SELECT json FROM agent_tokens WHERE id = ?`, id).toArray()[0];
+    if (!row) return false;
+    const token = JSON.parse(row.json as string) as AgentToken;
+    if (token.revokedAt) return true;
+    token.revokedAt = new Date().toISOString();
+    this.sql.exec(`UPDATE agent_tokens SET json = ? WHERE id = ?`, JSON.stringify(token), id);
+    this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
+    return true;
+  }
 
   // Two inits finishing out of order must not leave the older copy listed.
   registerProject(record: ProjectRecord): void {
@@ -226,11 +260,21 @@ export class Ledger extends DurableObject<Env> {
   item(id: string): Item {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("no_item", `no item ${id}`, 404);
-    return toItem(row);
+    const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`, id).toArray();
+    return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
   }
 
   items(): Item[] {
-    return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem);
+    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`).toArray();
+    const histories = new Map<string, Parameters<typeof pushActors>[0]>();
+    for (const row of events) {
+      const id = row.item_id as string;
+      const history = histories.get(id) ?? [];
+      history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
+      histories.set(id, history);
+    }
+    return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray()
+      .map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
   }
 
   tokenId(id: string): string | null {
@@ -238,7 +282,7 @@ export class Ledger extends DurableObject<Env> {
     return (row?.token_id as string | null) ?? null;
   }
 
-  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null): { item: Item; needsFork: boolean } {
+  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false): { item: Item; needsFork: boolean } {
     const item = this.item(id);
     assertDispatchedClaim(item, actor, runner);
     assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner);
@@ -256,7 +300,7 @@ export class Ledger extends DurableObject<Env> {
       return { item: this.item(id), needsFork: !item.fork };
     }
     this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null });
-    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {});
+    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {}, proved);
     return { item: this.item(id), needsFork: !item.fork };
   }
 
@@ -290,14 +334,14 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A failed fork must not leave an owner holding nothing.
-  unclaim(id: string, actor: string, reason: string): void {
+  unclaim(id: string, actor: string, reason: string, proved = false): void {
     this.update(id, { owner: null, state: "open" });
-    this.log(id, actor, "item.claim_failed", { reason });
+    this.log(id, actor, "item.claim_failed", { reason }, proved);
   }
 
-  setFork(id: string, fork: string, base: string | null, actor: string): void {
+  setFork(id: string, fork: string, base: string | null, actor: string, proved = false): void {
     this.update(id, { fork, base, head: base });
-    this.log(id, actor, "fork.created", { fork, base });
+    this.log(id, actor, "fork.created", { fork, base }, proved);
   }
 
   setToken(id: string, tokenId: string | null): void {
@@ -309,7 +353,7 @@ export class Ledger extends DurableObject<Env> {
   // An accepted task can still take a new revision, as when its merge
   // conflicts and the owner rebases: the push withdraws the acceptance, and
   // the task is back in progress until it is checked and submitted again.
-  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null): Item {
+  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false): Item {
     const item = this.item(id);
     if (item.state !== "accepted") assertLive(item);
     assertOwner(item, actor);
@@ -329,7 +373,7 @@ export class Ledger extends DurableObject<Env> {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
       ...(reopened ? { approvalInvalidated: true } : {}),
-    });
+    }, proved);
     return this.item(id);
   }
 
@@ -379,23 +423,29 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  addEvidence(e: Evidence, origin?: string): void {
+  recordSandboxRequest(id: string, actor: string, runId: string): void {
+    this.item(id);
+    this.log(id, actor, "sandbox.requested", { runId }, true);
+  }
+
+  addEvidence(e: Evidence, origin?: string, proved = false): void {
     const item = this.item(e.itemId);
     if (e.head !== item.head) {
       throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
-    this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) });
+    this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
   }
 
-  addReview(r: Review, origin?: string): void {
+  addReview(r: Review, origin?: string, proved = false): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
     if (!policy.agents) assertEligible(r.by, policy, this.owner);
     const item = this.item(r.itemId);
+    assertReviewAllowed(item, proved);
     if (item.state !== "accepted") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
     if (item.owner === r.by) throw new RuleError("self_review", "an owner cannot review their own item", 403);
@@ -403,43 +453,43 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null });
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head });
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head }, proved);
     this.notify(r.itemId, origin);
   }
 
   // The summary is recorded in the event and nowhere else; a later submit
   // without one leaves the new revision with none.
-  submit(id: string, actor: string, summary?: string, origin?: string): Item {
+  submit(id: string, actor: string, summary?: string, origin?: string, proved = false): Item {
     const item = this.item(id);
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
     this.update(id, { state: "submitted" });
     const text = cleanSummary(summary);
-    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) });
+    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, proved);
     this.notify(id, origin);
     return this.item(id);
   }
 
   // Ownership moves; the work does not fork. The new owner inherits the same
   // workspace repo, and the old owner's write token is revoked by the caller.
-  handoff(id: string, from: string, to: string, note: string): Item {
+  handoff(id: string, from: string, to: string, note: string, proved = false): Item {
     const item = this.item(id);
     if (from !== this.owner) assertOwner(item, from);
-    if (!validActor(to)) throw new RuleError("bad_actor", `"${to}" is not harness/model`, 400);
+    assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     this.update(id, { owner: to, state: "claimed" });
-    this.log(id, from, "item.handoff", { from: item.owner, to, note });
+    this.log(id, from, "item.handoff", { from: item.owner, to, note }, proved);
     return this.item(id);
   }
 
-  release(id: string, actor: string, note: string): Item {
+  release(id: string, actor: string, note: string, proved = false): Item {
     const item = this.item(id);
     assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
     this.update(id, { owner: null, state: "open" });
-    this.log(id, actor, "item.released", { from: item.owner, note });
+    this.log(id, actor, "item.released", { from: item.owner, note }, proved);
     return this.item(id);
   }
 
@@ -538,6 +588,7 @@ export class Ledger extends DurableObject<Env> {
       : this.sql.exec(`SELECT * FROM events ORDER BY seq DESC LIMIT ?`, limit).toArray();
     return rows.map((r) => ({
       seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
+      ...(r.proved === 1 ? { proved: true as const } : {}),
       actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
     }));
   }
@@ -577,10 +628,10 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), new Date().toISOString(), id);
   }
 
-  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>): void {
+  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, proved = false): void {
     this.sql.exec(
-      `INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, ?, ?)`,
-      itemId, new Date().toISOString(), actor, kind, JSON.stringify(data),
+      `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?)`,
+      itemId, new Date().toISOString(), actor, kind, JSON.stringify(data), proved ? 1 : null,
     );
   }
 }
