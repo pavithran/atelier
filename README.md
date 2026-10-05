@@ -35,8 +35,33 @@ End in the registered checkout with `atelier wrap "summary" --next "what is next
 It runs `git diff --check` and registered checks, warns about an unchanged state
 file and records a `session.wrapped` ledger event. `--no-check` skips registered
 checks. Results are Reported because they ran in the owner's checkout. A failing
-check still closes the session and is recorded. Wrap does not commit, push or deploy.
-Summary and next text are cleaned and capped at 2000 characters each.
+check still closes the session and is recorded. Wrap commits everything selected
+by `git add -A`, with the summary as its subject, next text as its body and an
+`Atelier-Session` trailer naming the note's session time. A clean checkout still
+gets a note. Detached HEAD, a merge or rebase in progress, and a branch other
+than the registered branch refuse wrap before committing.
+
+Wrap then updates the Atelier baseline through `sync` for fresh history or
+`publish` for full history. `--push` also pushes the checkout branch to every
+configured checkout remote, without force, continuing after a remote fails.
+Without `--push`, checkout remotes are not pushed. Wrap never deploys or
+publishes a release. The note records the commit and each remote result.
+
+When `docs/control-plane/context-budget.v1.json` exists, wrap counts lines in
+its named surfaces. Any absolute ceiling exceeded refuses the commit, even
+with an advisory policy. Move history into `docs/history/` rather than raising
+the ceiling. Baseline drift is advisory. No policy means no ceiling.
+
+Before closing, file defects in Atelier or project tooling as tasks in the
+project they belong to with `atelier new "…" --project NAME`. Atelier defects
+belong to `--project cloudflare-git`. File a lesson worth keeping the same way
+with a title starting `Lesson: `. Repeatable `--found TEXT` files tasks in the
+current project and records their IDs in the note.
+
+Session notes hold metadata only, never prompts, transcripts, file contents or
+check output. Summary, next text and check names are cleaned and capped at
+2000 characters each. Remote names are capped at 200 characters; checks,
+remote results and filed task IDs are limited to 100 each.
 `GET /api/projects/NAME/sessions` reads the newest five notes;
 `POST /api/projects/NAME/sessions` records one for the signed-in actor.
 
@@ -195,7 +220,7 @@ never contacts ControlPlane's central checkout:
 
 | ControlPlane | Atelier |
 | --- | --- |
-| `pickup-card` | `atelier unwrap --project NAME` |
+| `pickup-card`, `unwrap` (no arguments) | `atelier unwrap --project NAME` |
 | `wrap`, `session-receipt` | `atelier wrap`, with the arguments passed on |
 | `report TEXT` | `atelier new TEXT --project NAME`, so a report becomes a task |
 | `audit`, `context-budget`, `ship-check`, `observe`, `observatory-bundle`, `observatory-run`, `backup-status`, `validate-backup` | `atelier ops COMMAND [ARGUMENTS]` |
