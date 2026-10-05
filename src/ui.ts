@@ -825,7 +825,7 @@ export function renderMainPreview(m: MainPreview | null | undefined): string {
   if (m === null) return `<p class="meta">Whether this merges cleanly into main could not be read just now.</p>`;
   const plural = (n: number, w: string) => `${n.toLocaleString("en")} ${w}${n === 1 ? "" : "s"}`;
   if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date", "go")} Main has not moved since this task forked; it merges as it is.</p>`;
-  const moved = `Main has gained ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} since this task forked, changing ${plural(m.merge.ours, "path")}`;
+  const moved = `Main has moved ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} along its first-parent line since this task forked (a merge counts once), changing ${plural(m.merge.ours, "path")}`;
   if (m.merge.clean) {
     const shared = m.merge.both.length ? `; both sides changed ${plural(m.merge.both.length, "path")}, and the changes do not overlap` : "; none of them are paths this task changed";
     return `<p class="merge-preview">${tag("Merges cleanly", "go")} ${moved}${shared}.</p>`;

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedRegions, commitsSince, linesConflict, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
+import { changedRegions, commitsSince, linesConflict, linesOf, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
 import type { Reader } from "../src/diff.ts";
 
 // A content-addressed toy: files are named by their text, trees by a label.
@@ -124,19 +124,39 @@ test("the conflict rule agrees with git's merge on edits, insertions and deletio
     ["an insertion right before an edited line", "1234", "12x34", "12T4", true],
     ["an insertion right after an edited line", "1234", "123x4", "12T4", true],
     ["an insertion at the top and an edit of the first line", "123", "x123", "O23", true],
+    ["deletions of two adjacent lines", "ABCD", "ACD", "ABD", true],
   ];
   for (const [name, base, ours, theirs, git] of cases) assert.equal(linesConflict(L(base), L(ours), L(theirs)), git, name);
 });
 
-test("main's new commits are those the fork point cannot reach, merged side branches included", () => {
-  // main: M (merge of S into C), S (side, forked from A), C, B (the fork point), A.
-  // An older side commit S sits after B in this order; git rev-list B..M counts M, S, C.
-  const log = [
-    { hash: "M", parents: ["C", "S"] }, { hash: "C", parents: ["B"] }, { hash: "B", parents: ["A"] },
-    { hash: "S", parents: ["A"] }, { hash: "A", parents: [] },
-  ];
-  assert.deepEqual(commitsSince(log, "B", false), { ahead: 3, capped: false });
+test("main's moves are counted along its first-parent line, a merge once, as Artifacts lists it", () => {
+  // Artifacts' log is main's first-parent line: M merged a task of five commits into C.
+  const log = [{ hash: "M", parents: ["C", "T5"] }, { hash: "C", parents: ["B"] }, { hash: "B", parents: ["A"] }, { hash: "A", parents: [] }];
+  assert.deepEqual(commitsSince(log, "B", false), { ahead: 2, capped: false });
   assert.deepEqual(commitsSince(log, "M", false), { ahead: 0, capped: false });
   assert.deepEqual(commitsSince(log.slice(0, 2), "B", true), { ahead: 2, capped: true }, "a cut log without the fork point is a floor");
   assert.deepEqual(commitsSince(log, "Z", false), { ahead: null, capped: false });
+});
+
+// Run through git merge on 2026-10-05; the expected answer is git's.
+test("a change to the final newline alone is a change to the last line, as in git", () => {
+  const b = (t: string) => new TextEncoder().encode(t);
+  const conflict = (base: string, ours: string, theirs: string) => linesConflict(linesOf(b(base)), linesOf(b(ours)), linesOf(b(theirs)));
+  assert.equal(conflict("a\n", "a", "A\n"), true, "dropping the final newline and editing that line conflict");
+  assert.equal(conflict("a\nb\n", "a\nb", "a\nb"), false, "the same change on both sides merges");
+  assert.equal(conflict("a\nb\nc\n", "a\nb\nc", "A\nb\nc\n"), false, "an edit away from the end merges");
+});
+
+test("a file on one side where the other side has a folder is a conflict, as in git", async () => {
+  const blob = (t: string) => ({ hash: id(t), mode: "100644", type: "blob" });
+  const trees: Record<string, { name: string; mode: string; hash: string; type: string }[]> = {
+    empty: [],
+    ours: [{ name: "foo", ...blob("x\n") }],
+    dir: [{ name: "bar", ...blob("y\n") }],
+    theirs: [{ name: "foo", hash: "dir", mode: "40000", type: "tree" }],
+  };
+  const r: Reader = { tree: async (h) => trees[h] ?? null, blob: async () => new TextEncoder().encode("x\n") };
+  const m = await mergeability(r, r, "empty", "ours", "theirs");
+  assert.equal(m.clean, false);
+  assert.deepEqual(m.conflicts, [{ path: "foo", reason: "a file on one side and a folder on the other" }]);
 });
