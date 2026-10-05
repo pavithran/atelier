@@ -1,11 +1,12 @@
 import { scopesOverlap } from "../rules.ts";
 import { parsePlan, type Plan } from "./schema.ts";
+import { planErrors } from "./errors.ts";
 
 export function validatePlan(plan: Plan): string[] {
   const parsed = parsePlan(plan);
   if (!parsed.ok) return parsed.errors;
   plan = parsed.plan;
-  const errors: string[] = [];
+  const errors = planErrors();
   const parts = new Map(plan.parts.map((part) => [part.key, part]));
   const seen = new Set<string>();
   for (const part of plan.parts) {
@@ -18,7 +19,7 @@ export function validatePlan(plan: Plan): string[] {
       }
     }
   }
-  if (seen.size !== plan.parts.length) return errors;
+  if (seen.size !== plan.parts.length) return errors.result();
 
   const dependencies = new Map(plan.parts.map((part) => [part.key, new Set(part.dependsOn.filter((key) => parts.has(key)))]));
   const remaining = new Map([...dependencies].map(([key, deps]) => [key, new Set(deps)]));
@@ -69,5 +70,5 @@ export function validatePlan(plan: Plan): string[] {
     }
   }
   // Size M's model context-window rule belongs to step 3, routing.
-  return errors;
+  return errors.result();
 }

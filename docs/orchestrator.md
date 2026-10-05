@@ -47,26 +47,36 @@ inside parts and preferences. Strings are normalized to NFC before validation.
 Controls, bidi controls and default ignorable code points are replaced with spaces, then surrounding
 whitespace is removed. Text fields and list entries must remain non-empty.
 Keys contain only ASCII letters, digits and hyphens.
-`PLAN_LIMITS` in `src/plans/schema.ts` defines all caps after cleaning,
-measured in UTF-16 code units. The caps retain the design's part, scope and
+`PLAN_LIMITS` in `src/plans/schema.ts` defines document caps. String caps
+apply after cleaning, measured in UTF-16 code units. The caps retain the design's part, scope and
 brief sizes, use the display title size for short labels, and bound the other
 lists by the part budget. Object keys are sorted recursively for the SHA-256
 content hash; string values are normalized to NFC and array order is preserved.
+An over-long list produces one count error. Only entries up to its cap are
+inspected, including in `parts`. Parsing and validation each return at most
+50 errors. If more are found, the last entry says `and N more errors`, counting
+omitted diagnostics from inspected entries. Names quoted in errors are limited
+to 80 code units with an ellipsis when cut. Unknown field names with characters
+other than ASCII letters, digits, underscores and hyphens use escaped code points.
 Each part has:
 - `key`, `title`
 - `kind`: interface, build, tests or docs
 - `taskKind`, from the registry's `TaskKind`
 - `scope`: a non-empty list of globs
 - `dependsOn`, `provides`, `uses`
-- `brief` (at most 2,000 characters), `acceptance[]`, `tests[]`
+- `brief` (at most 2,000 characters), `acceptance[]` (at least one criterion), `tests[]`
 - `size`: S or M
 - an optional preference: `prefer {actor, reason}`
+
+Every part needs an acceptance criterion that states something observable.
+A part with nothing to observe cannot be reviewed. The parser enforces a
+non-empty list of non-empty strings; the reviewer judges their content.
 
 **Validation.** Pure functions in `src/plans/validate.ts`:
 - keys are unique, and a plan has at least one part and at most 12 parts;
 - the dependency graph is acyclic; Kahn's algorithm removes ready parts, then a traversal names cycles in every remaining branch;
 - any two parts whose scopes overlap under `scopesOverlap` must be ordered, one reachable from the other;
-- every `uses` resolves to a part that `provides` it and that the user reaches through its dependencies; interface parts depend only on interface parts;
+- every `uses` resolves to a part that `provides` it and that the user reaches through its dependencies; each direct dependency of an interface part must be an interface part;
 - sizing: at most 6 scope globs per part. Step 3 will allow size M only for models with a context window of 64K or more, or unknown. Qwen3-Coder is recorded as 32K.
 
 **Routing is computed by Atelier, not taken from the planner.** `routeParts()` in `src/plans/route.ts`:

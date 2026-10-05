@@ -81,3 +81,30 @@ test("structural validation refuses empty plans and normalizes interface names",
   assert.deepEqual(validatePlan(input), []);
   assert.deepEqual(input, before);
 });
+
+test("validation caps graph errors and counts omitted diagnostics", () => {
+  const input = plan(...Array.from({ length: 12 }, (_, i) => part(`p${i}`, {
+    scope: ["src/**"], dependsOn: Array(12).fill("missing"), uses: Array(12).fill("API"),
+  })));
+  const errors = validatePlan(input);
+  assert.equal(errors.length, 50);
+  assert.equal(errors.at(-1), "and 305 more errors");
+  assert.equal(errors[0], "part p0.dependsOn: unknown part missing");
+  const duplicates = validatePlan({ ...input, parts: input.parts.map((p) => ({ ...p, key: "same" })) });
+  assert.equal(duplicates.length, 50);
+  assert.equal(duplicates.at(-1), "and 106 more errors");
+});
+
+test("validation requires observable acceptance criteria", () => {
+  assert.deepEqual(validatePlan(plan(part("a", { acceptance: [] }))),
+    ["part a.acceptance: must contain at least one criterion"]);
+});
+
+test("interface restriction diagnoses direct dependencies", () => {
+  const errors = validatePlan(plan(
+    part("a", { kind: "interface", dependsOn: ["b"] }),
+    part("b", { kind: "interface", dependsOn: ["c"] }),
+    part("c"),
+  ));
+  assert.deepEqual(errors, ["part b.dependsOn: interface parts may depend only on interface parts (c)"]);
+});
