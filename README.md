@@ -25,6 +25,31 @@ It rests on three rules.
 The web inbox answers one question, *what needs the project owner now?*, and ranks the
 things a person must decide above the things an agent must fix.
 
+## For agents
+
+Use two commands for a task:
+
+```sh
+atelier start ID --as harness/model
+# Work in the printed workspace and commit the changes.
+atelier done "What changed and why"
+```
+
+`start` claims the task, prepares the same workspace as `claim`, and prints
+its title, scope and any dispatch note. Pass `--project NAME` when running
+outside a registered checkout. `done` runs inside the task workspace. It
+pushes, runs the required checks and submits the summary only after checks
+pass and the revision remains unchanged. It stops at the first failed step
+and names that step. Its final line says `Ready for the owner` or gives the
+gate's remaining blockers. The owner still decides whether to accept and merge.
+
+`atelier inbox` and `atelier show ID` print owner decision briefs with the
+recorded evidence, recommendation and task URL. An agent can relay that text
+unchanged. Both accept `--json` for scripts. The single-task read API is
+`GET /api/projects/NAME/items/ID/brief` and requires sign-in.
+
+The individual commands remain available as reference below.
+
 ## How it works
 
 In outline: a project's main branch is copied into an Artifacts repository,
@@ -123,21 +148,49 @@ plan (Artifacts is in open beta there), and `wrangler` logged in.
 npm install && npm run types && npm test
 ```
 
-Write the server token into the Keychain once, by hand:
+Choose a server token and keep it somewhere you can paste it from; a random
+one is fine:
 
 ```bash
-security add-generic-password -s atelier.API_TOKEN -a "$USER" -w
+openssl rand -hex 32
 ```
 
-Deploy, then make the Worker's secret match the Keychain:
+Deploy, then give the Worker the token as its secret. Wrangler reads it from
+the prompt, so it is not written on a command line:
 
 ```bash
 npx wrangler deploy
 ```
 
 ```bash
-security find-generic-password -s atelier.API_TOKEN -w | tr -d '\n' | npx wrangler secret put ATELIER_TOKEN
+npx wrangler secret put ATELIER_TOKEN
 ```
+
+Then sign in once. `atelier login --server URL` asks for the token (typed
+without echo at a terminal, or piped in on stdin), checks it against the
+server, stores it, and says where. `atelier login --store` names the store in
+use and whether it holds a token, without showing it.
+
+```bash
+atelier login --server https://atelier.example.com
+```
+
+The token is kept in the first of these that applies:
+
+| System | Store |
+| --- | --- |
+| macOS | The Keychain, item `atelier.API_TOKEN`, through `security`. |
+| Linux | The Secret Service, through `secret-tool` (service `atelier`, account `API_TOKEN`), when it is installed and a session bus is available. |
+| Windows, and Linux without those | A file, `secrets.json` in `XDG_CONFIG_HOME/atelier` or `~/.config/atelier` (`%APPDATA%\atelier` on Windows), created with mode 0600. Atelier refuses to read or write it if its mode lets other users read it. |
+
+Windows has no Credential Manager backend: reaching it from PowerShell means
+compiling a wrapper with `Add-Type`, which is not tested here, so Windows
+uses the file. On Windows the file's mode is not checked, because the system
+reports no meaningful mode; the file sits in your own profile. Setting
+`ATELIER_SECRET_STORE` to `file`, `keychain` or `secret-service` picks a
+store outright. The `ATELIER_TOKEN` environment variable overrides every
+store. A value is handed to a store on its standard input and never as a
+command line argument, and Atelier prints no token.
 
 The project owner acts as the actor `owner`, and the inbox asks "What needs
 you now?". To use your own actor and name, set `OWNER_ACTOR` and
@@ -150,6 +203,13 @@ printf jo | npx wrangler secret put OWNER_ACTOR
 
 ```bash
 printf Jo | npx wrangler secret put OWNER_NAME
+```
+
+Pages show times in UTC until `TIMEZONE` names the owner's zone, as an IANA
+name; an unknown name falls back to UTC:
+
+```bash
+printf America/New_York | npx wrangler secret put TIMEZONE
 ```
 
 `atelier login` asks the server for the owner's actor, so the CLI follows
@@ -186,7 +246,39 @@ config entry and then returns. It does not rename a server project, update
 its title or policy, or push a baseline. The server refuses a new project
 when its baseline repository belongs to another registered project.
 
-## Owner notifications
+## Projects that use Git LFS
+
+Artifacts has no Git LFS. The `atelier` command pushes with LFS uploads
+turned off, so the baseline and every workspace hold LFS pointer files, and
+clones a workspace or a check run without downloading what they point to. A
+merge into the owner's checkout writes real LFS files, as git-lfs would. A project whose required
+checks need those files must fetch them itself; a build that only compiles
+around them, as many do, works as it is.
+
+## Projects too large for Artifacts
+
+Artifacts holds at most 1 GB per repository and 32 MB per file. A project
+whose history is larger can join with its recent history only:
+
+```bash
+atelier init --history-since 2026-09-05 --check "…"
+```
+
+The baseline then starts with one commit holding the project as it was at
+the start of that day, followed by each commit on the branch's first-parent
+line since, rebuilt with the same files, authors, dates and messages. The
+project's own history is not pushed and not changed. The checkout keeps the
+pairs of baseline and project commits in `.git/atelier-baseline-map.json`.
+
+`atelier merge` carries an accepted task's commits onto the paired project
+commit, so each has exactly the files the agent committed, then merges them
+as usual, and publishes to the baseline a twin of the merge commit with the
+same files. It refuses when the branch has moved since the baseline last
+matched it; `atelier sync` carries commits made in the checkout outside
+Atelier to the baseline first. Merging and syncing need this checkout, which
+holds the pairs.
+
+
 
 Set `NTFY_TOPIC` to receive an ntfy notification when submission, review or
 check results put a submitted task in the owner's inbox:
@@ -209,8 +301,11 @@ the topic. A push that withdraws acceptance does not send a notification.
 
 The owner can run `atelier projects remove NAME` to remove a project from
 the index and from the local config. It disappears from Projects, Flow,
-Decisions and the public showcase. Claimed, submitted or accepted items
-block removal unless the owner adds `--force`.
+Decisions and the public showcase. Claimed, submitted or accepted items, and
+open items queued for a runner, block removal unless the owner adds `--force`.
+The local config entry is deleted whole, and the command lists what it held,
+such as the checkout path, branch and `notesRemote`, so a setting made by hand
+can be restored.
 
 Removal retains the Artifacts repository and all project Ledger data,
 including items, evidence and history. Deleting a repository requires a
@@ -384,7 +479,7 @@ printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
 
 `SHOWCASE` takes project names separated by commas; deleting it hides the
 page again. The page is cached for a minute, so a change to `SHOWCASE` shows
-within a minute. With a showcase set, a visitor who is not signed in opens
+within a minute. With a showcased project still registered, a visitor who is not signed in opens
 `atelier.zone` on it; signed in, `/` opens Decisions while something is
 waiting and Flow when nothing is, and `/decisions` is always Decisions.
 
