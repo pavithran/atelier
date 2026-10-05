@@ -97,6 +97,14 @@ merged.
   the policy says `overlapping_claims: refuse`; protected paths are the
   adapter's protected surfaces, the maintenance paths, and the agent and
   ControlPlane files themselves. Atelier never writes these files.
+- `atelier sync` and `atelier merge` re-read these files before other work
+  and refresh the stored protected paths, eligible agents and overlap rule.
+  Approval, checks and other project settings are kept. For a baseline with
+  full history, `sync` only refreshes this policy. Merge warns when it differs
+  from the server policy before the refresh, because acceptance does not
+  record a policy snapshot. If the accepted revision touches a newly
+  protected path, review the task on its page and accept again, or pass
+  `--policy-changed-ok` after reviewing the policy change.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
