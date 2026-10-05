@@ -8,7 +8,7 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
@@ -741,23 +741,31 @@ const commands = {
     // HEAD, staged or not, and each new file against nothing. A conflict
     // resolved with `git add` and its markers left in leaves no operation
     // marker or unmerged entry behind, so only the content shows it.
+    // The scan reads the lines the commit would add, never Git's diff
+    // attributes: a file marked -diff or binary skips git diff --check, so
+    // tracked changes are read with --text and new files are read whole. A
+    // line opening or closing a conflict (seven < or > then a space or the
+    // end) refuses the commit; a bare ======= alone does not, since Markdown
+    // underlines headings with it. The scan fails closed: if git cannot
+    // diff a path, wrap stops. Paths are literal, so none is read as an
+    // option, a pathspec or standard input.
+    const opensOrCloses = /^(<{7}|>{7})( |$)/;
     const marked = [];
-    // The scan fails closed: --check exits 0 (clean) or 2 (problems) on
-    // tracked files, and 0, 1 (differs) or 3 (differs, with problems) on a new
-    // file; any other status means the check did not run, and wrap stops. A
-    // path always follows "--" and starts "./", so a file named like an option
-    // is a path, and a file named "-" is not read as standard input.
-    const tracked = git(["diff", "HEAD", "--check"], { cwd, allowFail: true });
-    if (![0, 2].includes(tracked.status)) die(`wrap could not check tracked changes for conflict markers (git diff exited ${tracked.status}); nothing was staged`);
-    if (/leftover conflict marker/.test(tracked.stdout || "")) marked.push(tracked.stdout);
+    const changed = git(["diff", "HEAD", "--name-only", "--no-renames", "-z"], { cwd, raw: true }).split("\0").filter(Boolean);
+    for (const file of changed) {
+      const added = git(["--literal-pathspecs", "diff", "HEAD", "--text", "--no-ext-diff", "--no-textconv", "-U0", "--", file], { cwd, allowFail: true });
+      if (added.status !== 0) die(`wrap could not read the changes to ${sessionText(file, 200)} (git diff exited ${added.status}); nothing was staged`);
+      if ((added.stdout || "").split("\n").some((line) => line.startsWith("+") && !line.startsWith("+++") && opensOrCloses.test(line.slice(1)))) marked.push(file);
+    }
     for (const file of git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd, raw: true }).split("\0").filter(Boolean)) {
-      const fresh = git(["diff", "--no-index", "--check", "--", "/dev/null", `./${file}`], { cwd, allowFail: true });
-      if (![0, 1, 3].includes(fresh.status)) die(`wrap could not check ${sessionText(file, 200)} for conflict markers (git diff exited ${fresh.status}); nothing was staged`);
-      if (/leftover conflict marker/.test(fresh.stdout || "")) marked.push(fresh.stdout);
+      const path = join(cwd, file);
+      let stat;
+      try { stat = lstatSync(path); } catch { die(`wrap could not read ${sessionText(file, 200)}; nothing was staged`); }
+      if (!stat.isFile()) continue; // a symbolic link is committed as a link, not as the content it names
+      if (readFileSync(path).toString("latin1").split("\n").some((line) => opensOrCloses.test(line))) marked.push(file);
     }
     if (marked.length) {
-      const where = [...new Set(marked.join("\n").split("\n").map((line) => line.match(/^([^:]+):\d+: leftover conflict marker/)?.[1]?.replace(/^\.\//, "")).filter(Boolean))];
-      die(`wrap will not commit conflict markers: ${where.map((p) => sessionText(p, 200)).join(", ")}; resolve them first. Nothing was staged.`);
+      die(`wrap will not commit conflict markers: ${marked.map((p) => sessionText(p, 200)).join(", ")}; resolve them first. Nothing was staged.`);
     }
     git(["add", "-A"], { cwd });
     // Whitespace is checked on what the commit will hold, after staging: the
@@ -918,12 +926,12 @@ const commands = {
       const start = git(["rev-list", "-1", "--first-parent", `--before=${since}T00:00:00`, "HEAD"], { cwd: top });
       if (!start) die(`${branch} has no commit before ${since}`);
       const built = buildHistory(git, top, start, git(["rev-parse", "HEAD"], { cwd: top }));
-      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top });
+      git([...auth(r.baseline.token), "push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top });
       savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
       pushed = built.head;
       console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
     } else {
-      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
+      git([...auth(r.baseline.token), "push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
     }
     cfg.projects ??= {};
     cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
@@ -987,7 +995,7 @@ const commands = {
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
     if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
-    git([...auth(t.token), "push", "--quiet", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
+    git([...auth(t.token), "push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
   },
 
@@ -1037,7 +1045,7 @@ const commands = {
     const head = git(["rev-parse", "HEAD"]);
     // --force after `atelier update` rebased the workspace; the lease refuses
     // to overwrite anything pushed since this workspace last fetched.
-    git(["push", "--quiet", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
+    git(["push", "--quiet", "--recurse-submodules=no", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
     const item = await call("POST", `${I(name, id)}/push`, { head }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
@@ -1235,7 +1243,7 @@ const commands = {
       // The pairs are saved before the push: a push that lands just before a
       // crash is still paired, and the rebuild gives the same commits again.
       savePairs(gitDir, name, { ...pairs, ...built.pairs });
-      git([...auth(base.token), "push", "--quiet", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd });
+      git([...auth(base.token), "push", "--quiet", "--recurse-submodules=no", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd });
       const n = Object.keys(built.pairs).length;
       console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
     } finally { unlock(); }
