@@ -4,7 +4,7 @@ import { setTimeZone } from "./time";
 import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
-import { cleanSummary } from "./brief";
+import { briefFor, cleanSummary } from "./brief.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type Detail, type ReviewContext, type ProjectView } from "./ui";
 import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -330,6 +330,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const id = parts[3];
   const verb = parts[4];
   if (!verb && m === "GET") return json(await L.detail(id));
+  if (verb === "brief" && parts.length === 5 && m === "GET") {
+    const detail = await L.detail(id) as Detail;
+    return json({ title: detail.item.title, ...briefFor(detail) });
+  }
   if (verb === "sandbox" && parts[5] && m === "GET") {
     if (!parts[5].startsWith(`${project}:${id}:`)) throw new RuleError("not_found", "no such run", 404);
     const state = await env.RUNNER.get(env.RUNNER.idFromName(parts[5])).state();

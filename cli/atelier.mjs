@@ -10,6 +10,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -30,7 +31,10 @@ const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000
 
 // ── plumbing ───────────────────────────────────────────────────────────────
 
+let doneStep;
+
 function die(msg, code = 1) {
+  if (doneStep) msg = `${doneStep} failed: ${msg}`;
   process.stderr.write(`atelier: ${msg}\n`);
   process.exit(code);
 }
@@ -115,7 +119,8 @@ function actor(fallback) {
 }
 
 export function initName(projects, top, explicit, renameLocal) {
-  const existing = Object.entries(projects ?? {}).find(([, p]) => resolve(p.path) === resolve(top))?.[0];
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const existing = Object.entries(projects ?? {}).find(([, p]) => real(p.path) === real(top))?.[0];
   if (explicit !== undefined && (typeof explicit !== "string" || !explicit.trim())) throw new Error("--name needs a project name");
   if (existing && explicit && explicit !== existing && !renameLocal) throw new Error(`this checkout is registered as ${existing}; use --rename-local to change only the local entry`);
   const name = explicit ?? existing ?? top.split("/").pop();
@@ -131,7 +136,10 @@ function project() {
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (top.status === 0) {
     const here = top.stdout.trim();
-    for (const [name, p] of Object.entries(cfg.projects ?? {})) if (resolve(p.path) === here) return name;
+    // Compared as real paths: git reports /private/var/… for a checkout
+    // registered as /var/… on macOS, and any symlinked folder the same way.
+    const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+    for (const [name, p] of Object.entries(cfg.projects ?? {})) if (real(p.path) === real(here)) return name;
   }
   die("which project? pass --project NAME, or run inside a registered checkout or workspace");
 }
@@ -319,13 +327,40 @@ async function checkInSandbox() {
   if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (state.results.some((r) => !r.passed)) process.exit(2);
+  if (state.results.some((r) => !r.passed)) {
+    if (doneStep) die("required checks failed", 2);
+    process.exit(2);
+  }
+}
+
+// What an agent relays is one line per field: text a person or an agent
+// wrote (a review note, a title, a dispatch note) is flattened, so a newline
+// inside it can never pose as a line of the verdict, and terminal control
+// codes are dropped. Atelier's own wording is what the lines start with.
+const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
+
+export function formatDone(gate) {
+  return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
+}
+
+export function formatTask(item) {
+  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`,
+    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
+}
+
+export function formatBrief(project, id, brief, origin) {
+  return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...brief.evidence.map(flat),
+    `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
+    `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
 
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 const usage = {
+  start: "usage: atelier start ID [--as harness/model]",
+  done: 'usage: atelier done "summary"',
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   projects: "usage: atelier projects remove NAME [--force]",
 };
@@ -485,13 +520,15 @@ const commands = {
   },
 
   async show() {
-    const d = await call("GET", I(project(), itemArg()), undefined, actor(OWNER));
-    const { item, gate } = d;
-    console.log(`${item.id}  ${item.title}\n  state ${item.state}   owner ${item.owner ?? "—"}   head ${short(item.head)}   workspace ${item.fork ?? "—"}`);
-    console.log(gate.ready ? "  gate: READY" : `  gate:\n${gate.blockers.map((b) => `    - ${b}`).join("\n")}`);
-    if (gate.outOfScope.length) console.log(`  out of scope: ${gate.outOfScope.join(", ")}`);
-    console.log("  provenance:");
-    for (const e of d.events.slice(0, 15)) console.log(`    ${e.at.slice(0, 16)}  ${e.actor.padEnd(24)} ${e.kind}`);
+    const name = project(), id = itemArg();
+    const brief = await call("GET", `${I(name, id)}/brief`, undefined, actor(OWNER));
+    console.log(args.json ? JSON.stringify(brief, null, 2) : formatBrief(name, id, brief, server()));
+  },
+
+  async start() {
+    await commands.claim();
+    const d = await call("GET", I(project(), itemArg()), undefined, actor());
+    console.log(formatTask(d.item));
   },
 
   // Agents: take an item and get a private workspace for it.
@@ -519,7 +556,7 @@ const commands = {
     console.log(`${id} is yours, ${as}. Work here:\n  cd ${JSON.stringify(dir)}`);
     if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, as in the project checkout.`);
     console.log(`Write token expires ${r.workspace.expiresAt}; run \`atelier claim ${id}\` again to refresh it.`);
-    console.log(`Then: commit → atelier push → atelier check → atelier submit`);
+    console.log(args._[0] === "start" ? 'Then: commit, then atelier done "summary"' : `Then: commit → atelier push → atelier check → atelier submit`);
   },
 
   async push() {
@@ -573,7 +610,10 @@ const commands = {
       rmSync(markerPath(dir), { force: true });
     }
     console.log(`changed: ${changed.join(", ") || "nothing"}`);
-    if (failed) process.exit(2);
+    if (failed) {
+      if (doneStep) die("required checks failed", 2);
+      process.exit(2);
+    }
   },
 
   async gc() {
@@ -602,6 +642,7 @@ const commands = {
     summaryArg("submit");
     await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
+    if (doneStep) return d.gate;
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
 
@@ -657,6 +698,18 @@ const commands = {
     console.log(`${id} abandoned.`);
   },
 
+  async done() {
+    if (args._.length !== 2 || !args._[1].trim() || args.summary !== undefined || args.rest) die('usage: atelier done "summary"');
+    args.summary = args._[1];
+    args._ = ["done"];
+    doneStep = "prepare";
+    try {
+      const gate = await commands.finish();
+      doneStep = undefined;
+      console.log(formatDone(gate));
+    } catch (error) { die(error.message); }
+  },
+
   async finish() {
     const name = project(), id = itemArg(), as = actor();
     summaryArg("finish");
@@ -665,12 +718,15 @@ const commands = {
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
     if (git(["status","--porcelain"])) die("commit your changes before finishing");
     const head = git(["rev-parse","HEAD"]);
+    if (doneStep) doneStep = "push";
     await commands.push();
+    if (doneStep) doneStep = "check";
     if (d.policy.sandboxOnly || args.sandbox) await checkInSandbox(); else await commands.check();
     if (git(["rev-parse","HEAD"]) !== head || git(["status","--porcelain"])) die("the workspace changed while finishing; inspect it and finish again");
     const current = await call("GET", I(name,id), undefined, as);
     if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
-    await commands.submit();
+    if (doneStep) doneStep = "submit";
+    return commands.submit();
   },
 
   // The project owner merges an exact revision. With --head, a submitted item
@@ -945,8 +1001,16 @@ const commands = {
 
   async inbox() {
     const entries = await call("GET", "/inbox", undefined, OWNER);
+    if (args.json) return console.log(JSON.stringify(entries, null, 2));
     if (!entries.length) return console.log("Nothing needs you.");
-    for (const x of entries) console.log(`${x.kind.toUpperCase().padEnd(8)} ${x.project}/${x.itemId}  ${x.title}\n         ${x.reason}`);
+    const seen = new Set();
+    for (const x of entries) {
+      const key = `${x.project}/${x.itemId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const brief = await call("GET", `${I(x.project, x.itemId)}/brief`, undefined, actor(OWNER));
+      console.log(formatBrief(x.project, x.itemId, brief, server()) + "\n");
+    }
   },
 
   // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
@@ -972,14 +1036,16 @@ const commands = {
 Several agents may work on this project at once. Each piece of work is an
 item with exactly one owner. Never edit the project checkout directly.
 
-1. \`atelier ls --project NAME\` — find an open item, or ask the project owner to create one.
-2. \`atelier claim ID --project NAME --as HARNESS/MODEL\` — you get a private
-   workspace (a fork of the project). Work only there.
-3. Commit, then \`atelier push\`. Atelier records the head it sees in Artifacts.
-4. \`atelier check\` — runs the project's required checks in a clean clone of
-   exactly that head. Only these count as Observed. \`atelier report "…"\`
-   records anything else you verified; it shows as Reported, never as passing.
-5. \`atelier submit\` when the gate is clear. The project owner accepts and merges.
+1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
+   and prints its workspace, title, scope and note. Work only there.
+2. Commit your changes, then run \`atelier done "summary"\` in that workspace.
+   It pushes, runs required checks and submits only after they pass. Relay
+   its final line to the owner. The project owner accepts and merges.
+3. \`atelier inbox\` and \`atelier show ID\` print briefs you can relay to the owner.
+4. \`atelier ls --project NAME\` lists tasks. Ask the owner to create one if needed.
+5. Individual steps remain available: \`atelier claim\`, \`atelier push\`,
+   \`atelier check\` and \`atelier submit --summary "summary"\`.
+   \`atelier report "…"\` records a Reported claim, never an Observed pass.
 6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
    or \`atelier release ID\`. Your write token is revoked either way.
 7. Reviewing someone else's item: \`atelier diff ID\`, then
@@ -994,7 +1060,7 @@ item with exactly one owner. Never edit the project checkout directly.
 
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
-Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
+Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
