@@ -1,6 +1,6 @@
 import { itemDiff, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
-import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger";
+import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanSummary } from "./brief";
@@ -50,12 +50,13 @@ function showcased(env: Env): string[] {
 // The public page, read without signing in. It reads only the named projects,
 // builds their stories redacted, and may be cached for a minute.
 async function showcase(env: Env, url: URL): Promise<Response> {
-  // One cached copy per minute, whatever the query string, so the public page
-  // costs at most one set of Ledger reads a minute however often it is asked for.
-  const key = new Request(`${url.origin}/showcase`);
+  // Read index membership before using a cached page. Removed projects must
+  // not remain visible through a previously cached showcase.
+  const registered = await index(env).projects();
+  const names = showcased(env).filter((name) => registered.some((p) => p.name === name));
+  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}`);
   const hit = await caches.default.match(key);
   if (hit) return hit;
-  const names = showcased(env);
   const owner = ownerActor(env);
   const cutoffs = new Map<string, number | null>();
   const records: ProjectRecord[] = [];
@@ -259,6 +260,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     const repo = repoName(project);
+    await index(env).assertRepoAvailable(project, repo);
     // Running init again changes only what it is given; the Ledger merges it
     // into the current record in one step (initProject). Only reset: true
     // starts over from the defaults.
@@ -286,6 +288,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const record = await L.initProject(init, actor);
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write") });
+  }
+  if (parts.length === 2 && m === "DELETE") {
+    requireOwner(env, actor);
+    const registered = await index(env).projects();
+    if (!registered.some((p) => p.name === project)) throw new RuleError("no_project", `no project ${project}`, 404);
+    assertProjectRemovable(await L.items(), body.force === true);
+    if (!await index(env).removeProject(project)) throw new RuleError("no_project", `no project ${project}`, 404);
+    return json({ removed: true });
   }
   if (parts.length === 2 && m === "GET") {
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });

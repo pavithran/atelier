@@ -202,3 +202,68 @@ it("a first init with no title creates the project without one", async () => {
   expect(res.status).toBe(200);
   expect(((await res.json()) as { project: { title?: string } }).project.title).toBeUndefined();
 });
+
+it("init refuses another name for a registered baseline before touching Artifacts", async () => {
+  await project("repo-collision");
+  const res = await call("PUT", "/projects/Repo-Collision", "owner", { title: "Duplicate" });
+  expect(res.status).toBe(409);
+  expect(await res.json()).toMatchObject({ error: "repo_taken" });
+  const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  expect((await I.projects()).some((p) => p.name === "Repo-Collision")).toBe(false);
+  // Settled here, not through expect().rejects, so a Durable Object refusal is never left unhandled.
+  const err = await env.LEDGER.get(env.LEDGER.idFromName("project:Repo-Collision")).project().then(() => null, (e: unknown) => e as Error);
+  expect(String(err)).toContain("no_project");
+});
+
+it("only the owner removes registered projects, and removal retains the Ledger", async () => {
+  const name = "remove-retained";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("An open item", [], "owner");
+  expect((await call("DELETE", `/projects/${name}`, "codex/gpt-6-astra", { force: true })).status).toBe(403);
+  expect((await call("DELETE", "/projects/not-registered", "owner")).status).toBe(404);
+  expect((await call("DELETE", `/projects/${name}`, "owner", { force: true })).status).toBe(200);
+  expect(await (await call("GET", "/projects", "owner")).json()).not.toContainEqual(expect.objectContaining({ name }));
+  expect((await L.project()).name).toBe(name);
+  expect((await L.items()).length).toBe(1);
+  expect((await call("DELETE", `/projects/${name}`, "owner")).status).toBe(404);
+});
+
+it("removal refuses claimed, submitted and accepted work unless forced", async () => {
+  for (const state of ["claimed", "submitted", "accepted"]) {
+    const name = `remove-${state}`, actor = "codex/gpt-6-astra", head = "a".repeat(40);
+    await project(name);
+    const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+    await L.newItem("Live work", [], "owner");
+    await L.claim("t1", actor);
+    await L.setFork("t1", `${name}--t1`, "0".repeat(40), actor);
+    await L.recordPush("t1", actor, head, head);
+    if (state !== "claimed") await L.submit("t1", actor);
+    if (state === "accepted") {
+      await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: actor, at: new Date().toISOString(), changedPaths: [] } as never);
+      await L.accept("t1", "owner", head);
+    }
+    const refused = await call("DELETE", `/projects/${name}`, "owner", { force: "true" });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: "live_work" });
+    expect(await (await call("GET", "/projects", "owner")).json()).toContainEqual(expect.objectContaining({ name }));
+    expect((await call("DELETE", `/projects/${name}`, "owner", { force: true })).status).toBe(200);
+    expect((await L.item("t1")).state).toBe(state);
+  }
+});
+
+it("removed projects disappear from signed-in pages and a cached showcase", async () => {
+  const name = "remove-visible";
+  await project(name);
+  // The showcase draws a project only once an agent has taken a task.
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Visible work", [], "owner");
+  await L.claim("t1", "codex/gpt-6-astra");
+  const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: `atelier=${hex}` } }), { ...testEnv, SHOWCASE: name } as typeof env);
+  expect(await (await get("/showcase")).text()).toContain(name);
+  expect((await call("DELETE", `/projects/${name}`, "owner", { force: true })).status).toBe(200);
+  for (const path of ["/projects", "/flow", "/decisions", "/showcase"]) {
+    expect(await (await get(path)).text()).not.toContain(name);
+  }
+});

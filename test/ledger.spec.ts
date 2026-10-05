@@ -466,3 +466,29 @@ it("a merge holds a landing lease: no push over the revision being merged, and t
   await refusal(L.merged("t1", "owner", "c".repeat(40), true, H2), "acceptance_changed", /accepted again/);
   expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
 });
+
+it("registration atomically refuses another project with the same baseline", async () => {
+  const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  const record = { name: "repo-first", repo: "shared-baseline", policy, createdAt: new Date().toISOString() };
+  await I.registerProject(record);
+  await refusal(I.registerProject({ ...record, name: "repo-second" }), "repo_taken", /already registered to repo-first/);
+  await I.registerProject({ ...record, revision: 2 });
+  expect((await I.projects()).filter((p) => p.repo === record.repo).map((p) => p.name)).toEqual([record.name]);
+});
+
+it("removal policy permits inactive states and force overrides live work", async () => {
+  const { assertProjectRemovable } = await import("../src/ledger.ts");
+  for (const state of ["open", "merged", "abandoned"] as const) expect(() => assertProjectRemovable([{ state }], false)).not.toThrow();
+  for (const state of ["claimed", "submitted", "accepted"] as const) {
+    expect(() => assertProjectRemovable([{ state }], false)).toThrow(/claimed, submitted or accepted/);
+    expect(() => assertProjectRemovable([{ state }], true)).not.toThrow();
+  }
+});
+
+it("repo policy keeps re-init available for legacy duplicate registrations", async () => {
+  const { assertRepoAvailable } = await import("../src/ledger.ts");
+  const record = { name: "legacy", repo: "legacy", policy, createdAt: "then" };
+  const projects = [record, { ...record, name: "Legacy" }];
+  expect(() => assertRepoAvailable(projects, "legacy", "legacy")).not.toThrow();
+  expect(() => assertRepoAvailable(projects, "LEGACY", "legacy")).toThrow(/repo_taken/);
+});
