@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addTally, buildStory, drawStory, emptyTally, vendorOf, wrap } from "../src/graph.ts";
+import { addTally, buildStory, drawStory, emptyTally, vendorOf, isLocalRun, wrap } from "../src/graph.ts";
 
 const OWNER = "pavi";
 let seq = 0;
@@ -35,7 +35,8 @@ test("each agent's family has a colour; the owner has their own", () => {
   assert.equal(vendorOf("claude-code/opus-5.5", OWNER), "anthropic");
   assert.equal(vendorOf("codex/gpt-6", OWNER), "openai");
   assert.equal(vendorOf("zcode/glm-5.3", OWNER), "zai");
-  assert.equal(vendorOf("opencode/glm-5.3-flash", OWNER), "studio");
+  assert.equal(vendorOf("opencode/glm-5.3-flash", OWNER), "zai");
+  assert.ok(isLocalRun("opencode/glm-5.3-flash"));
   assert.equal(vendorOf("pavi", OWNER), "owner");
   assert.equal(vendorOf("someone/else", OWNER), "other");
   // A family is recognised by name, so new releases are coloured on day one.
@@ -43,9 +44,13 @@ test("each agent's family has a colour; the owner has their own", () => {
   assert.equal(vendorOf("zcode/glm-5.4", OWNER), "zai");
   assert.equal(vendorOf("gemini-cli/gemini-3.1-pro", OWNER), "google");
   assert.equal(vendorOf("opencode/gemini-3.1-pro", OWNER), "google", "a cloud-only family through OpenCode keeps its own colour");
-  assert.equal(vendorOf("opencode/deepseek-v4-flash", OWNER), "studio", "DeepSeek through OpenCode is home work: its family is not cloud-only (no local-build suffix here)");
-  assert.equal(vendorOf("opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX", OWNER), "studio", "a local build is home work");
-  assert.equal(vendorOf("opencode/gemini-3.1-pro-mlx-4bit", OWNER), "studio", "a local build is home work even in a cloud-only family");
+  assert.ok(!isLocalRun("opencode/gemini-3.1-pro"));
+  assert.equal(vendorOf("opencode/deepseek-v4-flash", OWNER), "deepseek");
+  assert.ok(isLocalRun("opencode/deepseek-v4-flash"), "DeepSeek through OpenCode is home work: its family is not cloud-only (no local-build suffix here)");
+  assert.equal(vendorOf("opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX", OWNER), "deepseek");
+  assert.ok(isLocalRun("opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX"), "a local build is home work");
+  assert.equal(vendorOf("opencode/gemini-3.1-pro-mlx-4bit", OWNER), "google");
+  assert.ok(isLocalRun("opencode/gemini-3.1-pro-mlx-4bit"), "a local build is home work even in a cloud-only family");
   assert.equal(vendorOf("someharness/deepseek-v4-pro", OWNER), "deepseek");
   assert.equal(vendorOf("someharness/qwen3.9-coder", OWNER), "qwen");
 });
@@ -268,4 +273,26 @@ test("a card links to the commit or the task's checks, encoded; a public story h
   assert.match(svg, /\[data-card="[^"]+"\]:hover,\[data-card="[^"]+"\]:focus-within\) \[data-card="[^"]+"\]/, "a card stays open while pointed at or holding focus");
   const pub = drawStory(buildStory("my project", [item("t1", "merged")], night(), OWNER, false, "P", { redact: true }), OWNER);
   assert.ok(!pub.includes("/commit/") && !pub.includes("#checks"));
+});
+
+test("a local run keeps its family's colour, dotted and drawn without the dash animation", () => {
+  seq = 0;
+  const evs = [ev("t9", "opencode/GLM-5.3-Flash-4_8bit", "item.claimed")].reverse();
+  const svg = drawStory(buildStory("demo", [{ id: "t9", title: "Local work", state: "claimed" } as never], evs, OWNER), OWNER);
+  const local = svg.match(/<path class="g-thread[^"]*local"[^>]*>/g) ?? [];
+  assert.ok(local.length > 0, "the thread is marked local");
+  for (const p of local) {
+    assert.match(p, /--c:var\(--m-zai\)/, "coloured by its family");
+    assert.doesNotMatch(p, /pathLength|\bdraw\b/, "the dot pattern is not in pathLength units, so no draw animation");
+  }
+  assert.match(svg, /<circle class="g-head pop local"/);
+});
+
+test("a local run's beads carry their actor's colour for the outline", () => {
+  seq = 0;
+  const evs = [ev("t9", "opencode/GLM-5.3-Flash-4_8bit", "item.claimed"), ev("t9", "opencode/GLM-5.3-Flash-4_8bit", "push.observed", { head: "a".repeat(40) })].reverse();
+  const svg = drawStory(buildStory("demo", [{ id: "t9", title: "Local work", state: "claimed" } as never], evs, OWNER), OWNER);
+  const beads = svg.match(/<g class="g-bead pop [^"]*local"[^>]*>/g) ?? [];
+  assert.ok(beads.length > 0, "a local bead is drawn");
+  for (const b of beads) assert.match(b, /--c:var\(--m-zai\)/);
 });

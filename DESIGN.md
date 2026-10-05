@@ -12,7 +12,7 @@ and nothing else.
 
 `src/layout.css` arranges those tokens. It defines colour only where the set
 has no role: one colour per family of agent (`--m-anthropic`, `--m-openai`,
-`--m-zai`, `--m-studio`, `--m-google`, `--m-other`, `--m-owner`) and the main
+`--m-zai`, `--m-google`, `--m-other`, `--m-owner`) and the main
 line (`--main-line`), each with a darker daylight value. It names three
 tokens for their part here: the page is `--surface`, a raised sheet is
 `--surface-raised`, and a selected row is `--inset`. To change how Atelier
@@ -71,3 +71,5 @@ No script runs on any page; every action is a form post bound to the
 revision on screen, and the content security policy forbids script. Badges
 never wrap. Pages hold their layout without horizontal scrolling at 390 px,
 and the navigation drops its icons below 720 px so all four destinations fit.
+
+The [orchestrator design](docs/orchestrator.md) describes plans, review and integration, with implementation status.
