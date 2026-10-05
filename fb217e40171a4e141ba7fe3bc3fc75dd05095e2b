@@ -1,0 +1,29 @@
+atelier cloudflare-git/t93 "agentOf maps the antigravity harness (Antigravity CLI, agy) to a project policy's 'antigravity' agent, so antigravity/gemini-3.1-pro is recognised as that agent for roles and eligibility"
+accepted head 9aaca930cbab6ab1eb3446f0b958adc5317f5821
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T21:21:35.191Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T21:21:37.404Z
+REVIEW approve — pavi: antigravity/gemini-3.1-pro approved before a clean merge of main; suite and typecheck pass.
+2026-10-05T20:26:57.283Z pavi item.created
+2026-10-05T20:27:15.521Z claude-code/opus-5.5 item.claimed
+2026-10-05T20:27:18.527Z claude-code/opus-5.5 fork.created
+2026-10-05T20:28:57.356Z claude-code/opus-5.5 push.observed
+2026-10-05T20:30:02.935Z claude-code/opus-5.5 evidence.observed
+2026-10-05T20:30:05.079Z claude-code/opus-5.5 evidence.observed
+2026-10-05T20:30:05.774Z claude-code/opus-5.5 item.submitted
+2026-10-05T20:42:38.017Z antigravity/gemini-3.1-pro review.rejected
+2026-10-05T20:43:53.903Z claude-code/opus-5.5 push.observed
+2026-10-05T20:44:59.538Z claude-code/opus-5.5 evidence.observed
+2026-10-05T20:45:01.620Z claude-code/opus-5.5 evidence.observed
+2026-10-05T20:45:02.307Z claude-code/opus-5.5 item.submitted
+2026-10-05T20:57:59.571Z antigravity/gemini-3.1-pro review.rejected
+2026-10-05T21:02:39.678Z claude-code/opus-5.5 push.observed
+2026-10-05T21:03:47.641Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:03:49.820Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:03:51.854Z claude-code/opus-5.5 item.submitted
+2026-10-05T21:19:23.600Z antigravity/gemini-3.1-pro review.approved
+2026-10-05T21:20:26.634Z claude-code/opus-5.5 push.observed
+2026-10-05T21:21:35.337Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:21:37.502Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:21:38.105Z claude-code/opus-5.5 item.submitted
+2026-10-05T21:21:38.755Z pavi review.approved
+2026-10-05T21:21:39.348Z pavi item.accepted
