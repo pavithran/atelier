@@ -250,6 +250,10 @@ const unfinished = {
     say: /will not commit conflict markers: --new\.txt/,
     make: (f) => { writeFileSync(join(f.checkout, "--new.txt"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
   },
+  "a new file named -, holding conflict markers": {
+    say: /will not commit conflict markers: -(\.|;)/,
+    make: (f) => { writeFileSync(join(f.checkout, "-"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
+  },
   "a new file holding conflict markers": {
     say: /will not commit conflict markers: copied\.md/,
     make: (f) => { writeFileSync(join(f.checkout, "copied.md"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
