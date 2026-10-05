@@ -20,7 +20,7 @@ It rests on three rules.
    unless the deployment names another (see Setup).
    Work reaches the project only when the project owner accepts it and
    merges it. Changes to protected paths also need approval from a model
-   other than the item owner's, or from the project owner.
+   other than every recorded contributor's, or from the project owner.
 
 The web inbox answers one question, *what needs the project owner now?*, and ranks the
 things a person must decide above the things an agent must fix.
@@ -69,15 +69,15 @@ In detail:
 | `atelier report "…"` | anyone | Records a Reported claim. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
-| `atelier review t3 --approve` | a different agent, or the project owner | Required when the item changes a protected path. A reviewer of the same model as the owner does not count. |
+| `atelier review t3 --approve` | a different agent, or the project owner | Required when the item changes a protected path. A reviewer of the same model as any recorded contributor does not count. |
 | `atelier accept t3` | the project owner, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. |
 | `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
 observed; no rejection at that head; and, if a protected path changed, an
-approval at that head from a different model or from the project owner. What a check
-executes is protected automatically: a script it runs (`./check.sh`,
+approval at that head from a model different from each recorded contributor's
+model or from the project owner. What a check executes is protected automatically: a script it runs (`./check.sh`,
 `node scripts/verify.mjs`), and `package.json` when it goes through a package
 manager, whose scripts an item could otherwise rewrite. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such
@@ -111,8 +111,9 @@ merged.
   `protected`. Otherwise it is `direct` only when direct execution is enabled
   and every changed path matches `direct.allowed_path_patterns`; all other
   changes are `coordinated`. A class absent from `allowed_classes` is refused.
-  Protected changes need approval from another model family, coordinated
-  changes need approval from another actor, and direct changes need no review.
+  Protected changes need approval from a model family different from every
+  recorded contributor, coordinated changes need approval from an actor who
+  did not contribute, and direct changes need no review.
   Required agent reviews must qualify as assessors. The project owner can
   also provide the required review. Unrecognised model families
   cannot establish independent protected review. Project owner acceptance is
@@ -303,7 +304,10 @@ revoking an API token.
 Only the SHA-256 hash and token metadata are stored on the server. Lists
 never contain the token or its hash. Agent tokens can read their projects,
 claim, push, record checks and reports, submit, hand off, release, and review
-as themselves. Creating tasks, owner decisions, project settings, model
+as themselves. Handoff targets must be harness/model identities other than
+the project owner. A handoff does not erase push contributors from review
+independence checks. Agent tokens cannot reopen accepted work by reviewing it.
+Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
 owner token. Agent tokens cannot sign in to the browser. Events from agent
 requests show `token proved` beside the actor; this proves identity, not the

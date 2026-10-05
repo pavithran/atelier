@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { parseRuleError } from "../src/rules.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { sha256, tokenOptions } from "../src/tokens.ts";
@@ -27,6 +28,15 @@ async function project(name: string) {
   await L(name).setProject(record, "owner");
   await I().registerProject(record);
   await L(name).newItem("Assigned task", [], "owner");
+}
+
+// A Durable Object call's promise is consumed once, by then(): expect().rejects
+// can subscribe twice and leave the second rejection unhandled.
+async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promise<void> {
+  const err = await p.then(() => new Error(`expected a ${code} refusal`), (e: unknown) => e as Error);
+  const parsed = parseRuleError(err);
+  expect(parsed?.code).toBe(code);
+  expect(parsed?.detail).toMatch(detail);
 }
 
 it("issues once, stores a hash, lists metadata and revokes", async () => {
@@ -102,7 +112,20 @@ it("applies project scope to direct reads, writes and aggregate lists", async ()
   }
   const list = await (await call("GET", "/projects", token)).json();
   expect(list).toEqual([expect.objectContaining({ name: "token-inside" })]);
-  for (const path of ["/queue", "/inbox"]) expect(await (await call("GET", path, token)).text()).not.toContain("token-outside");
+  for (const name of ["token-inside", "token-outside"]) {
+    await L(name).newItem("Ready task", [], "owner");
+    await L(name).claim("t2", ACTOR);
+    await L(name).recordPush("t2", ACTOR, "a".repeat(40), null);
+    await L(name).addEvidence({ itemId: "t2", claim: "paths", grade: "observed", head: "a".repeat(40), passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+    await L(name).submit("t2", ACTOR);
+  }
+  const ownerInbox = await (await call("GET", "/inbox", OWNER_TOKEN, "owner")).json() as { project: string }[];
+  expect(ownerInbox.some((entry) => entry.project === "token-outside")).toBe(true);
+  expect(await (await call("GET", "/inbox", token)).json()).toEqual([expect.objectContaining({ project: "token-inside", itemId: "t2", kind: "accept" })]);
+  await L("token-inside").newItem("Other actor's task", [], "owner");
+  await L("token-inside").dispatch("t3", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  const queue = await (await call("GET", "/queue", token)).json() as { project: string; item: { id: string } }[];
+  expect(queue.map(({ project, item }) => [project, item.id])).toEqual([["token-inside", "t1"], ["token-inside", "t3"]]);
   const offered = await call("POST", "/queue", token, undefined, { runner: "home:test", agents: [{ agent: "codex", models: ["gpt-6-astra"] }] });
   expect(await offered.json()).toEqual([expect.objectContaining({ project: "token-inside", actor: ACTOR })]);
 });
@@ -157,10 +180,53 @@ it("an agent claims, pushes, records checks, hands off and reviews as itself", a
   expect((await post("push", { head })).status).toBe(200);
   expect((await post("evidence", { kind: "check", claim: "test", head, passed: true, changedPaths: [] })).status).toBe(200);
   expect((await post("submit", { summary: "Done" })).status).toBe(200);
+  for (const to of ["owner", "invented", "a/b/c"]) {
+    expect((await post("handoff", { to })).status).toBe(400);
+    expect((await L(name).item("t1")).owner).toBe(ACTOR);
+  }
   expect((await post("handoff", { to: "claude-code/opus-5.5" })).status).toBe(200);
   expect((await post("review", { head, approve: true, note: "Reviewed" })).status).toBe(200);
   const events = await L(name).events("t1") as unknown as { actor: string; proved?: true; kind: string }[];
   for (const kind of ["item.claimed", "fork.created", "push.observed", "evidence.observed", "item.submitted", "item.handoff", "review.approved"]) {
     expect(events.find((e) => e.kind === kind)).toMatchObject({ actor: ACTOR, proved: true });
   }
+});
+
+it("agent reviews cannot reopen accepted work but the owner can", async () => {
+  const name = "token-accepted";
+  await project(name);
+  const { token } = await issue([name]);
+  const head = "a".repeat(40);
+  await L(name).claim("t1", "claude-code/opus-5.5");
+  await L(name).recordPush("t1", "claude-code/opus-5.5", head, null);
+  await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+  await L(name).submit("t1", "claude-code/opus-5.5");
+  await L(name).accept("t1", "owner", head);
+  for (const approve of [true, false]) {
+    expect((await call("POST", `/projects/${name}/items/t1/review`, token, undefined, { head, approve })).status).toBe(403);
+    await refusal(L(name).addReview({ itemId: "t1", by: ACTOR, head, approve, note: "", at: new Date().toISOString() }, undefined, true), "accepted", /only the owner token may reopen/);
+    expect((await L(name).item("t1")).state).toBe("accepted");
+    expect(await L(name).reviewsFor("t1")).toEqual([]);
+  }
+  expect((await call("POST", `/projects/${name}/items/t1/review`, OWNER_TOKEN, "owner", { head, approve: false })).status).toBe(200);
+  expect((await L(name).item("t1")).state).toBe("submitted");
+});
+
+it("handoffs cannot erase push contributors from the acceptance gate", async () => {
+  const name = "token-contributors";
+  await project(name);
+  await L(name).setProject({ name, repo: name, policy: { checks: [], protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() }, "owner");
+  const head = "b".repeat(40);
+  await L(name).claim("t1", ACTOR);
+  await L(name).recordPush("t1", ACTOR, "a".repeat(40), null);
+  await L(name).handoff("t1", ACTOR, "claude-code/opus-5.5", "");
+  await L(name).observePush("t1", head, "a".repeat(40));
+  await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L(name).submit("t1", "claude-code/opus-5.5");
+  await L(name).addReview({ itemId: "t1", by: ACTOR, head, approve: true, note: "", at: new Date().toISOString() });
+  const detail = await L(name).detail("t1") as unknown as { item: { pushActors: string[] }; gate: { needsAssessor: boolean } };
+  expect(detail.item.pushActors).toEqual([ACTOR, "claude-code/opus-5.5"]);
+  expect(detail.gate.needsAssessor).toBe(true);
+  expect((await L(name).inbox(new Date().toISOString())).some((entry) => entry.kind === "assess")).toBe(true);
+  await refusal(L(name).accept("t1", "owner", head), "not_ready", /protected path/);
 });

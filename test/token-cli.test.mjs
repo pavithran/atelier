@@ -14,6 +14,7 @@ function run(args, token = "owner-test-token") {
       const data = path === "/api/config" ? { actor: "codex/gpt-6-astra" }
         : options.method === "DELETE" ? { revoked: true }
         : path === "/api/tokens" && options.method === "POST" ? { id: "public-id", actor: body.actor, token: "atl_test-issued", expiresAt: "later" }
+        : path === "/api/tokens" ? [{ id: "public-id", actor: "codex/gpt-6-astra", token: "atl_test-issued", hash: "private-hash", expiresAt: "later" }]
         : [];
       return Response.json(data);
     };
@@ -40,7 +41,8 @@ test("token list and revoke use the owner actor", () => {
     const result = run(args);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stderr.trim()).actor, "owner");
-    assert.doesNotMatch(result.stdout, /atl_test-issued/);
+    assert.doesNotMatch(result.stdout, /atl_test-issued|private-hash/);
+    if (args[1] === "ls") assert.match(result.stdout, /public-id/);
   }
 });
 
@@ -61,4 +63,13 @@ test("agent CLI discovers its actor and refuses a conflicting --as", () => {
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /must match/);
   assert.doesNotMatch(refused.stderr, /\/api\/queue/);
+});
+
+test("agent local commands and invalid arguments do not request config", () => {
+  for (const args of [["guide"], ["init", "--title"], ["models", "frobnicate"], ["projects", "frobnicate"]]) {
+    const result = run(args, "atl_probe");
+    assert.equal(result.status, args[0] === "guide" ? 0 : 1, result.stderr);
+    assert.doesNotMatch(result.stderr, /\/api\//);
+    assert.match(result.stdout + result.stderr, args[0] === "guide" ? /atelier/ : /usage|give the title/);
+  }
 });
