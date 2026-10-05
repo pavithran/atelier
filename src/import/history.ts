@@ -74,6 +74,9 @@ export function buildImported(commits: ImportedCommit[], cutoff: number | null, 
     }
   }
   const ordered = [...lanes.values()].sort((a, b) => (a.label === NO_AGENT ? 1 : b.label === NO_AGENT ? -1 : a.first - b.first || b.count - a.count));
+  // A baseline that starts partway through the history never reaches the
+  // project's first commit, however much of it is read.
+  if (commits.some((c) => FRESH_ROOT.test(c.message))) complete = false;
   return {
     total: before.length, attributed, lanes: ordered,
     first: before[0]?.committedAt ?? 0, last: before.at(-1)?.committedAt ?? 0, complete,

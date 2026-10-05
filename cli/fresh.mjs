@@ -65,7 +65,7 @@ export function parseCommit(raw) {
   const field = (name) => {
     const line = fields.find((l) => l.startsWith(`${name} `));
     if (!line) throw new Error(`commit has no ${name} line`);
-    const m = /^\S+ (.*) <(.*)> (\d+ [+-]\d{4})$/.exec(Buffer.from(line, "latin1").toString("utf8"));
+    const m = /^\S+ (.*) <(.*)> (-?\d+ [+-]\d{4})$/.exec(Buffer.from(line, "latin1").toString("utf8"));
     if (!m) throw new Error(`commit has an unreadable ${name} line`);
     return { name: m[1], email: m[2], date: m[3] };
   };
