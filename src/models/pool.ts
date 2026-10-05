@@ -8,7 +8,7 @@
 import { RuleError } from "../rules.ts";
 
 export type PoolFamily = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "other";
-export const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli"] as const;
+export const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"] as const;
 export const PROVIDERS = ["ai-studio", "openai-compatible", "google", "deepseek", "openrouter", "anthropic", "openai", "subscription"] as const;
 export type PoolHarness = (typeof HARNESSES)[number];
 export type PoolProvider = (typeof PROVIDERS)[number];
