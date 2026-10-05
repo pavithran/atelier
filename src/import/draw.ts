@@ -11,7 +11,8 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const day = (t: number) => dayOf(t * 1000);
 const BINS = 96;
 // A name longer than the lane label column is cut, and shown whole on hover.
-const shortName = (s: string) => (s.length > 26 ? s.slice(0, 25).trimEnd() + "…" : s);
+// Cut by characters, not UTF-16 units, so an emoji is never split in half.
+const shortName = (s: string) => { const c = Array.from(s); return c.length > 26 ? c.slice(0, 25).join("").trimEnd() + "…" : s; };
 
 // The colour a lane takes: its agent's family, or none for "no agent named".
 export function laneColour(label: string, owner: string): string {
@@ -38,5 +39,7 @@ export function drawImported(h: ImportedHistory, owner: string, title: string): 
     const x = X0 + f * (X1 - X0);
     return `<text class="g-clock" x="${x.toFixed(1)}" y="14" text-anchor="${f === 0 ? "start" : f === 1 ? "end" : "middle"}">${day(h.first + f * span)}</text>`;
   }).join("");
-  return `<svg class="graph imported" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${title} before Atelier: ${h.total.toLocaleString("en")} commit${h.total === 1 ? "" : "s"}, ${h.attributed.toLocaleString("en")} naming an agent`)}">${axis}${rows}</svg>`;
+  // As the page's text does, a history cut short is labelled as its most recent part.
+  const partial = h.complete ? "" : " (the most recent part of the history)";
+  return `<svg class="graph imported" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${title} before Atelier: ${h.total.toLocaleString("en")} commit${h.total === 1 ? "" : "s"}, ${h.attributed.toLocaleString("en")} naming an agent${partial}`)}">${axis}${rows}</svg>`;
 }
