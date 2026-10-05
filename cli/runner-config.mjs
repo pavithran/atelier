@@ -2,12 +2,16 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { redactKeys } from "../src/models/pool.ts";
+
 export const DEFAULT_TASK_TIMEOUT_MS = 45 * 60_000;
 export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const PLACEHOLDERS = ["model", "brief_file", "workspace"];
+// The name of a Keychain entry, as the model pool records one.
+const KEYCHAIN_ENTRY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 export function parseConfig(json) {
   const agents = [], errors = [];
@@ -21,6 +25,20 @@ export function parseConfig(json) {
   if (!Number.isInteger(taskTimeoutMs) || taskTimeoutMs <= 0 || taskTimeoutMs > 2_147_483_647) errors.push("taskTimeoutMs must be a positive timer-safe integer");
   const finishTimeoutMs = value.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS;
   if (!Number.isInteger(finishTimeoutMs) || finishTimeoutMs <= 0 || finishTimeoutMs > 2_147_483_647) errors.push("finishTimeoutMs must be a positive timer-safe integer");
+  // Optional: for each model that needs an API key, the name of the Keychain
+  // entry that holds it. The key itself is refused here, and never echoed.
+  let keychain;
+  if (value.keychain !== undefined) {
+    if (!value.keychain || typeof value.keychain !== "object" || Array.isArray(value.keychain)) errors.push("keychain must map a model id to the name of its Keychain entry");
+    else {
+      keychain = {};
+      for (const [model, name] of Object.entries(value.keychain)) {
+        if (!MODEL.test(model) || redactKeys(model) !== model) errors.push("keychain has a key that is not a model id");
+        else if (typeof name !== "string" || !KEYCHAIN_ENTRY.test(name) || redactKeys(name) !== name) errors.push(`keychain.${model} must be the name of a Keychain entry, never the key itself`);
+        else keychain[model] = name;
+      }
+    }
+  }
   const seen = new Set();
   for (const [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
@@ -44,7 +62,7 @@ export function parseConfig(json) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command] });
   }
-  return { agents, errors, taskTimeoutMs, finishTimeoutMs };
+  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}) };
 }
 
 export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {
