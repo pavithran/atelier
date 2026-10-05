@@ -1,15 +1,16 @@
 import { scopesOverlap } from "../rules.ts";
-import type { Plan } from "./schema.ts";
+import { parsePlan, type Plan } from "./schema.ts";
 
 export function validatePlan(plan: Plan): string[] {
+  const parsed = parsePlan(plan);
+  if (!parsed.ok) return parsed.errors;
+  plan = parsed.plan;
   const errors: string[] = [];
-  if (plan.parts.length > 12) errors.push("plan.parts: must contain at most 12 parts");
   const parts = new Map(plan.parts.map((part) => [part.key, part]));
   const seen = new Set<string>();
   for (const part of plan.parts) {
     if (seen.has(part.key)) errors.push(`part ${part.key}.key: duplicate key`);
     seen.add(part.key);
-    if (part.scope.length > 6) errors.push(`part ${part.key}.scope: must contain at most 6 globs`);
     for (const dep of part.dependsOn) {
       if (!parts.has(dep)) errors.push(`part ${part.key}.dependsOn: unknown part ${dep}`);
       else if (part.kind === "interface" && parts.get(dep)!.kind !== "interface") {
@@ -26,18 +27,23 @@ export function validatePlan(plan: Plan): string[] {
     remaining.delete(key);
     for (const [other, deps] of remaining) if (deps.delete(key) && !deps.size) ready.push(other);
   }
-  if (remaining.size) {
-    // Kahn's remainder includes blocked descendants. Follow dependencies to
-    // name an actual cycle rather than reporting those descendants as cyclic.
-    const path: string[] = [];
-    let key = remaining.keys().next().value!;
-    while (!path.includes(key)) {
-      path.push(key);
-      key = remaining.get(key)!.values().next().value!;
+  // Visit every remaining branch, including separate cycles. Blocked
+  // descendants are not named as members of a cycle.
+  const visited = new Set<string>();
+  const path: string[] = [];
+  const visit = (key: string) => {
+    const start = path.indexOf(key);
+    if (start !== -1) {
+      errors.push(`part ${key}.dependsOn: cycle ${[...path.slice(start), key].join(" -> ")}`);
+      return;
     }
-    const cycle = [...path.slice(path.indexOf(key)), key];
-    errors.push(`part ${key}.dependsOn: cycle ${cycle.join(" -> ")}`);
-  }
+    if (visited.has(key)) return;
+    visited.add(key);
+    path.push(key);
+    for (const dep of remaining.get(key)!) visit(dep);
+    path.pop();
+  };
+  for (const key of remaining.keys()) visit(key);
 
   const reaches = (from: string, target: string): boolean => {
     const visited = new Set<string>([from]);

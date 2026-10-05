@@ -65,3 +65,19 @@ test("duplicate dependency edges do not create a cycle and validation does not m
   assert.deepEqual(validatePlan(input), []);
   assert.deepEqual(input, before);
 });
+
+test("names both disjoint cycles even behind a shared blocked descendant", () => {
+  assert.deepEqual(validatePlan(plan(
+    part("tail", { dependsOn: ["a", "c"] }),
+    part("a", { dependsOn: ["b"] }), part("b", { dependsOn: ["a"] }),
+    part("c", { dependsOn: ["d"] }), part("d", { dependsOn: ["c"] }),
+  )), ["part a.dependsOn: cycle a -> b -> a", "part c.dependsOn: cycle c -> d -> c"]);
+});
+
+test("structural validation refuses empty plans and normalizes interface names", () => {
+  assert.deepEqual(validatePlan(plan()), ["plan.parts: must contain at least one part"]);
+  const input = plan(part("a", { provides: ["café"] }), part("b", { uses: ["cafe\u0301"], dependsOn: ["a"] }));
+  const before = structuredClone(input);
+  assert.deepEqual(validatePlan(input), []);
+  assert.deepEqual(input, before);
+});

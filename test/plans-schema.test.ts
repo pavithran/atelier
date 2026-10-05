@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { parsePlan, planHash } from "../src/plans/schema.ts";
+import { parsePlan, planHash, PLAN_LIMITS, type Plan } from "../src/plans/schema.ts";
 
 const part = () => ({ key: "api", title: "API", kind: "interface", taskKind: "feature", scope: ["src/api.ts"], dependsOn: [], provides: ["API"], uses: [], brief: "Define API", acceptance: ["Typed"], tests: [], size: "S" });
 const document = () => ({ schema: "atelier.plan.v1", goal: "Build a feature", parts: [part()] });
@@ -71,4 +71,93 @@ test("hash is SHA-256 with recursively sorted object keys", async () => {
   assert.equal(hash, createHash("sha256").update(JSON.stringify(sorted(parsed.plan))).digest("hex"));
   assert.equal(await planHash(reversed(parsed.plan)), hash);
   assert.notEqual(await planHash({ ...parsed.plan, goal: "Another goal" }), hash);
+});
+
+const textFields = ["goal", "title", "brief", "prefer.actor", "prefer.reason", "scope", "dependsOn", "provides", "uses", "acceptance", "tests"] as const;
+const listFields = ["scope", "dependsOn", "provides", "uses", "acceptance", "tests"] as const;
+function withText(field: string, value: unknown) {
+  const input = { ...document(), parts: [{ ...part(), prefer: { actor: "codex/model", reason: "Fit" } }] };
+  if (field === "goal" || field === "schema") return { ...input, [field]: value };
+  if (field.startsWith("prefer.")) return { ...input, parts: [{ ...input.parts[0], prefer: { ...input.parts[0].prefer, [field.slice(7)]: value } }] };
+  return { ...input, parts: [{ ...input.parts[0], [field]: value }] };
+}
+function readText(plan: Plan, field: string): unknown {
+  if (field === "goal") return plan.goal;
+  if (field.startsWith("prefer.")) return plan.parts[0].prefer![field.slice(7) as "actor" | "reason"];
+  return plan.parts[0][field as keyof Plan["parts"][number]];
+}
+
+for (const control of ["\u202e", "\u200b", "\u00ad", "\u061c", "\ufeff", "\u2067", "\u034f", "\u{e0100}"]) {
+  for (const field of textFields) test(`cleans ${JSON.stringify(control)} in ${field} and refuses it alone`, () => {
+    const isList = listFields.includes(field as typeof listFields[number]);
+    const value = `a${control}b`;
+    const result = parsePlan(withText(field, isList ? [value] : value));
+    assert.ok(result.ok);
+    assert.deepEqual(readText(result.plan, field), isList ? ["a b"] : "a b");
+    const empty = parsePlan(withText(field, isList ? [control] : control));
+    assert.ok(!empty.ok);
+    assert.ok(empty.errors.some((error) => error.includes(`${field}${isList ? "[0]" : ""}: must be a non-empty string`)));
+  });
+  test(`cleans ${JSON.stringify(control)} around size and refuses it alone`, () => {
+    const result = parsePlan(withText("size", `${control}S${control}`));
+    assert.ok(result.ok);
+    assert.equal(result.plan.parts[0].size, "S");
+    assert.ok(!parsePlan(withText("size", control)).ok);
+  });
+  for (const field of ["key", "schema", "kind", "taskKind"]) test(`refuses embedded ${JSON.stringify(control)} in ${field}`, () => {
+    const original = field === "schema" ? "atelier.plan.v1" : part()[field as keyof ReturnType<typeof part>] as string;
+    const result = parsePlan(withText(field, original.slice(0, 1) + control + original.slice(1)));
+    assert.ok(!result.ok);
+    assert.ok(result.errors.some((error) => error.includes(`.${field}:`)));
+    assert.ok(!parsePlan(withText(field, control)).ok);
+  });
+}
+
+for (const key of ["\u200b\u200b", "a_b", "a/b", "a b", "café"]) test(`refuses non-identifier key ${JSON.stringify(key)}`, () => {
+  const result = parsePlan(withText("key", key));
+  assert.ok(!result.ok);
+  assert.ok(result.errors.some((error) => error.includes(".key: must be a non-empty string") || error.includes("letters (A-Z, a-z), digits (0-9) and hyphens")));
+});
+
+test("accepts letters, digits and hyphens in a key", () => {
+  assert.ok(parsePlan(withText("key", "API-v2")).ok);
+});
+
+for (const field of ["goal", "title", "key", "brief", "prefer.actor", "prefer.reason"]) test(`${field} length boundary`, () => {
+  const limit = PLAN_LIMITS[field.replace("prefer.", "") as "goal" | "title" | "key" | "brief" | "actor" | "reason"];
+  assert.ok(parsePlan(withText(field, "a".repeat(limit))).ok);
+  const result = parsePlan(withText(field, "a".repeat(limit + 1)));
+  assert.ok(!result.ok);
+  assert.ok(result.errors.some((error) => error.endsWith(`.${field}: must contain at most ${limit} characters`)));
+});
+for (const field of listFields) {
+  test(`${field} list length boundary`, () => {
+    const limit = PLAN_LIMITS[field].count;
+    assert.ok(parsePlan(withText(field, Array(limit).fill("a"))).ok);
+    const result = parsePlan(withText(field, Array(limit + 1).fill("a")));
+    assert.ok(!result.ok);
+    assert.ok(result.errors.includes(`part api.${field}: must contain at most ${limit} ${field === "scope" ? "globs" : "entries"}`));
+  });
+  test(`${field} entry length boundary`, () => {
+    const limit = PLAN_LIMITS[field].entry;
+    assert.ok(parsePlan(withText(field, ["a".repeat(limit)])).ok);
+    const result = parsePlan(withText(field, ["a".repeat(limit + 1)]));
+    assert.ok(!result.ok);
+    assert.ok(result.errors.includes(`part api.${field}[0]: must contain at most ${limit} characters`));
+  });
+}
+
+test("refuses a plan with no parts", () => {
+  assert.deepEqual(parsePlan({ ...document(), parts: [] }), { ok: false, errors: ["plan.parts: must contain at least one part"] });
+});
+
+test("normalizes every free text field before validation and hashing", async () => {
+  for (const field of textFields) {
+    const isList = listFields.includes(field as typeof listFields[number]);
+    const nfc = withText(field, isList ? ["café"] : "café");
+    const nfd = withText(field, isList ? ["cafe\u0301"] : "cafe\u0301");
+    assert.deepEqual(parsePlan(nfd), parsePlan(nfc));
+    assert.equal(await planHash(nfd as Plan), await planHash(nfc as Plan));
+  }
+  assert.ok(parsePlan(withText("title", "e\u0301".repeat(PLAN_LIMITS.title))).ok);
 });
