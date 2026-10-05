@@ -1,3 +1,4 @@
+import { cleanSession, type SessionNote } from "./sessions.ts";
 import { type AgentToken } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
@@ -563,6 +564,22 @@ export class Ledger extends DurableObject<Env> {
 
   reviewsFor(id: string): Review[] {
     return this.sql.exec(`SELECT json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  wrapSession(value: Record<string, unknown>, actor: string): SessionNote {
+    this.project();
+    if (!validActor(actor)) throw new RuleError("bad_actor", "a session needs a valid actor", 400);
+    let data;
+    try { data = cleanSession(value); }
+    catch (err) { throw new RuleError("bad_session", (err as Error).message, 400); }
+    this.log(null, actor, "session.wrapped", { ...data });
+    return this.sessions(1)[0];
+  }
+
+  sessions(limit = 5): SessionNote[] {
+    this.project();
+    return this.sql.exec(`SELECT actor, at, data FROM events WHERE kind = 'session.wrapped' ORDER BY seq DESC LIMIT ?`, Math.max(1, Math.min(20, limit))).toArray()
+      .map((r) => ({ actor: r.actor as string, at: r.at as string, data: JSON.parse(r.data as string) }));
   }
 
   events(id?: string, limit = 200): LedgerEvent[] {

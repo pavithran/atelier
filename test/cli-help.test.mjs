@@ -49,3 +49,23 @@ test("projects frobnicate prints its usage and exits 1 without contacting the se
   assert.match(r.stderr, /usage: atelier projects remove NAME/);
   assert.doesNotMatch(r.stderr, /no server|fetch failed|ECONNREFUSED|ENOTFOUND/);
 });
+test("session commands are listed and the guide teaches both boundaries", () => {
+  assert.match(run(["help"]).stdout, /Sessions\s+unwrap.*wrap/);
+  const guide = run(["guide"]);
+  assert.equal(guide.status, 0);
+  assert.match(guide.stdout, /1\. Start a session with `atelier unwrap/);
+  assert.match(guide.stdout, /2\. End with `atelier wrap/);
+  assert.match(run(["wrap", "--help"]).stdout, /usage: atelier wrap/);
+  assert.match(run(["unwrap", "--help"]).stdout, /usage: atelier unwrap/);
+});
+
+test("guide keeps the rule that the project checkout is never edited directly", () => {
+  const text = run(["guide"]).stdout;
+  assert.match(text, /Never edit the project checkout directly\./);
+  assert.match(text, /For each session the project owner runs in the registered checkout:/, "the session steps say whose checkout work they are for");
+});
+
+test("guide teaches filing, relay blocks and private saved copies", () => {
+  const text = run(["guide"]).stdout;
+  for (const pattern of [/--project cloudflare-git/, /Lesson: /, /--found TEXT/, /fenced block/, /bash for a command/, /text for prose/, /~\/Documents\/ai-project-data\/<project>\//, /metadata only/]) assert.match(text, pattern);
+});

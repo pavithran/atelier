@@ -17,12 +17,15 @@ This project works through Atelier, not ControlPlane. Several agents may work
 on it at once, each task has exactly one owner, and the project owner accepts
 and merges the work. bin/control-plane forwards what this project used to run:
 
-  pickup-card                    atelier status --project $atelier_project
-  wrap, session-receipt          atelier done "summary"
+  pickup-card, unwrap            atelier unwrap --project $atelier_project
+  wrap, session-receipt          atelier wrap "summary" --project $atelier_project
   report TEXT                    atelier new TEXT --project $atelier_project
   audit, context-budget, ship-check, observe, observatory-bundle,
   observatory-run, backup-status, validate-backup
                                  atelier ops COMMAND [ARGUMENTS]
+
+1. Start a session with atelier unwrap --project $atelier_project.
+2. End with atelier wrap "summary" --next "what is next" in the checkout.
 
 Run atelier help for the tasks, and atelier ops help for the operations.
 TEXT
@@ -38,8 +41,14 @@ if [ $# -gt 0 ]; then shift; fi
 
 case "$sub" in
   ""|help) mappings ;;
-  pickup-card) run status --project "$atelier_project" ;;
-  wrap|session-receipt) run done "$@" ;;
+  pickup-card|unwrap)
+    if [ $# -ne 0 ]; then
+      printf 'control-plane: %s takes no arguments.\n' "$sub" >&2
+      exit 2
+    fi
+    run unwrap --project "$atelier_project" ;;
+
+  wrap|session-receipt) run wrap "$@" --project "$atelier_project" ;;
   report) run new "$@" --project "$atelier_project" ;;
   audit|context-budget|ship-check|observe|observatory-bundle|observatory-run|backup-status|validate-backup) run ops "$sub" "$@" ;;
   *)
