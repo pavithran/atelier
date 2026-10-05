@@ -6,10 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitEnv } from "../cli/atelier.mjs";
 
-test("every git command skips LFS uploads and downloads, which Artifacts cannot serve", () => {
-  const env = gitEnv({ PATH: "/bin", GIT_LFS_SKIP_PUSH: "0" }, { GIT_AUTHOR_NAME: "A" });
+test("every push skips LFS uploads, and only a clone skips downloads", () => {
+  const env = gitEnv({ PATH: "/bin", GIT_LFS_SKIP_PUSH: "0" }, { GIT_AUTHOR_NAME: "A" }, ["push", "origin", "main"]);
   assert.equal(env.GIT_LFS_SKIP_PUSH, "1", "the CLI's setting wins over the caller's environment");
-  assert.equal(env.GIT_LFS_SKIP_SMUDGE, "1");
+  assert.equal(env.GIT_LFS_SKIP_SMUDGE, undefined, "a push, a merge or a reset in the owner's checkout writes real LFS files");
+  assert.equal(gitEnv({}, {}, ["merge", "--no-ff", "x"]).GIT_LFS_SKIP_SMUDGE, undefined);
+  assert.equal(gitEnv({}, {}, ["-c", "http.extraHeader=x", "clone", "--quiet", "url", "dir"]).GIT_LFS_SKIP_SMUDGE, "1", "a clone is a disposable copy and keeps pointers");
   assert.equal(env.GIT_TERMINAL_PROMPT, "0");
   assert.equal(env.GIT_AUTHOR_NAME, "A");
   assert.equal(env.PATH, "/bin");

@@ -49,17 +49,18 @@ function apiToken() {
   die("no API token: add Keychain item atelier.API_TOKEN, or set ATELIER_TOKEN");
 }
 
-// The environment every git command runs with. Artifacts has no Git LFS: a
-// push would try to upload a project's LFS objects and fail, and a clone or
-// fetch would try to download them and fail. Pushes skip the upload, so the
-// baseline and workspaces hold LFS pointer files; clones keep the pointers
-// rather than fetching what they point to.
-export function gitEnv(base = process.env, extra = {}) {
-  return { ...base, GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_PUSH: "1", GIT_LFS_SKIP_SMUDGE: "1", ...extra };
+// The environment a git command runs with. Artifacts has no Git LFS: a push
+// would try to upload a project's LFS objects and fail, so every push skips
+// the upload and Artifacts holds pointer files. A clone, always a disposable
+// copy (a task workspace, a check run), keeps the pointers rather than trying
+// to download what they point to. Nothing else skips the download: a merge or
+// reset in the owner's own checkout writes real LFS files as git-lfs would.
+export function gitEnv(base = process.env, extra = {}, args = []) {
+  return { ...base, GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_PUSH: "1", ...(args.includes("clone") ? { GIT_LFS_SKIP_SMUDGE: "1" } : {}), ...extra };
 }
 
 function git(args, opts = {}) {
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env, args), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
