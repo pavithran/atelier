@@ -420,7 +420,12 @@ const usage = {
 
 // The checkout's state against the baseline, in words. The baseline's head is
 // read with ls-remote, so nothing is fetched into the checkout.
+// Every path out of it is one flattened line, whatever a name holds.
 async function checkoutStatus(name, as) {
+  return flat(await checkoutStatusLine(name, as));
+}
+
+async function checkoutStatusLine(name, as) {
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) return checkoutLine({ name, registered: false });
   const cwd = p.path, fresh = p.fresh === true;
