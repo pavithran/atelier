@@ -1,4 +1,5 @@
 import { TEXT_CONTROLS } from "../text.ts";
+import { planErrors } from "./errors.ts";
 import type { TaskKind } from "../models/registry.ts";
 
 export interface PlanPart {
@@ -42,11 +43,26 @@ const TASK_KINDS = ["mechanical-edit", "feature", "refactor", "tests", "docs", "
 const PART_FIELDS = ["key", "title", "kind", "taskKind", "scope", "dependsOn", "provides", "uses", "brief", "acceptance", "tests", "size", "prefer"];
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const plain = (s: string) => s.normalize("NFC").replace(TEXT_CONTROLS, " ").trim();
+const short = (s: string) => s.length > PLAN_LIMITS.key ? `${s.slice(0, PLAN_LIMITS.key - 1)}…` : s;
+
+function fieldName(field: string): string {
+  if (/^[A-Za-z0-9_-]+$/.test(field)) return `.${short(field)}`;
+  let escaped = "";
+  for (const char of field) {
+    const next = /^[A-Za-z0-9_-]$/.test(char) ? char : `\\u{${char.codePointAt(0)!.toString(16)}}`;
+    if (escaped.length + next.length > PLAN_LIMITS.key - 5) {
+      escaped += "…";
+      break;
+    }
+    escaped += next;
+  }
+  return `["${escaped}"]`;
+}
 
 export function parsePlan(value: unknown): PlanResult {
-  const errors: string[] = [];
+  const errors = planErrors();
   const unknownFields = (v: Record<string, unknown>, allowed: readonly string[], at: string) => {
-    for (const field of Object.keys(v)) if (!allowed.includes(field)) errors.push(`${at}.${plain(field)}: unknown field`);
+    for (const field of Object.keys(v)) if (!allowed.includes(field)) errors.push(`${at}${fieldName(field)}: unknown field`);
   };
   const string = (v: unknown, at: string, max: number): string => {
     if (typeof v !== "string" || !plain(v)) {
@@ -63,7 +79,7 @@ export function parsePlan(value: unknown): PlanResult {
       return [];
     }
     if (v.length > limit.count) errors.push(`${at}: must contain at most ${limit.count} ${unit}`);
-    return v.map((entry, i) => string(entry, `${at}[${i}]`, limit.entry));
+    return v.slice(0, limit.count).map((entry, i) => string(entry, `${at}[${i}]`, limit.entry));
   };
   const choice = <T extends string>(v: unknown, choices: readonly T[], at: string): T => {
     const cleaned = typeof v === "string" ? plain(v) : "";
@@ -74,16 +90,19 @@ export function parsePlan(value: unknown): PlanResult {
   unknownFields(value, ["schema", "goal", "parts"], "plan");
   const schema = choice(value.schema, ["atelier.plan.v1"], "plan.schema");
   const goal = string(value.goal, "plan.goal", PLAN_LIMITS.goal);
-  if (!Array.isArray(value.parts)) return { ok: false, errors: [...errors, "plan.parts: must be an array"] };
+  if (!Array.isArray(value.parts)) {
+    errors.push("plan.parts: must be an array");
+    return { ok: false, errors: errors.result() };
+  }
   if (!value.parts.length) errors.push("plan.parts: must contain at least one part");
   if (value.parts.length > PLAN_LIMITS.parts) errors.push(`plan.parts: must contain at most ${PLAN_LIMITS.parts} parts`);
   const parts: PlanPart[] = [];
-  for (const [i, raw] of value.parts.entries()) {
+  for (const [i, raw] of value.parts.slice(0, PLAN_LIMITS.parts).entries()) {
     if (!object(raw)) {
       errors.push(`part[${i}]: must be an object`);
       continue;
     }
-    const at = typeof raw.key === "string" && plain(raw.key) ? `part ${plain(raw.key)}` : `part[${i}]`;
+    const at = typeof raw.key === "string" && plain(raw.key) ? `part ${short(plain(raw.key))}` : `part[${i}]`;
     unknownFields(raw, PART_FIELDS, at);
     const key = string(raw.key, `${at}.key`, PLAN_LIMITS.key);
     if (key && !/^[A-Za-z0-9-]+$/.test(key)) errors.push(`${at}.key: must contain only letters (A-Z, a-z), digits (0-9) and hyphens`);
@@ -97,6 +116,7 @@ export function parsePlan(value: unknown): PlanResult {
     const uses = list(raw.uses, `${at}.uses`, PLAN_LIMITS.uses);
     const brief = string(raw.brief, `${at}.brief`, PLAN_LIMITS.brief);
     const acceptance = list(raw.acceptance, `${at}.acceptance`, PLAN_LIMITS.acceptance);
+    if (!acceptance.length) errors.push(`${at}.acceptance: must contain at least one criterion`);
     const tests = list(raw.tests, `${at}.tests`, PLAN_LIMITS.tests);
     const size = choice(raw.size, ["S", "M"], `${at}.size`);
     let prefer: PlanPart["prefer"];
@@ -109,7 +129,8 @@ export function parsePlan(value: unknown): PlanResult {
     }
     parts.push({ key, title, kind, taskKind, scope, dependsOn, provides, uses, brief, acceptance, tests, size, ...(prefer ? { prefer } : {}) });
   }
-  return errors.length ? { ok: false, errors } : { ok: true, plan: { schema, goal, parts } };
+  const messages = errors.result();
+  return messages.length ? { ok: false, errors: messages } : { ok: true, plan: { schema, goal, parts } };
 }
 
 // Object keys are sorted recursively and string values are normalized to NFC,
