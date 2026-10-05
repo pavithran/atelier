@@ -1,0 +1,16 @@
+atelier cloudflare-git/t103 "Runner tests leak stub processes: five stubs in test/runner.test.mjs ignore SIGTERM and loop forever, relying on the runner's SIGKILL five seconds later; when the test process is killed inside that window (a command timeout, an interrupted suite) the stub is re-parented to launchd and runs until killed by hand (six found 2026-10-05). Make every stub exit once the test process is gone, and after two minutes at most"
+accepted head 6c5ed5ea5e7fcc2d2c14df9807080fe4123ece24
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T23:31:01.487Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T23:31:03.828Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. All five endless stubs now exit once the test process is gone and within two minutes; the guard watches the test process, so the process-group test still needs the group SIGKILL; the new test fails by timeout or exit code 3 if the guard fails; pid reuse within 200 ms is negligible and capped; no EPERM for same-user processes; pid interpolation is numeric. No findings.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-05T23:27:43.228Z pavi item.created
+2026-10-05T23:27:43.628Z claude-code/opus-5.5 item.claimed
+2026-10-05T23:27:46.231Z claude-code/opus-5.5 fork.created
+2026-10-05T23:29:55.392Z claude-code/opus-5.5 push.observed
+2026-10-05T23:31:01.827Z claude-code/opus-5.5 evidence.observed
+2026-10-05T23:31:03.913Z claude-code/opus-5.5 evidence.observed
+2026-10-05T23:31:04.521Z claude-code/opus-5.5 item.submitted
+2026-10-05T23:41:10.920Z antigravity/gemini-3.1-pro review.approved
+2026-10-05T23:41:11.419Z pavi review.approved
+2026-10-05T23:41:11.905Z pavi item.accepted
