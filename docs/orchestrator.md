@@ -1,8 +1,8 @@
 # Orchestrator design
 
 Built in t85: build-sequence steps 1 and 2, the plan schema, content hash and
-structural validation. Steps 3 through 14 are not built by this task.
-The model context-window size rule belongs to step 3.
+structural validation. Built in t86: step 3, part routing, with the model
+context-window size rule. Steps 4 through 14 are not built.
 
 The remaining sections describe the proposed orchestrator. They do not
 claim that its routes, storage, commands or runner jobs are implemented.
@@ -77,14 +77,20 @@ non-empty list of non-empty strings; the reviewer judges their content.
 - the dependency graph is acyclic; Kahn's algorithm removes ready parts, then a traversal names cycles in every remaining branch;
 - any two parts whose scopes overlap under `scopesOverlap` must be ordered, one reachable from the other;
 - every `uses` resolves to a part that `provides` it and that the user reaches through its dependencies; each direct dependency of an interface part must be an interface part;
-- sizing: at most 6 scope globs per part. Step 3 will allow size M only for models with a context window of 64K or more, or unknown. Qwen3-Coder is recorded as 32K.
+- sizing: at most 6 scope globs per part. Routing allows size M only for models with a context window of 64K or more, or unknown. Qwen3-Coder is recorded as 32K.
 
-**Routing is computed by Atelier, not taken from the planner.** `routeParts()` in `src/plans/route.ts`:
-- calls `route()` from `src/models/routing.ts`, with `buildRecord(events)` as the track record;
-- drops pool entries whose status is `refused`, and paid-per-token entries unless the owner approves with `allowPaid`;
-- under a governed policy, keeps only actors with the `executor` role (`hasRole`);
-- freezes, per part, the top builder, two alternates and the reasons;
-- picks reviewers whose `familyOf` differs from the builder's and, under a governed policy, who hold the `assessor` role.
+**Routing is computed by Atelier, not taken from the planner.** `routeParts(plan, input)` in `src/plans/route.ts` is a pure function over the pool, the registry and the project's ledger:
+- calls `route()` from `src/models/routing.ts` for each part's `taskKind`, with `buildRecord(events)` as the track record, over one registry-shaped profile per pool entry; the registry supplies evidence and the context window when it knows the model by id or alias, and an entry's record counts its aliases, as the Models page does;
+- drops pool entries whose status is `refused`, and paid-per-token entries (an API reached with a key; the Studio and a subscription are not) unless the owner approves with `allowPaid`;
+- applies the claim's rule, `assertEligible`: under a governed policy only actors with the `executor` role build, otherwise the project's eligible harnesses;
+- gives a size M part only to a model whose context window is at least 64K tokens or unknown; the reviewer reads the same scope, so the rule applies to it too;
+- honours a part's `prefer {actor, reason}` only when that actor passes every rule, and the builder's reasons say what became of the preference;
+- freezes, per part, the top builder, two alternates and the reasons, in `route()`'s order: score, then model id, then actor name;
+- picks the first reviewer in that order whose `familyOf` differs from the builder's, both families recognised, as `gate()` counts a cross-family review, and, under a governed policy, who holds the `assessor` role.
+
+A part with no eligible builder, or no reviewer of another family, is returned unrouted with a reason that names each model passed over. Every choice carries human-readable reasons, for the task page's "why this model?".
+
+Two inputs added on 2026-10-05 describe the owner's tools rather than the models. `availability` maps an actor or a harness (an actor's entry wins) to `available`, `reserved` (near its usage limit; `for` lists the task kinds it may still take, and a part of any other kind passes it over) or `paused` (gets nothing). `spend {cap, used}` is the owner's figure for paid models; once `used` reaches `cap`, paid models are excluded as if `allowPaid` were off. The reasons say when a model was passed over for availability or spend. Harnesses report no usage data, so `used` is what the owner reports.
 
 **An invalid plan** is recorded as `plan.invalid`. The planner is dispatched once more with the errors in its brief; after that the plan is blocked.
 
@@ -229,7 +235,7 @@ Reaching any limit blocks the plan; it never continues silently.
 **t15: Plans**
 1. **Schema and hash.** `src/plans/schema.ts`, `test/plans-schema.test.ts`. Acceptance: unknown fields and caps are refused; the hash does not depend on key order.
 2. **Validation.** `src/plans/validate.ts`. Acceptance: a cycle is named; unordered overlaps are refused; interfaces depend only on interfaces; scope counts are capped. Model context-window sizing belongs to step 3.
-3. **Part routing.** `src/plans/route.ts`. Acceptance: the reviewer is from another family; refused and paid models are excluded; governed roles are respected.
+3. **Part routing.** `src/plans/route.ts`, `test/plans-route.test.ts`. Built in t86. Acceptance: the reviewer is from another family; refused and paid models are excluded; governed roles are respected.
 4. **The tick, dispatch half.** `src/plans/phase.ts`. Acceptance: scenario tests for dependencies, the parallel limit, retries and blocking.
 5. **Ledger and rules.** `src/ledger.ts` and `src/rules.ts` changes (new columns and table; `newPlan`, `postPlan`, `approvePlan`, `dispatchPart`, the tick hook; inbox kinds; same-plan overlap). Test: `test/plans.spec.ts`.
 6. **Routes and CLI.** `src/index.ts`, `cli/atelier.mjs`. Tests: `routes.spec.ts`, `test/plan-cli.test.mjs`.
