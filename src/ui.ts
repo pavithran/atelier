@@ -381,7 +381,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${s.threads.length
     ? `${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}`
     : noTasks(s) ? "History imported from git · no Atelier tasks yet" : `${plural(s.tally.planned, "task")} planned, none taken yet${s.partial ? " · the most recent part of the record" : ""}`}</span>
-  ${s.threads.length ? `<a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
+  ${s.threads.length ? `<a class="replay" href="${where}${where.includes("?") ? "&amp;" : "?"}replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
   ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : imported.get(s.project)?.total ? "" : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
   ${importedBlock(imported.get(s.project), owner, s.title)}
 </section>`).join("");
@@ -405,7 +405,9 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
 
 export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), sinceParam = "all", familyParam?: string, familiesPresent: string[] = []): string {
   const t = drawnTotal(stories);
-  const { stages, columns, shown } = flowParts(stories, t, owner, "/flow", (s) => taskHref(s.project), "You", imported);
+  // Replay keeps the filters in force, so it replays what is shown.
+  const filtered = [sinceParam !== "all" ? `since=${e(sinceParam)}` : "", familyParam ? `family=${e(familyParam)}` : ""].filter(Boolean).join("&amp;");
+  const { stages, columns, shown } = flowParts(stories, t, owner, filtered ? `/flow?${filtered}` : "/flow", (s) => taskHref(s.project), "You", imported);
   const body = shown.length
     ? `${legendLine(vendorsIn(shown))}${stages}${columns}`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
