@@ -492,3 +492,35 @@ it("repo policy keeps re-init available for legacy duplicate registrations", asy
   expect(() => assertRepoAvailable(projects, "legacy", "legacy")).not.toThrow();
   expect(() => assertRepoAvailable(projects, "LEGACY", "legacy")).toThrow(/repo_taken/);
 });
+
+it("keeps acceptance protection until re-acceptance passes the current gate", async () => {
+  const L = await setup("acceptance-policy");
+  await L.newItem("Policy snapshot", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "acceptance-policy--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
+  const changed = { ...policy, protected: [...policy.protected, "src/**"] };
+  await L.setProject({ ...(await L.project()), policy: changed }, "owner");
+  for (let i = 0; i < 2; i++) {
+    await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
+    expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
+  }
+  await L.addReview(review("t1", "owner", H1, true));
+  expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
+  for (let i = 0; i < 2; i++) {
+    await L.accept("t1", "owner", H1);
+    expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(changed.protected);
+  }
+  const acceptances = (await L.events("t1") as unknown as LedgerEvent[]).filter((e) => e.kind === "item.accepted");
+  expect(acceptances.map((e) => e.data.protected)).toEqual([changed.protected, changed.protected, policy.protected]);
+  await L.beginLanding("t1", "owner", H1);
+  await refusal(L.addReview(review("t1", "owner", H1, false)), "landing", /cancel the interrupted landing/);
+  await L.cancelLanding("t1", "owner");
+  await L.addReview(review("t1", "owner", H1, false));
+  expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /reject|changes/i);
+});
