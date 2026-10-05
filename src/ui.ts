@@ -14,7 +14,7 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
-import { clockTime, shortStamp, stamp, zoneLabel } from "./time";
+import { clockTime, dayOf, shortStamp, stamp, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
@@ -313,10 +313,10 @@ interface FlowParts { stages: string; columns: string; shown: Story[] }
 // link reloads; `href` links a task, or nothing on the public page.
 // A project's history before Atelier, read from git: drawn below its
 // threads, framed and labelled as imported, never counted in the tally.
-function importedBlock(h: ImportedHistory | undefined, owner: string, title: string): string {
+function importedBlock(h: ImportedHistory | undefined, owner: string, title: string, project: string): string {
   if (!h?.total) return "";
   const named = h.lanes.filter((l) => l.label !== NO_AGENT).length;
-  return `<div class="imported-box">
+  return `<div class="imported-box" id="before-${e(project)}">
   <div class="imported-head"><h3>Before Atelier · imported from git</h3><span class="meta">${h.total.toLocaleString("en")} commits${h.complete ? "" : " (the most recent part of the history)"}, ${h.attributed.toLocaleString("en")} naming ${plural(named, "agent")}</span></div>
   <p class="meta">Who took part is read from each commit message's Co-Authored-By and Agent lines. It is what the commits say, not evidence Atelier observed.</p>
   <div class="stage-scroll">${drawImported(h, owner, title)}</div>
@@ -328,13 +328,37 @@ function importedBlock(h: ImportedHistory | undefined, owner: string, title: str
 // is still a task.
 const noTasks = (s: Story) => !s.threads.length && !s.tally.planned && !s.partial;
 
-// Before and with Atelier, side by side: a project known only from its git
-// history beside the record Atelier kept of its own tasks. Shown when there
-// is one of each; each side links to its drawing further down.
+// Dates as the owner reads them, in the owner's zone: "4 Sept to 5 Oct", with
+// years only when the two ends fall in different years.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+function dayLabel(at: string | number, year: boolean): string {
+  const [y, m, d] = dayOf(at).split("-").map(Number);
+  return `${d} ${MONTHS[m - 1]}${year ? ` ${y}` : ""}`;
+}
+export function spanLabel(from: number, to: number): string {
+  const a = dayOf(from * 1000), b = dayOf(to * 1000);
+  const year = a.slice(0, 4) !== b.slice(0, 4);
+  return a === b ? dayLabel(from * 1000, false) : `${dayLabel(from * 1000, year)} to ${dayLabel(to * 1000, year)}`;
+}
+
+// The project to compare with itself: one with commits from before its first
+// task and tasks since. Of several, the one with the most tasks.
+function sameProject(stories: Story[], imported: Map<string, ImportedHistory>): Story | undefined {
+  return stories.filter((s) => s.threads.length && imported.get(s.project)?.total)
+    .sort((a, b) => b.threads.length - a.threads.length)[0];
+}
+
+// Before and with Atelier, side by side. When one project has both commits
+// from before its first task and tasks since, that project is shown on both
+// sides: its own git history beside its own Atelier record. Otherwise a project
+// known only from its git history stands beside the record Atelier kept of
+// other projects' tasks, when there is one of each. Each side links to its drawing.
 export function compareBlock(stories: Story[], imported: Map<string, ImportedHistory>, t: Tally, owner: string, who: string): string {
-  const before = stories.find((s) => noTasks(s) && imported.get(s.project)?.total);
-  const withs = stories.filter((s) => s.threads.length);
-  if (!before || !withs.length || !t.claims) return "";
+  const same = sameProject(stories, imported);
+  const before = same ?? stories.find((s) => noTasks(s) && imported.get(s.project)?.total);
+  const withs = same ? [same] : stories.filter((s) => s.threads.length);
+  if (!before || !withs.length || (!same && !t.claims)) return "";
+  if (same) t = same.tally;
   const h = imported.get(before.project)!;
   const named = h.lanes.filter((l) => l.label !== NO_AGENT);
   const bar = h.lanes.map((l) => `<span style="--c:${laneColour(l.label, owner)};width:${((l.count / h.lanes.reduce((n, x) => n + x.count, 0)) * 100).toFixed(2)}%"></span>`).join("");
@@ -351,10 +375,18 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
     const p = Math.round((n / d) * 100);
     return p === 0 && n > 0 ? "<1%" : p === 100 && n < d ? ">99%" : `${p}%`;
   };
+  // Dates for the same-project card. The commits' span is from the messages'
+  // own times; the Atelier side starts at the first thing the record shows.
+  const began = same ? [...same.moments].sort((a, b) => a.at.localeCompare(b.at))[0]?.at : undefined;
+  const beforeDates = same
+    ? `<p class="meta compare-dates">${e(spanLabel(h.first, h.last))}${h.complete ? "" : " · only the most recent part of the history was read"}</p>` : "";
+  const withDates = same && began
+    ? `<p class="meta compare-dates">since ${e(dayLabel(began, false))}${same.partial ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
   return `<section class="compare" aria-label="Before and with Atelier">
-  <a class="compare-card before" href="#${e(before.project)}">
+  <a class="compare-card before" href="#${same ? "before-" : ""}${e(before.project)}">
     <span class="kicker">Before Atelier · from git</span>
     <h2>${e(before.title)}</h2>
+    ${beforeDates}
     <div class="tally-bar" aria-hidden="true">${bar}</div>
     <p class="compare-lead"><b>${e(pct(h.attributed, h.total))}</b> of commits name an agent. Git itself keeps no record of what was checked, reviewed or decided.</p>
     <ul>${row(h.total, `commits${h.complete ? "" : " (the most recent part)"}`)}${row(h.attributed, `name ${plural(named.length, "agent")} in their messages`)}${row("—", "checks tied to a revision", true)}${row("—", "reviews by another model", true)}${row("—", `decisions by ${who}`, true)}</ul>
@@ -363,6 +395,7 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
   <a class="compare-card with" href="#${e(withs[0].project)}">
     <span class="kicker">With Atelier · observed</span>
     <h2>${withTitle}</h2>
+    ${withDates}
     <div class="tally-bar" aria-hidden="true">${ours}</div>
     ${reviews ? `<p class="compare-lead"><b>${e(pct(t.sentBack, reviews))}</b> of reviews sent the work back: ${t.sentBack.toLocaleString("en")} of ${reviews.toLocaleString("en")}.</p>` : ""}
     <ul>${row(tasks, `${tasks === 1 ? "task" : "tasks"} taken, each by one agent on its own fork`)}${row(t.checks, `checks run on a clean copy of the exact revision`)}${row(reviews, `reviews, ${t.sentBack} sending work back`)}${row(t.decisions, `decisions by ${who}`)}${row(t.merges, "merged, with their record attached")}</ul>
@@ -384,7 +417,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
     : noTasks(s) ? "History imported from git · no Atelier tasks yet" : `${plural(s.tally.planned, "task")} planned, none taken yet${s.partial ? " · the most recent part of the record" : ""}`}</span>
   ${s.threads.length ? `<a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
   ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : imported.get(s.project)?.total ? "" : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
-  ${importedBlock(imported.get(s.project), owner, s.title)}
+  ${importedBlock(imported.get(s.project), owner, s.title, s.project)}
 </section>`).join("");
   const yours = who === "You" ? "your" : `${who}'s`;
   const journey = [
