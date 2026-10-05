@@ -162,7 +162,10 @@ function wsConfig(key, cwd = process.cwd()) {
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
+let tokenActor;
+
 function actor(fallback) {
+  if (tokenActor) return args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   const a = args.as ?? process.env.ATELIER_ACTOR ?? wsConfig("actor") ?? fallback;
   if (!a) die("say who you are: --as harness/model (e.g. claude-code/opus-5.5), or set ATELIER_ACTOR");
   return a;
@@ -207,11 +210,12 @@ function itemArg(i = 1) {
 }
 
 async function call(method, path, body, as, extra = {}) {
+  if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
     res = await fetch(server() + "/api" + path, {
       method,
-      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
+      headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     text = await res.text();
@@ -579,6 +583,26 @@ async function checkoutStatusLine(name, as) {
 }
 
 const commands = {
+  async token() {
+    const action = args._[1];
+    if (action === "issue") {
+      if (typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
+      if (args.days !== undefined && (args.days === true || !Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
+      const result = await call("POST", "/tokens", {
+        actor: args.as, ...(args.multi.project ? { projects: args.multi.project } : {}),
+        ...(args.days !== undefined ? { days: Number(args.days) } : {}),
+        ...(args.label !== undefined ? { label: args.label } : {}),
+      }, OWNER);
+      console.log(`Token ${result.id} for ${result.actor}, expires ${result.expiresAt}`);
+      console.log("This token is not shown again. Set ATELIER_TOKEN to this value in the agent's session:");
+      console.log(result.token);
+    } else if (action === "ls") {
+      console.log(JSON.stringify(await call("GET", "/tokens", undefined, OWNER), null, 2));
+    } else if (action === "revoke" && args._[2]) {
+      const result = await call("DELETE", `/tokens/${encodeURIComponent(args._[2])}`, {}, OWNER);
+      console.log(result.revoked ? "Token revoked." : "No such token.");
+    } else die("usage: atelier token issue --as HARNESS/MODEL [--project P]... [--days N] [--label TEXT] | ls | revoke ID");
+  },
   // Reached only when `ops` is not the first word; see runOps.
   async ops() {
     die("put ops first: atelier ops COMMAND [ARGS...]; everything after it goes to the operations toolkit", 2);
@@ -592,7 +616,7 @@ const commands = {
         async queue(offer, signal) {
           const res = await fetch(server() + "/api/queue", {
             method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "content-type": "application/json" },
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
             body: JSON.stringify(offer),
           });
           if (!res.ok) throw new Error(`queue: ${res.status}`);
@@ -1198,7 +1222,7 @@ const commands = {
 
   // Everything waiting for a runner, across projects, oldest first.
   async queue() {
-    const res = await fetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER } });
+    const res = await fetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
     if (!res.ok) die(`queue: ${res.status} ${(await res.text()).slice(0, 200)}`);
     const incomplete = res.headers.get("x-atelier-incomplete");
     if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
@@ -1319,7 +1343,7 @@ Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME 
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
 Docs       guide   (paste into a project's AGENTS.md)
 
-Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
+Tokens     token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID\nCommon flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
   },
 };
 
@@ -1333,6 +1357,12 @@ if (isMain) {
     if (cmd !== "help" && usage[cmd]) console.log(usage[cmd]);
     else commands.help();
     process.exit(0);
+  }
+  if (cmd !== "login" && cmd !== "help" && process.env.ATELIER_TOKEN?.startsWith("atl_")) {
+    const config = await call("GET", "/config");
+    tokenActor = config.actor;
+    const declared = args.as ?? process.env.ATELIER_ACTOR;
+    if (tokenActor && cmd !== "token" && declared !== undefined && declared !== tokenActor) die("--as and ATELIER_ACTOR must match the agent token actor");
   }
   await fn();
 }

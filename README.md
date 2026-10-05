@@ -62,7 +62,7 @@ In detail:
 | Step | Who | What happens |
 | --- | --- | --- |
 | `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths, and an optional display title. |
-| `atelier new "title" --scope 'src/**'` | anyone | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
+| `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/`. |
 | `atelier push` | the item's owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
 | `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, measures which paths changed since the baseline, and records the results as Observed. A result for a head that has since moved is refused. |
@@ -215,12 +215,12 @@ Enforced by construction:
 
 Trusted, and stated here so nobody assumes otherwise:
 
-- **Identity is declared.** Every caller shares one API token, and the actor
-  name (`harness/model`) is what the caller says it is. The token proves only
-  that the caller is one of the project owner's own tools. The write token is what stops
-  a non-owner from pushing.
+- **Agent tokens prove identity.** An agent token binds requests to one actor
+  and optionally to projects. The owner token still permits declared actors
+  for orchestration. Keep it with the owner's tools. A workspace write token
+  controls Git pushes and is separate from an API token.
 - **Check execution is explicit.** Local checks run in a clean clone at
-  the verified head, but a caller with the shared token can forge local
+  the verified head, but a caller authorised to record checks can forge local
   evidence. Cloudflare container checks execute on the server and are
   available with `--sandbox`; `sandboxOnly` policy requires that evidence.
   The container integration still needs deployment and a live runtime check.
@@ -281,7 +281,33 @@ reports no meaningful mode; the file sits in your own profile. Setting
 `ATELIER_SECRET_STORE` to `file`, `keychain` or `secret-service` picks a
 store outright. The `ATELIER_TOKEN` environment variable overrides every
 store. A value is handed to a store on its standard input and never as a
-command line argument, and Atelier prints no token.
+command line argument, and login prints no token.
+
+Give each agent its own token from an owner session:
+
+```sh
+atelier token issue --as codex/gpt-6-astra --project my-project --days 30 --label "Task runner"
+atelier token ls
+atelier token revoke ID
+```
+
+Issuing prints the token once. Set `ATELIER_TOKEN` to that value in the
+agent's session. The issue command never writes it to a file. The CLI
+obtains the bound actor from the server, so `--as` is optional and must
+match when supplied. Tokens expire after 30 days by default; `--days`
+accepts 1 through 365. Repeat `--project` to grant several projects; omitting
+it grants all projects. Revocation prevents later API requests. Existing
+Artifacts Git credentials have their own lifetime and are not revoked by
+revoking an API token.
+
+Only the SHA-256 hash and token metadata are stored on the server. Lists
+never contain the token or its hash. Agent tokens can read their projects,
+claim, push, record checks and reports, submit, hand off, release, and review
+as themselves. Creating tasks, owner decisions, project settings, model
+registry access, dispatch configuration and token management require the
+owner token. Agent tokens cannot sign in to the browser. Events from agent
+requests show `token proved` beside the actor; this proves identity, not the
+truth of a reported result.
 
 The project owner acts as the actor `owner`, and the inbox asks "What needs
 you now?". To use your own actor and name, set `OWNER_ACTOR` and
@@ -531,7 +557,7 @@ the dispatch. A runner that gives up releases the task, and it waits in the
 queue again. `atelier queue` lists everything waiting. If a project cannot be read, the
 response names it in the `X-Atelier-Incomplete` header and `atelier queue` says so.
 
-A runner's name is declared, like every actor's; what a dispatch guarantees
+A runner's name is declared independently of its actor token; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits.
 
