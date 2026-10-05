@@ -818,11 +818,15 @@ const commands = {
     const name = args._[2];
     if (args._[1] !== "remove" || !name) die("usage: atelier projects remove NAME [--force]");
     await call("DELETE", P(name), { force: args.force === true }, actor(OWNER));
+    // The whole local entry goes; say what it held, since some of it (notesRemote) is set by hand.
+    let dropped = "";
     if (cfg.projects?.[name]) {
+      const held = Object.entries(cfg.projects[name]).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
+      dropped = held.length ? ` Local settings dropped: ${held.join(", ")}.` : "";
       delete cfg.projects[name];
       saveConfig(cfg);
     }
-    console.log(`${name} removed from the project index and local config. The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the owner.`);
+    console.log(`${name} removed from the project index and local config.${dropped} The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the owner.`);
   },
 
   async owners() {
