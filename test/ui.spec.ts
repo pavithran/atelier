@@ -408,7 +408,7 @@ it('the merge preview says plainly whether a task would merge into main, and esc
  expect(renderMainPreview({head:'h',ahead:0,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:0,theirs:1}})).toContain('Main has not moved');
  const clean=renderMainPreview({head:'h',ahead:3,aheadCapped:false,merge:{clean:true,conflicts:[],both:['x.ts'],ours:4,theirs:1}});
  expect(clean).toContain('Merges cleanly');
- expect(clean).toContain('3 commits since this task forked, changing 4 paths; both sides changed 1 path, and the changes do not overlap');
+ expect(clean).toContain('3 commits along its first-parent line since this task forked (a merge counts once), changing 4 paths; both sides changed 1 path, and the changes do not overlap');
  const bad=renderMainPreview({head:'h',ahead:1000,aheadCapped:true,merge:{clean:false,conflicts:[{path:'<b>.ts',reason:'both sides changed the same lines'}],both:['<b>.ts'],ours:1,theirs:1}});
  expect(bad).toContain('1 conflict');
  expect(bad).toContain('at least 1,000 commits');

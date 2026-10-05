@@ -97,12 +97,36 @@ export async function mergeability(
     if (!bb || !ob || !tb) { conflicts.push({ path, reason: "could not be read" }); continue; }
     if ([bb, ob, tb].some((x) => x.length > BLOB_LIMIT)) { conflicts.push({ path, reason: "too large to compare here" }); continue; }
     if ([bb, ob, tb].some(isBinary)) { conflicts.push({ path, reason: "a binary file changed on both sides" }); continue; }
-    const d = new TextDecoder();
-    const clash = linesConflict(splitLines(d.decode(bb)), splitLines(d.decode(ob)), splitLines(d.decode(tb)));
+    const clash = linesConflict(linesOf(bb), linesOf(ob), linesOf(tb));
     if (clash === null) conflicts.push({ path, reason: "too large to compare here" });
     else if (clash) conflicts.push({ path, reason: b ? "both sides changed the same lines" : "added on both sides with different contents" });
   }
+  // A path that is a file on one side and a folder on the other: git cannot
+  // put both at one place, though no single path is changed by both sides.
+  const theirSet = new Set(theirsPaths);
+  const collisions = new Set<string>();
+  for (const [paths, other] of [[theirsPaths, ourSet], [oursPaths, theirSet]] as const) {
+    for (const p of paths) {
+      const parts = p.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const prefix = parts.slice(0, i).join("/");
+        if (other.has(prefix) && !both.includes(prefix)) collisions.add(prefix);
+      }
+    }
+  }
+  for (const path of [...collisions].sort()) conflicts.push({ path, reason: "a file on one side and a folder on the other" });
   return { clean: conflicts.length === 0, conflicts, both, ours: oursPaths.length, theirs: theirsPaths.length };
+}
+
+// A file's lines, with a missing final newline kept as part of the last line,
+// so that adding or removing only the final newline is a change to that line,
+// as it is to git.
+const NO_EOL = "\u0000no newline at end of file";
+export function linesOf(bytes: Uint8Array): string[] {
+  const text = new TextDecoder().decode(bytes);
+  const lines = splitLines(text);
+  if (text !== "" && !text.endsWith("\n")) lines[lines.length - 1] += NO_EOL;
+  return lines;
 }
 
 // Live tasks whose changes touch the same paths, as pairs with the shared
@@ -119,22 +143,23 @@ export function overlaps(tasks: { id: string; paths: string[] }[]): { a: string;
   return out;
 }
 
-// Where a task stands against main as it is now: how many commits main has
-// gained since the task's fork point, and whether the task would merge.
+// Where a task stands against main as it is now: how far main has moved since
+// the task's fork point, and whether the task would merge. Artifacts lists
+// main's first-parent line only, so a merged task counts once, as its merge.
 export interface MainPreview {
   head: string;                 // main's head now
-  ahead: number;                // commits on main since the fork point
+  ahead: number;                // commits on main's first-parent line since the fork point
   aheadCapped: boolean;         // the fork point is older than the log read; `ahead` is a floor
   merge: Mergeability;
 }
 
 const MAIN_LOG = 1000;
 
-// The commits on main that the fork point cannot reach, as `git rev-list
-// base..main` counts them, merged side branches included, from a log of main
-// in any order. When the log was cut short and the fork point is not in it,
-// the count is a floor. When the whole log was read and the fork point is not
-// in it, the fork point is not on main and there is no count.
+// The commits in main's log that the fork point cannot reach. Artifacts gives
+// the first-parent line, so each merge counts once and the commits it brought
+// in are not counted. When the log was cut short and the fork point is not in
+// it, the count is a floor. When the whole log was read and the fork point is
+// not in it, the fork point is not on main and there is no count.
 export function commitsSince(log: { hash: string; parents?: string[] }[], base: string, cut: boolean): { ahead: number | null; capped: boolean } {
   const byHash = new Map(log.map((c) => [c.hash, c]));
   if (!byHash.has(base)) return cut ? { ahead: log.length, capped: true } : { ahead: null, capped: false };
