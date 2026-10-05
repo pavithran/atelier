@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,6 +11,20 @@ import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute,
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
 const assignment = { project: "atelier", item: { id: "t13", title: "Home runner", scope: ["cli/runner.mjs", "test/runner*"] }, agent: entry.agent, model: entry.models[0], actor: `${entry.agent}/${entry.models[0]}` };
+// A stub that ignores SIGTERM outlives a test process killed before the runner's
+// SIGKILL reaches it, so each one exits once this process is gone, and after
+// two minutes at most.
+const untilExits = (pid) => `setInterval(() => { try { process.kill(${pid}, 0); } catch { process.exit(); } }, 200); setTimeout(() => process.exit(3), 120000);`;
+const UNTIL_TEST_EXITS = untilExits(process.pid);
+
+test("a stub that ignores SIGTERM exits once the process it watches is gone", { timeout: 10_000 }, async (t) => {
+  const owner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+  const stub = spawn(process.execPath, ["-e", `process.on('SIGTERM', () => {}); ${untilExits(owner.pid)}`], { detached: true, stdio: "ignore" });
+  t.after(() => { try { process.kill(stub.pid, "SIGKILL"); } catch { /* already gone */ } });
+  const exited = new Promise((resolve) => stub.on("exit", (code, signal) => resolve(code ?? signal)));
+  owner.kill("SIGKILL");
+  assert.equal(await exited, 0);
+});
 
 test("parseConfig accepts supported harnesses and copies their arrays", () => {
   const value = { agents: ["opencode", "claude-code", "codex", "zcode"].map((agent) => ({ ...entry, agent })) };
@@ -308,10 +322,10 @@ test("execute passes shell metacharacters unchanged to a real process", async ()
 
 test("timeout kills the process group even when its leader exits before a child ignoring SIGTERM", async () => {
   for (const ignore of [false, true]) {
-    const child = "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000);";
+    const child = `process.on('SIGTERM', () => {}); console.log('ready'); ${UNTIL_TEST_EXITS}`;
     const script = `const {spawn} = require('node:child_process'); ${ignore ? "process.on('SIGTERM', () => {});" : ""}
       spawn(process.execPath, ['-e', ${JSON.stringify(child)}], {stdio: 'inherit'});
-      setInterval(() => {}, 1000);`;
+      ${UNTIL_TEST_EXITS}`;
     const start = Date.now();
     const result = await execute([process.execPath, "-e", script], { capture: true, timeoutMs: 1000 });
     assert.equal(result.output, "ready");
@@ -426,7 +440,7 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     const { dir, workspace, path, args } = gitWorkspace(t);
     const script = join(dir, "harness.mjs");
-    writeFileSync(script, `process.on('SIGTERM', () => {}); process.kill(process.ppid, '${signal}'); setInterval(() => {}, 1000);`);
+    writeFileSync(script, `process.on('SIGTERM', () => {}); process.kill(process.ppid, '${signal}'); ${UNTIL_TEST_EXITS}`);
     writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
     const commands = [];
     const listeners = process.listenerCount(signal);
@@ -518,7 +532,7 @@ test("finish deadline stops a real child and preserves committed work", async (t
       commands.push(argv[2]);
       if (argv[2] !== "finish") return { code: 0 };
       assert.equal(options.timeoutMs, 100);
-      return execute([process.execPath, "-e", "setInterval(() => {}, 1000)"], { ...options, cwd: dir, capture: true });
+      return execute([process.execPath, "-e", UNTIL_TEST_EXITS], { ...options, cwd: dir, capture: true });
     },
   });
   assert.deepEqual(commands, ["claim", "finish"]);
@@ -543,7 +557,7 @@ test("SIGINT stops claim, finish and release children and exits the loop", async
         commands.push(argv[2]);
         if (argv[2] !== step) return { code: 0 };
         const result = await execute([process.execPath, "-e",
-          "process.on('SIGTERM', () => {}); process.kill(process.ppid, 'SIGINT'); setInterval(() => {}, 1000);"], { ...options, cwd: dir, capture: true });
+          `process.on('SIGTERM', () => {}); process.kill(process.ppid, 'SIGINT'); ${UNTIL_TEST_EXITS}`], { ...options, cwd: dir, capture: true });
         assert.equal(result.signal, "SIGKILL");
         return result;
       },
