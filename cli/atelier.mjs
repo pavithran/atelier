@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { homedir } from "node:os";
+import { constants as osConstants, homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { redactGitArgs } from "./runner.mjs";
@@ -116,7 +116,8 @@ const runnable = (path) => {
 };
 export function findOps(env = process.env) {
   if (env.ATELIER_OPS) { const named = resolve(env.ATELIER_OPS); return runnable(named) ? named : null; }
-  for (const dir of (env.PATH ?? "").split(":").filter(Boolean)) {
+  // An empty PATH entry is the current directory, as a shell reads it.
+  for (const dir of (env.PATH ?? "").split(":").map((d) => d || ".")) {
     const candidate = resolve(dir, "atelier-ops");
     if (runnable(candidate)) return candidate;
   }
@@ -130,8 +131,12 @@ function runOps(argv) {
   }
   const r = spawnSync(exe, argv, { stdio: "inherit" });
   if (r.error) { process.stderr.write(`atelier: could not run ${exe}: ${r.error.message}\n`); process.exit(2); }
-  // A toolkit ended by a signal ends this command the same way.
-  if (r.signal) process.kill(process.pid, r.signal);
+  // A toolkit ended by a signal ends this command the same way; a signal Node
+  // will not die of (SIGPIPE, SIGUSR1) gives the shell's 128 + its number.
+  if (r.signal) {
+    process.kill(process.pid, r.signal);
+    process.exit(128 + (osConstants.signals[r.signal] ?? 0));
+  }
   process.exit(r.status ?? 1);
 }
 if (isMain && process.argv[2] === "ops") runOps(process.argv.slice(3));
