@@ -502,6 +502,8 @@ it('the showcase sets a project known only from git beside Atelier\'s record, an
  expect(card('before')).toContain('&lt;Old&gt; project');
  expect(card('before')).not.toContain('<Old>');
  expect(card('with')).toContain('>Built<');
+ expect(card('before')).toContain('<b>50%</b> of commits name an agent');
+ expect(card('with')).not.toContain('class="compare-lead"');
  // A planned task nobody has claimed is still a task: that project is not "before".
  const planned=buildStory('planned',[{id:'t1',title:'Later',state:'open'}] as never,[{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Planned',{redact:true,ownerLabel:'PAVI'});
  const both=renderShowcase([withs,planned,before],withs.tally,'pavi','PAVI',false,new Map([['old',h],['planned',h]]));
@@ -510,4 +512,39 @@ it('the showcase sets a project known only from git beside Atelier\'s record, an
  expect(renderShowcase([withs,planned],withs.tally,'pavi','PAVI',false,new Map([['planned',h]]))).not.toContain('class="compare"');
  // With nothing imported there is nothing to compare.
  expect(renderShowcase([withs],withs.tally,'pavi','PAVI',false,new Map())).not.toContain('class="compare"');
+});
+
+it('the comparison leads with the share of reviews that sent work back',async()=>{
+ const {renderShowcase}=await import('../src/ui');
+ const {buildStory}=await import('../src/graph');
+ const {buildImported}=await import('../src/import/history');
+ const at=(m:number)=>new Date(Date.UTC(2026,9,4,12,m)).toISOString();
+ const evs=[
+  {seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}},
+  {seq:2,at:at(1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},
+  {seq:3,at:at(2),actor:'zcode/glm-5.3',kind:'review.rejected',itemId:'t1',data:{}},
+  {seq:4,at:at(3),actor:'zcode/glm-5.3',kind:'review.approved',itemId:'t1',data:{}},
+  {seq:5,at:at(4),actor:'opencode/gemini-3.1-pro-preview',kind:'review.approved',itemId:'t1',data:{}},
+ ].reverse();
+ const withs=buildStory('built',[{id:'t1',title:'Work',state:'claimed'}] as never,evs as never,'pavi',false,'Built',{redact:true,ownerLabel:'PAVI'});
+ const before=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
+ const h=buildImported([{hash:'a',committedAt:100,message:'x\n\nAgent: codex/gpt-6'}],null,true);
+ const html=renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',h]]));
+ const card=html.split('class="compare-card with"')[1].split('</a>')[0];
+ expect(card).toContain('<b>33%</b> of reviews sent the work back: 1 of 3.');
+});
+
+it('a share that rounds to 0% or 100% without being exactly that says so',async()=>{
+ const {renderShowcase}=await import('../src/ui');
+ const {buildStory}=await import('../src/graph');
+ const {buildImported}=await import('../src/import/history');
+ const at=(m:number)=>new Date(Date.UTC(2026,9,4,12,m)).toISOString();
+ const withs=buildStory('built',[{id:'t1',title:'Work',state:'claimed'}] as never,[{seq:2,at:at(1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Built',{redact:true,ownerLabel:'PAVI'});
+ const before=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
+ const commits=(named:number,total:number)=>Array.from({length:total},(_,i)=>({hash:`h${i}`,committedAt:i+1,message:i<named?'x\n\nAgent: codex/gpt-6':'x'}));
+ const lead=(named:number,total:number)=>renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',buildImported(commits(named,total),null,true)]])).split('class="compare-card before"')[1].split('</p>')[0];
+ expect(lead(1,300)).toContain('<b>&lt;1%</b>');
+ expect(lead(299,300)).toContain('<b>&gt;99%</b>');
+ expect(lead(300,300)).toContain('<b>100%</b>');
+ expect(lead(0,300)).toContain('<b>0%</b>');
 });
