@@ -43,6 +43,8 @@ export interface ProjectInit {
   title?: string | null;
   checks?: string[];
   protected?: string[];
+  agents?: ProjectPolicy["agents"];
+  execution?: ProjectPolicy["execution"];
   eligible?: string[];
   refuseOverlap?: boolean;
   sandboxOnly?: boolean;
@@ -63,6 +65,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
     ...(title ? { title } : {}),
     repo: i.repo,
     policy: {
+      ...((i.agents ?? p?.agents) !== undefined ? { agents: i.agents ?? p?.agents } : {}),
+      ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),
       checks: i.checks ?? p?.checks ?? [],
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
@@ -386,7 +390,10 @@ export class Ledger extends DurableObject<Env> {
 
   addReview(r: Review, origin?: string): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
-    assertEligible(r.by, this.project().policy, this.owner);
+    // Under a role policy any agent may record a review, and the gate counts
+    // only an assessor's; the executor role is for taking work, not reviewing.
+    const policy = this.project().policy;
+    if (!policy.agents) assertEligible(r.by, policy, this.owner);
     const item = this.item(r.itemId);
     assertLive(item);
     if (item.owner === r.by) throw new RuleError("self_review", "an owner cannot review their own item", 403);

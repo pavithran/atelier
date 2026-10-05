@@ -1,3 +1,4 @@
+import { familyOf } from "./models/pool.ts";
 import type { Dispatch } from "./dispatch/rules";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -51,13 +52,53 @@ export interface Review {
   at: string;
 }
 
+export type ChangeClass = "direct" | "coordinated" | "protected";
+export type AgentRole = "assessor" | "consultant" | "designer" | "executor" | "planner" | "reconciler";
+export interface AgentPolicy {
+  available: boolean;
+  eligible_roles: AgentRole[];
+  preferred_roles?: AgentRole[];
+}
+export interface ExecutionPolicy {
+  allowed_classes: ChangeClass[];
+  direct: { enabled: boolean; allowed_path_patterns: string[] };
+  protected_path_patterns: string[];
+}
+
 export interface ProjectPolicy {
+  agents?: Record<string, AgentPolicy>;
+  execution?: ExecutionPolicy;
   checks: string[];         // commands that must pass, observed, before acceptance
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
+}
+
+// Reject malformed policy at the boundary instead of silently widening access.
+export function parseAgents(value: unknown): Record<string, AgentPolicy> {
+  const roles = ["assessor", "consultant", "designer", "executor", "planner", "reconciler"];
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new RuleError("bad_policy", "agents must be an object", 400);
+  const entries = Object.entries(value).map(([name, a]) => {
+    if (!a || typeof a.available !== "boolean" || !Array.isArray(a.eligible_roles)
+      || !a.eligible_roles.every((r: unknown) => typeof r === "string" && roles.includes(r))
+      || (a.preferred_roles !== undefined && (!Array.isArray(a.preferred_roles) || !a.preferred_roles.every((r: unknown) => typeof r === "string" && roles.includes(r))))) {
+      throw new RuleError("bad_policy", `invalid roles for agent ${name}`, 400);
+    }
+    return [name, { available: a.available, eligible_roles: a.eligible_roles, ...(a.preferred_roles ? { preferred_roles: a.preferred_roles } : {}) }];
+  });
+  return Object.fromEntries(entries);
+}
+
+export function parseExecution(value: unknown): ExecutionPolicy {
+  const v = value as ExecutionPolicy | null;
+  const strings = (a: unknown): a is string[] => Array.isArray(a) && a.every((s) => typeof s === "string");
+  if (!v || !strings(v.allowed_classes) || !v.allowed_classes.every((c) => ["direct", "coordinated", "protected"].includes(c))
+    || !v.direct || typeof v.direct.enabled !== "boolean" || !strings(v.direct.allowed_path_patterns) || !strings(v.protected_path_patterns)) {
+    throw new RuleError("bad_policy", "invalid execution policy", 400);
+  }
+  return { allowed_classes: [...v.allowed_classes], direct: { enabled: v.direct.enabled, allowed_path_patterns: [...v.direct.allowed_path_patterns] }, protected_path_patterns: [...v.protected_path_patterns] };
 }
 
 // The actor that stands for the project owner. A deployment names its own with
@@ -147,13 +188,54 @@ export function assertClaimable(item: Item, actor: string): void {
   }
 }
 
-// "claude-code/opus-5.5" is eligible under "claude"; the project owner always is.
+// Role policy takes precedence over legacy harness eligibility.
 export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER): void {
+  if (policy.agents) {
+    if (!hasRole(actor, policy, "executor")) throw new RuleError("ineligible", `${actor} needs an available agent with the executor role`, 403);
+    return;
+  }
   if (actor === owner || !policy.eligible?.length) return;
   const harness = actor.split("/")[0];
   if (!policy.eligible.some((k) => harness === k || harness.startsWith(`${k}-`))) {
     throw new RuleError("ineligible", `${harness} is not an eligible agent here (eligible: ${policy.eligible.join(", ")})`, 403);
   }
+}
+
+// ControlPlane names agents separately from the harness that runs a model.
+export function agentOf(actor: string, agents: Record<string, AgentPolicy>): string | null {
+  const [harness, model] = actor.toLowerCase().split("/");
+  if (!model) return null;
+  const fixed = harness === "claude-code" ? "claude" : harness === "codex" ? "codex"
+    : harness === "zcode" || (harness === "opencode" && model.startsWith("glm")) ? "glm" : null;
+  const family = familyOf(model);
+  const names: Record<string, string> = { anthropic: "claude", openai: "gpt", zai: "glm", google: "gemini", meta: "llama" };
+  if (fixed) return Object.hasOwn(agents, fixed) ? fixed : null;
+  const name = names[family] ?? (family === "other" ? model.match(/^[a-z]+/)?.[0] : family);
+  if (name && Object.hasOwn(agents, name)) return name;
+  return family !== "other" && Object.hasOwn(agents, family) ? family : null;
+}
+
+export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): boolean {
+  if (!policy.agents) return true;
+  const name = agentOf(actor, policy.agents);
+  return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
+}
+
+export function countingReviews(reviews: Review[], head: string | null, policy: ProjectPolicy): Review[] {
+  return latestReviews(reviews, head).filter((r) => hasRole(r.by, policy, "assessor"));
+}
+
+export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass {
+  const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? [])];
+  if (paths.some((p) => matchesAny(p, guarded))) return "protected";
+  const direct = policy.execution?.direct;
+  return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
+}
+
+export function classRequirement(kind: ChangeClass): string {
+  if (kind === "protected") return "Protected change: needs one review from another model family";
+  if (kind === "coordinated") return "Coordinated change: needs one review from another agent";
+  return "Direct change: needs no review";
 }
 
 // Live items held by someone else whose scope overlaps this one.
@@ -234,6 +316,8 @@ export function checkFiles(checks: string[]): string[] {
 }
 
 export interface Gate {
+  changeClass?: ChangeClass | null;
+  requirement?: string;
   ready: boolean;
   blockers: string[];
   needsAssessor: boolean;
@@ -241,7 +325,7 @@ export interface Gate {
 }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Gate {
-  reviews = latestReviews(reviews, item.head);
+  reviews = countingReviews(reviews, item.head, policy);
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
   if (!item.head) blockers.push("no verified push");
@@ -252,23 +336,31 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   }
   if (view.changedPaths === null) blockers.push("changed paths not yet observed");
   const changed = view.changedPaths ?? [];
-  const guarded = [...policy.protected, ...checkFiles(policy.checks)];
-  const touchesProtected = changed.some((p) => matchesAny(p, guarded));
+  const kind = view.changedPaths === null ? null : changeClass(changed, policy);
+  const governed = policy.execution !== undefined;
+  const requirement = kind ? classRequirement(kind) : "Change class pending: changed paths not yet observed";
   let needsAssessor = false;
-  if (touchesProtected) {
+  if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
+  if (kind === "protected" || (governed && kind === "coordinated")) {
     const ownerModel = item.owner ? modelOf(item.owner) : "";
-    const independent = reviews.some(
-      (r) => r.head === item.head && r.approve && (r.by === owner || (r.by.includes("/") && modelOf(r.by) !== ownerModel)),
-    );
+    const ownerFamily = familyOf(ownerModel);
+    const independent = reviews.some((r) => {
+      if (!r.approve || r.by === item.owner) return false;
+      if (!governed) return r.by === owner || (r.by.includes("/") && modelOf(r.by) !== ownerModel);
+      if (!r.by.includes("/")) return false;
+      if (kind === "coordinated") return true;
+      const family = familyOf(modelOf(r.by));
+      return family !== "other" && ownerFamily !== "other" && family !== ownerFamily;
+    });
     if (!independent) {
       needsAssessor = true;
-      blockers.push("touches a protected path; needs approval from a different model or the project owner");
+      blockers.push(governed ? requirement : "touches a protected path; needs approval from a different model or the project owner");
     }
   }
   const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
   for (const r of rejected) blockers.push(`rejected by ${r.by}: ${r.note || "no note"}`);
   const outOfScope = item.scope.length ? changed.filter((p) => !matchesAny(p, item.scope)) : [];
-  return { ready: blockers.length === 0, blockers, needsAssessor, outOfScope };
+  return { ready: blockers.length === 0, blockers, needsAssessor, outOfScope, ...(governed ? { changeClass: kind, requirement } : {}) };
 }
 
 // "What needs the project owner now?" Only things a person must decide or
@@ -309,7 +401,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: "all checks observed passing at this head", weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: "touches a protected path; review it or assign a different model", weight: 80 });
+        out.push({ ...base, kind: "assess", reason: g.requirement ?? "touches a protected path; review it or assign a different model", weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
@@ -395,9 +487,9 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
   if (item.state === "accepted") return { title: "Ready to merge", detail: "Approval is recorded. Run the revision-bound command below in your local checkout.", action: "merge", tone: "go", passed };
   if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
-  if (item.state === "submitted" && g.needsAssessor) return { title: "Your review is needed", detail: "This task changes protected files. Review the changes and approve this revision, or request changes.", action: "review", tone: "ask", passed };
+  if (item.state === "submitted" && g.needsAssessor) return { title: "Your review is needed", detail: g.requirement ?? "This task changes protected files. Review the changes and approve this revision, or request changes.", action: "review", tone: "ask", passed };
   if (item.state === "submitted" && g.ready) return { title: "Ready to accept", detail: "Required checks passed for this revision. Accept it to prepare the local merge.", action: "accept", tone: "go", passed };
-  if (latestReviews(reviews, item.head).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
+  if (countingReviews(reviews, item.head, policy).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
   return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The task owner is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
 }
 

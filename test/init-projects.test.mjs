@@ -26,7 +26,8 @@ globalThis.fetch = async (url, options) => {
   appendFileSync(process.env.TEST_CALLS, JSON.stringify({ url, ...options }) + '\\n');
   if (process.env.TEST_REFUSE) return Response.json({ error: 'live_work', detail: 'live work' }, { status: 409 });
   return Response.json(options.method === 'DELETE' ? { removed: true } : {
-    project: { repo: 'weblog', policy: { checks: [], protected: [] } },
+    project: { repo: 'weblog', policy: { checks: [], protected: ['manual/**'] } },
+    remote: 'https://git.test/weblog', token: 'test-token',
     baseline: { remote: 'https://git.test/weblog', token: 'test-token' }
   });
 };
@@ -80,4 +81,49 @@ test("CLI removal of a project with no local entry names no dropped settings", (
   const removed = command(["projects", "remove", "elsewhere"]);
   assert.equal(removed.status, 0, removed.stderr);
   assert.doesNotMatch(removed.stdout, /Local settings dropped/);
+}));
+
+test("CLI init sends ControlPlane role and class policy", () => fixture(({ command, initial, calls }) => {
+  const dir = join(initial.projects.weblog.path, "docs/control-plane");
+  mkdirSync(dir, { recursive: true });
+  const agents = { codex: { available: true, eligible_roles: ["executor"], preferred_roles: ["planner"] } };
+  const execution = { allowed_classes: ["coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };
+  writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents }));
+  writeFileSync(join(dir, "execution-policy.v1.json"), JSON.stringify(execution));
+  const result = command(["init", "--approval", "Owner approved this fixture"]);
+  assert.equal(result.status, 0, result.stderr);
+  const body = JSON.parse(calls()[0].body);
+  assert.deepEqual(body.agents, agents);
+  assert.deepEqual(body.execution, execution);
+}));
+
+test("CLI sync refreshes ControlPlane policy even when the baseline already matches", () => fixture(({ command, initial, calls }) => {
+  const top = initial.projects.weblog.path;
+  initial.projects.weblog.fresh = true;
+  writeFileSync(join(top, "config.json"), JSON.stringify(initial));
+  const gitDir = join(top, "fake-git"), dir = join(top, "docs/control-plane");
+  mkdirSync(gitDir);
+  mkdirSync(dir, { recursive: true });
+  const head = "a".repeat(40);
+  writeFileSync(join(gitDir, "atelier-baseline-map.json"), JSON.stringify({ weblog: { [head]: head } }));
+  writeFileSync(join(top, "git"), `#!/usr/bin/env node
+if (process.argv.includes('--show-toplevel')) console.log(process.cwd());
+else if (process.argv.includes('--absolute-git-dir')) console.log(process.cwd() + '/fake-git');
+else if (process.argv.includes('--abbrev-ref')) console.log('main');
+else if (process.argv.includes('rev-parse')) console.log('a'.repeat(40));
+else if (process.argv.includes('config')) process.exit(1);
+else if (!process.argv.includes('status') && !process.argv.includes('fetch')) process.exit(2);
+`, { mode: 0o755 });
+  const agents = { codex: { available: true, eligible_roles: ["executor"] } };
+  const execution = { allowed_classes: ["protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };
+  writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents }));
+  writeFileSync(join(dir, "execution-policy.v1.json"), JSON.stringify(execution));
+  const result = command(["sync"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /baseline already matches/);
+  const body = JSON.parse(calls().find((c) => c.method === "PUT").body);
+  assert.deepEqual(body.agents, agents);
+  assert.deepEqual(body.execution, execution);
+  assert.ok(body.protected.includes("manual/**"));
+  assert.ok(body.protected.includes("security/**"));
 }));
