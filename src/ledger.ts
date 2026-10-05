@@ -1,3 +1,4 @@
+import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
@@ -85,6 +86,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -119,6 +121,39 @@ export class Ledger extends DurableObject<Env> {
 
   projects(): ProjectRecord[] {
     return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  // The model pool, on the index instance like the project list: shared by
+  // every project, written by the owner, read by runners.
+  models(): ModelEntry[] {
+    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  putModel(entry: ModelEntry): ModelEntry {
+    const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, entry.id).toArray()[0];
+    // A status is kept only while the entry is reached the way it was when
+    // the status was observed; a change there makes it a new, unchecked model.
+    const kept = row ? (JSON.parse(row.json as string) as ModelEntry) : undefined;
+    const status = kept && OBSERVED_UNDER.every((k) => kept[k] === entry[k]) ? kept.status : undefined;
+    const record = { ...entry, ...(status ? { status } : {}) };
+    this.sql.exec(`INSERT OR REPLACE INTO models (id, json) VALUES (?, ?)`, entry.id, JSON.stringify(record));
+    return record;
+  }
+
+  removeModel(id: string): boolean {
+    return this.sql.exec(`DELETE FROM models WHERE id = ?`, id).rowsWritten > 0;
+  }
+
+  // Only a runner of the kind the model runs on may report it: a home model
+  // by a home runner, a cloud model by a cloud runner.
+  setModelStatus(id: string, status: ModelStatus, kind: "home" | "cloud"): ModelEntry {
+    const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, id).toArray()[0];
+    if (!row) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    const entry = JSON.parse(row.json as string) as ModelEntry;
+    if (entry.where !== kind) throw new RuleError("wrong_runner", `${id} runs ${entry.where === "home" ? "at home" : "in the cloud"}; a ${kind} runner cannot report it`, 403);
+    const record = { ...entry, status };
+    this.sql.exec(`UPDATE models SET json = ? WHERE id = ?`, JSON.stringify(record), id);
+    return record;
   }
 
   // ── project instance ─────────────────────────────────────────────────────
