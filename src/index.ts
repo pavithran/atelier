@@ -47,13 +47,22 @@ function showcased(env: Env): string[] {
   return ((env as unknown as Settings).SHOWCASE ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+// The showcased names that are still registered: the page, the login link and
+// the front door all use this, so none of them points at a showcase that would
+// answer 404 after its last project was removed.
+async function liveShowcase(env: Env): Promise<string[]> {
+  const names = showcased(env);
+  if (!names.length) return [];
+  const registered = await index(env).projects();
+  return names.filter((name) => registered.some((p) => p.name === name));
+}
+
 // The public page, read without signing in. It reads only the named projects,
 // builds their stories redacted, and may be cached for a minute.
 async function showcase(env: Env, url: URL): Promise<Response> {
   // Read index membership before using a cached page. Removed projects must
   // not remain visible through a previously cached showcase.
-  const registered = await index(env).projects();
-  const names = showcased(env).filter((name) => registered.some((p) => p.name === name));
+  const names = await liveShowcase(env);
   const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}`);
   const hit = await caches.default.match(key);
   if (hit) return hit;
@@ -295,7 +304,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const registered = await index(env).projects();
     if (!registered.some((p) => p.name === project)) throw new RuleError("no_project", `no project ${project}`, 404);
-    assertProjectRemovable(await L.items(), body.force === true);
+    const items = await L.items();
+    // A task queued for a runner is live work too: removing the project would drop it from the queue while it stays claimable.
+    if (body.force !== true && items.some((i) => i.state === "open" && i.dispatch)) {
+      throw new RuleError("live_work", "project has work queued for a runner; use --force to remove it", 409);
+    }
+    assertProjectRemovable(items, body.force === true);
     if (!await index(env).removeProject(project)) throw new RuleError("no_project", `no project ${project}`, 404);
     return json({ removed: true });
   }
@@ -784,7 +798,7 @@ export default {
             },
           });
         }
-        return html(renderLogin(undefined, showcased(env).length > 0));
+        return html(renderLogin(undefined, (await liveShowcase(env).catch(() => [])).length > 0));
       }
       const how = await authorised(req, env);
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
@@ -794,11 +808,18 @@ export default {
         const actor = req.headers.get("x-atelier-actor") ?? "";
         if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
+        // Routes read fields from the body, so anything but a JSON object is refused here.
+        if (typeof body !== "object" || body === null || Array.isArray(body)) {
+          return json({ error: "bad_body", detail: "the request body must be a JSON object" }, 400);
+        }
         return await api({ env, req, url, actor, body }, parts.slice(1));
       }
       // The front door: a visitor who is not signed in sees the public showcase
       // when there is one, and is otherwise asked to sign in.
-      if (!how) return Response.redirect(new URL(parts.length === 0 && showcased(env).length ? "/showcase" : "/login", url).toString(), 303);
+      if (!how) {
+        const open = parts.length === 0 && (await liveShowcase(env).catch(() => [])).length > 0;
+        return Response.redirect(new URL(open ? "/showcase" : "/login", url).toString(), 303);
+      }
       return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
