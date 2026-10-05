@@ -246,6 +246,15 @@ config entry and then returns. It does not rename a server project, update
 its title or policy, or push a baseline. The server refuses a new project
 when its baseline repository belongs to another registered project.
 
+## Projects that use Git LFS
+
+Artifacts has no Git LFS. The `atelier` command pushes with LFS uploads
+turned off, so the baseline and every workspace hold LFS pointer files, and
+clones a workspace or a check run without downloading what they point to. A
+merge into the owner's checkout writes real LFS files, as git-lfs would. A project whose required
+checks need those files must fetch them itself; a build that only compiles
+around them, as many do, works as it is.
+
 ## Projects too large for Artifacts
 
 Artifacts holds at most 1 GB per repository and 32 MB per file. A project
