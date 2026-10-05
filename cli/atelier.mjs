@@ -3,16 +3,18 @@
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
-// sees in Artifacts. Only `atelier merge`, run by the project owner, touches
-// the checkout.
+// sees in Artifacts. Session checks run in the registered checkout and are
+// Reported. A session close does not commit, push or deploy.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, wrapRelay } from "../src/sessions.ts";
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
@@ -535,6 +537,11 @@ item with exactly one owner. Never edit the project checkout directly.
    \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
    paths need approval from a different model than the owner's.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
+
+For each session:
+
+1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
+2. End with \`atelier wrap "summary" --next "what is next"\` in the checkout; relay its final line.
 `;
 }
 
@@ -542,6 +549,8 @@ item with exactly one owner. Never edit the project checkout directly.
 
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 const usage = {
+  unwrap: "usage: atelier unwrap [--project P]",
+  wrap: 'usage: atelier wrap "summary" [--next TEXT] [--no-check] [--project P]',
   start: "usage: atelier start ID [--as harness/model]",
   done: 'usage: atelier done "summary"',
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
@@ -556,13 +565,17 @@ async function checkoutStatus(name, as) {
   return flat(await checkoutStatusLine(name, as));
 }
 
-async function checkoutStatusLine(name, as) {
+async function checkoutStatusLine(name, as, readOnly = false) {
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) return checkoutLine({ name, registered: false });
   const cwd = p.path, fresh = p.fresh === true;
-  const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-  const listed = git([...auth(base.token), "ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd });
-  const baselineHead = listed.split(/\s/)[0];
+  let baselineHead;
+  if (readOnly) baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
+  else {
+    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    const listed = git([...auth(base.token), "ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd });
+    baselineHead = listed.split(/\s/)[0];
+  }
   if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
   // The registered branch is compared, whatever is checked out: the line
   // names that branch, so its head is what it must describe.
@@ -578,7 +591,96 @@ async function checkoutStatusLine(name, as) {
   });
 }
 
+function sessionCheckout(name, requireHere = false) {
+  const cwd = cfg.projects?.[name]?.path;
+  if (!cwd || !existsSync(cwd)) {
+    if (requireHere) die("wrap needs a registered local checkout");
+    return null;
+  }
+  if (requireHere) {
+    const top = git(["rev-parse", "--show-toplevel"]);
+    if (realpathSync(top) !== realpathSync(cwd)) die("run wrap in the registered project checkout");
+  }
+  return cwd;
+}
+
+function sessionFiles(cwd) {
+  const paths = ["docs/STATE.md", "STATE.md"].filter((p) => existsSync(join(cwd, p)));
+  const state = stateFile(paths);
+  const contents = state ? readFileSync(join(cwd, state), "utf8") : "";
+  const scan = (dir, recursive) => {
+    if (!existsSync(join(cwd, dir))) return;
+    for (const entry of readdirSync(join(cwd, dir), { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isFile() && entry.name.endsWith(".md")) paths.push(path);
+      else if (recursive && entry.isDirectory()) scan(path, true);
+    }
+  };
+  scan("docs/handoffs", true);
+  scan("docs", false);
+  const modified = Object.fromEntries(paths.map((path) => [path, statSync(join(cwd, path)).mtime.toISOString()]));
+  return { state, contents, paths, modified };
+}
+
+function sessionTree(cwd) {
+  return git(["--no-optional-locks", "status", "--short", "--untracked-files=all"], { cwd });
+}
+
 const commands = {
+  async unwrap() {
+    const name = project(), as = actor(OWNER), cwd = sessionCheckout(name);
+    const standing = await call("GET", `${P(name)}/standing`, undefined, as);
+    console.log(formatStanding(standing, OWNER_NAME));
+    console.log(await checkoutStatusLine(name, as, true));
+    if (cwd) {
+      console.log(`Current branch: ${git(["branch", "--show-current"], { cwd }) || "detached HEAD"}`);
+      console.log(`Uncommitted files:\n${sessionTree(cwd) || "none"}`);
+    }
+    const [note] = await call("GET", `${P(name)}/sessions`, undefined, as);
+    console.log(sessionNoteText(note));
+    if (cwd) {
+      const files = sessionFiles(cwd);
+      if (files.state) console.log(fileExcerpt(files.state, files.contents));
+      for (const path of handoffNotes(files.contents, files.paths, note?.at, files.modified)) console.log(fileExcerpt(path, readFileSync(join(cwd, path), "utf8")));
+    }
+    console.log(UNWRAP_RELAY);
+  },
+
+  async wrap() {
+    const name = project(), as = actor(OWNER), cwd = sessionCheckout(name, true);
+    const head = git(["rev-parse", "HEAD"], { cwd });
+    let data;
+    try { data = cleanSession({ summary: args._[1], next: args.next, head, dirty: false, checks: [] }); }
+    catch (err) { die(err.message); }
+    if (args.next !== undefined && typeof args.next !== "string") die("--next needs text");
+    const diff = git(["diff", "--check"], { cwd, allowFail: true });
+    data.checks.push({ command: "git diff --check", passed: diff.status === 0, grade: "reported" });
+    console.log(`Reported: git diff --check: ${diff.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+    if (diff.stdout || diff.stderr) console.log(diff.stdout || diff.stderr);
+    const { project: record } = await call("GET", P(name), undefined, as);
+    data.checksSkipped = args["no-check"] === true;
+    if (!data.checksSkipped) for (const command of record.policy.checks) {
+      const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+      data.checks.push({ command, passed: result.status === 0, grade: "reported" });
+      console.log(`Reported: ${command}: ${result.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+    }
+    const [previous] = await call("GET", `${P(name)}/sessions`, undefined, as);
+    const { state } = sessionFiles(cwd);
+    if (state && previous) {
+      const before = git(["show", `${previous.data.head}:${state}`], { cwd, allowFail: true });
+      const warning = staleState(state, previous.data.head, before.status === 0 && before.stdout === readFileSync(join(cwd, state), "utf8"));
+      if (warning) console.log(warning);
+      if (before.status !== 0) console.log(`Could not compare ${state} with the previous session HEAD.`);
+    }
+    const tree = sessionTree(cwd);
+    console.log(`Uncommitted files:\n${tree || "none"}`);
+    data.dirty = !!tree;
+    data.head = git(["rev-parse", "HEAD"], { cwd });
+    const note = await call("POST", `${P(name)}/sessions`, data, as);
+    console.log(sessionNoteText(note));
+    console.log(wrapRelay(note));
+  },
+
   // Reached only when `ops` is not the first word; see runOps.
   async ops() {
     die("put ops first: atelier ops COMMAND [ARGS...]; everything after it goes to the operations toolkit", 2);
@@ -1306,6 +1408,7 @@ const commands = {
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
+Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--no-check] [--project P]
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]

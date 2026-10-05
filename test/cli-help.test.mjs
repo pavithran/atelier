@@ -49,3 +49,12 @@ test("projects frobnicate prints its usage and exits 1 without contacting the se
   assert.match(r.stderr, /usage: atelier projects remove NAME/);
   assert.doesNotMatch(r.stderr, /no server|fetch failed|ECONNREFUSED|ENOTFOUND/);
 });
+test("session commands are listed and the guide teaches both boundaries", () => {
+  assert.match(run(["help"]).stdout, /Sessions\s+unwrap.*wrap/);
+  const guide = run(["guide"]);
+  assert.equal(guide.status, 0);
+  assert.match(guide.stdout, /1\. Start a session with `atelier unwrap/);
+  assert.match(guide.stdout, /2\. End with `atelier wrap/);
+  assert.match(run(["wrap", "--help"]).stdout, /usage: atelier wrap/);
+  assert.match(run(["unwrap", "--help"]).stdout, /usage: atelier unwrap/);
+});

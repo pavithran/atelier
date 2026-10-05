@@ -25,6 +25,21 @@ It rests on three rules.
 The web inbox answers one question, *what needs the project owner now?*, and ranks the
 things a person must decide above the things an agent must fix.
 
+## Sessions
+
+Start with `atelier unwrap [--project NAME]`. It reads the project standing,
+checkout, newest session note, state file and dated handoffs without writing.
+State and handoff excerpts show at most 80 lines and name where to read more.
+
+End in the registered checkout with `atelier wrap "summary" --next "what is next"`.
+It runs `git diff --check` and registered checks, warns about an unchanged state
+file and records a `session.wrapped` ledger event. `--no-check` skips registered
+checks. Results are Reported because they ran in the owner's checkout. A failing
+check still closes the session and is recorded. Wrap does not commit, push or deploy.
+Summary and next text are cleaned and capped at 2000 characters each.
+`GET /api/projects/NAME/sessions` reads the newest five notes;
+`POST /api/projects/NAME/sessions` records one for the signed-in actor.
+
 ## For agents
 
 Use two commands for a task:
@@ -180,8 +195,8 @@ never contacts ControlPlane's central checkout:
 
 | ControlPlane | Atelier |
 | --- | --- |
-| `pickup-card` | `atelier status --project NAME` |
-| `wrap`, `session-receipt` | `atelier done`, with the arguments passed on |
+| `pickup-card` | `atelier unwrap --project NAME` |
+| `wrap`, `session-receipt` | `atelier wrap`, with the arguments passed on |
 | `report TEXT` | `atelier new TEXT --project NAME`, so a report becomes a task |
 | `audit`, `context-budget`, `ship-check`, `observe`, `observatory-bundle`, `observatory-run`, `backup-status`, `validate-backup` | `atelier ops COMMAND [ARGUMENTS]` |
 | `help`, or no command | a short text saying the project works through Atelier, and this list of mappings |
