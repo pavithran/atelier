@@ -58,3 +58,8 @@ test("session commands are listed and the guide teaches both boundaries", () => 
   assert.match(run(["wrap", "--help"]).stdout, /usage: atelier wrap/);
   assert.match(run(["unwrap", "--help"]).stdout, /usage: atelier unwrap/);
 });
+
+test("guide teaches filing, relay blocks and private saved copies", () => {
+  const text = run(["guide"]).stdout;
+  for (const pattern of [/--project cloudflare-git/, /Lesson: /, /--found TEXT/, /fenced block/, /bash for a command/, /text for prose/, /~\/Documents\/ai-project-data\/<project>\//, /metadata only/]) assert.match(text, pattern);
+});

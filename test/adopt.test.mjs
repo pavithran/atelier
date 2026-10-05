@@ -86,7 +86,7 @@ test("the entry point runs the Atelier command each ControlPlane command became"
 });
 
 test("a mapping to a command the real atelier has not got fails loudly", (t) => {
-  const broken = template.replace("pickup-card|unwrap) run unwrap --project", "pickup-card|unwrap) run statuss --project");
+  const broken = template.replace("run unwrap --project", "run statuss --project");
   assert.notEqual(broken, template, "the mapping was renamed");
   const run = entryPoint(t, "weblog", broken);
   const r = run("pickup-card");
@@ -516,4 +516,12 @@ test("an AGENTS.md with no heading gets the section at the top", async (t) => {
   const agents = f.read("AGENTS.md");
   assert.ok(agents.startsWith("## This project works through Atelier\n"), agents.slice(0, 60));
   assert.ok(agents.endsWith(prose), "every line of the file is kept");
+});
+
+test("pickup-card refuses extra arguments with one line", (t) => {
+  const run = entryPoint(t, "weblog");
+  const r = run("pickup-card", "extra");
+  assert.equal(r.status, 2);
+  assert.equal(r.stderr.trim().split("\n").length, 1);
+  assert.match(r.stderr, /takes no arguments/);
 });

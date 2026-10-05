@@ -4,7 +4,7 @@
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
 // sees in Artifacts. Session checks run in the registered checkout and are
-// Reported. A session close does not commit, push or deploy.
+// Reported. Wrap commits and updates the baseline; checkout remote pushes are opt-in.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -14,7 +14,9 @@ import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, wrapRelay } from "../src/sessions.ts";
+import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay } from "../src/sessions.ts";
+
+import { contextBudget, evaluateCeilings } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
@@ -519,7 +521,7 @@ export function guideText() {
   return `## Working through Atelier
 
 Several agents may work on this project at once. Each piece of work is an
-item with exactly one owner. Never edit the project checkout directly.
+item with exactly one owner. Task work belongs in its claimed workspace.
 
 1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
    and prints its workspace, title, scope and note. Work only there.
@@ -541,7 +543,14 @@ item with exactly one owner. Never edit the project checkout directly.
 For each session:
 
 1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
-2. End with \`atelier wrap "summary" --next "what is next"\` in the checkout; relay its final line.
+2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout; it commits and updates the baseline. Add \`--push\` to push each checkout remote. It never deploys or publishes a release.
+3. ${FILING_RELAY} Use repeatable \`--found TEXT\` on wrap to file tasks in this project.
+
+Session notes keep metadata only, never prompts, transcripts or file contents.
+Material for the owner to copy is one complete fenced block with a language
+tag: bash for a command the owner runs, text for prose, a brief or an envelope.
+Never leave prose the owner must select by hand. Save a copy under
+~/Documents/ai-project-data/<project>/, never the portfolio root.
 `;
 }
 
@@ -550,7 +559,7 @@ For each session:
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 const usage = {
   unwrap: "usage: atelier unwrap [--project P]",
-  wrap: 'usage: atelier wrap "summary" [--next TEXT] [--no-check] [--project P]',
+  wrap: 'usage: atelier wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]',
   start: "usage: atelier start ID [--as harness/model]",
   done: 'usage: atelier done "summary"',
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
@@ -653,6 +662,33 @@ const commands = {
     try { data = cleanSession({ summary: args._[1], next: args.next, head, dirty: false, checks: [] }); }
     catch (err) { die(err.message); }
     if (args.next !== undefined && typeof args.next !== "string") die("--next needs text");
+    const found = args.multi.found ?? [];
+    if (found.length > 100 || found.some((text) => typeof text !== "string" || !sessionText(text))) die("--found needs text, at most 100 times");
+    if (args.push !== undefined && args.push !== true) die("--push takes no value");
+    const ready = () => {
+      const branch = git(["branch", "--show-current"], { cwd });
+      if (!branch) die("wrap refuses a detached HEAD");
+      for (const path of ["MERGE_HEAD", "rebase-merge", "rebase-apply", "atelier-landing.json"]) {
+        if (existsSync(resolve(cwd, git(["rev-parse", "--git-path", path], { cwd })))) die("wrap refuses a merge or rebase in progress");
+      }
+      if (branch !== cfg.projects[name].branch) die(`check out ${cfg.projects[name].branch} before wrap`);
+      const policyPath = join(cwd, "docs/control-plane/context-budget.v1.json");
+      if (existsSync(policyPath)) {
+        const policy = contextBudget(JSON.parse(readFileSync(policyPath, "utf8")));
+        const contents = Object.create(null);
+        for (const surface of policy.surfaces) {
+          const path = join(cwd, surface.path);
+          if (!existsSync(path)) continue;
+          if (!realpathSync(path).startsWith(realpathSync(cwd) + "/")) die(`context surface escapes checkout: ${surface.path}`);
+          contents[surface.path] = readFileSync(path, "utf8");
+        }
+        const result = evaluateCeilings(policy, contents);
+        result.messages.forEach((message) => console.log(message));
+        if (result.refused) die("wrap refused: context ceiling exceeded");
+      }
+      return branch;
+    };
+    ready();
     const diff = git(["diff", "--check"], { cwd, allowFail: true });
     data.checks.push({ command: "git diff --check", passed: diff.status === 0, grade: "reported" });
     console.log(`Reported: git diff --check: ${diff.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
@@ -674,10 +710,40 @@ const commands = {
     }
     const tree = sessionTree(cwd);
     console.log(`Uncommitted files:\n${tree || "none"}`);
-    data.dirty = !!tree;
+    const branch = ready();
+    const remotes = args.push ? git(["remote"], { cwd }).split("\n").filter(Boolean) : [];
+    if (remotes.length > 100) die("wrap supports at most 100 remote results");
+    data = cleanSession(data);
+    data.sessionAt = new Date().toISOString();
+    git(["add", "-A"], { cwd });
+    const staged = git(["diff", "--cached", "--quiet"], { cwd, allowFail: true });
+    if (staged.status === 1) {
+      git(["commit", "-F", "-"], { cwd, input: sessionCommitMessage(data.summary, data.next, data.sessionAt) });
+      data.commit = git(["rev-parse", "HEAD"], { cwd });
+      console.log(`Committed session as ${data.commit}.`);
+    } else if (staged.status === 0) console.log("Nothing to commit.");
+    else die("could not inspect staged changes");
+    data.pushes = [];
+    for (const remote of remotes) {
+      const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true });
+      data.pushes.push({ remote, passed: result.status === 0 });
+      console.log(`Remote ${sessionText(remote, 200)}: ${result.status === 0 ? "pushed" : "failed"}.`);
+    }
+    if (!args.push) console.log("Checkout remotes not pushed (no --push).");
+    data.found = [];
+    for (const text of found) {
+      const item = await call("POST", `${P(name)}/items`, { title: sessionText(text), scope: [] }, as);
+      data.found.push(item.id);
+      console.log(`Filed ${item.id}: ${sessionText(text)}`);
+    }
+    data.dirty = !!sessionTree(cwd);
     data.head = git(["rev-parse", "HEAD"], { cwd });
-    const note = await call("POST", `${P(name)}/sessions`, data, as);
+    const note = await call("POST", `${P(name)}/sessions`, cleanSession(data), as);
     console.log(sessionNoteText(note));
+    if (cfg.projects[name].fresh === true) await commands.sync();
+    else await commands.publish();
+    console.log("Nothing deployed or published as a release.");
+    console.log(FILING_RELAY);
     console.log(wrapRelay(note));
   },
 
@@ -1408,7 +1474,7 @@ const commands = {
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--no-check] [--project P]
+Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]

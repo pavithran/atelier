@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, wrapRelay } from "../src/sessions.ts";
+import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, wrapRelay, sessionCommitMessage } from "../src/sessions.ts";
 
 const input = { summary: "A\nB\u202e\u200bC", next: "x".repeat(3000), head: "a".repeat(40), dirty: true, checks: [{ command: "npm test", passed: false, grade: "observed" }] };
 test("session text is cleaned, capped and always reported", () => {
@@ -38,4 +38,16 @@ test("a dated handoff changed later on the same day is newer", () => {
   const path = "docs/handoffs/2026-10-05-note.md";
   assert.deepEqual(handoffNotes("", [path], "2026-10-05T12:00:00Z", { [path]: "2026-10-05T13:00:00Z" }), [path]);
   assert.deepEqual(handoffNotes("", [path], "2026-10-05T12:00:00Z", { [path]: "2026-10-05T11:00:00Z" }), []);
+});
+
+test("session metadata is bounded, cleaned and excludes content", () => {
+  const data = cleanSession({ ...input, sessionAt: "2026-10-05T12:00:00.000Z", commit: input.head,
+    pushes: [{ remote: "origin\n" + "x".repeat(300), passed: false, output: "private output" }], found: ["t1"], prompt: "private", transcript: "private", files: "private" });
+  assert.equal(data.pushes?.[0].remote.length, 200);
+  assert.equal(JSON.stringify(data).includes("private"), false);
+  assert.throws(() => cleanSession({ ...input, pushes: Array(101).fill({ remote: "x", passed: true }) }));
+  assert.throws(() => cleanSession({ ...input, found: ["t1\nsecret"] }));
+  assert.throws(() => cleanSession({ ...input, commit: "not a hash" }));
+  assert.throws(() => cleanSession({ ...input, sessionAt: "unbounded" }));
+  assert.equal(sessionCommitMessage("Summary\nclean", "Next\nstep", "2026-10-05T12:00:00.000Z"), "Summary clean\n\nNext step\n\nAtelier-Session: 2026-10-05T12:00:00.000Z\n");
 });

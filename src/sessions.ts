@@ -1,5 +1,10 @@
 export const SESSION_TEXT_MAX = 2000;
+// Metadata only. Never store prompts, transcripts, file contents or command output.
 export interface SessionData {
+  sessionAt?: string;
+  commit?: string;
+  pushes?: { remote: string; passed: boolean }[];
+  found?: string[];
   summary: string;
   next: string;
   head: string;
@@ -28,7 +33,27 @@ export function cleanSession(value: Record<string, unknown>): SessionData {
     if (!c || typeof c !== "object" || !sessionText(c.command) || typeof c.passed !== "boolean") throw new Error("a check needs a command and boolean result");
     return { command: sessionText(c.command), passed: c.passed, grade: "reported" as const };
   });
-  return { summary, next: sessionText(value.next), head: value.head, dirty: value.dirty, checks, checksSkipped: value.checksSkipped === true };
+  const metadata: Partial<SessionData> = {};
+  if (value.sessionAt !== undefined) {
+    if (typeof value.sessionAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.sessionAt)) throw new Error("invalid session time");
+    metadata.sessionAt = value.sessionAt;
+  }
+  if (value.commit !== undefined) {
+    if (typeof value.commit !== "string" || !/^[a-f0-9]{40,64}$/.test(value.commit)) throw new Error("invalid session commit");
+    metadata.commit = value.commit;
+  }
+  if (value.pushes !== undefined) {
+    if (!Array.isArray(value.pushes) || value.pushes.length > 100) throw new Error("at most 100 remote results allowed");
+    metadata.pushes = value.pushes.map((p) => {
+      if (!p || !sessionText(p.remote, 200) || typeof p.passed !== "boolean") throw new Error("invalid remote result");
+      return { remote: sessionText(p.remote, 200), passed: p.passed };
+    });
+  }
+  if (value.found !== undefined) {
+    if (!Array.isArray(value.found) || value.found.length > 100 || value.found.some((id) => typeof id !== "string" || !/^t[0-9]{1,20}$/.test(id))) throw new Error("invalid filed task ids");
+    metadata.found = value.found;
+  }
+  return { ...metadata, summary, next: sessionText(value.next), head: value.head, dirty: value.dirty, checks, checksSkipped: value.checksSkipped === true };
 }
 
 export function stateFile(paths: string[]): string | undefined {
@@ -56,12 +81,20 @@ export function fileExcerpt(path: string, contents: string, limit = 80): string 
 export function sessionNoteText(note?: SessionNote): string {
   if (!note) return "No session note recorded.";
   const d = note.data;
-  return [`Session: ${sessionText(note.actor)} at ${note.at}`, d.summary, `Next: ${d.next || "not recorded"}`,
+  return [`Session: ${sessionText(note.actor)} at ${sessionText(note.at, 40)}`, d.summary, `Next: ${d.next || "not recorded"}`,
     `Checkout HEAD: ${d.head}; tree ${d.dirty ? "dirty" : "clean"}.`,
+    ...(d.commit ? [`Session commit: ${d.commit}`] : []),
+    ...(d.pushes ?? []).map((p) => `Remote ${sessionText(p.remote, 200)}: ${p.passed ? "pushed" : "failed"}.`),
+    ...(d.found?.length ? [`Filed tasks: ${d.found.join(", ")}`] : []),
     ...d.checks.map((c) => `Reported: ${c.command}: ${c.passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`),
     ...(d.checksSkipped ? ["Registered checks skipped (--no-check)."] : [])].join("\n");
 }
-export const UNWRAP_RELAY = "Say in a short paragraph what is true, what is open and what you will do.";
+export const FILING_RELAY = 'Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project cloudflare-git. File a lesson worth keeping the same way with a title starting "Lesson: ".';
+export const UNWRAP_RELAY = "Say in a short paragraph what is true, what is open and what you will do. " + FILING_RELAY;
 export function wrapRelay(note: SessionNote): string {
   return note.data.checks.some((c) => !c.passed) ? "Relay: session closed with a failing check." : "Relay: session closed; checks are Reported, not Observed.";
+}
+
+export function sessionCommitMessage(summary: string, next: string, at: string): string {
+  return `${sessionText(summary)}\n\n${next ? `${sessionText(next)}\n\n` : ""}Atelier-Session: ${sessionText(at, 40)}\n`;
 }
