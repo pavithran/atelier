@@ -736,6 +736,22 @@ const commands = {
     if (remotes.length > 100) die("wrap supports at most 100 remote results");
     data = cleanSession(data);
     data.sessionAt = new Date().toISOString();
+    // Conflict markers refuse the commit, checked before anything is staged so
+    // a refusal leaves the index as the owner had it: tracked changes against
+    // HEAD, staged or not, and each new file against nothing. A conflict
+    // resolved with `git add` and its markers left in leaves no operation
+    // marker or unmerged entry behind, so only the content shows it.
+    const marked = [];
+    const tracked = git(["diff", "HEAD", "--check"], { cwd, allowFail: true });
+    if (/leftover conflict marker/.test(tracked.stdout || "")) marked.push(tracked.stdout);
+    for (const file of git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd, raw: true }).split("\0").filter(Boolean)) {
+      const fresh = git(["diff", "--no-index", "--check", "/dev/null", file], { cwd, allowFail: true });
+      if (/leftover conflict marker/.test(fresh.stdout || "")) marked.push(fresh.stdout);
+    }
+    if (marked.length) {
+      const where = [...new Set(marked.join("\n").split("\n").map((line) => line.match(/^([^:]+):\d+: leftover conflict marker/)?.[1]).filter(Boolean))];
+      die(`wrap will not commit conflict markers: ${where.map((p) => sessionText(p, 200)).join(", ")}; resolve them first. Nothing was staged.`);
+    }
     git(["add", "-A"], { cwd });
     // Whitespace is checked on what the commit will hold, after staging: the
     // index against HEAD takes in staged changes and new files, which a diff of
