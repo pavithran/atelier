@@ -247,7 +247,7 @@ function readJson(path) {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
 }
 
-function readControlPlane(top) {
+export function readControlPlane(top) {
   const dir = join(top, "docs", "control-plane");
   const agent = readJson(join(dir, "agent-policy.v1.json"));
   const exec = readJson(join(dir, "execution-policy.v1.json"));
@@ -271,7 +271,15 @@ function readControlPlane(top) {
     sources.push("project-adapter.v1.json");
     for (const s of adapter.protected_surfaces ?? []) if (s.pattern) protectedPaths.add(s.pattern);
   }
-  return { sources, protected: [...protectedPaths], eligible, refuseOverlap };
+  return {
+    sources, protected: [...protectedPaths], eligible, refuseOverlap,
+    ...(agent ? { agents: agent.agents ?? {} } : {}),
+    ...(exec ? { execution: {
+      allowed_classes: exec.allowed_classes ?? ["direct", "coordinated", "protected"],
+      direct: { enabled: exec.direct?.enabled ?? false, allowed_path_patterns: exec.direct?.allowed_path_patterns ?? [] },
+      protected_path_patterns: exec.protected_path_patterns ?? [],
+    } } : {}),
+  };
 }
 
 function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote }) {
@@ -454,7 +462,11 @@ const commands = {
     const policy = {};
     if (args.multi.check || reset) policy.checks = args.multi.check ?? [];
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...(args.multi.protect ?? [])])];
-    if (cp) policy.eligible = cp.eligible ?? [];
+    if (cp) {
+      policy.eligible = cp.eligible ?? [];
+      if (cp.agents) policy.agents = cp.agents;
+      if (cp.execution) policy.execution = cp.execution;
+    }
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]);
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = Boolean(args["sandbox-only"]);
     const r = await call("PUT", P(name), {
@@ -755,6 +767,16 @@ const commands = {
     try { unlock = landingLock(gitDir); } catch (error) { die(error.message); }
     try {
       if (existsSync(join(gitDir, "atelier-landing.json"))) die("a merge is in progress; finish it or cancel it first");
+      const cp = readControlPlane(cwd);
+      if (cp) {
+        const current = await call("GET", P(name));
+        await call("PUT", P(name), {
+          protected: [...new Set([...current.project.policy.protected, ...cp.protected])],
+          eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false,
+          ...(cp.agents ? { agents: cp.agents } : {}),
+          ...(cp.execution ? { execution: cp.execution } : {}),
+        }, OWNER);
+      }
       const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
       git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
       const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });

@@ -492,3 +492,37 @@ it("repo policy keeps re-init available for legacy duplicate registrations", asy
   expect(() => assertRepoAvailable(projects, "legacy", "legacy")).not.toThrow();
   expect(() => assertRepoAvailable(projects, "LEGACY", "legacy")).toThrow(/repo_taken/);
 });
+
+it("governed policy persists across init and gates claims, handoffs, reviews and acceptance", async () => {
+  const agents: NonNullable<ProjectPolicy["agents"]> = {
+    claude: { available: true, eligible_roles: ["executor", "assessor"] },
+    codex: { available: true, eligible_roles: ["assessor"] },
+    glm: { available: true, eligible_roles: ["executor"] },
+  };
+  const execution: NonNullable<ProjectPolicy["execution"]> = {
+    allowed_classes: ["direct", "coordinated", "protected"],
+    direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: ["secret/**"],
+  };
+  const L = ledger("governed");
+  await L.initProject({ name: "governed", repo: "governed", reset: false, checks: ["npm test"], agents, execution }, "owner");
+  await L.initProject({ name: "governed", repo: "governed", reset: false, title: "Governed" }, "owner");
+  expect((await L.project()).policy).toMatchObject({ agents, execution });
+  await L.newItem("Coordinated change", ["src/**"], "owner");
+  await refusal(L.claim("t1", B), "ineligible", /executor role/);
+  await L.claim("t1", A);
+  await refusal(L.handoff("t1", A, B, "handoff"), "ineligible", /executor role/);
+  await L.setFork("t1", "governed--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1));
+  await L.submit("t1", A);
+  await L.addReview(review("t1", "opencode/glm-5.3", H1, true));
+  await refusal(L.accept("t1", "owner"), "not_ready", /another agent/);
+  await L.addReview(review("t1", B, H1, true));
+  await refusal(L.accept("t1", B), "not_project_owner", /only the project owner/);
+  expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
+  await L.initProject({ name: "governed", repo: "governed", reset: false, agents: {} }, "owner");
+  expect((await L.project()).policy.agents).toEqual({});
+  await L.initProject({ name: "governed", repo: "governed", reset: true }, "owner");
+  expect((await L.project()).policy.agents).toBeUndefined();
+  expect((await L.project()).policy.execution).toBeUndefined();
+});

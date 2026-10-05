@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
+  agentOf, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
   assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap, validActor,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
@@ -232,4 +232,102 @@ test("actor names allow a :profile suffix on the model, never on the harness", (
   assert.ok(validActor("pavi"));
   assert.equal(validActor("open:code/glm"), false);
   assert.equal(validActor("opencode/mlx-community/Qwen3"), false);
+});
+
+const governed: ProjectPolicy = {
+  ...policy,
+  agents: {
+    claude: { available: true, eligible_roles: ["executor", "assessor"] },
+    codex: { available: true, eligible_roles: ["executor", "assessor"] },
+    glm: { available: true, eligible_roles: ["executor"] },
+    gemini: { available: false, eligible_roles: ["executor", "assessor"] },
+    qwen: { available: true, eligible_roles: ["assessor"], preferred_roles: ["executor"] },
+  },
+  execution: {
+    allowed_classes: ["direct", "coordinated", "protected"],
+    direct: { enabled: true, allowed_path_patterns: ["docs/**"] },
+    protected_path_patterns: ["docs/secret/**"],
+  },
+};
+const review = (by: string, over: Partial<Review> = {}): Review => ({ itemId: "t1", by, head: H1, approve: true, note: "", at: T, ...over });
+
+test("ControlPlane actor mapping uses harness aliases and listed model families", () => {
+  for (const [actor, name] of [
+    ["claude-code/opus-5.5", "claude"], ["codex/gpt-6-astra", "codex"],
+    ["zcode/anything", "glm"], ["opencode/GLM-5.3:local", "glm"],
+    ["opencode/sonnet-5.5", "claude"], ["gemini-cli/gemini-3", "gemini"],
+    ["opencode/qwen3-coder", "qwen"], ["other/deepseek-v4", null],
+    ["opencode/unknown", null], ["owner", null],
+  ]) assert.equal(agentOf(actor!, governed.agents!), name);
+  assert.equal(agentOf("codex/gpt-6", {}), null);
+  assert.equal(agentOf("opencode/gpt-6", { openai: governed.agents!.codex }), "openai");
+});
+
+test("claims and handoff eligibility require an available executor, not a preferred role", () => {
+  const open = item({ state: "open", owner: null });
+  for (const actor of ["opencode/qwen3", "gemini-cli/gemini-3", "other/unknown", "owner"]) {
+    assert.throws(() => assertClaimAllowed(open, [], governed, actor), /executor role/);
+    assert.throws(() => assertEligible(actor, governed), /executor role/);
+  }
+  assert.doesNotThrow(() => assertClaimAllowed(open, [], governed, "opencode/glm-5.3"));
+  assert.throws(() => assertClaimAllowed(open, [], { ...governed, agents: {} }, "codex/gpt-6"), /executor role/);
+});
+
+test("changed paths take the strictest class and retain implicit check protection", () => {
+  for (const [paths, kind] of [
+    [["docs/a.md"], "direct"], [["src/a.ts"], "coordinated"],
+    [["docs/a.md", "src/a.ts"], "coordinated"],
+    [["docs/a.md", "docs/secret/key"], "protected"],
+    [["src/a.ts", "AGENTS.md"], "protected"], [["package.json"], "protected"],
+    [[], "direct"],
+  ] as [string[], string][]) assert.equal(changeClass(paths, governed), kind);
+  assert.equal(changeClass(["docs/a.md"], { ...governed, execution: { ...governed.execution!, direct: { enabled: false, allowed_path_patterns: ["**"] } } }), "coordinated");
+});
+
+test("direct needs no review, coordinated needs another actor, protected needs another family", () => {
+  const direct = [pass({ changedPaths: ["docs/a.md"] })];
+  const coordinated = [pass()];
+  const protectedChange = [pass({ changedPaths: ["AGENTS.md"] })];
+  assert.equal(gate(item(), governed, direct, []).ready, true);
+  assert.equal(gate(item(), governed, coordinated, []).needsAssessor, true);
+  assert.equal(gate(item(), governed, coordinated, [review(item().owner!)]).ready, false);
+  assert.equal(gate(item(), governed, coordinated, [review("claude-code/sonnet-5.5")]).ready, true);
+  assert.equal(gate(item(), governed, protectedChange, [review("claude-code/sonnet-5.5")]).ready, false);
+  assert.equal(gate(item(), governed, protectedChange, [review("opencode/opus-5.5")]).ready, false);
+  assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6")]).ready, true);
+  assert.equal(gate(item(), governed, protectedChange, [review("owner")]).ready, false);
+  assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6", { head: H2 })]).ready, false);
+});
+
+test("reviews without an available assessor role do not approve or reject the gate", () => {
+  for (const by of ["opencode/glm-5.3", "gemini-cli/gemini-3", "other/unknown"]) {
+    assert.equal(gate(item(), governed, [pass()], [review(by)]).ready, false);
+    assert.equal(gate(item(), governed, [pass()], [review("codex/gpt-6"), review(by, { approve: false })]).ready, true);
+  }
+  assert.equal(gate(item(), governed, [pass()], [review("codex/gpt-6"), review("codex/gpt-6", { approve: false, at: "2026-10-04" })]).ready, false);
+});
+
+test("disallowed classes block even with approval; missing paths do not imply direct", () => {
+  const p = { ...governed, execution: { ...governed.execution!, allowed_classes: [] } };
+  for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
+    assert.match(gate(item(), p, [pass({ changedPaths: [path] })], [review("codex/gpt-6")]).blockers.join(), /not allowed/);
+  }
+  const g = gate(item(), governed, [], []);
+  assert.equal(g.changeClass, null);
+  assert.equal(g.ready, false);
+  assert.match(g.requirement!, /pending/);
+});
+
+test("policy parsing rejects malformed roles and execution rules", () => {
+  assert.deepEqual(parseAgents(governed.agents), governed.agents);
+  assert.deepEqual(parseExecution(governed.execution), governed.execution);
+  for (const value of [null, [], { codex: { available: "yes", eligible_roles: ["executor"] } }, { codex: { available: true, eligible_roles: ["admin"] } }]) assert.throws(() => parseAgents(value), /400\|bad_policy/);
+  for (const value of [null, {}, { ...governed.execution, allowed_classes: ["unknown"] }, { ...governed.execution, direct: { enabled: "true", allowed_path_patterns: [] } }]) assert.throws(() => parseExecution(value), /400\|bad_policy/);
+});
+
+test("ungoverned gates retain exact-model independence and owner review", () => {
+  assert.equal(gate(item(), policy, [pass()], []).ready, true);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("claude-code/sonnet-5.5")]).ready, true);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("owner")]).ready, true);
+  assert.equal(gate(item(), policy, [pass()], []).changeClass, undefined);
 });
