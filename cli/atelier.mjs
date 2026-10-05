@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { redactGitArgs } from "./runner.mjs";
+
 import { landingJournal, landingLock } from "./landing.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
@@ -48,8 +50,12 @@ function apiToken() {
 
 function git(args, opts = {}) {
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
-  const shown = args.filter((a, i) => !a.startsWith("http.extraHeader") && !(a === "-c" && args[i + 1]?.startsWith("http.extraHeader")));
-  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${(r.stderr || r.stdout).trim()}`);
+  const shown = redactGitArgs(args);
+  let detail = (r.stderr || r.stdout || "").trim();
+  for (const [i, arg] of args.entries()) {
+    if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
+  }
+  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${detail}`);
   return opts.allowFail ? r : r.stdout.trim();
 }
 
@@ -134,15 +140,20 @@ function itemArg(i = 1) {
 }
 
 async function call(method, path, body, as, extra = {}) {
-  const res = await fetch(server() + "/api" + path, {
-    method,
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
+  let res, text;
+  try {
+    res = await fetch(server() + "/api" + path, {
+      method,
+      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    text = await res.text();
+  } catch (error) { die(`server request failed: ${error.message}`, 4); }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`);
+  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
+    res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
   return data;
 }
 
@@ -305,6 +316,26 @@ async function checkInSandbox() {
 // ── commands ───────────────────────────────────────────────────────────────
 
 const commands = {
+  async runner() {
+    const { runRunner } = await import("./runner.mjs");
+    try {
+      await runRunner(args, {
+        workspacePath,
+        async queue(offer, signal) {
+          const res = await fetch(server() + "/api/queue", {
+            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "content-type": "application/json" },
+            body: JSON.stringify(offer),
+          });
+          if (!res.ok) throw new Error(`queue: ${res.status}`);
+          const incomplete = res.headers.get("x-atelier-incomplete");
+          if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
+          return res.json();
+        },
+      });
+    } catch (error) { die(error.message); }
+  },
+
   async login() {
     if (!args.server) die("usage: atelier login --server https://atelier.example.com");
     cfg.server = String(args.server).replace(/\/$/, "");
@@ -851,7 +882,7 @@ Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects remove NAME [--force] · init --name NAME --rename-local
-Local      gc [--project NAME] [--dry-run | --apply]
+Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
