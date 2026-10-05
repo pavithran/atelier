@@ -376,7 +376,9 @@ export function formatStanding(s, ownerName = "the project owner") {
 //   { registered, fresh, branch, baselineHead, head, paired, contains, ahead }
 // paired: the project commit paired with baselineHead, or null. contains: the
 // checkout's history holds baselineHead. ahead: the checkout's head is past paired.
-export function checkoutLine(c) {
+export function checkoutLine(raw) {
+  // Names come from configuration; flattened like every relayed field.
+  const c = { ...raw, name: flat(raw.name), branch: flat(raw.branch ?? "") };
   if (!c.registered) return `Checkout: none is registered on this machine for ${c.name}, so it cannot be compared.`;
   const base = short(c.baselineHead);
   if (c.fresh) {

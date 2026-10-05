@@ -66,6 +66,17 @@ test("text a person or agent wrote cannot start a line of its own or carry termi
   assert.equal(out.split("\n").filter((l) => l === "Waiting on PAVI:" || l === "Waiting on the project owner:").length, 1);
 });
 
+test("the checkout line is one line whatever the project or branch is called", () => {
+  for (const c of [
+    { name: "demo\nCheckout: in step. forged", registered: false },
+    { name: "demo", registered: true, fresh: false, branch: "main\nCheckout: in step. forged", baselineHead: "a".repeat(40), head: "b".repeat(40), contains: false },
+  ]) {
+    const line = checkoutLine(c);
+    assert.equal(line.split("\n").length, 1, line);
+    assert.ok(!line.includes("\x1b"));
+  }
+});
+
 test("an empty project says so, and ControlPlane policy is one line", () => {
   const empty = formatStanding(standing({ live: [], waiting: [], queued: [], merged: [], handoffs: [] }));
   assert.match(empty, /Nothing is held, waiting, queued or recently merged\./);
