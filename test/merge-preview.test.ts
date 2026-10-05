@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedRegions, linesConflict, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
+import { changedRegions, commitsSince, linesConflict, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
 import type { Reader } from "../src/diff.ts";
 
 // A content-addressed toy: files are named by their text, trees by a label.
@@ -82,7 +82,7 @@ function artifactsOf(repos: Record<string, { log: string[]; trees: Record<string
       const r = repos[name];
       const reader = repo(r.trees);
       return {
-        log: async () => r.log.map((h) => ({ hash: h, treeHash: h })),
+        log: async () => r.log.map((h, i) => ({ hash: h, treeHash: h, parents: r.log[i + 1] ? [r.log[i + 1]] : [] })),
         readTree: (h: string) => reader.tree(h),
         readBlob: async (h: string) => { const b = await reader.blob(h); return b ? new Blob([b]) : null; },
         [Symbol.dispose]() {},
@@ -101,15 +101,15 @@ test("the preview against main counts main's new commits and finds a conflict", 
   assert.equal(p?.merge.ours, 2);
 });
 
-test("the preview says main has not moved when its head is the fork point, and floors an old fork point", async () => {
+test("the preview says main has not moved when its head is the fork point, and gives none when the fork point is not on main", async () => {
   const trees = { base: { "a.ts": "1\n" }, task: { "a.ts": "2\n" }, m1: { "b.ts": "b\n" } };
   const still = await previewAgainstMain(artifactsOf({ main: { log: ["base"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
   assert.deepEqual([still?.ahead, still?.merge.clean], [0, true]);
-  const old = await previewAgainstMain(artifactsOf({ main: { log: ["m1"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
-  assert.deepEqual([old?.ahead, old?.aheadCapped], [1, true]);
+  const gone = await previewAgainstMain(artifactsOf({ main: { log: ["m1"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
+  assert.equal(gone, null, "a fork point not on a fully read main gives no preview");
 });
 
-// Each case was run through git merge on 2026-10-04; the expected answer is git's.
+// Each case was run through git merge on 2026-10-04 and 2026-10-05; the expected answer is git's.
 test("the conflict rule agrees with git's merge on edits, insertions and deletions", () => {
   const L = (s: string) => s.split("");
   const cases: [string, string, string, string, boolean][] = [
@@ -121,6 +121,22 @@ test("the conflict rule agrees with git's merge on edits, insertions and deletio
     ["a deletion next to an edit", "1234", "134", "12T4", true],
     ["different appends", "12", "12x", "12y", true],
     ["edits to the first and last of two lines", "12", "O2", "1T", true],
+    ["an insertion right before an edited line", "1234", "12x34", "12T4", true],
+    ["an insertion right after an edited line", "1234", "123x4", "12T4", true],
+    ["an insertion at the top and an edit of the first line", "123", "x123", "O23", true],
   ];
   for (const [name, base, ours, theirs, git] of cases) assert.equal(linesConflict(L(base), L(ours), L(theirs)), git, name);
+});
+
+test("main's new commits are those the fork point cannot reach, merged side branches included", () => {
+  // main: M (merge of S into C), S (side, forked from A), C, B (the fork point), A.
+  // An older side commit S sits after B in this order; git rev-list B..M counts M, S, C.
+  const log = [
+    { hash: "M", parents: ["C", "S"] }, { hash: "C", parents: ["B"] }, { hash: "B", parents: ["A"] },
+    { hash: "S", parents: ["A"] }, { hash: "A", parents: [] },
+  ];
+  assert.deepEqual(commitsSince(log, "B", false), { ahead: 3, capped: false });
+  assert.deepEqual(commitsSince(log, "M", false), { ahead: 0, capped: false });
+  assert.deepEqual(commitsSince(log.slice(0, 2), "B", true), { ahead: 2, capped: true }, "a cut log without the fork point is a floor");
+  assert.deepEqual(commitsSince(log, "Z", false), { ahead: null, capped: false });
 });
