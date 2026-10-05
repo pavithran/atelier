@@ -375,7 +375,28 @@ const usage = {
   projects: "usage: atelier projects remove NAME [--force]",
 };
 
+// Portfolio operations (surveys, devices and shipping, backups, Observatory,
+// the findings ledger) live in a private toolkit, not in this public command:
+// `atelier ops ...` hands its arguments, untouched, to the program ATELIER_OPS
+// names or to atelier-ops on PATH, and exits with its status.
+export function findOps(env = process.env) {
+  if (env.ATELIER_OPS) return existsSync(env.ATELIER_OPS) ? env.ATELIER_OPS : null;
+  for (const dir of (env.PATH ?? "").split(":").filter(Boolean)) {
+    const candidate = join(dir, "atelier-ops");
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 const commands = {
+  async ops() {
+    const exe = findOps();
+    if (!exe) die("atelier ops runs the operations toolkit, atelier-ops, which is not installed on this machine: put it on PATH or set ATELIER_OPS to its path", 2);
+    const at = process.argv.indexOf("ops", 2);
+    const r = spawnSync(exe, process.argv.slice(at + 1), { stdio: "inherit" });
+    process.exit(r.status ?? 1);
+  },
+
   async runner() {
     const { runRunner } = await import("./runner.mjs");
     try {
@@ -1077,6 +1098,7 @@ Models     models · models add ID --harness H --where home|cloud [--provider P]
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects remove NAME [--force] · init --name NAME --rename-local
 Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]
+Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
@@ -1089,7 +1111,8 @@ if (isMain) {
   if (!fn) die(`unknown command "${cmd}"; try atelier help`);
   // --help/-h anywhere prints the command's usage, or the general help, and
   // exits before any server contact.
-  if (args.help) {
+  // `atelier ops` passes --help on to the toolkit with everything else.
+  if (args.help && cmd !== "ops") {
     if (cmd !== "help" && usage[cmd]) console.log(usage[cmd]);
     else commands.help();
     process.exit(0);
