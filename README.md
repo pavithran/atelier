@@ -271,6 +271,66 @@ A runner's name is declared, like every actor's; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits.
 
+## Home runner
+
+`atelier runner` polls the queue every 30 seconds, claims one eligible task,
+and runs its configured harness in the claimed workspace. The brief is kept
+outside that workspace. After a successful harness exit with a new commit,
+the runner calls `finish` to push, run required checks, and submit. Failure
+releases a claim only when no new commit was made. Otherwise the claim stays
+in place for inspection. Two counters are kept for each project and task id,
+across revision changes. The task counter never resets. Two task failures,
+including harness failures and finish failures other than exit 4, skip the
+task for the rest of the process. A separate counter skips it after three consecutive infrastructure failures,
+including claim errors other than refusals, workspace preparation errors,
+HEAD read errors after successful harness exits, and finish exit 4. This
+counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
+increase either counter. Interruptions stop the runner without updating either
+counter. An infrastructure failure moves on to the next offered task in the
+same poll; `--once` still handles at most one task.
+Reaching either cap logs that the task needs the owner's attention; the
+infrastructure message includes the reason. Project names rejected by runner
+validation are skipped and remembered so other tasks
+can run.
+SIGINT stops polling and interrupts the active child process. A second
+interrupt exits immediately.
+
+Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
+
+```json
+{
+  "agents": [
+    {
+      "agent": "opencode",
+      "models": ["GLM-5.3-Flash-4_8bit"],
+      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."]
+    }
+  ]
+}
+```
+
+Agent ids are `opencode`, `claude-code`, `codex`, or `zcode`. Set model ids
+and command arguments to match the installed harness. Commands are argv
+arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
+the runner invokes them directly without a shell. The example requires that
+model to be configured in opencode. Atelier login and credentials are shared
+with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
+deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
+deadline from 60 minutes. Expiry terminates the process group, with forced
+termination after five seconds. A finish timeout leaves the claim held.
+
+```sh
+atelier runner --name home:studio
+```
+
+Add `--once` to handle at most one task and exit, including when the queue
+is empty.
+
+The CLI's exit codes let the runner tell a task's own failure from the
+server's: 0 success, 1 a refusal or failure of the command, 3 a claim the
+server refused, 4 the server unavailable or a request that failed in
+transit (retry later).
+
 ## The public showcase
 
 `/showcase` is the one page anyone can read without signing in. It shows the

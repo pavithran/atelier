@@ -118,7 +118,8 @@ test("CLI gc uses only GET requests, defaults to preview, and fails closed on AP
     return { status, output };
   }
   const preview = await run(); assert.equal(preview.status, 0); assert.match(preview.output, /WOULD REMOVE/); assert.ok(existsSync(dir));
-  fail = true; assert.equal((await run("--apply")).status, 1); assert.ok(existsSync(dir));
+  // A server error exits 4 (unavailable, retry later), still failing closed.
+  fail = true; assert.equal((await run("--apply")).status, 4); assert.ok(existsSync(dir));
   fail = false; assert.equal((await run("--apply")).status, 0); assert.ok(!existsSync(dir));
   assert.ok(requests.every((s) => s.startsWith("GET ")));
   assert.ok(requests.includes("GET /api/projects/proj/items/t1"));
