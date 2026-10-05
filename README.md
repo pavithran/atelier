@@ -188,9 +188,10 @@ when its baseline repository belongs to another registered project.
 
 ## Projects that use Git LFS
 
-Artifacts has no Git LFS. The `atelier` command pushes and clones with LFS
-uploads and downloads turned off, so the baseline and every workspace hold
-LFS pointer files, not the files they point to. A project whose required
+Artifacts has no Git LFS. The `atelier` command pushes with LFS uploads
+turned off, so the baseline and every workspace hold LFS pointer files, and
+clones a workspace or a check run without downloading what they point to. A
+merge into the owner's checkout writes real LFS files, as git-lfs would. A project whose required
 checks need those files must fetch them itself; a build that only compiles
 around them, as many do, works as it is.
 
