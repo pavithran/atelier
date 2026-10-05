@@ -400,3 +400,17 @@ it('the log stops offering older pages at its last page instead of looping',asyn
  expect(last).toContain('Older commits are not paged here');
  expect(renderLog({project,item:null,at:null},head,[head],3,true)).toContain('>Older<');
 });
+
+it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
+ const {renderMainPreview}=await import('../src/ui');
+ expect(renderMainPreview(undefined)).toBe('');
+ expect(renderMainPreview(null)).toContain('could not be read just now');
+ expect(renderMainPreview({head:'h',ahead:0,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:0,theirs:1}})).toContain('Main has not moved');
+ const clean=renderMainPreview({head:'h',ahead:3,aheadCapped:false,merge:{clean:true,conflicts:[],both:['x.ts'],ours:4,theirs:1}});
+ expect(clean).toContain('Merges cleanly');
+ expect(clean).toContain('3 commits since this task forked, changing 4 paths; both sides changed 1 path, and the changes do not overlap');
+ const bad=renderMainPreview({head:'h',ahead:1000,aheadCapped:true,merge:{clean:false,conflicts:[{path:'<b>.ts',reason:'both sides changed the same lines'}],both:['<b>.ts'],ours:1,theirs:1}});
+ expect(bad).toContain('1 conflict');
+ expect(bad).toContain('at least 1,000 commits');
+ expect(bad).toContain('<code>&lt;b&gt;.ts</code>');
+});

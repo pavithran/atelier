@@ -1,4 +1,5 @@
 import { itemDiff, type ItemDiff } from "./diff";
+import { previewAgainstMain } from "./preview/merge";
 import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
@@ -558,12 +559,24 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
 
 async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
   if (!fork) return null;
+  let diff: ItemDiff | null;
   try {
-    return await itemDiff(env.ARTIFACTS, baselineRepo, fork);
+    diff = await itemDiff(env.ARTIFACTS, baselineRepo, fork);
   } catch (err) {
     console.error("diff unavailable", err);
     return "unavailable";
   }
+  // The merge preview is read beside the diff; when it cannot be read the
+  // diff is still shown, and the page says the preview is missing.
+  if (diff?.files.length && diff.baseTree && diff.headTree) {
+    try {
+      diff.main = await previewAgainstMain(env.ARTIFACTS, baselineRepo, fork, diff.base, diff.baseTree, diff.headTree);
+    } catch (err) {
+      console.error("merge preview unavailable", err);
+      diff.main = null;
+    }
+  }
+  return diff;
 }
 
 function runnerOffer(body: Record<string, unknown>): RunnerOffer {
