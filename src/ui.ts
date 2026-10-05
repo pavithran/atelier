@@ -10,7 +10,7 @@ import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
-import { drawImported } from "./import/draw";
+import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
@@ -295,6 +295,41 @@ function importedBlock(h: ImportedHistory | undefined, owner: string, title: str
 </div>`;
 }
 
+// Before and with Atelier, side by side: a project known only from its git
+// history beside the record Atelier kept of its own tasks. Shown when there
+// is one of each; each side links to its drawing further down.
+export function compareBlock(stories: Story[], imported: Map<string, ImportedHistory>, t: Tally, owner: string, who: string): string {
+  const before = stories.find((s) => !s.threads.length && imported.get(s.project)?.total);
+  const withs = stories.filter((s) => s.threads.length);
+  if (!before || !withs.length || !t.claims) return "";
+  const h = imported.get(before.project)!;
+  const named = h.lanes.filter((l) => l.label !== NO_AGENT);
+  const bar = h.lanes.map((l) => `<span style="--c:${laneColour(l.label, owner)};width:${((l.count / h.lanes.reduce((n, x) => n + x.count, 0)) * 100).toFixed(2)}%"></span>`).join("");
+  const total = t.agentMoves + t.decisions || 1;
+  const ours = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
+    .map(([v]) => `<span style="--c:var(--m-${v});width:${((t.byVendor[v]! / total) * 100).toFixed(2)}%"></span>`).join("")
+    + `<span style="--c:var(--m-owner);width:${((t.decisions / total) * 100).toFixed(2)}%"></span>`;
+  const row = (n: number | string, label: string, dim = false) => `<li${dim ? ' class="none"' : ""}><b>${typeof n === "number" ? n.toLocaleString("en") : e(n)}</b> ${e(label)}</li>`;
+  const withTitle = withs.map((s) => e(s.title)).join(" and ");
+  const tasks = withs.reduce((n, s) => n + s.threads.length, 0);
+  return `<section class="compare" aria-label="Before and with Atelier">
+  <a class="compare-card before" href="#${e(before.project)}">
+    <span class="kicker">Before Atelier · from git</span>
+    <h2>${e(before.title)}</h2>
+    <div class="tally-bar" aria-hidden="true">${bar}</div>
+    <ul>${row(h.total, `commits${h.complete ? "" : " (the most recent part)"}`)}${row(h.attributed, `name ${plural(named.length, "agent")} in their messages`)}${row("—", "checks tied to a revision", true)}${row("—", "reviews by another model", true)}${row("—", `decisions by ${who}`, true)}</ul>
+    <p class="meta">Git keeps what each commit message claims. It cannot say whether the checks passed on that revision, which model reviewed it, or who decided it should land.</p>
+  </a>
+  <a class="compare-card with" href="#${e(withs[0].project)}">
+    <span class="kicker">With Atelier · observed</span>
+    <h2>${withTitle}</h2>
+    <div class="tally-bar" aria-hidden="true">${ours}</div>
+    <ul>${row(tasks, `${tasks === 1 ? "task" : "tasks"} taken, each by one agent on its own fork`)}${row(t.checks, `checks run on a clean copy of the exact revision`)}${row(t.approvals + t.sentBack, `reviews, ${t.sentBack} sending work back`)}${row(t.decisions, `decisions by ${who}`)}${row(t.merges, "merged, with their record attached")}</ul>
+    <p class="meta">Atelier records each step as it happens: who held the task, what ran on which revision, who reviewed it, and the decision that let it land.</p>
+  </a>
+</section>`;
+}
+
 function flowParts(stories: Story[], t: Tally, owner: string, where: string, href?: (s: Story) => (th: { id: string }) => string, who = "You", imported: Map<string, ImportedHistory> = new Map()): FlowParts {
   const shown = stories.filter((s) => s.threads.length || imported.get(s.project)?.total);
   const moments = shown
@@ -303,9 +338,11 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
     .slice(0, 14);
   const many = shown.length > 1;
   const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.title)}">
-  <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}</span>
+  <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${s.threads.length
+    ? `${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}`
+    : "History imported from git · no Atelier tasks yet"}</span>
   ${s.threads.length ? `<a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
-  ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
+  ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : imported.get(s.project)?.total ? "" : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
   ${importedBlock(imported.get(s.project), owner, s.title)}
 </section>`).join("");
   const yours = who === "You" ? "your" : `${who}'s`;
@@ -374,6 +411,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     ${tallyBlock(total, who)}
   </header>
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
+  ${compareBlock(stories, imported, total, owner, who)}
   ${body}
   <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded.</p>
 </main></body></html>`;
