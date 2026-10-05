@@ -1,3 +1,5 @@
+import { assertReviewAllowed } from "./rules.ts";
+import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
@@ -20,18 +22,12 @@ export { CheckRunner, Egress, Ledger };
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
 
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any };
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken };
 
 // ── auth ───────────────────────────────────────────────────────────────────
-// One bearer token, held in the Keychain as atelier.API_TOKEN. Identity is
-// declared by the caller (X-Atelier-Actor); the token proves only that the
-// caller is one of the project owner's own tools. What makes ownership real is that a
-// fork's write token is minted for its owner alone and revoked on handoff.
-
-async function sha256(s: string): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+// The owner bearer token may declare any actor for orchestration. Agent tokens
+// prove one actor, expire, and may be limited to projects. Only hashes are
+// stored. Only the owner token can sign in to the browser or decide for the owner.
 
 function sameString(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -150,11 +146,15 @@ function serverToken(env: Env): string | undefined {
   return (env as unknown as { ATELIER_TOKEN?: string }).ATELIER_TOKEN;
 }
 
-async function authorised(req: Request, env: Env): Promise<"api" | "ui" | null> {
+async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentToken | null> {
   const want = serverToken(env);
   if (!want) return null;
   const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (bearer && sameString(bearer, want)) return "api";
+  if (bearer) {
+    const token = await index(env).agentToken(await sha256(bearer));
+    return token && tokenActive(token, Date.now()) ? token : null;
+  }
   const cookie = /(?:^|;\s*)atelier=([a-f0-9]{64})/.exec(req.headers.get("cookie") ?? "")?.[1];
   if (cookie && sameString(cookie, await sha256(want))) return "ui";
   return null;
@@ -241,9 +241,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req, actor, body } = c;
   const m = req.method;
 
-  if (parts[0] === "inbox" && m === "GET") return json(await inbox(env));
-  // The model pool: any signed-in caller reads it (runners do); only the owner
-  // changes it; a runner reports a model's status under its runner name.
+  if (parts[0] === "tokens") {
+    requireOwner(env, actor);
+    const I = index(env);
+    if (parts.length === 1 && m === "GET") return json(await I.agentTokens());
+    if (parts.length === 1 && m === "POST") {
+      const options = tokenOptions(body, ownerActor(env), Date.now());
+      const token = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+      const hash = await sha256(token);
+      const record = { ...options, id: crypto.randomUUID().replaceAll("-", "").slice(0, 16), hash };
+      await I.putAgentToken(record);
+      const { hash: _, ...publicRecord } = record;
+      return json({ ...publicRecord, token }, 201);
+    }
+    if (parts.length === 2 && m === "DELETE") return json({ revoked: await I.revokeAgentToken(parts[1]) });
+    throw new RuleError("not_found", "no such route", 404);
+  }
+  if (parts[0] === "inbox" && m === "GET") return json(await inbox(env, c.token));
+  // The model pool requires the owner token. Owner tools may read it and
+  // report runner status; changes also require the owner actor.
   if (parts[0] === "models") {
     const I = index(env);
     if (parts.length === 1 && m === "GET") return json(await I.models());
@@ -267,7 +283,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // what it can run and gets back the tasks it may claim, with the name to claim under.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
-    const projects = await index(env).projects();
+    const projects = (await index(env).projects()).filter((p) => inScope(c.token, p.name));
     const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
       try { return (await ledger(env, p.name).waiting()).map((item) => ({ project: p.name, item })); }
@@ -277,7 +293,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const result = offer
       ? queued.flatMap(({ project, item }) => {
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
-          return a ? [{ project, item, ...a }] : [];
+          return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -286,7 +302,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return res;
   }
   if (parts[0] !== "projects") throw new RuleError("not_found", "no such route", 404);
-  if (parts.length === 1 && m === "GET") return json(await index(env).projects());
+  if (parts.length === 1 && m === "GET") return json((await index(env).projects()).filter((p) => inScope(c.token, p.name)));
 
   const project = parts[1];
   const L = ledger(env, project);
@@ -374,7 +390,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   switch (verb) {
     case "claim": {
-      const { item, needsFork } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")));
+      const { item, needsFork } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
       const p = await L.project();
       let fork = item.fork;
       if (needsFork) {
@@ -382,9 +398,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try {
           using base = await env.ARTIFACTS.get(p.repo);
           await base.fork(fork, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
-          await L.setFork(id, fork, await headOf(env, fork), actor);
+          await L.setFork(id, fork, await headOf(env, fork), actor, !!c.token);
         } catch (err) {
-          await L.unclaim(id, actor, codeOf(err).trim());
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
           throw err;
         }
       }
@@ -410,7 +426,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      return json(await L.recordPush(id, actor, observed, body.head ?? null));
+      return json(await L.recordPush(id, actor, observed, body.head ?? null, !!c.token));
     }
     case "evidence": {
       const item = await L.item(id);
@@ -430,7 +446,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (check && item.fork && e.head !== (await headOf(env, item.fork))) {
         throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
       }
-      await L.addEvidence(e, c.url.origin);
+      await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
     }
     case "sandbox": {
@@ -446,6 +462,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         checks: p.policy.checks, requestedBy: actor,
       };
       await L.setNotificationOrigin(id, c.url.origin);
+      if (c.token) await L.recordSandboxRequest(id, actor, runId);
       const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
       return json({ runId, state }, 202);
     }
@@ -455,24 +472,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.undispatch(id, actor));
     case "review": {
       const item = await L.item(id);
+      assertReviewAllowed(item, !!c.token);
       assertRevision(item, String(body.head ?? ""));
       if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
-      }, c.url.origin);
+      }, c.url.origin, !!c.token);
       return json(await L.detail(id));
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.
       const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
       if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
-      return json(await L.submit(id, actor, summary, c.url.origin));
+      return json(await L.submit(id, actor, summary, c.url.origin, !!c.token));
     case "handoff": {
       const to = String(body.to ?? "");
       const before = await L.item(id);
       const oldToken = await L.tokenId(id);
-      const item = await L.handoff(id, actor, to, String(body.note ?? ""));
+      const item = await L.handoff(id, actor, to, String(body.note ?? ""), !!c.token);
       await revoke(env, before.fork, oldToken);
       await L.setToken(id, null);
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
@@ -480,7 +498,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "release": {
       const before = await L.item(id);
       const oldToken = await L.tokenId(id);
-      const item = await L.release(id, actor, String(body.note ?? ""));
+      const item = await L.release(id, actor, String(body.note ?? ""), !!c.token);
       await revoke(env, before.fork, oldToken);
       await L.setToken(id, null);
       return json(item);
@@ -651,8 +669,8 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   };
 }
 
-async function inbox(env: Env) {
-  const projects = await index(env).projects();
+async function inbox(env: Env, token?: AgentToken) {
+  const projects = (await index(env).projects()).filter((p) => inScope(token, p.name));
   const now = new Date().toISOString();
   const lists = await Promise.all(projects.map((p) => ledger(env, p.name).inbox(now)));
   return lists.flat().sort((a, b) => b.weight - a.weight);
@@ -857,16 +875,25 @@ export default {
       const how = await authorised(req, env);
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       if (parts[0] === "api") {
-        if (how !== "api") return json({ error: "unauthorised" }, 401);
-        if (parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env) });
-        const actor = req.headers.get("x-atelier-actor") ?? "";
+        if (how !== "api" && (typeof how !== "object" || !how)) return json({ error: "unauthorised" }, 401);
+        const token = typeof how === "object" && how ? how : undefined;
+        const declared = req.headers.get("x-atelier-actor");
+        if (token && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
+          return json({ error: "actor_mismatch", detail: "X-Atelier-Actor must equal the agent token actor" }, 403);
+        }
+        if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token ? { actor: token.actor } : {}) });
+        const actor = token?.actor ?? declared ?? "";
         if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
           return json({ error: "bad_body", detail: "the request body must be a JSON object" }, 400);
         }
-        return await api({ env, req, url, actor, body }, parts.slice(1));
+        if (token) {
+          if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
+          if (parts[1] === "projects" && parts[2] && !inScope(token, parts[2])) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
+        }
+        return await api({ env, req, url, actor, body, token }, parts.slice(1));
       }
       // The front door: a visitor who is not signed in sees the public showcase
       // when there is one, and is otherwise asked to sign in.
@@ -874,6 +901,7 @@ export default {
         const open = parts.length === 0 && (await liveShowcase(env).catch(() => [])).length > 0;
         return Response.redirect(new URL(open ? "/showcase" : "/login", url).toString(), 303);
       }
+      if (typeof how === "object") return html("Agent tokens cannot use browser routes.", 403);
       return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
