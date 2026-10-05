@@ -526,3 +526,9 @@ body.public main { margin: 0 auto; padding: 28px 16px 64px; }
 .model form.inline { margin-top: 10px; }
 button.quiet { background: transparent; color: var(--text-muted); border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 5px 12px; font-size: 13px; cursor: pointer; }
 button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
+
+/* ── merge preview: the task against main as it is now ───────────────────── */
+.merge-preview { margin: 8px 0 12px; }
+.merge-preview .tag { margin-right: 6px; }
+.merge-conflicts { margin: 6px 0 4px; padding-left: 20px; }
+.merge-conflicts li { margin: 2px 0; overflow-wrap: anywhere; }

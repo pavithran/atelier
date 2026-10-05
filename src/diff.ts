@@ -3,6 +3,8 @@
 // line diff (Myers) and the tree walk live here. The algorithms are pure and
 // take a reader, so they are tested without Cloudflare.
 
+import type { MainPreview } from "./preview/merge.ts";
+
 export type Op = { op: " " | "+" | "-"; text: string };
 
 export interface Hunk {
@@ -28,6 +30,9 @@ export interface ItemDiff {
   head: string;
   files: FileChange[];
   truncated: boolean;    // more changed files than the limit; the rest are not listed
+  baseTree?: string;     // the fork point's tree and the head's, for the merge preview
+  headTree?: string;
+  main?: MainPreview | null;  // against main as it is now; absent when not read
 }
 
 export const LIMITS = {
@@ -298,5 +303,5 @@ export async function itemDiff(artifacts: Artifacts, baselineRepo: string, works
   if (!fp) return null;
   if (fp.base === fp.head) return { base: fp.base, head: fp.head, files: [], truncated: false };
   const { files, truncated } = await treeDiff(repoReader(fork), fp.baseTree, fp.headTree);
-  return { base: fp.base, head: fp.head, files, truncated };
+  return { base: fp.base, head: fp.head, files, truncated, baseTree: fp.baseTree, headTree: fp.headTree };
 }
