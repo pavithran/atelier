@@ -46,9 +46,9 @@ test("the drawing escapes agent names and draws only names, counts and times", (
   assert.equal(drawImported(buildImported([], null, true), "pavi", "Demo"), "");
 });
 
-test("the email goes and the text on either side of it stays; the name is capped by code points after the agent test", () => {
+test("the name is the text before the email, or after it when nothing comes before; capped by code points after the agent test", () => {
   assert.deepEqual(agentsIn("x\n\nCo-Authored-By: <a@b.c> Claude Opus 5.5"), ["Claude Opus 5.5"], "an email that comes first does not take the name with it");
-  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude Opus 5.5 <a@b.c> do not publish"), ["Claude Opus 5.5 do not publish"]);
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude Opus 5.5 <a@b.c> do not publish"), ["Claude Opus 5.5"]);
   assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude\u202e Opus\u200b 5.5 <a@b.c>"), ["Claude Opus 5.5"]);
   assert.deepEqual(agentsIn(`x\n\nAgent: ${"a".repeat(41)}9`), ["a".repeat(40)], "a digit after the cap still gets the name kept");
   const [emoji] = agentsIn(`x\n\nAgent: claude ${"🤖".repeat(21)}`);
@@ -72,4 +72,16 @@ test("a drawing of a history cut short says it shows the most recent part", () =
   assert.match(drawImported(h, "pavi", "Demo"), /aria-label="Demo before Atelier: 1 commit, 1 naming an agent \(the most recent part of the history\)"/);
   const whole = buildImported([c("a", 100, "m\n\nCo-Authored-By: Claude Opus 9 <x>")], null, true);
   assert.match(drawImported(whole, "pavi", "Demo"), /aria-label="Demo before Atelier: 1 commit, 1 naming an agent"/);
+});
+
+test("a person named before the email stays a person, whatever follows the email; a lane label is cut by characters", () => {
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Jane Doe <jane@example.com> reviewed PR #42"), []);
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Jane Doe <jane@example.com> https://example.com/u/7"), []);
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: <a@b.c> Claude Opus 5.5"), ["Claude Opus 5.5"]);
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com> (1M context)"), ["Claude Opus 5.5"]);
+  const label = `codex/${"🤖".repeat(21)}`;
+  const svg = drawImported(buildImported([c("a", 1, `x\n\nAgent: ${label}`)], null, true), "pavi", "Demo");
+  const shown = /<text class="imp-name"[^>]*>([^<]*)</.exec(svg)?.[1] ?? "";
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(shown), "no half of an emoji is drawn");
+  assert.ok(shown.endsWith("…"));
 });

@@ -10,7 +10,8 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const BINS = 96;
 // A name longer than the lane label column is cut, and shown whole on hover.
-const shortName = (s: string) => (s.length > 26 ? s.slice(0, 25).trimEnd() + "…" : s);
+// Cut by characters, not UTF-16 units, so an emoji is never split in half.
+const shortName = (s: string) => { const c = Array.from(s); return c.length > 26 ? c.slice(0, 25).join("").trimEnd() + "…" : s; };
 
 // The colour a lane takes: its agent's family, or none for "no agent named".
 export function laneColour(label: string, owner: string): string {
