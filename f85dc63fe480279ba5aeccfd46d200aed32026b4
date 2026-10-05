@@ -1,0 +1,18 @@
+atelier cloudflare-git/t64 "Imported history hardening: a NaN cutoff from an unparseable createdAt empties the block; the 40-character cap can split a surrogate pair and runs before the agent test; a name after an email is lost; no test pins the cutoff source at the Flow and showcase call sites; say when only the most recent 3,000 commits are drawn"
+accepted head d2bf6741d411c9c980feead1e547c56c17292c9c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/GLM-5.3-Flash-4_8bit 2026-10-05T15:33:22.337Z
+OBSERVED pass npm run types && npm run typecheck — opencode/GLM-5.3-Flash-4_8bit 2026-10-05T15:33:24.904Z
+REVIEW approve — codex/gpt-6-astra: Re-review at HEAD: a person named before the email stays a person; lane labels cut by characters. No blocking findings.
+2026-10-05T00:45:42.745Z pavi item.created
+2026-10-05T14:34:10.047Z opencode/GLM-5.3-Flash-4_8bit item.claimed
+2026-10-05T14:34:12.288Z opencode/GLM-5.3-Flash-4_8bit fork.created
+2026-10-05T15:11:34.690Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-05T15:12:42.040Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-05T15:12:44.242Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-05T15:12:44.934Z opencode/GLM-5.3-Flash-4_8bit item.submitted
+2026-10-05T15:32:15.196Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-05T15:33:22.646Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-05T15:33:24.993Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-05T15:33:25.748Z opencode/GLM-5.3-Flash-4_8bit item.submitted
+2026-10-05T15:44:03.799Z codex/gpt-6-astra review.approved
+2026-10-05T15:44:04.342Z pavi item.accepted
