@@ -211,7 +211,7 @@ function itemArg(i = 1) {
 }
 
 async function resolveTokenActor() {
-  if (tokenActor || !process.env.ATELIER_TOKEN?.startsWith("atl_")) return;
+  if (tokenActor || !apiToken().startsWith("atl_")) return;
   const config = await call("GET", "/config");
   tokenActor = config.actor;
   const declared = args.as ?? process.env.ATELIER_ACTOR;

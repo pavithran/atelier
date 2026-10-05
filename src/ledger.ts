@@ -140,6 +140,7 @@ export class Ledger extends DurableObject<Env> {
 
   putAgentToken(token: AgentToken): void {
     this.sql.exec(`INSERT INTO agent_tokens (id, hash, json) VALUES (?, ?, ?)`, token.id, token.hash, JSON.stringify(token));
+    this.log(null, this.owner, "token.issued", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
   }
 
   agentToken(hash: string): AgentToken | null {
@@ -158,8 +159,10 @@ export class Ledger extends DurableObject<Env> {
     const row = this.sql.exec(`SELECT json FROM agent_tokens WHERE id = ?`, id).toArray()[0];
     if (!row) return false;
     const token = JSON.parse(row.json as string) as AgentToken;
-    token.revokedAt ??= new Date().toISOString();
+    if (token.revokedAt) return true;
+    token.revokedAt = new Date().toISOString();
     this.sql.exec(`UPDATE agent_tokens SET json = ? WHERE id = ?`, JSON.stringify(token), id);
+    this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
     return true;
   }
 
@@ -261,7 +264,16 @@ export class Ledger extends DurableObject<Env> {
   }
 
   items(): Item[] {
-    return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map((row) => this.item(row.id as string));
+    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`).toArray();
+    const histories = new Map<string, Parameters<typeof pushActors>[0]>();
+    for (const row of events) {
+      const id = row.item_id as string;
+      const history = histories.get(id) ?? [];
+      history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
+      histories.set(id, history);
+    }
+    return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray()
+      .map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
   }
 
   tokenId(id: string): string | null {
