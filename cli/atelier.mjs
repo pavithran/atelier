@@ -8,9 +8,12 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { redactGitArgs } from "./runner.mjs";
 
 import { landingJournal, landingLock } from "./landing.mjs";
 import { applyIdentity } from "./identity.mjs";
@@ -47,8 +50,12 @@ function apiToken() {
 
 function git(args, opts = {}) {
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
-  const shown = args.filter((a, i) => !a.startsWith("http.extraHeader") && !(a === "-c" && args[i + 1]?.startsWith("http.extraHeader")));
-  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${(r.stderr || r.stdout).trim()}`);
+  const shown = redactGitArgs(args);
+  let detail = (r.stderr || r.stdout || "").trim();
+  for (const [i, arg] of args.entries()) {
+    if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
+  }
+  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${detail}`);
   return opts.allowFail ? r : r.stdout.trim();
 }
 
@@ -74,7 +81,8 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const cfg = loadConfig();
+const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+const cfg = isMain ? loadConfig() : {};
 
 // The server says which actor stands for the project owner; `login` records it.
 const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";
@@ -95,6 +103,16 @@ function actor(fallback) {
   const a = args.as ?? process.env.ATELIER_ACTOR ?? wsConfig("actor") ?? fallback;
   if (!a) die("say who you are: --as harness/model (e.g. claude-code/opus-5.5), or set ATELIER_ACTOR");
   return a;
+}
+
+export function initName(projects, top, explicit, renameLocal) {
+  const existing = Object.entries(projects ?? {}).find(([, p]) => resolve(p.path) === resolve(top))?.[0];
+  if (explicit !== undefined && (typeof explicit !== "string" || !explicit.trim())) throw new Error("--name needs a project name");
+  if (existing && explicit && explicit !== existing && !renameLocal) throw new Error(`this checkout is registered as ${existing}; use --rename-local to change only the local entry`);
+  const name = explicit ?? existing ?? top.split("/").pop();
+  if (renameLocal && (!existing || !explicit)) throw new Error("--rename-local needs a registered checkout and --name NAME");
+  if (renameLocal && name !== existing && projects?.[name]) throw new Error(`${name} is already registered locally`);
+  return { name, existing };
 }
 
 function project() {
@@ -122,15 +140,20 @@ function itemArg(i = 1) {
 }
 
 async function call(method, path, body, as, extra = {}) {
-  const res = await fetch(server() + "/api" + path, {
-    method,
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
+  let res, text;
+  try {
+    res = await fetch(server() + "/api" + path, {
+      method,
+      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    text = await res.text();
+  } catch (error) { die(`server request failed: ${error.message}`, 4); }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`);
+  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
+    res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
   return data;
 }
 
@@ -293,6 +316,26 @@ async function checkInSandbox() {
 // ── commands ───────────────────────────────────────────────────────────────
 
 const commands = {
+  async runner() {
+    const { runRunner } = await import("./runner.mjs");
+    try {
+      await runRunner(args, {
+        workspacePath,
+        async queue(offer, signal) {
+          const res = await fetch(server() + "/api/queue", {
+            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "content-type": "application/json" },
+            body: JSON.stringify(offer),
+          });
+          if (!res.ok) throw new Error(`queue: ${res.status}`);
+          const incomplete = res.headers.get("x-atelier-incomplete");
+          if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
+          return res.json();
+        },
+      });
+    } catch (error) { die(error.message); }
+  },
+
   async login() {
     if (!args.server) die("usage: atelier login --server https://atelier.example.com");
     cfg.server = String(args.server).replace(/\/$/, "");
@@ -310,7 +353,16 @@ const commands = {
     // silently clear the stored title.
     if (args.title === true) die('give the title as --title TEXT, or --title "" to clear it');
     const top = git(["rev-parse", "--show-toplevel"]);
-    const name = args.name ?? top.split("/").pop();
+    let name, existing;
+    try { ({ name, existing } = initName(cfg.projects, top, args.name, args["rename-local"] === true)); }
+    catch (err) { die(err.message); }
+    if (args["rename-local"] === true) {
+      cfg.projects[name] = cfg.projects[existing];
+      if (name !== existing) delete cfg.projects[existing];
+      saveConfig(cfg);
+      console.log(`Local registration changed from ${existing} to ${name}. No server project or repository was changed.`);
+      return;
+    }
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
     const cp = readControlPlane(top);
     if (cp && (!args.approval || args.approval === true)) {
@@ -754,6 +806,17 @@ const commands = {
     }
   },
 
+  async projects() {
+    const name = args._[2];
+    if (args._[1] !== "remove" || !name) die("usage: atelier projects remove NAME [--force]");
+    await call("DELETE", P(name), { force: args.force === true }, actor(OWNER));
+    if (cfg.projects?.[name]) {
+      delete cfg.projects[name];
+      saveConfig(cfg);
+    }
+    console.log(`${name} removed from the project index and local config. The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the owner.`);
+  },
+
   async owners() {
     const name = project();
     const live = await call("GET", `${P(name)}/owners`, undefined, actor(OWNER));
@@ -818,14 +881,17 @@ Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summa
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
-Local      gc [--project NAME] [--dry-run | --apply]
+Projects   projects remove NAME [--force] · init --name NAME --rename-local
+Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
   },
 };
 
-const cmd = args._[0] ?? "help";
-const fn = commands[cmd];
-if (!fn) die(`unknown command "${cmd}"; try atelier help`);
-await fn();
+if (isMain) {
+  const cmd = args._[0] ?? "help";
+  const fn = commands[cmd];
+  if (!fn) die(`unknown command "${cmd}"; try atelier help`);
+  await fn();
+}
