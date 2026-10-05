@@ -296,6 +296,7 @@ it('the front door: visitors see the showcase, the owner sees Decisions only whe
  const TOKEN='door-test-token';
  const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
  const go=(path:string,extra:Record<string,string>={},signed=false)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:`atelier=${hex}`}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,...extra} as typeof env);
+ await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject({name:'door',repo:'door',policy:{checks:[],protected:[]},createdAt:time});
  expect((await go('/',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/showcase');
  expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
  expect((await go('/flow',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/login');
@@ -547,4 +548,17 @@ it('a share that rounds to 0% or 100% without being exactly that says so',async(
  expect(lead(299,300)).toContain('<b>&gt;99%</b>');
  expect(lead(300,300)).toContain('<b>100%</b>');
  expect(lead(0,300)).toContain('<b>0%</b>');
+});
+
+it('the front door and the login link follow a showcase only while its project is registered',async()=>{
+ const TOKEN='door-removed-token';
+ const go=(path:string)=>worker.fetch(new Request(`https://atelier.test${path}`,{redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,SHOWCASE:'vanishing'} as typeof env);
+ const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
+ await index.registerProject({name:'vanishing',repo:'vanishing',policy:{checks:[],protected:[]},createdAt:time});
+ expect((await go('/')).headers.get('location')).toBe('https://atelier.test/showcase');
+ expect(await (await go('/login')).text()).toContain('href="/showcase"');
+ expect(await index.removeProject('vanishing')).toBe(true);
+ expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
+ expect(await (await go('/login')).text()).not.toContain('href="/showcase"');
+ expect((await go('/showcase')).status).toBe(404);
 });
