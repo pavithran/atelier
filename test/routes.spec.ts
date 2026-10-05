@@ -267,3 +267,23 @@ it("removed projects disappear from signed-in pages and a cached showcase", asyn
     expect(await (await get(path)).text()).not.toContain(name);
   }
 });
+
+it("task briefs are readable by the owner and signed-in agents, but not anonymous callers", async () => {
+  await project("routes-brief");
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-brief"));
+  await L.newItem("Small edit", ["docs/**"], "owner");
+  const path = "/projects/routes-brief/items/t1/brief";
+  for (const actor of ["owner", "codex/gpt-6-astra"]) {
+    const res = await call("GET", path, actor);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      title: "Small edit", decided: "Wait on t1 with nothing pushed: Small edit.",
+      evidence: ["Required checks at this revision: 1 waiting."],
+      recommendation: { verdict: "wait" },
+    });
+  }
+  const anonymous = await worker.fetch(new Request(`https://atelier.test/api${path}`), testEnv);
+  expect(anonymous.status).toBe(401);
+  expect((await call("GET", "/projects/routes-brief/items/t99/brief", "owner")).status).toBe(404);
+  expect((await call("POST", path, "owner", {})).status).toBe(404);
+});
