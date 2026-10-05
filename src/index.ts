@@ -6,7 +6,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, measuredPaths, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
-import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
+import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
@@ -89,14 +89,15 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   return res;
 }
 
-// Each project's imported history, read once per baseline head: the result
-// is cached under the head's commit id, which never changes meaning.
+// Each project's imported history, read once per baseline head and format:
+// the result is cached under the head's commit id, which never changes
+// meaning, and the format, which changes when the reading does.
 async function importedFor(env: Env, project: ProjectRecord, cutoff: number | null): Promise<ImportedHistory | null> {
   try {
     using repo = await env.ARTIFACTS.get(project.repo);
     const head = (await repo.log({ limit: 1 }))[0];
     if (!head) return null;
-    const key = new Request(`https://atelier.internal/imported/${encodeURIComponent(project.repo)}/${head.hash}/${cutoff ?? "all"}`);
+    const key = new Request(`https://atelier.internal/imported/v${IMPORTED_FORMAT}/${encodeURIComponent(project.repo)}/${head.hash}/${cutoff ?? "all"}`);
     const hit = await caches.default.match(key).catch(() => undefined);
     if (hit) return (await hit.json()) as ImportedHistory;
     const h = await readImported(repo as unknown as LogSource, cutoff);
