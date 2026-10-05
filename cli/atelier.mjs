@@ -8,17 +8,17 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
-import { adoption, SCOPE } from "./adopt.mjs";
+import { adoption, SCOPE, writeMove } from "./adopt.mjs";
 import { landingJournal, landingLock } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
@@ -636,21 +636,27 @@ const commands = {
     const p = cfg.projects?.[name];
     if (!p?.path) die(`${name} is not registered on this Mac; run atelier init in its checkout first`);
     if (git(["status", "--porcelain"], { cwd: p.path })) die(`${p.path} has uncommitted changes; commit or set them aside before moving ${name}`);
+    // Every check that can refuse the move runs on the checkout first — the
+    // files readable and computable, no symlink in the way — so a refusal
+    // leaves nothing behind: no task, no claim, no workspace.
+    try { adoption({ project: name, checkout: p.path, workspace: p.path, guide: guideText() }); }
+    catch (error) { die(error.message); }
     const as = actor(OWNER);
     const item = await call("POST", `${P(name)}/items`, { title: `Move ${name} from ControlPlane to Atelier`, scope: SCOPE }, as);
     const { dir } = await claimWorkspace(name, item.id, as);
     let plan;
     try { plan = adoption({ project: name, checkout: p.path, workspace: dir, guide: guideText() }); }
     catch (error) { die(error.message); }
-    for (const file of plan.files) {
-      const path = join(dir, file.path);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, file.text, file.mode ? { mode: file.mode } : {});
-      if (file.mode) chmodSync(path, file.mode);
-    }
+    try { writeMove(dir, plan.files); }
+    catch (error) { die(error.message); }
     git(["add", "--", ...plan.files.map((f) => f.path)], { cwd: dir });
-    git(["commit", "--quiet", "-m", plan.message], { cwd: dir });
-    console.log(`${item.id} is yours, ${as}. The move is committed here and not pushed:\n  cd ${JSON.stringify(dir)}`);
+    // Adopting a project that already moved leaves the workspace as it is;
+    // committing nothing keeps that a success rather than a git failure.
+    const moved = git(["diff", "--cached", "--quiet"], { cwd: dir, allowFail: true }).status !== 0;
+    if (moved) git(["commit", "--quiet", "-m", plan.message], { cwd: dir });
+    console.log(`${item.id} is yours, ${as}. ${moved
+      ? "The move is committed here and not pushed:"
+      : "The move is already in place; nothing to commit:"}\n  cd ${JSON.stringify(dir)}`);
     console.log(plan.leftovers.length
       ? `\nLeftovers in ${p.path} for the agent finishing ${item.id}:`
       : `\nNothing in ${p.path} is left over from ControlPlane.`);
