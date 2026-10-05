@@ -287,6 +287,10 @@ const unfinished = {
   },
 };
 function refuses(f, say) {
+  // Leave STATE.md stat-dirty, as iCloud or an editor does: a git call that
+  // refreshes the index would rewrite it, and a refusal must not.
+  const old = new Date(Date.now() - 60_000);
+  if (existsSync(join(f.checkout, "STATE.md"))) utimesSync(join(f.checkout, "STATE.md"), old, old);
   const before = snapshot(f.checkout), head = f.git("rev-parse", "HEAD");
   const r = f.run("wrap", "Refuse");
   assert.equal(r.status, 1, r.stdout);
