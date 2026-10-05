@@ -326,20 +326,26 @@ async function checkInSandbox() {
   }
 }
 
+// What an agent relays is one line per field: text a person or an agent
+// wrote (a review note, a title, a dispatch note) is flattened, so a newline
+// inside it can never pose as a line of the verdict, and terminal control
+// codes are dropped. Atelier's own wording is what the lines start with.
+const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
+
 export function formatDone(gate) {
-  return gate.ready ? "Ready for the owner" : gate.blockers.join("; ");
+  return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
 }
 
 export function formatTask(item) {
-  return [item.title, `Scope: ${item.scope.join(", ") || "not specified"}`,
-    item.dispatch?.note ? `Note: ${item.dispatch.note}` : null].filter(Boolean).join("\n");
+  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`,
+    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {
-  return [`${project}/${id}  ${brief.title}`, brief.decided,
-    ...(brief.summary ? [`Summary: ${brief.summary}`] : []), ...brief.evidence,
-    `Recommendation: ${brief.recommendation.verdict}. ${brief.recommendation.reason}`,
-    `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].map(stripVTControlCharacters).join("\n");
+  return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...brief.evidence.map(flat),
+    `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
+    `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
