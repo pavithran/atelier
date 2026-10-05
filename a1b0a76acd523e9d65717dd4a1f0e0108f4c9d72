@@ -1,0 +1,14 @@
+atelier cloudflare-git/t75 "Showcase comparison for one project: its imported history before its first Atelier task beside its Atelier record after, when a project has both; the cross-project card stays for a project known only from git"
+accepted head 7d39484030451e184c1f909f657b0b2811376a9b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-05T15:55:06.462Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-05T15:55:09.162Z
+REVIEW approve — zcode/glm-5.3: Same-project card: numbers, dates and wording match what each side counts; cross-project card unchanged; escaping holds. No blocking findings.
+2026-10-05T15:39:45.625Z pavi item.created
+2026-10-05T15:40:05.911Z claude-code/sonnet-5.5 item.claimed
+2026-10-05T15:40:09.327Z claude-code/sonnet-5.5 fork.created
+2026-10-05T15:53:57.927Z claude-code/sonnet-5.5 push.observed
+2026-10-05T15:55:07.072Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T15:55:09.257Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T15:55:10.060Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T16:08:59.424Z zcode/glm-5.3 review.approved
+2026-10-05T16:09:00.487Z pavi item.accepted
