@@ -43,7 +43,7 @@ case "$sub" in
   ""|help) mappings ;;
   pickup-card|unwrap)
     if [ $# -ne 0 ]; then
-      printf 'control-plane: pickup-card takes no arguments.\n' >&2
+      printf 'control-plane: %s takes no arguments.\n' "$sub" >&2
       exit 2
     fi
     run unwrap --project "$atelier_project" ;;

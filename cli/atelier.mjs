@@ -14,9 +14,9 @@ import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay } from "../src/sessions.ts";
+import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
 
-import { contextBudget, evaluateCeilings } from "../src/context-budget.ts";
+import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
@@ -67,17 +67,24 @@ function apiToken() {
 }
 
 // The environment a git command runs with. Artifacts has no Git LFS: a push
-// would try to upload a project's LFS objects and fail, so every push skips
-// the upload and Artifacts holds pointer files. A clone, always a disposable
-// copy (a task workspace, a check run), keeps the pointers rather than trying
-// to download what they point to. Nothing else skips the download: a merge or
-// reset in the owner's own checkout writes real LFS files as git-lfs would.
-export function gitEnv(base = process.env, extra = {}, args = []) {
-  return { ...base, GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_PUSH: "1", ...(args.includes("clone") ? { GIT_LFS_SKIP_SMUDGE: "1" } : {}), ...extra };
+// would try to upload a project's LFS objects and fail, so every push to
+// Atelier skips the upload and Artifacts holds pointer files. A clone, always
+// a disposable copy (a task workspace, a check run), keeps the pointers rather
+// than trying to download what they point to. Nothing else skips the download:
+// a merge or reset in the owner's own checkout writes real LFS files as
+// git-lfs would. `ownerRemote` marks a push to one of the owner's own remotes
+// (wrap --push). Those remotes need the project's LFS objects, so the upload
+// runs: GIT_LFS_SKIP_PUSH is left out whatever the caller's environment holds,
+// and a remote that has the commits without their LFS objects is never
+// reported as pushed.
+export function gitEnv(base = process.env, extra = {}, args = [], ownerRemote = false) {
+  const env = { ...base, GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_PUSH: "1", ...(args.includes("clone") ? { GIT_LFS_SKIP_SMUDGE: "1" } : {}), ...extra };
+  if (ownerRemote) delete env.GIT_LFS_SKIP_PUSH;
+  return env;
 }
 
 function git(args, opts = {}) {
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env, args), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
@@ -521,7 +528,7 @@ export function guideText() {
   return `## Working through Atelier
 
 Several agents may work on this project at once. Each piece of work is an
-item with exactly one owner. Task work belongs in its claimed workspace.
+item with exactly one owner. Never edit the project checkout directly.
 
 1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
    and prints its workspace, title, scope and note. Work only there.
@@ -540,7 +547,7 @@ item with exactly one owner. Task work belongs in its claimed workspace.
    paths need approval from a different model than the owner's.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
 
-For each session:
+For each session the project owner runs in the registered checkout:
 
 1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
 2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout; it commits and updates the baseline. Add \`--push\` to push each checkout remote. It never deploys or publishes a release.
@@ -635,6 +642,42 @@ function sessionTree(cwd) {
   return git(["--no-optional-locks", "status", "--short", "--untracked-files=all"], { cwd });
 }
 
+// What wrap needs before it stages anything: asked first, and again after the
+// registered checks, which can change the tree. It refuses a detached HEAD, a
+// merge, cherry-pick, revert, rebase or landing in progress, unmerged files in
+// the index (a squash merge or a stash pop leaves those with no marker file),
+// another branch than the registered one, and a surface over its ceiling. The
+// ceiling is the policy committed at HEAD: the working tree's copy can be
+// edited or deleted in the session that goes over it, so it is only compared.
+// `report` prints advisories; a refusal always prints what it counted.
+function wrapReady(name, cwd, report) {
+  const branch = git(["branch", "--show-current"], { cwd });
+  const inProgress = Object.keys(WRAP_MARKERS).filter((marker) => existsSync(resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))));
+  const unmerged = unmergedPaths(git(["ls-files", "-u", "-z"], { cwd, raw: true }));
+  const refusal = wrapRefusal({ branch, registered: cfg.projects[name].branch, inProgress, unmerged });
+  if (refusal) die(refusal);
+  const committed = git(["ls-tree", "--name-only", "HEAD", "--", CONTEXT_BUDGET_PATH], { cwd }) ? git(["show", `HEAD:${CONTEXT_BUDGET_PATH}`], { cwd, raw: true }) : undefined;
+  let working;
+  try { working = readFileSync(join(cwd, CONTEXT_BUDGET_PATH), "utf8"); } catch { /* absent or unreadable: it differs from HEAD's */ }
+  const notice = policyNotice(committed, working);
+  if (notice && report) console.log(notice);
+  if (committed === undefined) return branch;
+  let policy;
+  try { policy = contextBudget(JSON.parse(committed)); }
+  catch (err) { die(`${CONTEXT_BUDGET_PATH} at HEAD is not a valid policy: ${err.message}`); }
+  const contents = Object.create(null);
+  for (const surface of policy.surfaces) {
+    const path = join(cwd, surface.path);
+    if (!existsSync(path)) continue;
+    if (!realpathSync(path).startsWith(realpathSync(cwd) + "/")) die(`context surface escapes checkout: ${surface.path}`);
+    contents[surface.path] = readFileSync(path, "utf8");
+  }
+  const result = evaluateCeilings(policy, contents);
+  if (report || result.refused) result.messages.forEach((message) => console.log(message));
+  if (result.refused) die("wrap refused: context ceiling exceeded");
+  return branch;
+}
+
 const commands = {
   async unwrap() {
     const name = project(), as = actor(OWNER), cwd = sessionCheckout(name);
@@ -657,42 +700,20 @@ const commands = {
 
   async wrap() {
     const name = project(), as = actor(OWNER), cwd = sessionCheckout(name, true);
+    // Until task t43 limits an agent's token to its own actor, the server
+    // records a session only for the project owner. Refuse here, before wrap
+    // commits or pushes anything the server would then not take a note for.
+    if (as !== OWNER) die(`only the project owner records a session: run wrap as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
     const head = git(["rev-parse", "HEAD"], { cwd });
     let data;
-    try { data = cleanSession({ summary: args._[1], next: args.next, head, dirty: false, checks: [] }); }
+    // An unquoted summary reaches here as several words: they are one summary.
+    try { data = cleanSession({ summary: args._.slice(1).join(" "), next: args.next, head, dirty: false, checks: [] }); }
     catch (err) { die(err.message); }
     if (args.next !== undefined && typeof args.next !== "string") die("--next needs text");
     const found = args.multi.found ?? [];
     if (found.length > 100 || found.some((text) => typeof text !== "string" || !sessionText(text))) die("--found needs text, at most 100 times");
     if (args.push !== undefined && args.push !== true) die("--push takes no value");
-    const ready = () => {
-      const branch = git(["branch", "--show-current"], { cwd });
-      if (!branch) die("wrap refuses a detached HEAD");
-      for (const path of ["MERGE_HEAD", "rebase-merge", "rebase-apply", "atelier-landing.json"]) {
-        if (existsSync(resolve(cwd, git(["rev-parse", "--git-path", path], { cwd })))) die("wrap refuses a merge or rebase in progress");
-      }
-      if (branch !== cfg.projects[name].branch) die(`check out ${cfg.projects[name].branch} before wrap`);
-      const policyPath = join(cwd, "docs/control-plane/context-budget.v1.json");
-      if (existsSync(policyPath)) {
-        const policy = contextBudget(JSON.parse(readFileSync(policyPath, "utf8")));
-        const contents = Object.create(null);
-        for (const surface of policy.surfaces) {
-          const path = join(cwd, surface.path);
-          if (!existsSync(path)) continue;
-          if (!realpathSync(path).startsWith(realpathSync(cwd) + "/")) die(`context surface escapes checkout: ${surface.path}`);
-          contents[surface.path] = readFileSync(path, "utf8");
-        }
-        const result = evaluateCeilings(policy, contents);
-        result.messages.forEach((message) => console.log(message));
-        if (result.refused) die("wrap refused: context ceiling exceeded");
-      }
-      return branch;
-    };
-    ready();
-    const diff = git(["diff", "--check"], { cwd, allowFail: true });
-    data.checks.push({ command: "git diff --check", passed: diff.status === 0, grade: "reported" });
-    console.log(`Reported: git diff --check: ${diff.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
-    if (diff.stdout || diff.stderr) console.log(diff.stdout || diff.stderr);
+    wrapReady(name, cwd, true);
     const { project: record } = await call("GET", P(name), undefined, as);
     data.checksSkipped = args["no-check"] === true;
     if (!data.checksSkipped) for (const command of record.policy.checks) {
@@ -710,12 +731,19 @@ const commands = {
     }
     const tree = sessionTree(cwd);
     console.log(`Uncommitted files:\n${tree || "none"}`);
-    const branch = ready();
+    const branch = wrapReady(name, cwd, false);
     const remotes = args.push ? git(["remote"], { cwd }).split("\n").filter(Boolean) : [];
     if (remotes.length > 100) die("wrap supports at most 100 remote results");
     data = cleanSession(data);
     data.sessionAt = new Date().toISOString();
     git(["add", "-A"], { cwd });
+    // Whitespace is checked on what the commit will hold, after staging: the
+    // index against HEAD takes in staged changes and new files, which a diff of
+    // the working tree against the index leaves out.
+    const diff = git(["diff", "--cached", "--check"], { cwd, allowFail: true });
+    data.checks.push({ command: "git diff --cached --check", passed: diff.status === 0, grade: "reported" });
+    console.log(`Reported: git diff --cached --check: ${diff.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+    if (diff.stdout || diff.stderr) console.log(diff.stdout || diff.stderr);
     const staged = git(["diff", "--cached", "--quiet"], { cwd, allowFail: true });
     if (staged.status === 1) {
       git(["commit", "-F", "-"], { cwd, input: sessionCommitMessage(data.summary, data.next, data.sessionAt) });
@@ -725,7 +753,8 @@ const commands = {
     else die("could not inspect staged changes");
     data.pushes = [];
     for (const remote of remotes) {
-      const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true });
+      // The owner's own remotes: a normal push, LFS objects included (see gitEnv).
+      const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true, ownerRemote: true });
       data.pushes.push({ remote, passed: result.status === 0 });
       console.log(`Remote ${sessionText(remote, 200)}: ${result.status === 0 ? "pushed" : "failed"}.`);
     }
@@ -745,6 +774,10 @@ const commands = {
     console.log("Nothing deployed or published as a release.");
     console.log(FILING_RELAY);
     console.log(wrapRelay(note));
+    // Every remote was tried, the note is recorded and the baseline is in
+    // step; only now does a remote that did not take the push fail the command.
+    const failed = data.pushes.filter((p) => !p.passed);
+    if (failed.length) die(`the session is recorded, but the push failed for ${failed.length} remote${failed.length === 1 ? "" : "s"}: ${failed.map((p) => sessionText(p.remote, 200)).join(", ")}`);
   },
 
   // Reached only when `ops` is not the first word; see runOps.

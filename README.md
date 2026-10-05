@@ -32,25 +32,40 @@ checkout, newest session note, state file and dated handoffs without writing.
 State and handoff excerpts show at most 80 lines and name where to read more.
 
 End in the registered checkout with `atelier wrap "summary" --next "what is next"`.
-It runs `git diff --check` and registered checks, warns about an unchanged state
-file and records a `session.wrapped` ledger event. `--no-check` skips registered
-checks. Results are Reported because they ran in the owner's checkout. A failing
-check still closes the session and is recorded. Wrap commits everything selected
-by `git add -A`, with the summary as its subject, next text as its body and an
-`Atelier-Session` trailer naming the note's session time. A clean checkout still
-gets a note. Detached HEAD, a merge or rebase in progress, and a branch other
-than the registered branch refuse wrap before committing.
+The words after `wrap` that no flag has taken are joined into one summary, quoted
+or not. Give the summary first: a flag takes the word after it as its value.
+It runs the registered checks, warns about an unchanged state file and records a
+`session.wrapped` ledger event. `--no-check` skips registered checks. Results are
+Reported because they ran in the owner's checkout. A failing check still closes
+the session and is recorded. Wrap commits everything selected by `git add -A`,
+with the summary as its subject, next text as its body and an `Atelier-Session`
+trailer naming the note's session time. It runs `git diff --cached --check` after
+staging, so whitespace errors are checked in what the commit holds, staged
+changes and new files included. A clean checkout still gets a note. Wrap refuses
+before staging on a detached HEAD, on a merge, cherry-pick, revert, rebase or
+landing in progress, on unmerged files in the index (a squash merge or a stash
+pop leaves them with nothing else to show), and on a branch other than the
+registered branch. Only the project owner records a session; until task t43
+adds an allowlist for agent tokens, the server refuses any other actor.
 
 Wrap then updates the Atelier baseline through `sync` for fresh history or
 `publish` for full history. `--push` also pushes the checkout branch to every
 configured checkout remote, without force, continuing after a remote fails.
-Without `--push`, checkout remotes are not pushed. Wrap never deploys or
-publishes a release. The note records the commit and each remote result.
+These are the owner's own remotes, so each is a normal push that uploads the
+project's Git LFS objects; only pushes to Atelier skip the upload, because
+Artifacts holds pointer files. Without `--push`, checkout remotes are not
+pushed. Wrap never deploys or publishes a release. The note records the commit
+and each remote result. A remote that fails is named in the relay line, and
+wrap exits 1 once the note and the baseline are recorded.
 
-When `docs/control-plane/context-budget.v1.json` exists, wrap counts lines in
-its named surfaces. Any absolute ceiling exceeded refuses the commit, even
-with an advisory policy. Move history into `docs/history/` rather than raising
-the ceiling. Baseline drift is advisory. No policy means no ceiling.
+When `docs/control-plane/context-budget.v1.json` is committed at HEAD, wrap
+counts lines in its named surfaces. Any absolute ceiling exceeded refuses the
+commit, even with an advisory policy. Move history into `docs/history/` rather
+than raising the ceiling. Wrap reads the policy as committed at HEAD, never the
+working tree's copy, so editing or deleting it in the same session does not lift
+a ceiling; when the copy differs, wrap says so and applies HEAD's. A policy not
+yet committed applies from the session after it is. Baseline drift is advisory.
+No policy at HEAD means no ceiling.
 
 Before closing, file defects in Atelier or project tooling as tasks in the
 project they belong to with `atelier new "…" --project NAME`. Atelier defects
@@ -63,7 +78,7 @@ check output. Summary, next text and check names are cleaned and capped at
 2000 characters each. Remote names are capped at 200 characters; checks,
 remote results and filed task IDs are limited to 100 each.
 `GET /api/projects/NAME/sessions` reads the newest five notes;
-`POST /api/projects/NAME/sessions` records one for the signed-in actor.
+`POST /api/projects/NAME/sessions` records one, for the project owner only.
 
 ## For agents
 
@@ -379,12 +394,15 @@ when its baseline repository belongs to another registered project.
 
 ## Projects that use Git LFS
 
-Artifacts has no Git LFS. The `atelier` command pushes with LFS uploads
+Artifacts has no Git LFS. The `atelier` command pushes to Atelier with LFS uploads
 turned off, so the baseline and every workspace hold LFS pointer files, and
 clones a workspace or a check run without downloading what they point to. A
 merge into the owner's checkout writes real LFS files, as git-lfs would. A project whose required
 checks need those files must fetch them itself; a build that only compiles
-around them, as many do, works as it is.
+around them, as many do, works as it is. The owner's own remotes do hold the
+objects: `atelier wrap --push` pushes to them with LFS uploads on, even when
+`GIT_LFS_SKIP_PUSH` is set in the environment, and a remote whose upload fails
+is reported as failed, never as pushed.
 
 ## Projects too large for Artifacts
 
