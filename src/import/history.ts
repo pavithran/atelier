@@ -24,6 +24,7 @@ export interface ImportedHistory {
 }
 
 export const NO_AGENT = "No agent named";
+const FRESH_ROOT = /^Atelier-Fresh-History: [0-9a-f]{40,64}$/m;
 const NAME_LIMIT = 40;
 
 // The agents a commit message names. Variants of one model, such as
@@ -33,16 +34,24 @@ export function agentsIn(message: string): string[] {
   for (const line of message.split("\n")) {
     const m = /^\s*(?:Co-Authored-By|Agent)\s*:\s*(.+?)\s*$/i.exec(line);
     if (!m) continue;
-    // The name ends at the email address, and what follows it is not a name;
-    // anything else in angle brackets goes too. Invisible and direction-changing
-    // characters go, as in a project title, because the name is drawn on
-    // public pages.
-    const name = m[1].replace(/<[^<>]*@[^<>]*>.*$/, "").replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
+    // The name is the text before the email address, or, when nothing comes
+    // before it, the text after it: "Jane Doe <j@x> reviewed PR #42" is Jane
+    // Doe, and "<a@b.c> Claude Opus 5.5" is Claude Opus 5.5. Anything else in
+    // angle brackets goes too. Invisible and direction-changing characters
+    // go, as in a project title, because the name is drawn on public pages.
+    const email = /<[^<>]*@[^<>]*>/.exec(m[1]);
+    const before = email ? m[1].slice(0, email.index) : m[1];
+    const side = email && !before.replace(/<[^>]*>/g, "").trim() ? m[1].slice(email.index + email[0].length) : before;
+    const name = side.replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
       .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ")
-      .replace(/\s+/g, " ").trim().slice(0, NAME_LIMIT).trim();
+      .replace(/\s+/g, " ").trim();
     // A human co-author is a person, not an agent: keep only names that
-    // read as a model or an agent harness and model.
-    if (name && (/\//.test(name) || /\d/.test(name) || /^(claude|gpt|codex|gemini|glm|deepseek|qwen|opus|sonnet|haiku|fable)\b/i.test(name))) names.add(name);
+    // read as a model or an agent harness and model. The whole name is
+    // tested, then it is capped by code points, so a digit or slash after
+    // the cap, or half of an emoji, is not what decides.
+    if (name && (/\//.test(name) || /\d/.test(name) || /^(claude|gpt|codex|gemini|glm|deepseek|qwen|opus|sonnet|haiku|fable)\b/i.test(name))) {
+      names.add(Array.from(name).slice(0, NAME_LIMIT).join("").trim());
+    }
   }
   return [...names];
 }
@@ -52,13 +61,15 @@ export function agentsIn(message: string): string[] {
 // so a long record never moves the cutoff into Atelier's own work. A project
 // with no tasks yet has all its history before Atelier.
 export function firstTaskAt(items: { createdAt: string }[]): number | null {
-  const first = items.map((i) => i.createdAt).sort()[0];
-  return first ? Math.floor(Date.parse(first) / 1000) : null;
+  const times = items.map((i) => Math.floor(Date.parse(i.createdAt) / 1000)).filter((t) => Number.isFinite(t));
+  return times.length ? Math.min(...times) : null;
 }
 
 // Commits before `cutoff` (unix seconds), newest first as git logs them.
 export function buildImported(commits: ImportedCommit[], cutoff: number | null, complete: boolean): ImportedHistory {
-  const before = commits.filter((c) => cutoff === null || c.committedAt < cutoff).sort((a, b) => a.committedAt - b.committedAt);
+  // A baseline that starts partway through a project's history begins with a
+  // root commit Atelier made (cli/fresh.mjs); it is not the project's work.
+  const before = commits.filter((c) => (cutoff === null || c.committedAt < cutoff) && !FRESH_ROOT.test(c.message)).sort((a, b) => a.committedAt - b.committedAt);
   const lanes = new Map<string, ImportedLane>();
   let attributed = 0;
   for (const c of before) {
@@ -71,6 +82,9 @@ export function buildImported(commits: ImportedCommit[], cutoff: number | null, 
     }
   }
   const ordered = [...lanes.values()].sort((a, b) => (a.label === NO_AGENT ? 1 : b.label === NO_AGENT ? -1 : a.first - b.first || b.count - a.count));
+  // A baseline that starts partway through the history never reaches the
+  // project's first commit, however much of it is read.
+  if (commits.some((c) => FRESH_ROOT.test(c.message))) complete = false;
   return {
     total: before.length, attributed, lanes: ordered,
     first: before[0]?.committedAt ?? 0, last: before.at(-1)?.committedAt ?? 0, complete,

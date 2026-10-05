@@ -10,15 +10,18 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { redactGitArgs } from "./runner.mjs";
 
 import { landingJournal, landingLock } from "./landing.mjs";
+import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatStatus } from "./status.mjs";
+import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -28,7 +31,10 @@ const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000
 
 // ── plumbing ───────────────────────────────────────────────────────────────
 
+let doneStep;
+
 function die(msg, code = 1) {
+  if (doneStep) msg = `${doneStep} failed: ${msg}`;
   process.stderr.write(`atelier: ${msg}\n`);
   process.exit(code);
 }
@@ -41,22 +47,37 @@ function saveConfig(c) {
   writeFileSync(CONFIG, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
 }
 
+// The token `login` has just been given and has not yet stored.
+let loginToken = null;
+
+// ATELIER_TOKEN wins, then the store for this system (see credentials.mjs).
 function apiToken() {
-  if (process.env.ATELIER_TOKEN) return process.env.ATELIER_TOKEN.trim();
-  const r = spawnSync("security", ["find-generic-password", "-s", "atelier.API_TOKEN", "-w"], { encoding: "utf8" });
-  if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
-  die("no API token: add Keychain item atelier.API_TOKEN, or set ATELIER_TOKEN");
+  if (loginToken) return loginToken;
+  let token;
+  try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+  if (token) return token;
+  die("no API token: run `atelier login --server URL` to store one, or set ATELIER_TOKEN");
+}
+
+// The environment a git command runs with. Artifacts has no Git LFS: a push
+// would try to upload a project's LFS objects and fail, so every push skips
+// the upload and Artifacts holds pointer files. A clone, always a disposable
+// copy (a task workspace, a check run), keeps the pointers rather than trying
+// to download what they point to. Nothing else skips the download: a merge or
+// reset in the owner's own checkout writes real LFS files as git-lfs would.
+export function gitEnv(base = process.env, extra = {}, args = []) {
+  return { ...base, GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_PUSH: "1", ...(args.includes("clone") ? { GIT_LFS_SKIP_SMUDGE: "1" } : {}), ...extra };
 }
 
 function git(args, opts = {}) {
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env, args), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
   }
   if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${detail}`);
-  return opts.allowFail ? r : r.stdout.trim();
+  return opts.allowFail ? r : opts.raw ? r.stdout : r.stdout.trim();
 }
 
 // Tokens go in a per-command header, never in a remote URL or the iCloud tree.
@@ -108,7 +129,8 @@ function actor(fallback) {
 }
 
 export function initName(projects, top, explicit, renameLocal) {
-  const existing = Object.entries(projects ?? {}).find(([, p]) => resolve(p.path) === resolve(top))?.[0];
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const existing = Object.entries(projects ?? {}).find(([, p]) => real(p.path) === real(top))?.[0];
   if (explicit !== undefined && (typeof explicit !== "string" || !explicit.trim())) throw new Error("--name needs a project name");
   if (existing && explicit && explicit !== existing && !renameLocal) throw new Error(`this checkout is registered as ${existing}; use --rename-local to change only the local entry`);
   const name = explicit ?? existing ?? top.split("/").pop();
@@ -124,7 +146,10 @@ function project() {
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (top.status === 0) {
     const here = top.stdout.trim();
-    for (const [name, p] of Object.entries(cfg.projects ?? {})) if (resolve(p.path) === here) return name;
+    // Compared as real paths: git reports /private/var/… for a checkout
+    // registered as /var/… on macOS, and any symlinked folder the same way.
+    const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+    for (const [name, p] of Object.entries(cfg.projects ?? {})) if (real(p.path) === real(here)) return name;
   }
   die("which project? pass --project NAME, or run inside a registered checkout or workspace");
 }
@@ -312,13 +337,40 @@ async function checkInSandbox() {
   if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (state.results.some((r) => !r.passed)) process.exit(2);
+  if (state.results.some((r) => !r.passed)) {
+    if (doneStep) die("required checks failed", 2);
+    process.exit(2);
+  }
+}
+
+// What an agent relays is one line per field: text a person or an agent
+// wrote (a review note, a title, a dispatch note) is flattened, so a newline
+// inside it can never pose as a line of the verdict, and terminal control
+// codes are dropped. Atelier's own wording is what the lines start with.
+const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
+
+export function formatDone(gate) {
+  return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
+}
+
+export function formatTask(item) {
+  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`,
+    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
+}
+
+export function formatBrief(project, id, brief, origin) {
+  return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...brief.evidence.map(flat),
+    `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
+    `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
 
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 const usage = {
+  start: "usage: atelier start ID [--as harness/model]",
+  done: 'usage: atelier done "summary"',
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   projects: "usage: atelier projects remove NAME [--force]",
 };
@@ -345,14 +397,33 @@ const commands = {
   },
 
   async login() {
-    if (!args.server) die("usage: atelier login --server https://atelier.example.com");
+    if (args.store) {
+      let held = null;
+      try { held = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+      const env = process.env.ATELIER_TOKEN?.trim() ? " ATELIER_TOKEN is set in the environment and is used instead." : "";
+      return console.log(`The token store is ${describeStore("API_TOKEN")}. ${held ? "A token is stored." : "No token is stored."}${env}`);
+    }
+    if (!args.server || args.server === true) die("usage: atelier login --server https://atelier.example.com   or   atelier login --store");
+    // A token already stored, or in ATELIER_TOKEN, is used; otherwise ask for one.
+    let token = null, fresh = false;
+    try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+    if (!token) {
+      try { token = await promptSecret("Server token (not shown): "); } catch (error) { die(`no token entered: ${error.message}`); }
+      if (!token) die("no token entered");
+      fresh = true;
+    }
+    loginToken = token;
     cfg.server = String(args.server).replace(/\/$/, "");
     saveConfig(cfg);
     const conf = await call("GET", "/config", undefined, "owner");
     cfg.owner = conf.ownerActor;
     cfg.ownerName = conf.ownerName ?? undefined;
     saveConfig(cfg);
-    console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". The token is read from Keychain atelier.API_TOKEN.`);
+    // A token the server refused is never stored: `call` has already ended the command.
+    let where;
+    if (fresh) { try { where = writeSecret("API_TOKEN", token); } catch (error) { die(error.message); } }
+    else where = process.env.ATELIER_TOKEN?.trim() ? "the ATELIER_TOKEN environment variable" : describeStore("API_TOKEN");
+    console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". The token ${fresh ? "is now stored in" : "is read from"} ${where}.`);
   },
 
   // The project owner, in the project's checkout.
@@ -394,12 +465,36 @@ const commands = {
       ...(args.title === undefined ? {} : { title: args.title }),
       defaultBranch: branch,
     }, OWNER);
-    git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
+    // A project too large for Artifacts joins with its recent history only
+    // (cli/fresh.mjs). Once set up that way it stays that way: a later init
+    // changes the policy and pushes nothing; atelier sync carries new commits.
+    const fresh = cfg.projects?.[name]?.fresh === true;
+    const since = typeof args["history-since"] === "string" ? args["history-since"] : null;
+    if (args["history-since"] === true || args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
+    let pushed = "HEAD";
+    if (fresh) {
+      if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
+    } else if (since) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) die("--history-since takes a day, YYYY-MM-DD");
+      if (git(["status", "--porcelain"], { cwd: top })) die("commit or set aside the checkout's changes first; the baseline is built from its commits");
+      const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd: top });
+      const start = git(["rev-list", "-1", "--first-parent", `--before=${since}T00:00:00`, "HEAD"], { cwd: top });
+      if (!start) die(`${branch} has no commit before ${since}`);
+      const built = buildHistory(git, top, start, git(["rev-parse", "HEAD"], { cwd: top }));
+      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top });
+      savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
+      pushed = built.head;
+      console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
+    } else {
+      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
+    }
     cfg.projects ??= {};
-    cfg.projects[name] = { ...cfg.projects[name], path: top, branch };
+    cfg.projects[name] = { ...cfg.projects[name], path: top, branch, ...(since || fresh ? { fresh: true } : {}) };
     saveConfig(cfg);
     const pol = r.project.policy;
-    console.log(`${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
+    console.log(fresh
+      ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
+      : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
     if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
@@ -412,6 +507,7 @@ const commands = {
   async publish() {
     const name = project();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
+    if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
     git([...auth(t.token), "push", "--quiet", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
@@ -434,13 +530,15 @@ const commands = {
   },
 
   async show() {
-    const d = await call("GET", I(project(), itemArg()), undefined, actor(OWNER));
-    const { item, gate } = d;
-    console.log(`${item.id}  ${item.title}\n  state ${item.state}   owner ${item.owner ?? "—"}   head ${short(item.head)}   workspace ${item.fork ?? "—"}`);
-    console.log(gate.ready ? "  gate: READY" : `  gate:\n${gate.blockers.map((b) => `    - ${b}`).join("\n")}`);
-    if (gate.outOfScope.length) console.log(`  out of scope: ${gate.outOfScope.join(", ")}`);
-    console.log("  provenance:");
-    for (const e of d.events.slice(0, 15)) console.log(`    ${e.at.slice(0, 16)}  ${e.actor.padEnd(24)} ${e.kind}`);
+    const name = project(), id = itemArg();
+    const brief = await call("GET", `${I(name, id)}/brief`, undefined, actor(OWNER));
+    console.log(args.json ? JSON.stringify(brief, null, 2) : formatBrief(name, id, brief, server()));
+  },
+
+  async start() {
+    await commands.claim();
+    const d = await call("GET", I(project(), itemArg()), undefined, actor());
+    console.log(formatTask(d.item));
   },
 
   // Agents: take an item and get a private workspace for it.
@@ -468,7 +566,7 @@ const commands = {
     console.log(`${id} is yours, ${as}. Work here:\n  cd ${JSON.stringify(dir)}`);
     if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, as in the project checkout.`);
     console.log(`Write token expires ${r.workspace.expiresAt}; run \`atelier claim ${id}\` again to refresh it.`);
-    console.log(`Then: commit → atelier push → atelier check → atelier submit`);
+    console.log(args._[0] === "start" ? 'Then: commit, then atelier done "summary"' : `Then: commit → atelier push → atelier check → atelier submit`);
   },
 
   async push() {
@@ -522,7 +620,10 @@ const commands = {
       rmSync(markerPath(dir), { force: true });
     }
     console.log(`changed: ${changed.join(", ") || "nothing"}`);
-    if (failed) process.exit(2);
+    if (failed) {
+      if (doneStep) die("required checks failed", 2);
+      process.exit(2);
+    }
   },
 
   async gc() {
@@ -551,6 +652,7 @@ const commands = {
     summaryArg("submit");
     await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
+    if (doneStep) return d.gate;
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
 
@@ -606,6 +708,18 @@ const commands = {
     console.log(`${id} abandoned.`);
   },
 
+  async done() {
+    if (args._.length !== 2 || !args._[1].trim() || args.summary !== undefined || args.rest) die('usage: atelier done "summary"');
+    args.summary = args._[1];
+    args._ = ["done"];
+    doneStep = "prepare";
+    try {
+      const gate = await commands.finish();
+      doneStep = undefined;
+      console.log(formatDone(gate));
+    } catch (error) { die(error.message); }
+  },
+
   async finish() {
     const name = project(), id = itemArg(), as = actor();
     summaryArg("finish");
@@ -614,16 +728,52 @@ const commands = {
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
     if (git(["status","--porcelain"])) die("commit your changes before finishing");
     const head = git(["rev-parse","HEAD"]);
+    if (doneStep) doneStep = "push";
     await commands.push();
+    if (doneStep) doneStep = "check";
     if (d.policy.sandboxOnly || args.sandbox) await checkInSandbox(); else await commands.check();
     if (git(["rev-parse","HEAD"]) !== head || git(["status","--porcelain"])) die("the workspace changed while finishing; inspect it and finish again");
     const current = await call("GET", I(name,id), undefined, as);
     if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
-    await commands.submit();
+    if (doneStep) doneStep = "submit";
+    return commands.submit();
   },
 
   // The project owner merges an exact revision. With --head, a submitted item
   // is first approved (with --approve) and accepted at that revision only.
+  // A baseline holding part of the history (init --history-since) does not
+  // follow the checkout by itself: commits made in the checkout outside
+  // Atelier are carried to it here, rebuilt with the same trees.
+  async sync() {
+    const name = project();
+    const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
+    if (p.fresh !== true) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
+    if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first");
+    if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
+    const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+    let unlock;
+    try { unlock = landingLock(gitDir); } catch (error) { die(error.message); }
+    try {
+      if (existsSync(join(gitDir, "atelier-landing.json"))) die("a merge is in progress; finish it or cancel it first");
+      const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+      git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
+      const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
+      const pairs = loadPairs(gitDir, name);
+      const paired = pairs[baselineHead] ?? die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
+      const head = git(["rev-parse", "HEAD"], { cwd });
+      if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
+      if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
+      let built;
+      try { built = syncHistory(git, cwd, baselineHead, paired, head); } catch (error) { die(error.message); }
+      // The pairs are saved before the push: a push that lands just before a
+      // crash is still paired, and the rebuild gives the same commits again.
+      savePairs(gitDir, name, { ...pairs, ...built.pairs });
+      git([...auth(base.token), "push", "--quiet", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd });
+      const n = Object.keys(built.pairs).length;
+      console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
+    } finally { unlock(); }
+  },
+
   async merge() {
     // Ends an interrupted merge's landing lease, so the task's owner can push
     // again; refused once the merge is on the baseline.
@@ -681,18 +831,32 @@ const commands = {
       const owners=[...new Set(d.events.filter(e=>['item.claimed','item.handoff'].includes(e.kind)).map(e=>e.data.to??e.actor))];
       const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
       const marker=`Atelier: ${name}/${id} accepted at ${item.acceptedHead}`;
+      // A project whose baseline holds part of its history (cli/fresh.mjs)
+      // merges the task's commits rebuilt onto the paired project commit.
+      const fresh=p.fresh===true, pairs=fresh?loadPairs(gitDir,name):null;
       if (!journal.state) {
-        if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
-        journal.save({start:local,phase:'prepared'});
+        if (fresh) {
+          const paired=pairs[baselineHead];
+          if (!paired) die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
+          if (local!==paired) die(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
+        }
+        else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
+        journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
       }
       if (!journal.state.mergeCommit) {
+        // What is merged: the accepted head, or its rebuilt twin on the project's commits.
+        let target=item.acceptedHead;
+        if (fresh) {
+          try { target=carryTask(git,cwd,journal.state.baselineStart??baselineHead,item.acceptedHead,pairs); } catch (error) { journal.clear(); die(error.message); }
+          if (!target) { journal.clear(); die('the accepted revision adds nothing to the baseline'); }
+        }
         // Recover a commit made just before a crash prevented the journal update.
         const parents=git(['rev-list','--parents','-n','1','HEAD'],{cwd}).split(' ');
-        const ownCommit=parents.length===3 && parents[1]===journal.state.start && parents[2]===item.acceptedHead && git(['log','-1','--format=%B'],{cwd}).split('\n').includes(marker);
+        const ownCommit=parents.length===3 && parents[1]===journal.state.start && parents[2]===target && git(['log','-1','--format=%B'],{cwd}).split('\n').includes(marker);
         if (ownCommit) journal.save({mergeCommit:local,phase:'committed'});
         else {
           if(local!==journal.state.start) die('checkout moved during an interrupted merge; inspect the journal before retrying');
-          const result=git(['merge','--no-ff','--no-commit',item.acceptedHead],{cwd,allowFail:true});
+          const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote});
@@ -717,15 +881,23 @@ const commands = {
           git(['notes','--ref=atelier','merge','FETCH_HEAD'],{cwd});
         else git(['update-ref','refs/notes/atelier','FETCH_HEAD'],{cwd});
       }
-      const priorNote=git(['notes','--ref=atelier','show',mergeCommit],{cwd,allowFail:true});
-      if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,mergeCommit],{cwd});
-      const alreadyPublished=git(['merge-base','--is-ancestor',mergeCommit,baselineHead],{cwd,allowFail:true}).status===0;
-      git([...auth(base.token),'push','--quiet',base.remote,...(alreadyPublished?[]:[`${mergeCommit}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd});
+      // The baseline gets the merge commit itself, or, for a baseline holding
+      // part of the history, its twin: the same tree, authors, dates and
+      // message on the baseline's head and the accepted head. The same inputs
+      // give the same twin, so a retry publishes the same commit.
+      const published=fresh?rebuild(git,cwd,mergeCommit,[journal.state.baselineStart??baselineHead,item.acceptedHead]):mergeCommit;
+      if(fresh)savePairs(gitDir,name,{...loadPairs(gitDir,name),[published]:mergeCommit});
+      for(const c of new Set([mergeCommit,published])){
+        const priorNote=git(['notes','--ref=atelier','show',c],{cwd,allowFail:true});
+        if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,c],{cwd});
+      }
+      const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
+      git([...auth(base.token),'push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd});
       journal.save({phase:'published'});
-      await call('POST',`${I(name,id)}/merged`,{mergeCommit},OWNER);
+      await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
       journal.clear();
       const notesPush=p.notesRemote?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
-      console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline and ledger agree.`);
+      console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}${published!==mergeCommit?` (on the baseline as ${short(published)})`:""}; baseline and ledger agree.`);
       console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
       if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
       else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
@@ -818,11 +990,15 @@ const commands = {
     const name = args._[2];
     if (args._[1] !== "remove" || !name) die("usage: atelier projects remove NAME [--force]");
     await call("DELETE", P(name), { force: args.force === true }, actor(OWNER));
+    // The whole local entry goes; say what it held, since some of it (notesRemote) is set by hand.
+    let dropped = "";
     if (cfg.projects?.[name]) {
+      const held = Object.entries(cfg.projects[name]).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
+      dropped = held.length ? ` Local settings dropped: ${held.join(", ")}.` : "";
       delete cfg.projects[name];
       saveConfig(cfg);
     }
-    console.log(`${name} removed from the project index and local config. The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the owner.`);
+    console.log(`${name} removed from the project index and local config.${dropped} The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the owner.`);
   },
 
   async owners() {
@@ -835,8 +1011,16 @@ const commands = {
 
   async inbox() {
     const entries = await call("GET", "/inbox", undefined, OWNER);
+    if (args.json) return console.log(JSON.stringify(entries, null, 2));
     if (!entries.length) return console.log("Nothing needs you.");
-    for (const x of entries) console.log(`${x.kind.toUpperCase().padEnd(8)} ${x.project}/${x.itemId}  ${x.title}\n         ${x.reason}`);
+    const seen = new Set();
+    for (const x of entries) {
+      const key = `${x.project}/${x.itemId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const brief = await call("GET", `${I(x.project, x.itemId)}/brief`, undefined, actor(OWNER));
+      console.log(formatBrief(x.project, x.itemId, brief, server()) + "\n");
+    }
   },
 
   // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
@@ -862,14 +1046,16 @@ const commands = {
 Several agents may work on this project at once. Each piece of work is an
 item with exactly one owner. Never edit the project checkout directly.
 
-1. \`atelier ls --project NAME\` — find an open item, or ask the project owner to create one.
-2. \`atelier claim ID --project NAME --as HARNESS/MODEL\` — you get a private
-   workspace (a fork of the project). Work only there.
-3. Commit, then \`atelier push\`. Atelier records the head it sees in Artifacts.
-4. \`atelier check\` — runs the project's required checks in a clean clone of
-   exactly that head. Only these count as Observed. \`atelier report "…"\`
-   records anything else you verified; it shows as Reported, never as passing.
-5. \`atelier submit\` when the gate is clear. The project owner accepts and merges.
+1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
+   and prints its workspace, title, scope and note. Work only there.
+2. Commit your changes, then run \`atelier done "summary"\` in that workspace.
+   It pushes, runs required checks and submits only after they pass. Relay
+   its final line to the owner. The project owner accepts and merges.
+3. \`atelier inbox\` and \`atelier show ID\` print briefs you can relay to the owner.
+4. \`atelier ls --project NAME\` lists tasks. Ask the owner to create one if needed.
+5. Individual steps remain available: \`atelier claim\`, \`atelier push\`,
+   \`atelier check\` and \`atelier submit --summary "summary"\`.
+   \`atelier report "…"\` records a Reported claim, never an Observed pass.
 6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
    or \`atelier release ID\`. Your write token is revoked either way.
 7. Reviewing someone else's item: \`atelier diff ID\`, then
@@ -882,9 +1068,9 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
-Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
+Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID

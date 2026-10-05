@@ -47,7 +47,10 @@ export interface Floor {
 }
 
 const LIVE = new Set(["claimed", "submitted", "accepted"]);
-const MIN_WINDOW_MS = 2 * 3600_000;
+// The axis fits the work shown: from a little before the earliest mark to now,
+// never narrower than a quarter hour or wider than two days.
+const MIN_WINDOW_MS = 15 * 60_000;
+const LEAD = 0.08;
 const MAX_WINDOW_MS = 48 * 3600_000;
 
 export function splitActor(actor: string): { harness: string; model: string } {
@@ -117,7 +120,7 @@ export function buildFloor(views: FloorView[], now: Date): Floor {
   }
   benches.sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
   const earliest = Math.min(...benches.flatMap((b) => b.marks.map((m) => Date.parse(m.at))), now.getTime());
-  const span = Math.min(Math.max(now.getTime() - earliest, MIN_WINDOW_MS), MAX_WINDOW_MS);
+  const span = Math.min(Math.max((now.getTime() - earliest) * (1 + LEAD), MIN_WINDOW_MS), MAX_WINDOW_MS);
   return { benches, from: new Date(now.getTime() - span).toISOString(), to: now.toISOString() };
 }
 
