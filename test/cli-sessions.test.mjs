@@ -233,6 +233,23 @@ const unfinished = {
     say: /unmerged files: STATE\.md/,
     make: (f) => { diverge(f); conflict(f, "merge", "--squash", "side"); assert.ok(!marked(f, "MERGE_HEAD") && unmerged(f)); },
   },
+  // Resolved with git add and the markers left in: no marker file, no unmerged entry.
+  "a stash pop whose conflict was added with its markers": {
+    say: /will not commit conflict markers: STATE\.md/,
+    make: (f) => {
+      writeFileSync(join(f.checkout, "STATE.md"), "stashed\n");
+      f.git("stash", "-q");
+      writeFileSync(join(f.checkout, "STATE.md"), "committed\n");
+      f.git("commit", "-qam", "Committed");
+      conflict(f, "stash", "pop");
+      f.git("add", "STATE.md");
+      assert.ok(!marked(f, "MERGE_HEAD") && !unmerged(f));
+    },
+  },
+  "a new file holding conflict markers": {
+    say: /will not commit conflict markers: copied\.md/,
+    make: (f) => { writeFileSync(join(f.checkout, "copied.md"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
+  },
   "a stash pop stopped on a conflict": {
     say: /unmerged files: STATE\.md/,
     make: (f) => {
