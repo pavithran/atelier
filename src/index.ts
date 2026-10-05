@@ -64,7 +64,7 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   // Read index membership before using a cached page. Removed projects must
   // not remain visible through a previously cached showcase.
   const names = await liveShowcase(env);
-  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}`);
+  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
   const hit = await caches.default.match(key);
   if (hit) return hit;
   const owner = ownerActor(env);

@@ -50,7 +50,16 @@ export function dayOf(at: Date | string | number): string {
   return `${p.y}-${p.m}-${p.d}`;
 }
 
-// "EDT", for a page that names its zone once.
+// "EDT": the abbreviation in force at one moment.
 export function zoneName(at: Date | string | number = Date.now()): string {
   return parts(at).tz;
+}
+
+// "New York time", or "UTC": the zone itself, right in every season, for a
+// legend beside times from many dates. An abbreviation such as EDT is right
+// only for the dates it belongs to.
+export function zoneLabel(): string {
+  if (zone === "UTC") return "UTC";
+  const city = zone.split("/").pop()!.replace(/_/g, " ");
+  return `${city} time`;
 }
