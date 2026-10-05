@@ -152,6 +152,13 @@ printf jo | npx wrangler secret put OWNER_ACTOR
 printf Jo | npx wrangler secret put OWNER_NAME
 ```
 
+Pages show times in UTC until `TIMEZONE` names the owner's zone, as an IANA
+name; an unknown name falls back to UTC:
+
+```bash
+printf America/New_York | npx wrangler secret put TIMEZONE
+```
+
 `atelier login` asks the server for the owner's actor, so the CLI follows
 whatever the Worker is set to.
 
