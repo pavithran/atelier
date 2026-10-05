@@ -179,6 +179,25 @@ protected paths (with the defaults), and everything not named keeps its value.
 `atelier init --reset` rebuilds the policy from the options given and the
 defaults, as a first init does; the project's title and creation date are kept.
 
+When the checkout is already registered locally, `init` reuses its registered
+name, even if the folder has a different name. A different `--name NAME` is
+refused. `atelier init --name NAME --rename-local` changes only that local
+config entry and then returns. It does not rename a server project, update
+its title or policy, or push a baseline. The server refuses a new project
+when its baseline repository belongs to another registered project.
+
+## Removing a project
+
+The owner can run `atelier projects remove NAME` to remove a project from
+the index and from the local config. It disappears from Projects, Flow,
+Decisions and the public showcase. Claimed, submitted or accepted items
+block removal unless the owner adds `--force`.
+
+Removal retains the Artifacts repository and all project Ledger data,
+including items, evidence and history. Deleting a repository requires a
+separate, deliberate action by the owner. Reinitialising the same project
+can register its retained Ledger again.
+
 ## Local cache cleanup
 
 `atelier gc --project NAME` previews local directories eligible for removal.
