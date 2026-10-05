@@ -15,6 +15,7 @@ export interface Item {
   base: string | null;      // baseline commit the fork started from
   head: string | null;      // last head Atelier verified in the fork
   acceptedHead: string | null;
+  pushActors?: string[];     // holders and recorded push contributors
   createdAt: string;
   updatedAt: string;
   lastPushAt: string | null;
@@ -114,6 +115,34 @@ export function validActor(actor: string): boolean {
   return ACTOR.test(actor);
 }
 
+// Holding a workspace permits plain Git pushes before Atelier observes a head.
+// Keep every holder and push actor even after handoff or release.
+export function pushActors(events: { actor: string; kind: string; data: Record<string, unknown> }[]): string[] {
+  const actors = new Set<string>();
+  let holder: string | null = null;
+  for (const event of events) {
+    if (event.kind === "item.claimed") holder = event.actor;
+    if (event.kind === "item.handoff") {
+      if (typeof event.data.from === "string") actors.add(event.data.from);
+      holder = typeof event.data.to === "string" ? event.data.to : null;
+    }
+    if (event.kind === "item.released") holder = null;
+    if (holder) actors.add(holder);
+    if (event.kind === "push.observed") actors.add(event.actor === "atelier/events" ? holder ?? event.actor : event.actor);
+  }
+  return [...actors];
+}
+
+export function assertHandoffTarget(actor: string, owner: string): void {
+  if (!validActor(actor) || !actor.includes("/") || actor === owner) {
+    throw new RuleError("bad_actor", "handoff needs harness/model and cannot name the project owner", 400);
+  }
+}
+
+export function assertReviewAllowed(item: Item, proved: boolean): void {
+  if (proved && item.state === "accepted") throw new RuleError("accepted", "only the owner token may reopen accepted work by reviewing", 403);
+}
+
 // "claude-code/opus-5.5" → "opus-5.5". The model, not the harness, is what
 // makes a second opinion independent; the same model in another harness is not.
 export function modelOf(actor: string): string {
@@ -210,6 +239,10 @@ export function agentOf(actor: string, agents: Record<string, AgentPolicy>): str
   const family = familyOf(model);
   const names: Record<string, string> = { anthropic: "claude", openai: "gpt", zai: "glm", google: "gemini", meta: "llama" };
   if (fixed) return Object.hasOwn(agents, fixed) ? fixed : null;
+  // A ControlPlane policy's "antigravity" agent means Gemini through
+  // Antigravity (its CLI is agy). Antigravity also serves other vendors'
+  // models, and those are matched by their own family, like any harness.
+  if (harness === "antigravity" && family === "google" && Object.hasOwn(agents, "antigravity")) return "antigravity";
   const name = names[family] ?? (family === "other" ? model.match(/^[a-z]+/)?.[0] : family);
   if (name && Object.hasOwn(agents, name)) return name;
   return family !== "other" && Object.hasOwn(agents, family) ? family : null;
@@ -349,17 +382,18 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   let needsAssessor = false;
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
   if (kind === "protected" || (governed && kind === "coordinated")) {
-    const ownerModel = item.owner ? modelOf(item.owner) : "";
-    const ownerFamily = familyOf(ownerModel);
+    const contributors = [...new Set([...(item.pushActors ?? []), ...(item.owner ? [item.owner] : [])])];
     const independent = reviews.some((r) => {
       if (!r.approve) return false;
       if (r.by === owner) return true;
-      if (r.by === item.owner) return false;
-      if (!governed) return r.by === owner || (r.by.includes("/") && modelOf(r.by) !== ownerModel);
-      if (!r.by.includes("/")) return false;
-      if (kind === "coordinated") return true;
-      const family = familyOf(modelOf(r.by));
-      return family !== "other" && ownerFamily !== "other" && family !== ownerFamily;
+      if (!validActor(r.by) || !r.by.includes("/")) return false;
+      return contributors.every((actor) => {
+        if (r.by === actor) return false;
+        if (!governed) return modelOf(r.by) !== modelOf(actor);
+        if (kind === "coordinated") return true;
+        const family = familyOf(modelOf(r.by)), contributorFamily = familyOf(modelOf(actor));
+        return family !== "other" && contributorFamily !== "other" && family !== contributorFamily;
+      });
     });
     if (!independent) {
       needsAssessor = true;

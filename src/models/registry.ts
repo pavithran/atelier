@@ -1,6 +1,6 @@
 export type TaskKind = "mechanical-edit" | "feature" | "refactor" | "tests" | "docs" | "ui" | "research";
 export type Family = "anthropic" | "openai" | "zai" | "qwen" | "deepseek" | "minimax" | "google";
-export type Harness = "claude-code" | "codex" | "opencode" | "zcode";
+export type Harness = "claude-code" | "codex" | "opencode" | "zcode" | "gemini-cli" | "antigravity";
 export type Where = "cloud" | "home";
 export type EvidenceKind = "model-card" | "benchmark" | "local-qualification" | "atelier-record";
 

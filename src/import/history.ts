@@ -79,7 +79,7 @@ export function normaliseAgentName(name: string): string {
   let norm = s.toLowerCase().trim().replace(/\s+/g, "-");
   norm = norm.replace(/^claude-(opus|sonnet|haiku|fable)/, "$1");
   if (!/\d/.test(norm)) {
-    if (norm === "codex" || norm === "claude-code" || norm === "zcode" || norm === "opencode" || norm === "gemini-cli") {
+    if (norm === "codex" || norm === "claude-code" || norm === "zcode" || norm === "opencode" || norm === "gemini-cli" || norm === "antigravity") {
       return `${norm}, model not recorded`;
     }
     return `${norm}, version not recorded`;
