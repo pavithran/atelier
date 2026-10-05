@@ -159,4 +159,8 @@ test("a file on one side where the other side has a folder is a conflict, as in 
   const m = await mergeability(r, r, "empty", "ours", "theirs");
   assert.equal(m.clean, false);
   assert.deepEqual(m.conflicts, [{ path: "foo", reason: "a file on one side and a folder on the other" }]);
+  // Main replaces the folder foo/ with a file foo; the task only deletes foo/bar. Git merges this.
+  const r2: Reader = { tree: async (h) => ({ base: [{ name: "foo", hash: "dir", mode: "40000", type: "tree" }], dir: trees.dir, ours: trees.ours, gone: [] } as Record<string, typeof trees.ours>)[h] ?? null, blob: async () => new TextEncoder().encode("x\n") };
+  const replaced = await mergeability(r2, r2, "base", "ours", "gone");
+  assert.equal(replaced.clean, true, "a deleted path leaves nothing to collide with");
 });
