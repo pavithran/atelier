@@ -263,12 +263,13 @@ function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git([...auth(token), "clone", "--quiet", remote, dir]);
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
-  let changed = [];
+  let changed;
   if (baseline) {
     git([...auth(baseline.token), "fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir });
     const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
     if (mb.status === 0) {
-      changed = git(["diff", "--name-only", mb.stdout.trim(), "HEAD"], { cwd: dir }).split("\n").filter(Boolean);
+      const diff = git(["diff", "--no-renames", "--name-only", "-z", mb.stdout.trim(), "HEAD"], { cwd: dir, allowFail: true });
+      if (diff.status === 0) changed = diff.stdout.split("\0").filter(Boolean);
     }
   }
   return { dir, changed };
@@ -342,7 +343,15 @@ export function readControlPlane(top) {
     sources.push("project-adapter.v1.json");
     for (const s of adapter.protected_surfaces ?? []) if (s.pattern) protectedPaths.add(s.pattern);
   }
-  return { sources, protected: [...protectedPaths], eligible, refuseOverlap };
+  return {
+    sources, protected: [...protectedPaths], eligible, refuseOverlap,
+    ...(agent ? { agents: agent.agents ?? {} } : {}),
+    ...(exec ? { execution: {
+      allowed_classes: exec.allowed_classes ?? ["direct", "coordinated", "protected"],
+      direct: { enabled: exec.direct?.enabled ?? false, allowed_path_patterns: exec.direct?.allowed_path_patterns ?? [] },
+      protected_path_patterns: exec.protected_path_patterns ?? [],
+    } } : {}),
+  };
 }
 
 export async function refreshControlPlane(top, name, request = call, report = console.log) {
@@ -354,8 +363,12 @@ export async function refreshControlPlane(top, name, request = call, report = co
   }
   if (!cp) return null;
   const before = (await request("GET", P(name), undefined, OWNER)).project.policy;
-  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false };
-  const changes = controlPlaneChanges(before, policy);
+  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
+  // Roles and change classes are compared here too, as whole values with their
+  // keys in a fixed order; the merge guard compares protected paths only.
+  const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
+  const changes = [...controlPlaneChanges(before, policy),
+    ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`)];
   if (changes.length) {
     await request("PUT", P(name), policy, OWNER);
     for (const change of changes) report(`ControlPlane ${change}`);
@@ -363,7 +376,7 @@ export async function refreshControlPlane(top, name, request = call, report = co
   return { before, policy: { ...before, ...policy }, changes };
 }
 
-function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote }) {
+function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass }) {
   const dir = join(cwd, "docs", "control-plane", "landing-receipts");
   if (!existsSync(dir)) return null;
   const template = readJson(join(cwd, "docs", "control-plane", "landing-receipt.v1.json")) ?? {};
@@ -374,7 +387,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
     kind: "control-plane.landing-receipt",
     receipt_id: `atelier-${name}-${id}-${date}`,
     project_id: template.project_id ?? name,
-    execution_class: "coordinated",
+    execution_class: changeClass ?? "coordinated",
     closure: "compact",
     implementation_commit: item.acceptedHead,
     delivery: {
@@ -438,6 +451,49 @@ async function checkInSandbox() {
 // codes are dropped. Atelier's own wording is what the lines start with.
 const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
 
+// Where a project stands, as plain text an agent can paste into a chat: one
+// line per item, and any text a person or agent wrote flattened.
+const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
+export function formatStanding(s, ownerName = "the project owner") {
+  const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
+  const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
+  const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
+  group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
+  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
+  group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
+  group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
+  group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
+  if (lines.length === 1) lines.push("", "Nothing is held, waiting, queued or recently merged.");
+  if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
+  if (s.controlPlane) {
+    lines.push("", `ControlPlane policy, approved: ${flat(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(flat).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(flat).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.`);
+  }
+  return lines.join("\n");
+}
+
+// Whether this machine's checkout is in step with the baseline, from what git
+// reported. A baseline that holds part of the history (--history-since) is
+// matched by its paired project commit; otherwise the baseline's head must be
+// in the checkout.
+//   { registered, fresh, branch, baselineHead, head, paired, contains, ahead }
+// paired: the project commit paired with baselineHead, or null. contains: the
+// checkout's history holds baselineHead. ahead: the checkout's head is past paired.
+export function checkoutLine(raw) {
+  // Names come from configuration; flattened like every relayed field.
+  const c = { ...raw, name: flat(raw.name), branch: flat(raw.branch ?? "") };
+  if (!c.registered) return `Checkout: none is registered on this machine for ${c.name}, so it cannot be compared.`;
+  const base = short(c.baselineHead);
+  if (c.fresh) {
+    if (!c.paired) return `Checkout: out of step. The baseline's head ${base} has no pair in this checkout; it was set up or synced from another machine.`;
+    if (c.head === c.paired) return `Checkout: in step. ${c.branch} @ ${short(c.head)} is the commit the baseline's head ${base} matches.`;
+    if (c.ahead) return `Checkout: out of step. ${c.branch} has commits the baseline lacks; run atelier sync --project ${c.name}.`;
+    return `Checkout: out of step. ${c.branch} @ ${short(c.head)} is not the commit the baseline's head ${base} matches (${short(c.paired)}); reconcile the checkout, then run atelier sync --project ${c.name}.`;
+  }
+  return c.contains
+    ? `Checkout: in step. ${c.branch} @ ${short(c.head)} holds the baseline's head ${base}.`
+    : `Checkout: out of step. ${c.branch} @ ${short(c.head)} does not hold the baseline's head ${base}; reconcile the checkout before merging.`;
+}
+
 export function formatDone(gate) {
   return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
 }
@@ -492,6 +548,35 @@ const usage = {
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   projects: "usage: atelier projects remove NAME [--force]",
 };
+
+// The checkout's state against the baseline, in words. The baseline's head is
+// read with ls-remote, so nothing is fetched into the checkout.
+// Every path out of it is one flattened line, whatever a name holds.
+async function checkoutStatus(name, as) {
+  return flat(await checkoutStatusLine(name, as));
+}
+
+async function checkoutStatusLine(name, as) {
+  const p = cfg.projects?.[name];
+  if (!p?.path || !existsSync(p.path)) return checkoutLine({ name, registered: false });
+  const cwd = p.path, fresh = p.fresh === true;
+  const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+  const listed = git([...auth(base.token), "ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd });
+  const baselineHead = listed.split(/\s/)[0];
+  if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
+  // The registered branch is compared, whatever is checked out: the line
+  // names that branch, so its head is what it must describe.
+  const head = git(["rev-parse", "--verify", "--quiet", `refs/heads/${p.branch}`], { cwd, allowFail: true }).stdout?.trim();
+  if (!head) return `Checkout: cannot be compared: this checkout has no ${p.branch} branch.`;
+  const has = (sha) => git(["cat-file", "-e", `${sha}^{commit}`], { cwd, allowFail: true }).status === 0;
+  const is = (a, b) => git(["merge-base", "--is-ancestor", a, b], { cwd, allowFail: true }).status === 0;
+  const paired = fresh ? loadPairs(git(["rev-parse", "--absolute-git-dir"], { cwd }), name)[baselineHead] ?? null : null;
+  return checkoutLine({
+    name, registered: true, fresh, branch: p.branch, baselineHead, head, paired,
+    contains: !fresh && has(baselineHead) && is(baselineHead, head),
+    ahead: !!paired && head !== paired && is(paired, head),
+  });
+}
 
 const commands = {
   // Reached only when `ops` is not the first word; see runOps.
@@ -578,7 +663,11 @@ const commands = {
     const policy = {};
     if (args.multi.check || reset) policy.checks = args.multi.check ?? [];
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
-    if (cp) policy.eligible = cp.eligible ?? [];
+    if (cp) {
+      policy.eligible = cp.eligible ?? [];
+      if (cp.agents) policy.agents = cp.agents;
+      if (cp.execution) policy.execution = cp.execution;
+    }
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]);
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = Boolean(args["sandbox-only"]);
     const r = await call("PUT", P(name), {
@@ -768,7 +857,7 @@ const commands = {
       rmSync(dir, { recursive: true, force: true });
       rmSync(markerPath(dir), { force: true });
     }
-    console.log(`changed: ${changed.join(", ") || "nothing"}`);
+    console.log(changed ? `changed: ${changed.join(", ") || "nothing"}` : "changed: not measured (the comparison with the baseline failed); the gate waits for a check that measures it");
     if (failed) {
       if (doneStep) die("required checks failed", 2);
       process.exit(2);
@@ -1023,7 +1112,7 @@ const commands = {
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
-          const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote});
+          const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
           git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd});
           journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});
@@ -1189,9 +1278,15 @@ const commands = {
 
   // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
   async status() {
+    if (args.project !== undefined) {
+      const name = args.project === true ? die("usage: atelier status [--project NAME]") : args.project;
+      const as = actor(OWNER);
+      const standing = await call("GET", `${P(name)}/standing`, undefined, as);
+      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + await checkoutStatus(name, as));
+      return;
+    }
     const known = await call("GET", "/projects", undefined, OWNER);
-    const chosen = args.project ? known.filter((p) => p.name === args.project) : known;
-    if (args.project && !chosen.length) die(`no project named ${args.project}`);
+    const chosen = known;
     const inbox = await call("GET", "/inbox", undefined, OWNER);
     const views = await Promise.all(chosen.map(async (p) => {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
@@ -1212,7 +1307,7 @@ const commands = {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
-Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
+Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] [--policy-changed-ok] · abandon ID
