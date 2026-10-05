@@ -267,3 +267,36 @@ it("removed projects disappear from signed-in pages and a cached showcase", asyn
     expect(await (await get(path)).text()).not.toContain(name);
   }
 });
+
+it("project routes refuse a body that is not a JSON object with a 400, not a 500", async () => {
+  const name = "remove-bad-body";
+  await project(name);
+  for (const body of [null, [1], "force", 7, true]) {
+    for (const [method, path] of [["DELETE", `/projects/${name}`], ["PUT", `/projects/${name}`]]) {
+      const res = await call(method, path, "owner", body);
+      expect(res.status, `${method} ${JSON.stringify(body)}`).toBe(400);
+      expect(await res.json()).toEqual({ error: "bad_body", detail: "the request body must be a JSON object" });
+    }
+  }
+  expect(await (await call("GET", "/projects", "owner")).json()).toContainEqual(expect.objectContaining({ name }));
+  expect((await call("DELETE", `/projects/${name}`, "owner")).status).toBe(200);
+});
+
+it("removal counts an open item queued for a runner as live work", async () => {
+  const name = "remove-queued";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Queued for a runner", [], "owner");
+  await L.dispatch("t1", "owner", { to: "home" });
+  const refused = await call("DELETE", `/projects/${name}`, "owner");
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toMatchObject({ error: "live_work", detail: expect.stringContaining("queued for a runner") });
+  expect(await (await call("GET", "/projects", "owner")).json()).toContainEqual(expect.objectContaining({ name }));
+  expect((await call("DELETE", `/projects/${name}`, "owner", { force: "true" })).status).toBe(409);
+  expect((await call("DELETE", `/projects/${name}`, "owner", { force: true })).status).toBe(200);
+  // A task that is open but not queued is still removable without force.
+  const plain = "remove-open";
+  await project(plain);
+  await env.LEDGER.get(env.LEDGER.idFromName(`project:${plain}`)).newItem("Just open", [], "owner");
+  expect((await call("DELETE", `/projects/${plain}`, "owner")).status).toBe(200);
+});

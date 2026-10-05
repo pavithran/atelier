@@ -180,6 +180,13 @@ printf jo | npx wrangler secret put OWNER_ACTOR
 printf Jo | npx wrangler secret put OWNER_NAME
 ```
 
+Pages show times in UTC until `TIMEZONE` names the owner's zone, as an IANA
+name; an unknown name falls back to UTC:
+
+```bash
+printf America/New_York | npx wrangler secret put TIMEZONE
+```
+
 `atelier login` asks the server for the owner's actor, so the CLI follows
 whatever the Worker is set to.
 
@@ -214,7 +221,30 @@ config entry and then returns. It does not rename a server project, update
 its title or policy, or push a baseline. The server refuses a new project
 when its baseline repository belongs to another registered project.
 
-## Owner notifications
+## Projects too large for Artifacts
+
+Artifacts holds at most 1 GB per repository and 32 MB per file. A project
+whose history is larger can join with its recent history only:
+
+```bash
+atelier init --history-since 2026-09-05 --check "…"
+```
+
+The baseline then starts with one commit holding the project as it was at
+the start of that day, followed by each commit on the branch's first-parent
+line since, rebuilt with the same files, authors, dates and messages. The
+project's own history is not pushed and not changed. The checkout keeps the
+pairs of baseline and project commits in `.git/atelier-baseline-map.json`.
+
+`atelier merge` carries an accepted task's commits onto the paired project
+commit, so each has exactly the files the agent committed, then merges them
+as usual, and publishes to the baseline a twin of the merge commit with the
+same files. It refuses when the branch has moved since the baseline last
+matched it; `atelier sync` carries commits made in the checkout outside
+Atelier to the baseline first. Merging and syncing need this checkout, which
+holds the pairs.
+
+
 
 Set `NTFY_TOPIC` to receive an ntfy notification when submission, review or
 check results put a submitted task in the owner's inbox:
@@ -237,8 +267,11 @@ the topic. A push that withdraws acceptance does not send a notification.
 
 The owner can run `atelier projects remove NAME` to remove a project from
 the index and from the local config. It disappears from Projects, Flow,
-Decisions and the public showcase. Claimed, submitted or accepted items
-block removal unless the owner adds `--force`.
+Decisions and the public showcase. Claimed, submitted or accepted items, and
+open items queued for a runner, block removal unless the owner adds `--force`.
+The local config entry is deleted whole, and the command lists what it held,
+such as the checkout path, branch and `notesRemote`, so a setting made by hand
+can be restored.
 
 Removal retains the Artifacts repository and all project Ledger data,
 including items, evidence and history. Deleting a repository requires a
@@ -412,7 +445,7 @@ printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
 
 `SHOWCASE` takes project names separated by commas; deleting it hides the
 page again. The page is cached for a minute, so a change to `SHOWCASE` shows
-within a minute. With a showcase set, a visitor who is not signed in opens
+within a minute. With a showcased project still registered, a visitor who is not signed in opens
 `atelier.zone` on it; signed in, `/` opens Decisions while something is
 waiting and Flow when nothing is, and `/decisions` is always Decisions.
 

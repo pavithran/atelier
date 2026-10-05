@@ -5,9 +5,10 @@
 
 import { vendorOf } from "../graph.ts";
 import { NO_AGENT, type ImportedHistory } from "./history.ts";
+import { dayOf } from "../time.ts";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
+const day = (t: number) => dayOf(t * 1000);
 const BINS = 96;
 // A name longer than the lane label column is cut, and shown whole on hover.
 const shortName = (s: string) => (s.length > 26 ? s.slice(0, 25).trimEnd() + "…" : s);

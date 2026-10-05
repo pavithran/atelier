@@ -5,6 +5,7 @@
 
 import { escapeText as e, page, renderFile, titleOf } from "../ui.ts";
 import type { ProjectRecord } from "../ledger.ts";
+import { stamp } from "../time.ts";
 import { HISTORY_CAP, READABLE, type Commit, type FileChange, type FileView, type Node } from "./repo.ts";
 
 export interface Where {
@@ -22,7 +23,7 @@ export const commitHref = (w: Where, hash: string) => `${root(w)}/commit/${enc(h
 export const historyHref = (w: Where, path: string[]) => `${root(w)}/history${path.map((p) => "/" + enc(p)).join("")}${atQuery(w)}`;
 
 const short = (h: string) => h.slice(0, 8);
-const day = (seconds: number) => new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+const day = (seconds: number) => stamp(seconds * 1000);
 const firstLine = (m: string) => m.split("\n")[0];
 
 function frame(w: Where, title: string, tab: "code" | "log" | "commit", head: Commit | null, body: string, ownerName: string | null): string {
