@@ -395,10 +395,13 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     if (!policy.agents) assertEligible(r.by, policy, this.owner);
     const item = this.item(r.itemId);
-    assertLive(item);
+    if (item.state !== "accepted") assertLive(item);
+    else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
     if (item.owner === r.by) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
+    // A new review of accepted work requires another acceptance.
+    if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null });
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head });
     this.notify(r.itemId, origin);
   }
@@ -443,10 +446,11 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
-    const g = gate(item, this.project().policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
+    const policy = this.project().policy;
+    const g = gate(item.state === "accepted" ? { ...item, state: "submitted" } : item, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     this.update(id, { state: "accepted", accepted_head: item.head });
-    this.log(id, actor, "item.accepted", { head: item.head });
+    this.log(id, actor, "item.accepted", { head: item.head, protected: [...policy.protected] });
     return this.item(id);
   }
 
@@ -534,7 +538,11 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const evidence = this.evidenceFor(id);
     const reviews = this.reviewsFor(id);
-    return { item, policy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    // Read acceptance separately so later events cannot hide its snapshot.
+    const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.accepted' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+    const acceptance = row ? JSON.parse(row.data as string) : null;
+    const acceptanceProtected: string[] | null = acceptance?.head === item.acceptedHead ? acceptance.protected ?? null : null;
+    return { item, policy, acceptanceProtected, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string): InboxEntry[] {
