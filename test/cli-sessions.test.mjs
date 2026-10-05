@@ -406,9 +406,10 @@ function remote(f, name) {
 // the value, or "unset", as git-lfs's own hook would read it.
 function recordPushes(f) {
   const hook = join(f.checkout, ".git", "hooks", "pre-push"), log = join(f.dir, "pushes.log");
-  writeFileSync(hook, `#!/bin/sh\necho "$1 \${GIT_LFS_SKIP_PUSH-unset}" >> ${JSON.stringify(log)}\n`);
+  // A tab separates the fields: a remote's path may hold spaces.
+  writeFileSync(hook, `#!/bin/sh\nprintf '%s\\t%s\\n' "$1" "\${GIT_LFS_SKIP_PUSH-unset}" >> ${JSON.stringify(log)}\n`);
   chmodSync(hook, 0o755);
-  return () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => l.split(" ")) : [];
+  return () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => l.split("\t")) : [];
 }
 test("wrap never pushes checkout remotes without --push and respects ignored files", (t) => {
   const f = fixture(t), path = remote(f, "origin");
