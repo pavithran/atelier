@@ -1,0 +1,18 @@
+atelier cloudflare-git/t69 "Showcase comparison: make the share of reviews that sent work back the With Atelier card's lead figure"
+accepted head b9f38c1b6d2915940cf3b6b9ee2c6426e145ceba
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T02:16:19.475Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T02:16:26.074Z
+REVIEW approve — codex/gpt-6-astra: Zero denominators guarded; both percentages use the displayed counts; false rounded endpoints become escaped <1% and >99%; the revised wording separates git's recorded claims from observed evidence.
+2026-10-05T02:08:00.823Z pavi item.created
+2026-10-05T02:08:01.135Z claude-code/opus-5.5 item.claimed
+2026-10-05T02:08:05.042Z claude-code/opus-5.5 fork.created
+2026-10-05T02:09:52.065Z claude-code/opus-5.5 push.observed
+2026-10-05T02:10:56.044Z claude-code/opus-5.5 evidence.observed
+2026-10-05T02:10:57.992Z claude-code/opus-5.5 evidence.observed
+2026-10-05T02:10:58.600Z claude-code/opus-5.5 item.submitted
+2026-10-05T02:15:13.118Z claude-code/opus-5.5 push.observed
+2026-10-05T02:16:19.579Z claude-code/opus-5.5 evidence.observed
+2026-10-05T02:16:26.147Z claude-code/opus-5.5 evidence.observed
+2026-10-05T02:16:27.902Z claude-code/opus-5.5 item.submitted
+2026-10-05T02:17:26.923Z codex/gpt-6-astra review.approved
+2026-10-05T02:17:27.365Z pavi item.accepted
