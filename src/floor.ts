@@ -14,6 +14,7 @@ export interface Mark {
   kind: MarkKind;
   actor: string;
   label: string;
+  title?: string;
 }
 
 export interface Bench {
@@ -63,11 +64,15 @@ export function markFor(ev: LedgerEvent): Mark | null {
   const d = ev.data as Record<string, unknown>;
   const claim = typeof d.claim === "string" ? d.claim : "";
   const base = { at: ev.at, actor: ev.actor };
+  const model = splitActor(ev.actor).model || ev.actor;
   switch (ev.kind) {
     case "item.claimed":
-      return { ...base, kind: "claim", label: `${ev.actor} claimed it` };
+      return { ...base, kind: "claim", label: `${model} claimed it`, title: `${ev.actor} claimed it` };
     case "item.handoff":
-      return { ...base, kind: "handoff", label: `handed from ${d.from ?? "nobody"} to ${d.to}` };
+      const fromModel = splitActor(d.from as string ?? "").model || (d.from ?? "nobody");
+      const to = typeof d.to === "string" ? d.to : "nobody recorded";
+      const toModel = splitActor(to).model || to;
+      return { ...base, kind: "handoff", label: `handed from ${fromModel} to ${toModel}`, title: `handed from ${d.from ?? "nobody"} to ${to}` };
     case "push.observed":
       return { ...base, kind: "push", label: `pushed ${String(d.head ?? "").slice(0, 8)}` };
     case "evidence.observed":
@@ -80,9 +85,9 @@ export function markFor(ev: LedgerEvent): Mark | null {
     case "item.submitted":
       return { ...base, kind: "submit", label: "submitted for review" };
     case "review.approved":
-      return { ...base, kind: "approve", label: `${ev.actor} approved` };
+      return { ...base, kind: "approve", label: `${model} approved`, title: `${ev.actor} approved` };
     case "review.rejected":
-      return { ...base, kind: "reject", label: `${ev.actor} requested changes` };
+      return { ...base, kind: "reject", label: `${model} requested changes`, title: `${ev.actor} requested changes` };
     case "item.accepted":
       return { ...base, kind: "accept", label: "accepted" };
     default:

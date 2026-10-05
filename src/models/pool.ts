@@ -39,7 +39,7 @@ export interface ModelEntry {
 // Names, as patterns, oldest-established first within each family. Anything
 // none matches is "other", and the Models page says so.
 const FAMILIES: [PoolFamily, RegExp][] = [
-  ["anthropic", /^(claude|opus|sonnet|haiku)\b|anthropic/i],
+  ["anthropic", /^(claude|opus|sonnet|haiku|fable)\b|anthropic/i],
   ["openai", /^(gpt|o\d|codex|chatgpt)\b|^gpt-|openai/i],
   ["zai", /^glm|zhipu|z-?ai/i],
   ["google", /^(gemini|gemma)|google/i],

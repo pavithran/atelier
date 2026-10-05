@@ -90,3 +90,8 @@ test("a longer stretch of work gets an axis that starts a little before its earl
   const p = position(T(0), floor);
   assert.ok(p > 0.05 && p < 0.1, `the earliest mark is near the left edge, not on it (${p})`);
 });
+
+test("a handoff with no recipient recorded is still a mark", () => {
+  const m = markFor(ev(1, "codex/gpt-6-astra", "item.handoff", { from: "codex/gpt-6-astra" }));
+  assert.equal(m?.label, "handed from gpt-6-astra to nobody recorded");
+});
