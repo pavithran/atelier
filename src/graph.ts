@@ -447,7 +447,8 @@ function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: 
   // its accessible name is the card's text. A linked mark leaves focus to its link.
   const name = esc(`${stamp(b.at)}, ${BEAD_NAMES[b.kind]}: ${b.label}`);
   const focus = b.href ? "" : ' tabindex="0"';
-  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}${isLocal ? " local" : ""}" style="--d:${d}${style}" transform="translate(${X} ${y})" data-key="${key}"${focus} role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
+  // A local bead is hollow and outlined in its actor's colour, so it carries the colour itself.
+  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}${isLocal ? " local" : ""}" style="--d:${d}${style}${isLocal && !style.includes("--c:") ? `;--c:${color}` : ""}" transform="translate(${X} ${y})" data-key="${key}"${focus} role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
   switch (b.kind) {
     case "push": return `${open("push")}<path d="M0 -6V6"/></g>`;
     case "pass": return `${open("pass")}<circle r="3.6"/></g>`;

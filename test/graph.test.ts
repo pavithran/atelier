@@ -287,3 +287,12 @@ test("a local run keeps its family's colour, dotted and drawn without the dash a
   }
   assert.match(svg, /<circle class="g-head pop local"/);
 });
+
+test("a local run's beads carry their actor's colour for the outline", () => {
+  seq = 0;
+  const evs = [ev("t9", "opencode/GLM-5.3-Flash-4_8bit", "item.claimed"), ev("t9", "opencode/GLM-5.3-Flash-4_8bit", "push.observed", { head: "a".repeat(40) })].reverse();
+  const svg = drawStory(buildStory("demo", [{ id: "t9", title: "Local work", state: "claimed" } as never], evs, OWNER), OWNER);
+  const beads = svg.match(/<g class="g-bead pop [^"]*local"[^>]*>/g) ?? [];
+  assert.ok(beads.length > 0, "a local bead is drawn");
+  for (const b of beads) assert.match(b, /--c:var\(--m-zai\)/);
+});
