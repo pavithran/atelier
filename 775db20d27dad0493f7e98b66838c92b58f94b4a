@@ -1,0 +1,23 @@
+atelier cloudflare-git/t79 "Policy vocabulary from ControlPlane: roles (who may author, review, reconcile) and change classes (direct, coordinated, protected) read from a project's policy and enforced by the gate"
+accepted head 6dfb942b951fc7f5ca1e9c5881ed95d5d69df1c0
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-05T17:45:37.497Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-05T17:45:39.680Z
+REVIEW approve — pavi: Merge-only revision over GLM's approved cad02e62: resolves main's policy guard and ops alongside roles and classes; the refresh also reports role and class changes; restores sync's HEAD line. Full suite and typecheck pass.
+2026-10-05T16:24:53.538Z pavi item.created
+2026-10-05T16:24:59.873Z codex/gpt-6-astra item.claimed
+2026-10-05T16:25:02.309Z codex/gpt-6-astra fork.created
+2026-10-05T16:40:11.214Z codex/gpt-6-astra push.observed
+2026-10-05T16:41:16.576Z codex/gpt-6-astra evidence.observed
+2026-10-05T16:41:18.783Z codex/gpt-6-astra evidence.observed
+2026-10-05T16:41:19.399Z codex/gpt-6-astra item.submitted
+2026-10-05T17:12:09.684Z codex/gpt-6-astra push.observed
+2026-10-05T17:13:15.133Z codex/gpt-6-astra evidence.observed
+2026-10-05T17:13:17.263Z codex/gpt-6-astra evidence.observed
+2026-10-05T17:13:17.915Z codex/gpt-6-astra item.submitted
+2026-10-05T17:26:07.051Z zcode/glm-5.3 review.approved
+2026-10-05T17:44:29.920Z codex/gpt-6-astra push.observed
+2026-10-05T17:45:37.638Z codex/gpt-6-astra evidence.observed
+2026-10-05T17:45:39.818Z codex/gpt-6-astra evidence.observed
+2026-10-05T17:45:40.428Z codex/gpt-6-astra item.submitted
+2026-10-05T17:45:45.695Z pavi review.approved
+2026-10-05T17:45:46.719Z pavi item.accepted
