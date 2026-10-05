@@ -550,6 +550,20 @@ it('a share that rounds to 0% or 100% without being exactly that says so',async(
  expect(lead(0,300)).toContain('<b>0%</b>');
 });
 
+it('Flow offers time and family filters that keep each other, and the showcase has none',async()=>{
+ const {renderFlow,renderShowcase}=await import('../src/ui');
+ const {buildStory}=await import('../src/graph');
+ const evs=[{seq:2,itemId:'t1',at:'2026-10-04T10:01:00Z',actor:'codex/gpt-6-astra',kind:'item.claimed',data:{}},{seq:1,itemId:'t1',at:'2026-10-04T10:00:00Z',actor:'pavi',kind:'item.created',data:{}}];
+ const s=buildStory('p',[{id:'t1',title:'T',state:'claimed'}] as never,evs as never,'pavi');
+ const html=renderFlow([s],s.tally,'pavi','PAVI',false,new Map(),'7d','openai',['openai']);
+ expect(html).toContain('href="?since=1d&amp;family=openai"');
+ expect(html).toContain('href="?since=7d"');
+ expect(html).toMatch(/<a href="\?since=7d&amp;family=openai" aria-current="page"/);
+ expect(html).toMatch(/class="replay" href="\/flow\?since=7d&amp;family=openai&amp;replay=[0-9a-z]+#p"/);
+ expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).toMatch(/class="replay" href="\/flow\?replay=[0-9a-z]+#p"/);
+ expect(renderShowcase([s],s.tally,'pavi','PAVI')).not.toContain('aria-label="Filters"');
+});
+
 it('the front door and the login link follow a showcase only while its project is registered',async()=>{
  const TOKEN='door-removed-token';
  const go=(path:string)=>worker.fetch(new Request(`https://atelier.test${path}`,{redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,SHOWCASE:'vanishing'} as typeof env);
