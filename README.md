@@ -290,6 +290,33 @@ within a minute. With a showcase set, a visitor who is not signed in opens
 `atelier.zone` on it; signed in, `/` opens Decisions while something is
 waiting and Flow when nothing is, and `/decisions` is always Decisions.
 
+## The model pool
+
+The Models page (`/models`) and `atelier models` hold the models Atelier
+can dispatch to. Each entry names the model as its harness does, the
+harness (OpenCode, Claude Code, Codex, ZCode or the Gemini CLI), where it
+runs, its provider and, for an API, the name of the Keychain entry on the
+runner's machine that holds its key. Atelier stores that name and never a
+key; a form or request that carries one is refused.
+
+```text
+atelier models add GLM-5.3-Flash-4_8bit --harness opencode --where home --endpoint http://studio.local:8000/v1
+atelier models add gemini-3.1-pro --harness opencode --where cloud --provider google --keychain gemini.API_KEY
+atelier models
+```
+
+A model's family (Claude, GPT, GLM, Gemini, DeepSeek, Qwen and others) is
+recognised from its name, so a new release is coloured correctly on the
+graph the day it appears; a name no family claims is shown as not
+recognised. A runner reports what it finds for each model through
+`POST /api/models/ID/status`, naming itself in `X-Atelier-Runner`: a home
+model is reported only by a home runner and a cloud model only by a cloud
+runner, and the Models page shows each report with the runner that made it.
+Changing how a model is reached (its harness, where it runs, provider,
+endpoint or Keychain entry) clears its status until it is checked again.
+An endpoint carrying a query string, or a Keychain entry name that looks
+like a key, is refused.
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,

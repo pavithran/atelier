@@ -3,9 +3,11 @@ import { Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanSummary } from "./brief";
-import { cleanTitle, titleOf, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
 import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
+import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { buildRecord, type ActorRecord } from "./models/record";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally } from "./graph";
@@ -204,6 +206,27 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const m = req.method;
 
   if (parts[0] === "inbox" && m === "GET") return json(await inbox(env));
+  // The model pool: any signed-in caller reads it (runners do); only the owner
+  // changes it; a runner reports a model's status under its runner name.
+  if (parts[0] === "models") {
+    const I = index(env);
+    if (parts.length === 1 && m === "GET") return json(await I.models());
+    const id = parts[1] ?? "";
+    if (parts.length === 2 && m === "PUT") {
+      requireOwner(env, actor);
+      return json(await I.putModel(cleanEntry({ ...body, id }, actor, new Date().toISOString())));
+    }
+    if (parts.length === 2 && m === "DELETE") {
+      requireOwner(env, actor);
+      return json({ removed: await I.removeModel(id) });
+    }
+    if (parts.length === 3 && parts[2] === "status" && m === "POST") {
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
+      return json(await I.setModelStatus(id, cleanStatus(body, new Date().toISOString(), runner.runner), runner.kind));
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   // The queue across every project. GET lists it for the owner; a runner POSTs
   // what it can run and gets back the tasks it may claim, with the name to claim under.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
@@ -447,6 +470,44 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 }
 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
+const MODEL_EVENTS = 1000;
+
+// The Models page, and its two forms: add (or replace) an entry, and remove one.
+async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
+  const { env, req } = c;
+  const I = index(env);
+  let error = "";
+  if (req.method === "POST") {
+    if (req.headers.get("origin") !== c.url.origin) return html("Cross-origin form refused.", 403);
+    const form = Object.fromEntries((await req.formData()).entries());
+    try {
+      if (verb === "add") await I.putModel(cleanEntry(form, ownerActor(env), new Date().toISOString()));
+      else if (verb === "remove") await I.removeModel(String(form.id ?? ""));
+      else return html("Not found.", 404);
+      return Response.redirect(new URL("/models", c.url).toString(), 303);
+    } catch (err) {
+      const rule = parseRuleError(err);
+      if (!rule) throw err;
+      error = rule.detail;
+    }
+  }
+  const [entries, projects] = await Promise.all([I.models(), I.projects()]);
+  // Each model's record is read from every project's most recent events;
+  // the page says how many, and which projects could not be read.
+  const unread: string[] = [];
+  const events = (await Promise.all(projects.map(async (p) => {
+    try { return (await ledger(env, p.name).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[]; } catch { unread.push(titleOf(p)); return []; }
+  })));
+  const record = new Map<string, ActorRecord>();
+  for (const evs of events) {
+    for (const [actor, r] of buildRecord([...evs].sort((a, b) => a.seq - b.seq))) {
+      const k = record.get(actor);
+      record.set(actor, k ? Object.fromEntries(Object.entries(k).map(([f, n]) => [f, n + r[f as keyof ActorRecord]])) as unknown as ActorRecord : r);
+    }
+  }
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, { events: MODEL_EVENTS, unread }), error ? 400 : 200);
+}
+
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
 // /p/P/tN/{code,log,commit,history}/… reads task tN's fork. Null when the
 // path is not a browsing path, so the task page keeps /p/P/tN.
@@ -537,6 +598,7 @@ async function verifyRevision(env: Env, project: string, id: string, expected: s
 
 async function ui(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req } = c;
+  if (parts[0] === "models" && (parts.length === 1 || (parts.length === 2 && req.method === "POST"))) return await modelsPage(c, parts[1]);
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
     if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);

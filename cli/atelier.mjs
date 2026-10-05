@@ -725,6 +725,35 @@ const commands = {
     }
   },
 
+  // The model pool. With no subcommand, lists it. `models add ID --harness H
+  // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
+  // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
+  // removes one. Keys stay in the Keychain; only the entry's name is sent.
+  async models() {
+    const [sub, id] = args._.slice(1);
+    if (sub === "add") {
+      if (!id) die("atelier models add ID --harness H --where home|cloud");
+      for (const k of ["key", "api-key", "token"]) if (args[k] !== undefined) die("Atelier never stores keys; put the key in your Keychain and give its entry's name with --keychain");
+      const entry = await call("PUT", `/models/${encodeURIComponent(id)}`, {
+        harness: args.harness, where: args.where, provider: args.provider, endpoint: args.endpoint,
+        keychain: args.keychain, aliases: args.multi.alias ?? [], note: args.note,
+      }, OWNER);
+      return console.log(`${entry.id} is in the pool: ${entry.harness}, ${entry.where}, ${entry.provider}${entry.keychain ? `, key in Keychain ${entry.keychain}` : ""}; family ${entry.family}.`);
+    }
+    if (sub === "remove") {
+      if (!id) die("atelier models remove ID");
+      const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
+      return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
+    }
+    if (sub) die(`unknown models command "${sub}"; use add, remove, or nothing to list`);
+    const pool = await call("GET", "/models", undefined, OWNER);
+    if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
+    for (const m of pool) {
+      const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
+      console.log(`${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`);
+    }
+  },
+
   async owners() {
     const name = project();
     const live = await call("GET", `${P(name)}/owners`, undefined, actor(OWNER));
@@ -787,6 +816,7 @@ Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--j
 Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
+Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Local      gc [--project NAME] [--dry-run | --apply]
 Docs       guide   (paste into a project's AGENTS.md)
