@@ -426,7 +426,10 @@ async function checkoutStatus(name, as) {
   const listed = git([...auth(base.token), "ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd });
   const baselineHead = listed.split(/\s/)[0];
   if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
-  const head = git(["rev-parse", "HEAD"], { cwd });
+  // The registered branch is compared, whatever is checked out: the line
+  // names that branch, so its head is what it must describe.
+  const head = git(["rev-parse", "--verify", "--quiet", `refs/heads/${p.branch}`], { cwd, allowFail: true }).stdout?.trim();
+  if (!head) return `Checkout: cannot be compared: this checkout has no ${p.branch} branch.`;
   const has = (sha) => git(["cat-file", "-e", `${sha}^{commit}`], { cwd, allowFail: true }).status === 0;
   const is = (a, b) => git(["merge-base", "--is-ancestor", a, b], { cwd, allowFail: true }).status === 0;
   const paired = fresh ? loadPairs(git(["rev-parse", "--absolute-git-dir"], { cwd }), name)[baselineHead] ?? null : null;
@@ -822,7 +825,10 @@ const commands = {
       const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
       const pairs = loadPairs(gitDir, name);
       const paired = pairs[baselineHead] ?? die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
-      const head = git(["rev-parse", "HEAD"], { cwd });
+      // The registered branch is compared, whatever is checked out: the line
+  // names that branch, so its head is what it must describe.
+  const head = git(["rev-parse", "--verify", "--quiet", `refs/heads/${p.branch}`], { cwd, allowFail: true }).stdout?.trim();
+  if (!head) return `Checkout: cannot be compared: this checkout has no ${p.branch} branch.`;
       if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
       if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
       let built;
