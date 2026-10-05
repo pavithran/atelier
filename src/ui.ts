@@ -262,7 +262,7 @@ const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? o
 function legendLine(vendors: Vendor[], hasLocal: boolean, who = "You"): string {
   const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
     .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
-  const local = hasLocal ? `<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran on your Studio</li>` : "";
+  const local = hasLocal ? `<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran locally</li>` : "";
   return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}${local}<li><i style="--c:var(--fault)"></i>sent back</li><li class="meta">times in ${e(zoneLabel())}</li></ul>`;
 }
 
