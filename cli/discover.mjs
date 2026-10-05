@@ -426,27 +426,32 @@ const slowIfLate = (outcome, elapsed) =>
 // ── what was found, per model ──────────────────────────────────────────────
 
 // A model judged from what its harness has served. For a harness that
-// chooses its own model, a request answered by a model the pool does not
-// register for that harness, after the registered model last answered, is a
-// mismatch: the registered model is not what is being served now.
-export function judgeLog(entry, log, siblings, now) {
+// chooses its own model, a request answered by any other model after the
+// registered one last answered is a mismatch, whether or not the pool also
+// registers that other model: the entry's own model is not what is being
+// served now. A model that is absent from the record is not judged at all
+// (`absent`): not being in a log is no evidence of anything, so the caller
+// reports nothing for it.
+export function judgeLog(entry, log, now) {
   const aliases = entry.aliases ?? [];
   const match = log.seen.find((s) => sameModel(s.model, entry.id, aliases));
   const strangers = !SELF_CHOOSING.has(entry.harness) ? [] : log.seen.filter((s) =>
-    (!match || s.at > match.at) && !siblings.some((p) => sameModel(s.model, p.id, p.aliases ?? [])));
+    (!match || s.at > match.at) && !sameModel(s.model, entry.id, aliases));
   if (strangers.length) {
     const s = strangers[0];
     return { state: "refused", served: s.model, mismatch: true,
       detail: `${s.model} answered at ${stamp(s.at)}${match ? `, after ${match.model} last answered at ${stamp(match.at)}` : `; ${entry.id} is not in the record`}` };
   }
-  if (!match) return { state: "unknown", detail: `${entry.id} is not in the record` };
+  if (!match) return { state: "unknown", absent: true, detail: `${entry.id} is not in the record` };
   if (now - match.at > RECENT_MS) return { state: "unknown", served: match.model, detail: `last answered at ${stamp(match.at)}; nothing recent` };
   return { state: "available", served: match.model, detail: `last answered at ${stamp(match.at)}${match.count ? `, ${match.count} requests in the record` : ""}` };
 }
 
 // The row for one pool entry. `ctx`: offered (is it in this runner's config),
-// plan (probePlan), probe (an outcome), log (a harness's record), siblings
-// (the pool's entries for the same harness) and now.
+// plan (probePlan), probe (an outcome), log (a harness's record) and now. A
+// row is posted only with evidence: a probe's answer, or something the
+// harness's record says about this model. No record of it is "no recent
+// record", and nothing is posted.
 export function decideRow(entry, ctx) {
   const id = entry.id, aliases = entry.aliases ?? [], paused = entry.provider === "ai-studio";
   const row = { id, harness: entry.harness, provider: entry.provider, offered: ctx.offered, state: "unknown", label: "not checked", served: null, source: "none", mismatch: false, detail: "", post: false };
@@ -458,14 +463,15 @@ export function decideRow(entry, ctx) {
       found = { ...found, state: "refused", mismatch: true, detail: `${found.detail}; the registered model is ${id}` };
     }
   } else if (ctx.log && !ctx.log.error) {
-    found = { ...judgeLog(entry, ctx.log, ctx.siblings, ctx.now), source: "log" };
+    found = { ...judgeLog(entry, ctx.log, ctx.now), source: "log" };
     if (ctx.log.limits) found.detail += `; ${describeLimits(ctx.log.limits, ctx.now)}`;
   }
   if (ctx.probe && !ctx.probe.ran) notes.push(`probe not run: ${ctx.probe.detail}`);
-  else if (!found && !ctx.probe && ctx.plan.reason && !paused) notes.push(ctx.plan.reason);
+  else if ((!found || found.absent) && !ctx.probe && ctx.plan.reason && !paused) notes.push(ctx.plan.reason);
   if (ctx.log?.error) notes.push(ctx.log.error);
   else if (!ctx.log && !found && !LOCAL_SOURCES.has(entry.harness)) notes.push(`no local record is read for ${entry.harness}`);
-  if (found) Object.assign(row, { state: found.state, label: found.state, served: found.served ?? null, source: found.source, mismatch: !!found.mismatch, post: true, detail: `${found.source}: ${found.detail}` });
+  if (found?.absent) Object.assign(row, { label: "no recent record", detail: found.detail });
+  else if (found) Object.assign(row, { state: found.state, label: found.state, served: found.served ?? null, source: found.source, mismatch: !!found.mismatch, post: true, detail: `${found.source}: ${found.detail}` });
   if (paused) Object.assign(row, { state: "unknown", label: "paused by owner", post: true, detail: ["paused by owner; not probed", found && row.detail].filter(Boolean).join("; ") });
   row.detail = [row.detail, ...notes].filter(Boolean).join("; ");
   return row;
@@ -546,7 +552,6 @@ export async function runDiscover(args, given = {}) {
   const now = io.now();
   const rows = home.map((entry) => decideRow(entry, {
     offered: offers(entry), plan: probePlan(entry, opts), probe: probes.get(entry.id), log: logs[entry.harness], now,
-    siblings: pool.filter((m) => m.harness === entry.harness),
   })).map((row) => ({ ...row, id: safe(row.id, 64), served: row.served ? safe(row.served, 128) : null, detail: safe(row.detail, 300) }));
 
   const out = [
