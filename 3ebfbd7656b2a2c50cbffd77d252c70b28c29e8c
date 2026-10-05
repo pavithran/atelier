@@ -1,0 +1,23 @@
+atelier cloudflare-git/t77 "ControlPlane policy stays current: atelier sync and atelier merge re-read a governed project's ControlPlane policy, update the server's copy when it changed, and warn before a merge when the policy changed since the task was accepted"
+accepted head 32e1e162a3abb363ab6d1f072e1297477fba033b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-05T17:04:54.990Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-05T17:04:57.476Z
+REVIEW approve — pavi: Owner approval of the merge-only revision; GLM approved t77's own changes at f5968997.
+2026-10-05T16:13:37.583Z pavi item.created
+2026-10-05T16:13:37.975Z codex/gpt-6-astra item.claimed
+2026-10-05T16:13:42.934Z codex/gpt-6-astra fork.created
+2026-10-05T16:21:38.633Z codex/gpt-6-astra push.observed
+2026-10-05T16:22:44.741Z codex/gpt-6-astra evidence.observed
+2026-10-05T16:22:46.824Z codex/gpt-6-astra evidence.observed
+2026-10-05T16:22:47.628Z codex/gpt-6-astra item.submitted
+2026-10-05T16:52:24.354Z codex/gpt-6-astra push.observed
+2026-10-05T16:53:30.238Z codex/gpt-6-astra evidence.observed
+2026-10-05T16:53:32.378Z codex/gpt-6-astra evidence.observed
+2026-10-05T16:53:33.061Z codex/gpt-6-astra item.submitted
+2026-10-05T17:02:36.613Z zcode/glm-5.3 review.approved
+2026-10-05T17:03:49.072Z codex/gpt-6-astra push.observed
+2026-10-05T17:04:55.346Z codex/gpt-6-astra evidence.observed
+2026-10-05T17:04:57.590Z codex/gpt-6-astra evidence.observed
+2026-10-05T17:04:58.211Z codex/gpt-6-astra item.submitted
+2026-10-05T17:04:58.993Z pavi review.approved
+2026-10-05T17:04:59.745Z pavi item.accepted
