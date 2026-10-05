@@ -22,3 +22,19 @@ test("a bare --title is refused, not treated as an empty title", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const { initName } = await import("../cli/atelier.mjs");
+
+test("init reuses the registered name when the checkout folder differs", () => {
+  const projects = { weblog: { path: "/work/ikon weblog" }, photograph: { path: "/work/Photograph" } };
+  assert.deepEqual(initName(projects, "/work/ikon weblog", undefined, false), { name: "weblog", existing: "weblog" });
+  assert.equal(initName(projects, "/work/Photograph", undefined, false).name, "photograph");
+  assert.equal(initName(projects, "/work/new", undefined, false).name, "new");
+  assert.equal(initName(projects, "/work/ikon weblog", "weblog", false).name, "weblog");
+  assert.throws(() => initName(projects, "/work/ikon weblog", "other", false), /registered as weblog/);
+  assert.deepEqual(initName(projects, "/work/ikon weblog", "other", true), { name: "other", existing: "weblog" });
+  assert.throws(() => initName(projects, "/work/ikon weblog", "photograph", true), /already registered locally/);
+  assert.throws(() => initName(projects, "/work/new", "other", true), /registered checkout/);
+  assert.throws(() => initName(projects, "/work/ikon weblog", undefined, true), /--name NAME/);
+  assert.throws(() => initName(projects, "/work/ikon weblog", true, false), /needs a project name/);
+});

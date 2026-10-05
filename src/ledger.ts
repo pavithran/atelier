@@ -73,6 +73,18 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   };
 }
 
+export function assertRepoAvailable(projects: ProjectRecord[], name: string, repo: string): void {
+  if (projects.some((p) => p.name === name)) return;
+  const other = projects.find((p) => p.name !== name && p.repo === repo);
+  if (other) throw new RuleError("repo_taken", `baseline ${repo} is already registered to ${other.name}`, 409);
+}
+
+export function assertProjectRemovable(items: Pick<Item, "state">[], force: boolean): void {
+  if (!force && items.some((i) => ["claimed", "submitted", "accepted"].includes(i.state))) {
+    throw new RuleError("live_work", "project has claimed, submitted or accepted work; use --force to remove it", 409);
+  }
+}
+
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
 
@@ -113,10 +125,19 @@ export class Ledger extends DurableObject<Env> {
 
   // Two inits finishing out of order must not leave the older copy listed.
   registerProject(record: ProjectRecord): void {
+    this.assertRepoAvailable(record.name, record.repo);
     const row = this.sql.exec(`SELECT json FROM projects WHERE name = ?`, record.name).toArray()[0];
     const held = row ? (JSON.parse(row.json as string) as ProjectRecord).revision ?? 0 : -1;
     if ((record.revision ?? 0) < held) return;
     this.sql.exec(`INSERT OR REPLACE INTO projects (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
+  }
+
+  assertRepoAvailable(name: string, repo: string): void {
+    assertRepoAvailable(this.projects(), name, repo);
+  }
+
+  removeProject(name: string): boolean {
+    return this.sql.exec(`DELETE FROM projects WHERE name = ?`, name).rowsWritten > 0;
   }
 
   projects(): ProjectRecord[] {
