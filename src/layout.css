@@ -506,6 +506,15 @@ body.public { display: block; }
 body.public main { margin: 0 auto; padding: 28px 16px 64px; }
 .public-note { margin-top: 32px; }
 
+/* ── imported history: a project's git history before Atelier ───────────── */
+.imported-box { margin: 6px 20px 16px; padding: 12px 14px 4px; border: 1px dashed var(--line-bright); border-radius: var(--radius-medium); }
+.imported-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.imported-head h3 { font: 700 16px/1.3 var(--font-display); margin: 0; color: var(--text-bright); }
+.imported-box > p.meta { margin: 4px 0 6px; }
+.graph.imported text.imp-name { font-size: 12px; fill: var(--text-muted); }
+.graph.imported text.imp-count { font-size: 10px; fill: var(--text-dim); }
+.stage-empty { padding: 10px 20px 0; }
+
 /* ── models ─────────────────────────────────────────────────────────────── */
 .model-grid { list-style: none; margin: 0 0 8px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 14px; }
 .model { position: relative; padding: 16px 18px 14px 22px; border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--sheet); overflow: hidden; }
