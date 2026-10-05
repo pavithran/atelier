@@ -19,6 +19,7 @@ import { landingJournal, landingLock } from "./landing.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatStatus } from "./status.mjs";
+import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -41,11 +42,16 @@ function saveConfig(c) {
   writeFileSync(CONFIG, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
 }
 
+// The token `login` has just been given and has not yet stored.
+let loginToken = null;
+
+// ATELIER_TOKEN wins, then the store for this system (see credentials.mjs).
 function apiToken() {
-  if (process.env.ATELIER_TOKEN) return process.env.ATELIER_TOKEN.trim();
-  const r = spawnSync("security", ["find-generic-password", "-s", "atelier.API_TOKEN", "-w"], { encoding: "utf8" });
-  if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
-  die("no API token: add Keychain item atelier.API_TOKEN, or set ATELIER_TOKEN");
+  if (loginToken) return loginToken;
+  let token;
+  try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+  if (token) return token;
+  die("no API token: run `atelier login --server URL` to store one, or set ATELIER_TOKEN");
 }
 
 function git(args, opts = {}) {
@@ -345,14 +351,33 @@ const commands = {
   },
 
   async login() {
-    if (!args.server) die("usage: atelier login --server https://atelier.example.com");
+    if (args.store) {
+      let held = null;
+      try { held = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+      const env = process.env.ATELIER_TOKEN?.trim() ? " ATELIER_TOKEN is set in the environment and is used instead." : "";
+      return console.log(`The token store is ${describeStore("API_TOKEN")}. ${held ? "A token is stored." : "No token is stored."}${env}`);
+    }
+    if (!args.server || args.server === true) die("usage: atelier login --server https://atelier.example.com   or   atelier login --store");
+    // A token already stored, or in ATELIER_TOKEN, is used; otherwise ask for one.
+    let token = null, fresh = false;
+    try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+    if (!token) {
+      try { token = await promptSecret("Server token (not shown): "); } catch (error) { die(`no token entered: ${error.message}`); }
+      if (!token) die("no token entered");
+      fresh = true;
+    }
+    loginToken = token;
     cfg.server = String(args.server).replace(/\/$/, "");
     saveConfig(cfg);
     const conf = await call("GET", "/config", undefined, "owner");
     cfg.owner = conf.ownerActor;
     cfg.ownerName = conf.ownerName ?? undefined;
     saveConfig(cfg);
-    console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". The token is read from Keychain atelier.API_TOKEN.`);
+    // A token the server refused is never stored: `call` has already ended the command.
+    let where;
+    if (fresh) { try { where = writeSecret("API_TOKEN", token); } catch (error) { die(error.message); } }
+    else where = process.env.ATELIER_TOKEN?.trim() ? "the ATELIER_TOKEN environment variable" : describeStore("API_TOKEN");
+    console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". The token ${fresh ? "is now stored in" : "is read from"} ${where}.`);
   },
 
   // The project owner, in the project's checkout.
@@ -882,7 +907,7 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
 Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
