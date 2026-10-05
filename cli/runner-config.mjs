@@ -7,7 +7,7 @@ import { redactKeys } from "../src/models/pool.ts";
 export const DEFAULT_TASK_TIMEOUT_MS = 45 * 60_000;
 export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 
-const HARNESSES = ["opencode", "claude-code", "codex", "zcode"];
+const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const PLACEHOLDERS = ["model", "brief_file", "workspace"];
 // The name of a Keychain entry, as the model pool records one.
