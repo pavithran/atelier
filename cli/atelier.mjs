@@ -67,6 +67,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
+    // Help is intercepted before flag parsing, so a word after --help is not eaten as its value.
+    if (a === "-h" || a === "--help") { out.help = true; continue; }
     if (a.startsWith("--")) {
       // --key=value carries its value; --key VALUE takes the next word unless it is a flag.
       const eq = a.indexOf("=");
@@ -314,6 +316,12 @@ async function checkInSandbox() {
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
+
+// Per-command usage lines, shown by --help/-h and by a bad subcommand.
+const usage = {
+  models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
+  projects: "usage: atelier projects remove NAME [--force]",
+};
 
 const commands = {
   async runner() {
@@ -797,7 +805,7 @@ const commands = {
       const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
       return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
     }
-    if (sub) die(`unknown models command "${sub}"; use add, remove, or nothing to list`);
+    if (sub) die(`${usage.models}\nunknown models command "${sub}"; use add, remove, or nothing to list`);
     const pool = await call("GET", "/models", undefined, OWNER);
     if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
     for (const m of pool) {
@@ -893,5 +901,12 @@ if (isMain) {
   const cmd = args._[0] ?? "help";
   const fn = commands[cmd];
   if (!fn) die(`unknown command "${cmd}"; try atelier help`);
+  // --help/-h anywhere prints the command's usage, or the general help, and
+  // exits before any server contact.
+  if (args.help) {
+    if (cmd !== "help" && usage[cmd]) console.log(usage[cmd]);
+    else commands.help();
+    process.exit(0);
+  }
   await fn();
 }
