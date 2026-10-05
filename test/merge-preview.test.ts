@@ -19,8 +19,8 @@ function repo(trees: Record<string, Record<string, string>>): Reader {
 }
 
 test("a side's changes are regions of the base's lines", () => {
-  assert.deepEqual(changedRegions(["a", "b", "c"], ["a", "B", "c"]), [[1, 2]]);
-  assert.deepEqual(changedRegions(["a", "b"], ["a", "x", "b"]), [[1, 1]], "an insertion is an empty region at its place");
+  assert.deepEqual(changedRegions(["a", "b", "c"], ["a", "B", "c"]), [[1, 2, ["B"]]]);
+  assert.deepEqual(changedRegions(["a", "b"], ["a", "x", "b"]), [[1, 1, ["x"]]], "an insertion is an empty region at its place");
   assert.deepEqual(changedRegions(["a"], ["a"]), []);
 });
 
@@ -107,4 +107,20 @@ test("the preview says main has not moved when its head is the fork point, and f
   assert.deepEqual([still?.ahead, still?.merge.clean], [0, true]);
   const old = await previewAgainstMain(artifactsOf({ main: { log: ["m1"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
   assert.deepEqual([old?.ahead, old?.aheadCapped], [1, true]);
+});
+
+// Each case was run through git merge on 2026-10-04; the expected answer is git's.
+test("the conflict rule agrees with git's merge on edits, insertions and deletions", () => {
+  const L = (s: string) => s.split("");
+  const cases: [string, string, string, string, boolean][] = [
+    ["adjacent edits", "12345", "O2345", "1T345", true],
+    ["edits one line apart", "12345", "O2345", "12T45", false],
+    ["different insertions at one place", "123", "1x23", "1y23", true],
+    ["the same insertion on both sides", "123", "1x23", "1x23", false],
+    ["an insertion next to an edit", "1234", "1x234", "12T4", false],
+    ["a deletion next to an edit", "1234", "134", "12T4", true],
+    ["different appends", "12", "12x", "12y", true],
+    ["edits to the first and last of two lines", "12", "O2", "1T", true],
+  ];
+  for (const [name, base, ours, theirs, git] of cases) assert.equal(linesConflict(L(base), L(ours), L(theirs)), git, name);
 });
