@@ -414,7 +414,7 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
   <header class="flow-hero">
     <div><span class="kicker">Atelier · every project · from the ledger</span>
       <h1>${headline(t)}</h1>
-      <p class="lead">Each coloured thread is a task an agent took off main: its pushes, its checks, the reviews from other models, and your decision. Hover a mark for what happened; select a task to open it.</p></div>
+      <p class="lead">Each coloured thread is a task an agent took off main: its pushes, its checks, the reviews from other models, and your decision. Hover over a mark for what happened; select a task to open it.</p></div>
     ${tallyBlock(t)}
   </header>
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
@@ -448,7 +448,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>${headline(total, who)}</h1>
-      <p class="lead">Atelier is a Git platform for several coding agents working on one codebase at once, built on Cloudflare Workers, Durable Objects and Artifacts. Every task has exactly one owner and its own fork; checks run on a clean copy of the exact revision; protected changes are reviewed by a model from another family; and nothing reaches main until ${e(who)} accepts it. Each coloured thread below is one task. Hover a mark for what happened.</p></div>
+      <p class="lead">Atelier is a Git platform for several coding agents working on one codebase at once, built on Cloudflare Workers, Durable Objects and Artifacts. Every task has exactly one owner and its own fork; checks run on a clean copy of the exact revision; protected changes are reviewed by a model from another family; and nothing reaches main until ${e(who)} accepts it. Each coloured thread below is one task. Hover over a mark for what happened.</p></div>
     ${tallyBlock(total, who)}
   </header>
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
