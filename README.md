@@ -145,6 +145,62 @@ merged.
   or paths. Publishing it to Observatory is ControlPlane's to do, because
   Observatory reads only what ControlPlane publishes.
 
+## Moving a project from ControlPlane
+
+A project moves to Atelier one at a time, and the move is itself an Atelier
+task, reviewed by a model from another family and accepted by the project
+owner. `atelier adopt` runs in the project's registered checkout:
+
+```sh
+atelier adopt --project NAME --as HARNESS/MODEL
+```
+
+It refuses unless the project is registered in Atelier and the checkout is
+clean. Every check that can refuse the move runs before the task is created,
+so a refusal leaves nothing behind — no task, no claim: the checkout's files
+are readable, the AGENTS.md edit is computable, and no symbolic link stands
+where the move writes. The move writes into the task's workspace and nothing
+outside it: a file it writes that is a symlink is replaced with a regular
+file, never written through, and a symlinked directory above one refuses the
+move (an AGENTS.md that is a symlink is refused too, because the section is
+built from its text). It creates the task "Move NAME from ControlPlane to
+Atelier", claims it as `--as` (without it, as the current actor), and in the
+task's workspace it writes `bin/control-plane`, replaces
+`bin/control-plane-paste`, when the project has one, with two lines pointing
+handoffs at `atelier handoff`, and inserts the text `atelier guide` prints
+into `AGENTS.md`: right after its first heading, at the top when the file has
+no heading, and in place of the section it already carries, so adopting a
+project again cannot stack a second one. It commits those changes in the
+workspace and does not push them; the agent finishing the task pushes, checks
+and submits as usual.
+
+The new `bin/control-plane` is a POSIX sh script that knows the project's
+Atelier name. It prints the Atelier command it runs to stderr, runs it, and
+never contacts ControlPlane's central checkout:
+
+| ControlPlane | Atelier |
+| --- | --- |
+| `pickup-card` | `atelier status --project NAME` |
+| `wrap`, `session-receipt` | `atelier done`, with the arguments passed on |
+| `report TEXT` | `atelier new TEXT --project NAME`, so a report becomes a task |
+| `audit`, `context-budget`, `ship-check`, `observe`, `observatory-bundle`, `observatory-run`, `backup-status`, `validate-backup` | `atelier ops COMMAND [ARGUMENTS]` |
+| `help`, or no command | a short text saying the project works through Atelier, and this list of mappings |
+| anything else | a line saying the command moved into Atelier, naming `atelier help` and `atelier ops help`, and exit 2 |
+
+Adopt then reads the checkout, without changing it, and prints the leftovers
+the agent finishing the task must settle: a
+`docs/control-plane/work-item.v1.json` whose state is `active`,
+`completed-unreconciled` or `blocked`, with its plan id, state and owner; a
+capability in `docs/control-plane/project-adapter.v1.json` whose command names
+a file the project does not have — the command is read as shell words, so a
+quoted path with spaces stays one word, and a script run through an
+interpreter or `env` (`python3 tools/ship.py`, `bash bin/sweep.sh`) is judged
+by the script, not the interpreter; a vendored `tools/control-plane/`
+directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
+names `pickup-card`, `control-plane-paste`, `session-receipt` or
+`audit record`, with its file and line number. The same list is recorded on
+the task as reported notes, so the reviewer and the owner see it there.
+
 ## What is enforced and what is trusted
 
 Enforced by construction:
