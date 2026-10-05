@@ -9,6 +9,7 @@ import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
+import { shortStamp, stamp } from "./time.ts";
 
 export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
 
@@ -299,7 +300,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
       lastX = X;
       out.push(`<line class="g-grid" x1="${X}" x2="${X}" y1="14" y2="${H - 6}"/>`);
       const anchor = X > X1 - 40 ? "end" : X < X0 + 40 ? "start" : "middle";
-      if (tm.at) out.push(`<text class="g-clock" x="${X}" y="10" text-anchor="${anchor}">${esc(tm.at.slice(5, 10).replace("-", "/"))} ${esc(tm.at.slice(11, 16))}</text>`);
+      if (tm.at) out.push(`<text class="g-clock" x="${X}" y="10" text-anchor="${anchor}">${esc(shortStamp(tm.at))}</text>`);
     }
   }
   out.push(`<text class="g-name main-name" x="${X0 - 12}" y="${MAIN + 4}" text-anchor="end">main</text>`);
@@ -340,7 +341,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
           + `<g transform="translate(${r1(nx)} ${ny})">${b.kind === "reject" ? '<circle class="ring" r="7"/><path d="M-4 -3L0 4L4 -3Z"/>' : '<path d="M-4 3L0 -4L4 3Z"/>'}</g></g>`);
       }
       g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
-      cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
+      cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${shortStamp(b.at)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
     });
     g.unshift(...edges);
     const holders = th.holds.map((h) => (h.who === owner ? (o.ownerLabel ?? "you") : splitActor(h.who).model || h.who)).join(" → ");
@@ -385,7 +386,7 @@ const STATE_NAMES: Record<string, string> = {
 function bead(b: Bead, X: number, y: number, d: string, color: string, key: string): string {
   // Each mark is focusable, so a keyboard reaches the same card a pointer does;
   // its accessible name is the card's text.
-  const name = esc(`${b.at.slice(0, 16).replace("T", " ")} UTC, ${BEAD_NAMES[b.kind]}: ${b.label}`);
+  const name = esc(`${stamp(b.at)}, ${BEAD_NAMES[b.kind]}: ${b.label}`);
   const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}" style="--d:${d}${style}" transform="translate(${X} ${y})" data-key="${key}" tabindex="0" role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
   switch (b.kind) {
     case "push": return `${open("push")}<path d="M0 -6V6"/></g>`;

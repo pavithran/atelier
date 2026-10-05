@@ -55,7 +55,7 @@ test("a bench follows the item through handoffs and keeps the whole chain", () =
   ]);
 });
 
-test("benches sort by latest activity and share one time axis of at least two hours", () => {
+test("benches sort by latest activity and share one time axis that fits the work shown", () => {
   const views = [{
     project,
     items: [item({ id: "t1" }), item({ id: "t2", owner: "zcode/glm-5.3" })],
@@ -64,7 +64,9 @@ test("benches sort by latest activity and share one time axis of at least two ho
   const now = new Date(T(10));
   const floor = buildFloor(views, now);
   assert.deepEqual(floor.benches.map((b) => b.item.id), ["t2", "t1"]);
-  assert.equal(Date.parse(floor.to) - Date.parse(floor.from), 2 * 3600_000);
+  // Work that began nine minutes ago gets a quarter-hour axis, not a two-hour one.
+  assert.equal(Date.parse(floor.to) - Date.parse(floor.from), 15 * 60_000);
+  assert.ok(position(T(1), floor) > 0.3, "the earliest mark sits well inside the axis, not pressed against now");
   assert.ok(position(T(5), floor) > position(T(1), floor));
   assert.equal(position("2026-01-01T00:00:00Z", floor), 0);
   assert.equal(position(T(10), floor), 1);
@@ -78,4 +80,13 @@ test("relative times read plainly", () => {
 
 test("marks that land together are staggered, alternating above and below", () => {
   assert.deepEqual(staggers([0.1, 0.5, 0.505, 0.508, 0.512, 0.9]), [0, 0, -1, 1, -2, 0]);
+});
+
+test("a longer stretch of work gets an axis that starts a little before its earliest mark", () => {
+  const views = [{ project, items: [item({ id: "t1" })], events: [ev(0, "codex/gpt-6", "item.claimed", {}, "t1")] }];
+  const floor = buildFloor(views, new Date(Date.parse(T(0)) + 3 * 3600_000));
+  const span = Date.parse(floor.to) - Date.parse(floor.from);
+  assert.ok(span > 3 * 3600_000 && span < 3.5 * 3600_000);
+  const p = position(T(0), floor);
+  assert.ok(p > 0.05 && p < 0.1, `the earliest mark is near the left edge, not on it (${p})`);
 });
