@@ -1,0 +1,14 @@
+atelier cloudflare-git/t67 "Project removal follow-ups: the front door and login link follow the index, not SHOWCASE alone (a removed last showcase project 303s to a 404); a DELETE or PUT with a null JSON body returns 400, not 500; removal keeps notesRemote or says it was dropped; an open item with a live dispatch counts as live work"
+accepted head 38c0882d66e79b62b6feb08c65ea390e2de81b63
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-05T14:40:24.410Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-05T14:40:26.813Z
+REVIEW approve — pavi:
+2026-10-05T01:03:22.036Z pavi item.created
+2026-10-05T14:34:03.891Z claude-code/sonnet-5.5 item.claimed
+2026-10-05T14:34:06.812Z claude-code/sonnet-5.5 fork.created
+2026-10-05T14:39:19.636Z claude-code/sonnet-5.5 push.observed
+2026-10-05T14:40:24.749Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T14:40:26.921Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T14:40:27.533Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T14:46:22.360Z pavi review.approved
+2026-10-05T14:46:31.141Z pavi item.accepted
