@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
+  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
   assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap, validActor,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
@@ -370,4 +370,59 @@ test("path input preserves an empty measurement and rejects malformed input", ()
   for (const value of [undefined, null, "docs/a.md", {}, [null], [1]]) assert.equal(measuredPaths(value), null);
   assert.deepEqual(measuredPaths([]), []);
   assert.deepEqual(measuredPaths(["AGENTS.md", "docs/agents.md"]), ["AGENTS.md", "docs/agents.md"]);
+});
+
+test("handoffs require an agent identity distinct from the project owner", () => {
+  for (const actor of ["owner", "invented", "a/b/c", "a b/c", "codex/gpt-6"]) {
+    assert.throws(() => assertHandoffTarget(actor, "codex/gpt-6"));
+  }
+  assert.doesNotThrow(() => assertHandoffTarget("codex/gpt-6", "owner"));
+});
+
+test("only owner credentials may review accepted work", () => {
+  assert.throws(() => assertReviewAllowed(item({ state: "accepted" }), true), /403/);
+  assert.doesNotThrow(() => assertReviewAllowed(item({ state: "accepted" }), false));
+  assert.doesNotThrow(() => assertReviewAllowed(item(), true));
+});
+
+test("push contributors survive handoffs and include event observations", () => {
+  const event = (kind: string, actor: string, data = {}) => ({ kind, actor, data });
+  assert.deepEqual(pushActors([
+    event("item.claimed", "codex/gpt-6"), event("push.observed", "atelier/events"),
+    event("item.handoff", "codex/gpt-6", { to: "claude-code/opus-5.5" }),
+    event("push.observed", "atelier/events"), event("push.observed", "claude-code/opus-5.5"),
+    event("item.handoff", "owner", { to: "opencode/glm-5.3" }),
+  ]), ["codex/gpt-6", "claude-code/opus-5.5", "opencode/glm-5.3"]);
+});
+
+test("holders remain contributors when Git pushes precede observation", () => {
+  for (const kind of ["item.handoff", "item.released"]) {
+    const contributors = pushActors([
+      { kind: "item.claimed", actor: "codex/gpt-6", data: {} },
+      { kind, actor: "owner", data: { from: "codex/gpt-6", to: "claude-code/opus-5.5" } },
+      { kind: "push.observed", actor: "atelier/events", data: {} },
+      { kind: "item.claimed", actor: "claude-code/opus-5.5", data: {} },
+      { kind: "push.observed", actor: "opencode/glm-5.3", data: {} },
+    ]);
+    assert.ok(contributors.includes("codex/gpt-6"));
+    assert.ok(contributors.includes("claude-code/opus-5.5"));
+    assert.ok(contributors.includes("opencode/glm-5.3"));
+    const held = item({ pushActors: contributors });
+    const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+    assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
+    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
+  }
+});
+
+test("review independence includes every contributor after a handoff", () => {
+  const handed = item({ pushActors: ["codex/gpt-6", "opencode/glm-5.3"], owner: "claude-code/opus-5.5" });
+  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  for (const by of ["codex/gpt-6", "opencode/gpt-6", "opencode/glm-5.3"]) {
+    assert.equal(gate(handed, policy, evidence, [review(by)]).ready, false);
+  }
+  assert.equal(gate(handed, policy, evidence, [review("qwen/qwen3")]).ready, true);
+  assert.equal(gate(handed, governed, evidence, [review("codex/gpt-7")]).ready, false);
+  assert.equal(gate(handed, governed, evidence, [review("qwen/qwen3")]).ready, true);
+  assert.equal(gate(handed, governed, [pass()], [review("codex/gpt-6")]).ready, false);
+  assert.equal(gate(handed, governed, evidence, [review("owner")]).ready, true);
 });
