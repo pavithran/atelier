@@ -1,0 +1,24 @@
+atelier cloudflare-git/t54 "Runner discovery: read the pool from Atelier, list what each provider serves, probe each model, report availability, record the served model"
+accepted head 14ca5e933a037620df9b26d8fb4a8d7602295c06
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-05T21:24:06.296Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-05T21:24:08.422Z
+REVIEW approve — pavi: glm-5.3 approved 7f34ceaa; a clean merge of main since; suite and typecheck pass.
+2026-10-04T18:15:09.232Z pavi item.created
+2026-10-05T20:12:20.544Z claude-code/sonnet-5.5 item.claimed
+2026-10-05T20:12:24.502Z claude-code/sonnet-5.5 fork.created
+2026-10-05T20:37:30.684Z claude-code/sonnet-5.5 push.observed
+2026-10-05T20:38:35.743Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T20:38:37.800Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T20:38:38.413Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T20:58:00.639Z antigravity/gemini-3.1-pro review.rejected
+2026-10-05T21:05:25.072Z claude-code/sonnet-5.5 push.observed
+2026-10-05T21:06:33.060Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:06:35.131Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:06:35.733Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T21:21:53.363Z opencode/glm-5.3 review.approved
+2026-10-05T21:23:00.111Z claude-code/sonnet-5.5 push.observed
+2026-10-05T21:24:06.419Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:24:08.516Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:24:09.190Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T21:24:09.879Z pavi review.approved
+2026-10-05T21:24:10.442Z pavi item.accepted
