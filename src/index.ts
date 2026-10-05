@@ -5,14 +5,14 @@ import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, typ
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, measuredPaths, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type Detail, type ReviewContext, type ProjectView } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
-import { addTally, buildStory, emptyTally } from "./graph";
+import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
 export { CheckRunner, Egress, Ledger };
@@ -113,6 +113,27 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
+// How many of each task's own events the "where it stands" view reads.
+const TASK_EVENTS = 300;
+
+// Where a project stands, from its Ledger: the page and the JSON route share it.
+// Each section reads its own source: items for holders and merges, and the
+// events of the tasks it names, never a window over the whole project's record.
+async function standingOf(env: Env, name: string): Promise<Standing> {
+  const L = ledger(env, name);
+  const now = new Date();
+  const [project, items, inbox] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString())]);
+  const taskEvents = new Map<string, LedgerEvent[]>();
+  await Promise.all(standingTasks(items).map(async (id) => {
+    try { taskEvents.set(id, (await L.events(id, TASK_EVENTS)) as unknown as LedgerEvent[]); } catch { /* reported as not read */ }
+  }));
+  const ids = [...new Set(inbox.filter((x) => x.kind !== "failing").map((x) => x.itemId))].slice(0, STANDING_BRIEFS);
+  const details = new Map<string, Detail>();
+  await Promise.all(ids.map(async (id) => {
+    try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line keeps the inbox's own reason */ }
+  }));
+  return buildStanding(project, items, taskEvents, TASK_EVENTS, inbox, details, now);
+}
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;
 
@@ -320,6 +341,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
   }
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
+  if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, project));
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
@@ -708,11 +730,32 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     };
     const recent = (v: FloorView) => v.events[0]?.at ?? "";
     if (parts[0] === "flow") {
-      const stories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null)
-        .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
+      // Unknown values are ignored: the page shows all time, every family.
+      const sinceRaw = c.url.searchParams.get("since") ?? "all";
+      const sinceParam = ["1d", "7d", "all"].includes(sinceRaw) ? sinceRaw : "all";
+      const familyParam = c.url.searchParams.get("family");
+      let sinceIso: string | undefined = undefined;
+      if (sinceParam === "1d") sinceIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+      if (sinceParam === "7d") sinceIso = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+      const familyAllowed = VENDOR_NAMES.some(([v]) => v === familyParam) && familyParam ? familyParam : undefined;
+      
+      const unfilteredStories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null);
+      const familiesPresent = [...new Set(unfilteredStories.flatMap(s => Object.keys(s.tally.byVendor) as string[]))];
+      
+      const filteredStory = async (v: FloorView) => {
+        try {
+          const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+          cutoffs.set(v.project.name, firstTaskAt(v.items));
+          return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project), { since: sinceIso, family: familyAllowed });
+        } catch { return null; }
+      };
+
+      const stories = (sinceParam === "all" && !familyAllowed) ? unfilteredStories :
+        (await Promise.all(floorViews.map(filteredStory))).filter((s): s is NonNullable<typeof s> => s !== null)
+          .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
       const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
       const imported = await importedAll(env, floorViews.map((v) => v.project), cutoffs);
-      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported));
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent));
     }
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects));
     const lists = await Promise.all(views.map(async v => {
@@ -748,7 +791,8 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
-    return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env)));
+    const standing = await standingOf(env, parts[1]);
+    return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env), standing));
   }
   if (parts[0] === "p" && parts.length >= 3) {
     const res = await browse(env, c.url, parts.slice(1));

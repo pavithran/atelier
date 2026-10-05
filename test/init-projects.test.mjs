@@ -100,6 +100,8 @@ test("CLI init sends ControlPlane role and class policy", () => fixture(({ comma
 test("CLI sync refreshes ControlPlane policy even when the baseline already matches", () => fixture(({ command, initial, calls }) => {
   const top = initial.projects.weblog.path;
   initial.projects.weblog.fresh = true;
+  // Paths the owner added with init --protect are kept from the local registration.
+  initial.projects.weblog.protect = ["manual/**"];
   writeFileSync(join(top, "config.json"), JSON.stringify(initial));
   const gitDir = join(top, "fake-git"), dir = join(top, "docs/control-plane");
   mkdirSync(gitDir);

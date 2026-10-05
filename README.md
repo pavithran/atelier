@@ -119,6 +119,19 @@ merged.
   always required and does not replace a governed change's required review.
   A measured empty change has nothing to merge.
   Projects without these policy files retain the existing gate rules.
+- `atelier sync` and normal `atelier merge` re-read these files and refresh
+  the stored protected paths, eligible agents and overlap rule. The refresh
+  preserves paths recorded locally by `init --protect`. Approval, checks and
+  other project settings are kept. For a baseline with full history, `sync`
+  only refreshes this policy. Malformed or empty policy files produce a
+  warning and skip the refresh. Merge then uses the acceptance policy.
+- Acceptance records the project's protected paths on the server. Every
+  merge attempt compares the current ControlPlane paths with that snapshot.
+  If the accepted revision touches a newly protected path, review the task
+  and accept again, or pass `--policy-changed-ok` after reviewing the change.
+  Older acceptances without a snapshot are treated as having no recorded
+  protected paths. Re-acceptance checks the current gate and records a new
+  snapshot. `merge --cancel` does not read or refresh ControlPlane policy.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
@@ -319,6 +332,36 @@ per task and head, including failed attempts, across restarts. Delivery runs
 in the background; failures do not fail the action and are logged without
 the topic. A push that withdraws acceptance does not send a notification.
 
+## Where a project stands
+
+For a project on Atelier, this replaces ControlPlane's pickup card and a
+hand-written `STATE.md`. Atelier already records who holds each task, what is
+waiting, what merged and what each handoff said, so the summary is generated
+from that record and cannot go stale or be written wrongly by hand.
+
+- The project page leads with "Where it stands": the tasks held (claimed,
+  submitted or accepted) and since when, what waits on the owner with each
+  task's one-line brief, the tasks queued for a runner, the last five merges
+  with the agent's summary and the date, the latest handoff note on each live
+  task, and, for a project with ControlPlane policy, its protected areas,
+  eligible agents and overlap rule on one line. The record holds no ControlPlane
+  change classes, so none are shown.
+  Each part reads its own source, not a window over the project's record:
+  holders from the items, since when and handoff notes from each live task's
+  own events, merges from the merged items. A waiting task keeps the inbox's
+  own reason, with the brief after it. Where a task's record is longer than
+  what is read of it, the page and the text say what is not shown rather than
+  guess.
+- `GET /api/projects/NAME/standing` returns the same as JSON to any signed-in
+  caller, the owner or an agent.
+- `atelier status --project NAME` prints it as plain text, one line per item,
+  ready to paste into a chat. Text a person or agent wrote is flattened to one
+  line. It ends by saying whether this machine's checkout is in step with
+  Atelier: for a project set up with `--history-since`, whether the checkout's
+  head is the commit the baseline's head is paired with; otherwise whether the
+  baseline's head is in the checkout. `atelier status` with no project keeps
+  its owner's queue output.
+
 ## Removing a project
 
 The owner can run `atelier projects remove NAME` to remove a project from
@@ -333,6 +376,16 @@ Removal retains the Artifacts repository and all project Ledger data,
 including items, evidence and history. Deleting a repository requires a
 separate, deliberate action by the owner. Reinitialising the same project
 can register its retained Ledger again.
+
+## Operations
+
+`atelier ops COMMAND [ARGS...]` runs an operations toolkit kept outside this
+repository: work on the machines and services around the projects, such as
+surveys of every project, devices, backups and archives, which belongs to
+one owner's setup rather than to the Git platform. `ops` comes first:
+Atelier hands everything after it, unchanged and before reading anything
+itself, to the executable `ATELIER_OPS` names or to `atelier-ops` on `PATH`,
+and exits as it exits. Without one, `atelier ops` says so and exits 2.
 
 ## Local cache cleanup
 
