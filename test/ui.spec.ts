@@ -463,3 +463,16 @@ it('a waiting entry without its record stays a plain row, and an empty inbox ren
  const selected=renderInbox(entries,[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
  expect(selected).toContain('aria-current="true"');expect(selected).toContain('aria-label="Selected task"');
 });
+it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
+ const {renderMainPreview}=await import('../src/ui');
+ expect(renderMainPreview(undefined)).toBe('');
+ expect(renderMainPreview(null)).toContain('could not be read just now');
+ expect(renderMainPreview({head:'h',ahead:0,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:0,theirs:1}})).toContain('Main has not moved');
+ const clean=renderMainPreview({head:'h',ahead:3,aheadCapped:false,merge:{clean:true,conflicts:[],both:['x.ts'],ours:4,theirs:1}});
+ expect(clean).toContain('Merges cleanly');
+ expect(clean).toContain('3 commits along its first-parent line since this task forked (a merge counts once), changing 4 paths; both sides changed 1 path, and the changes do not overlap');
+ const bad=renderMainPreview({head:'h',ahead:1000,aheadCapped:true,merge:{clean:false,conflicts:[{path:'<b>.ts',reason:'both sides changed the same lines'}],both:['<b>.ts'],ours:1,theirs:1}});
+ expect(bad).toContain('1 conflict');
+ expect(bad).toContain('at least 1,000 commits');
+ expect(bad).toContain('<code>&lt;b&gt;.ts</code>');
+});

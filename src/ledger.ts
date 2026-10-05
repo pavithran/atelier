@@ -5,6 +5,7 @@ import {
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
 import { cleanSummary } from "./brief";
+import { notificationRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
@@ -110,6 +111,10 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS notifications (
+        item_id TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY (item_id, head)
+      );
+      CREATE TABLE IF NOT EXISTS notification_origins (item_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT, at TEXT NOT NULL,
         actor TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
@@ -336,16 +341,50 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  addEvidence(e: Evidence): void {
+  // Cloud checks arrive without an HTTP request, so retain the initiating origin.
+  setNotificationOrigin(id: string, origin: string): void {
+    this.item(id);
+    this.sql.exec(`INSERT OR REPLACE INTO notification_origins (item_id, origin) VALUES (?, ?)`, id, new URL(origin).origin);
+  }
+
+  private notify(id: string, origin?: string): void {
+    try {
+      if (origin) this.setNotificationOrigin(id, origin);
+      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+      if (!topic) return;
+      const item = this.item(id);
+      if (item.state !== "submitted" || !item.head || !this.inbox(new Date().toISOString()).some((e) => e.itemId === id)) return;
+      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, id).toArray()[0];
+      if (!saved) return;
+      const request = notificationRequest(topic, saved.origin as string, this.project().name, this.detail(id));
+      // Reserve before network I/O. A failed attempt is not retried at this head.
+      const claimed = this.sql.exec(`INSERT OR IGNORE INTO notifications (item_id, head) VALUES (?, ?) RETURNING item_id`, id, item.head).toArray();
+      if (!claimed.length) return;
+      this.ctx.waitUntil((async () => {
+        try {
+          const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+          if (!response.ok) console.error("Atelier notification failed", response.status);
+          await response.body?.cancel();
+        } catch {
+          console.error("Atelier notification failed");
+        }
+      })());
+    } catch {
+      console.error("Atelier notification could not be scheduled");
+    }
+  }
+
+  addEvidence(e: Evidence, origin?: string): void {
     const item = this.item(e.itemId);
     if (e.head !== item.head) {
       throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) });
+    if (e.grade === "observed") this.notify(e.itemId, origin);
   }
 
-  addReview(r: Review): void {
+  addReview(r: Review, origin?: string): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertEligible(r.by, this.project().policy, this.owner);
     const item = this.item(r.itemId);
@@ -354,11 +393,12 @@ export class Ledger extends DurableObject<Env> {
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head });
+    this.notify(r.itemId, origin);
   }
 
   // The summary is recorded in the event and nowhere else; a later submit
   // without one leaves the new revision with none.
-  submit(id: string, actor: string, summary?: string): Item {
+  submit(id: string, actor: string, summary?: string, origin?: string): Item {
     const item = this.item(id);
     assertLive(item);
     assertOwner(item, actor);
@@ -366,6 +406,7 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { state: "submitted" });
     const text = cleanSummary(summary);
     this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) });
+    this.notify(id, origin);
     return this.item(id);
   }
 
