@@ -553,3 +553,9 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .card-thread { padding: 0; margin: 0 -4px 4px; }
 .card-links { margin: 0; }
 @media (max-width: 720px) { .card-body { padding: 0 10px 10px; } }
+
+/* ── merge preview: the task against main as it is now ───────────────────── */
+.merge-preview { margin: 8px 0 12px; }
+.merge-preview .tag { margin-right: 6px; }
+.merge-conflicts { margin: 6px 0 4px; padding-left: 20px; }
+.merge-conflicts li { margin: 2px 0; overflow-wrap: anywhere; }
