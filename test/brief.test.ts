@@ -264,3 +264,26 @@ test("cleanSummary trims, replaces control characters and caps at 600", () => {
   assert.equal(cleanSummary("   "), undefined);
   assert.equal(cleanSummary(42), undefined);
 });
+
+test("governed briefs show the class requirement even after approval", () => {
+  const p: ProjectPolicy = { ...policy, execution: {
+    allowed_classes: ["direct", "coordinated", "protected"],
+    direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: [],
+  } };
+  for (const [path, label] of [["docs/a.md", "Direct"], ["src/a.ts", "Coordinated"], ["AGENTS.md", "Protected"]]) {
+    for (const reviews of [[], [rev()]]) {
+      const b = briefFor(detail({ policy: p, evidence: [pass({ changedPaths: [path] })], reviews }));
+      assert.ok(b.evidence.some((line) => line.startsWith(`${label} change:`) && line.includes("owner acceptance is required")));
+    }
+  }
+  const b = briefFor(detail({ policy: p }));
+  assert.match(b.recommendation.reason, /Coordinated change/);
+  assert.doesNotMatch(b.recommendation.reason, /protected/);
+});
+
+
+test("the project owner's rejection stays visible under role policy", () => {
+  const b = briefFor(detail({ policy: { ...policy, agents: {} }, reviews: [rev({ by: OWNER, approve: false, note: "Fix this" })] }));
+  assert.equal(b.recommendation.verdict, "send back");
+  assert.match(b.evidence.join(), /project owner asked for changes/);
+});

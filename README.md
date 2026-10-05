@@ -93,10 +93,32 @@ merged.
 
 - `atelier init` reads `docs/control-plane/agent-policy.v1.json`,
   `execution-policy.v1.json` and `project-adapter.v1.json` when they exist.
-  Eligible agents are the available ones; overlapping claims are refused when
-  the policy says `overlapping_claims: refuse`; protected paths are the
-  adapter's protected surfaces, the maintenance paths, and the agent and
-  ControlPlane files themselves. Atelier never writes these files.
+  `sync` refreshes the policy from those files too. Overlapping claims are
+  refused when the policy says `overlapping_claims: refuse`. Protected paths
+  include execution policy patterns, adapter surfaces, maintenance paths,
+  agent instructions, ControlPlane files and the files that run checks.
+  Atelier never writes these policy files.
+- `claude-code/*` maps to `claude`, `codex/*` to `codex`, and `zcode/*`
+  and `opencode/glm*` to `glm`. Other actors map by model family name,
+  such as `claude`, `gpt`, `gemini` or `qwen`, when that name is listed in
+  the agent policy. An unmapped actor has no role. Claiming or receiving a
+  handoff requires an available agent with `executor` in `eligible_roles`.
+  Agent reviews count toward the gate only when the agent is available with
+  `assessor`. The project owner's reviews always count.
+  `preferred_roles` records a preference and does not grant a role. The
+  other roles do not grant execution or review authority.
+- Changed paths determine the class. Any protected path makes the change
+  `protected`. Otherwise it is `direct` only when direct execution is enabled
+  and every changed path matches `direct.allowed_path_patterns`; all other
+  changes are `coordinated`. A class absent from `allowed_classes` is refused.
+  Protected changes need approval from another model family, coordinated
+  changes need approval from another actor, and direct changes need no review.
+  Required agent reviews must qualify as assessors. The project owner can
+  also provide the required review. Unrecognised model families
+  cannot establish independent protected review. Project owner acceptance is
+  always required and does not replace a governed change's required review.
+  A measured empty change has nothing to merge.
+  Projects without these policy files retain the existing gate rules.
 - `atelier sync` and normal `atelier merge` re-read these files and refresh
   the stored protected paths, eligible agents and overlap rule. The refresh
   preserves paths recorded locally by `init --protect`. Approval, checks and
