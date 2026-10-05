@@ -344,11 +344,18 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
   const row = (n: number | string, label: string, dim = false) => `<li${dim ? ' class="none"' : ""}><b>${typeof n === "number" ? n.toLocaleString("en") : e(n)}</b> ${e(label)}</li>`;
   const withTitle = withs.map((s) => e(s.title)).join(" and ");
   const tasks = withs.reduce((n, s) => n + s.threads.length, 0);
+  const reviews = t.approvals + t.sentBack;
+  // A share that rounds to 0% or 100% without being exactly that says so.
+  const pct = (n: number, d: number) => {
+    const p = Math.round((n / d) * 100);
+    return p === 0 && n > 0 ? "<1%" : p === 100 && n < d ? ">99%" : `${p}%`;
+  };
   return `<section class="compare" aria-label="Before and with Atelier">
   <a class="compare-card before" href="#${e(before.project)}">
     <span class="kicker">Before Atelier · from git</span>
     <h2>${e(before.title)}</h2>
     <div class="tally-bar" aria-hidden="true">${bar}</div>
+    <p class="compare-lead"><b>${e(pct(h.attributed, h.total))}</b> of commits name an agent. Git itself keeps no record of what was checked, reviewed or decided.</p>
     <ul>${row(h.total, `commits${h.complete ? "" : " (the most recent part)"}`)}${row(h.attributed, `name ${plural(named.length, "agent")} in their messages`)}${row("—", "checks tied to a revision", true)}${row("—", "reviews by another model", true)}${row("—", `decisions by ${who}`, true)}</ul>
     <p class="meta">Git keeps what each commit message claims. It cannot say whether the checks passed on that revision, which model reviewed it, or who decided it should land.</p>
   </a>
@@ -356,7 +363,8 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
     <span class="kicker">With Atelier · observed</span>
     <h2>${withTitle}</h2>
     <div class="tally-bar" aria-hidden="true">${ours}</div>
-    <ul>${row(tasks, `${tasks === 1 ? "task" : "tasks"} taken, each by one agent on its own fork`)}${row(t.checks, `checks run on a clean copy of the exact revision`)}${row(t.approvals + t.sentBack, `reviews, ${t.sentBack} sending work back`)}${row(t.decisions, `decisions by ${who}`)}${row(t.merges, "merged, with their record attached")}</ul>
+    ${reviews ? `<p class="compare-lead"><b>${e(pct(t.sentBack, reviews))}</b> of reviews sent the work back: ${t.sentBack.toLocaleString("en")} of ${reviews.toLocaleString("en")}.</p>` : ""}
+    <ul>${row(tasks, `${tasks === 1 ? "task" : "tasks"} taken, each by one agent on its own fork`)}${row(t.checks, `checks run on a clean copy of the exact revision`)}${row(reviews, `reviews, ${t.sentBack} sending work back`)}${row(t.decisions, `decisions by ${who}`)}${row(t.merges, "merged, with their record attached")}</ul>
     <p class="meta">Atelier records each step as it happens: who held the task, what ran on which revision, who reviewed it, and the decision that let it land.</p>
   </a>
 </section>`;
