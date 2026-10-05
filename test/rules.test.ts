@@ -265,6 +265,9 @@ test("ControlPlane actor mapping uses harness aliases and listed model families"
   assert.equal(agentOf("antigravity/gemini-3.1-pro", withAntigravity), "antigravity");
   assert.equal(agentOf("antigravity/gemini-3.1-pro", governed.agents!), "gemini");
   assert.equal(agentOf("antigravity/claude-opus-5-5", { claude: governed.agents!.claude }), "claude");
+  // Antigravity also serves Claude: that model is never the policy's antigravity agent.
+  assert.equal(agentOf("antigravity/claude-opus-5-5", withAntigravity), "claude");
+  assert.equal(agentOf("antigravity/claude-opus-5-5", { antigravity: governed.agents!.claude }), null);
   assert.equal(agentOf("opencode/gpt-6", { openai: governed.agents!.codex }), "openai");
 });
 
