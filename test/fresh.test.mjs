@@ -62,7 +62,7 @@ test("the baseline history starts at the chosen commit and follows the first-par
     assert.match(git(["log", "-1", "--format=%B", line[0]], { cwd: dir }), /^Atelier-Fresh-History: [0-9a-f]{40}$/m);
     assert.equal(git(["log", "-1", "--format=%an %aI", line[1]], { cwd: dir }), "Agent 2026-09-02T12:00:00+02:00");
     assert.match(git(["log", "-1", "--format=%B", line[1]], { cwd: dir }), /Co-Authored-By: Claude Opus 4\.7/);
-    assert.equal(git(["rev-list", "--count", `${line[3]}^@`], { cwd: dir }), "3", "the rebuilt merge has one parent");
+    assert.equal(git(["rev-list", "--parents", "-n", "1", line[3]], { cwd: dir }).split(" ").length, 2, "the rebuilt merge has exactly one parent");
     assert.equal(built.pairs[built.head], head);
     assert.equal(Object.keys(built.pairs).length, 4);
     assert.deepEqual(buildHistory(git, dir, start, head), built, "building again gives the same history");
@@ -121,5 +121,34 @@ test("pairs are kept per project in the git directory", () => {
     savePairs(dir, "b", { p: "q" });
     assert.deepEqual(loadPairs(dir, "a"), { x: "y" });
     assert.deepEqual(loadPairs(dir, "b"), { p: "q" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A commit object written byte for byte, as another tool or an old git might have.
+function writeRaw(dir, text) {
+  const r = spawnSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], { cwd: dir, input: text });
+  if (r.status !== 0) throw new Error(String(r.stderr));
+  return String(r.stdout).trim();
+}
+
+test("a rebuild keeps every byte but the parents: an encoded message, a missing final newline, an unusual name; a signature is dropped", () => {
+  const dir = project();
+  try {
+    const tree = git(["rev-parse", "HEAD^{tree}"], { cwd: dir });
+    const parent = git(["rev-parse", "HEAD~1"], { cwd: dir });
+    const other = git(["rev-parse", "HEAD~2"], { cwd: dir });
+    const head = (extra) => `tree ${tree}\nparent ${parent}\nauthor Zoë O'Brien-Łukasz <z@example.com> 1759600000 -0430\ncommitter A <a@example.com> 1759600000 +0545\n${extra}`;
+    const latin1 = Buffer.concat([Buffer.from(head("encoding ISO-8859-1\n\n")), Buffer.from("Caf\xe9 cr\xe8me", "latin1")]);
+    const encoded = writeRaw(dir, latin1);
+    const moved = rebuild(git, dir, encoded, [other]);
+    const out = spawnSync("git", ["cat-file", "commit", moved], { cwd: dir }).stdout;
+    assert.ok(out.equals(Buffer.from(latin1.toString("latin1").replace(`parent ${parent}`, `parent ${other}`), "latin1")), "only the parent line changed, byte for byte");
+    assert.ok(!out.toString("latin1").endsWith("\n"), "no final newline was added");
+    const signed = writeRaw(dir, head("gpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n -----END PGP SIGNATURE-----\n\nSigned work\n"));
+    const unsigned = spawnSync("git", ["cat-file", "commit", rebuild(git, dir, signed, [other])], { cwd: dir }).stdout.toString("utf8");
+    assert.ok(!unsigned.includes("gpgsig") && !unsigned.includes("abc"), "the signature and its continuation lines are gone");
+    assert.match(unsigned, /^tree [0-9a-f]+\nparent [0-9a-f]+\nauthor Zoë O'Brien-Łukasz <z@example.com> 1759600000 -0430\ncommitter A <a@example.com> 1759600000 \+0545\n\nSigned work\n$/);
+    assert.equal(rebuild(git, dir, encoded, [other, parent]), rebuild(git, dir, encoded, [other, parent]), "the same inputs give the same commit");
+    assert.equal(git(["rev-list", "--parents", "-n", "1", rebuild(git, dir, encoded, [])], { cwd: dir }).split(" ").length, 1, "a root has no parent");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
