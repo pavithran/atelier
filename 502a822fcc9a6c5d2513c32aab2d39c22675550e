@@ -1,0 +1,35 @@
+atelier cloudflare-git/t78 "Project state page and atelier status --project: where a project stands, as STATE.md and the pickup card give today: who holds what, what waits on the owner, what merged lately with its brief, open handoff notes, and whether the checkout is in step with the baseline"
+accepted head 1d933520691a4662b4c5e208b97b4cfbb05224c0
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-05T17:25:52.817Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-05T17:25:56.478Z
+REVIEW approve — pavi: Owner approval of the merge-only revision; Codex approved t78's own changes at 69341f32.
+2026-10-05T16:24:53.094Z pavi item.created
+2026-10-05T16:24:53.923Z claude-code/sonnet-5.5 item.claimed
+2026-10-05T16:24:57.374Z claude-code/sonnet-5.5 fork.created
+2026-10-05T16:36:07.977Z claude-code/sonnet-5.5 push.observed
+2026-10-05T16:37:13.659Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T16:37:16.321Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T16:37:16.944Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T16:57:44.517Z claude-code/sonnet-5.5 push.observed
+2026-10-05T16:58:50.997Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T16:58:53.196Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T16:58:53.792Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T17:09:47.615Z claude-code/sonnet-5.5 push.observed
+2026-10-05T17:10:53.410Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:10:55.500Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:10:56.097Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T17:16:45.405Z claude-code/sonnet-5.5 push.observed
+2026-10-05T17:17:51.055Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:17:53.084Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:17:53.689Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T17:21:04.618Z claude-code/sonnet-5.5 push.observed
+2026-10-05T17:22:15.479Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:22:17.674Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:22:18.317Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T17:23:31.735Z codex/gpt-6-astra review.approved
+2026-10-05T17:24:47.401Z claude-code/sonnet-5.5 push.observed
+2026-10-05T17:25:53.375Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:25:56.563Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T17:25:57.285Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T17:25:57.978Z pavi review.approved
+2026-10-05T17:25:58.578Z pavi item.accepted
