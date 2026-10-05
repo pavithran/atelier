@@ -103,14 +103,21 @@ export async function mergeability(
   }
   // A path that is a file on one side and a folder on the other: git cannot
   // put both at one place, though no single path is changed by both sides.
+  // Only entries that survive count: a side that deleted the longer path, or
+  // replaced the file, leaves nothing to collide.
   const theirSet = new Set(theirsPaths);
   const collisions = new Set<string>();
-  for (const [paths, other] of [[theirsPaths, ourSet], [oursPaths, theirSet]] as const) {
-    for (const p of paths) {
+  const sides = [
+    { paths: theirsPaths, other: ourSet, has: (p: string) => atTask(theirsTree, p), fileOnOther: (p: string) => atMain(oursTree, p) },
+    { paths: oursPaths, other: theirSet, has: (p: string) => atMain(oursTree, p), fileOnOther: (p: string) => atTask(theirsTree, p) },
+  ];
+  for (const side of sides) {
+    for (const p of side.paths) {
       const parts = p.split("/");
       for (let i = 1; i < parts.length; i++) {
         const prefix = parts.slice(0, i).join("/");
-        if (other.has(prefix) && !both.includes(prefix)) collisions.add(prefix);
+        if (!side.other.has(prefix) || both.includes(prefix) || collisions.has(prefix)) continue;
+        if ((await side.fileOnOther(prefix)) && (await side.has(p))) collisions.add(prefix);
       }
     }
   }
