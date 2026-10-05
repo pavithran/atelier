@@ -8,7 +8,6 @@
   --m-anthropic: #ff8a5b;
   --m-openai: #3fe0b0;
   --m-zai: #6f9bff;
-  --m-studio: #c49bff;
   --m-google: #ff8fcf;
   --m-deepseek: #5ad1e6;
   --m-qwen: #b5e55c;
@@ -26,7 +25,6 @@
     --m-anthropic: #b4461c;
     --m-openai: #0b7a5c;
     --m-zai: #2f56c9;
-    --m-studio: #7a3fc9;
     --m-google: #b0307a;
     --m-deepseek: #0f7d93;
     --m-qwen: #4d7a12;
@@ -353,7 +351,7 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 .kicker { font: 500 12px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--text-muted); }
 .flow-hero h1 { font-size: clamp(38px, 5.4vw, 72px); line-height: .98; margin: 14px 0 0; text-wrap: balance; }
 .flow-hero h1 .you { color: var(--m-owner); }
-.flow-hero h1 .them { background: linear-gradient(90deg, var(--m-anthropic), var(--m-openai) 34%, var(--m-zai) 66%, var(--m-studio)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.flow-hero h1 .them { background: linear-gradient(90deg, var(--m-anthropic), var(--m-openai) 34%, var(--m-zai) 66%, var(--m-google)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .flow-hero .lead { margin: 18px 0 0; }
 .tally { display: grid; gap: 14px; }
 .tally-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--line); }
@@ -389,10 +387,12 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 .g-grid { stroke: var(--line); stroke-width: 1; }
 .g-main { stroke: var(--main-line); stroke-width: 4; stroke-linecap: round; fill: none; filter: drop-shadow(0 0 5px color-mix(in srgb, var(--main-line) calc(45% * var(--glow)), transparent)); }
 .g-thread { stroke: var(--c); stroke-width: 2.4; fill: none; stroke-linecap: round; opacity: .9; }
+.g-thread.local { stroke-dasharray: 0.1 6; stroke-linecap: round; }  /* ran on the Studio: dotted; a dashed edge means sent back */
 .g-lane { stroke-width: 3.2; opacity: 1; filter: drop-shadow(0 0 4px var(--c)); }
 .g-task.closed .g-thread, .g-task.closed .g-bead, .g-task.closed .g-cap { opacity: .45; }  /* the label stays legible */
 .g-cap { stroke: var(--text-dim); stroke-width: 2.4; stroke-linecap: round; }
 .g-head { fill: var(--c); filter: drop-shadow(0 0 6px var(--c)); }
+.g-head.local, .g-bead.local > :not(.hit) { fill: var(--shell); stroke: var(--c); stroke-width: 1.5; stroke-dasharray: 0.1 3; stroke-linecap: round; }
 .g-task.live .g-head { animation: breathe 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 .g-merge { fill: var(--m-owner); filter: drop-shadow(0 0 5px var(--m-owner)); }
 .g-sha { font-size: 10px; fill: var(--main-line) !important; }

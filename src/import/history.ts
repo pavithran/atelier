@@ -7,7 +7,8 @@
 export interface ImportedCommit { hash: string; message: string; committedAt: number }
 
 export interface ImportedLane {
-  label: string;               // as the commits name it, e.g. "Claude Opus 4.7"
+  label: string;               // normalized model name, e.g. "opus-5.5"
+  names: string[];             // as the commits name it, e.g. ["Claude Opus 4.7"]
   count: number;
   first: number;               // unix seconds
   last: number;
@@ -65,6 +66,21 @@ export function firstTaskAt(items: { createdAt: string }[]): number | null {
   return times.length ? Math.min(...times) : null;
 }
 
+export function normaliseAgentName(name: string): string {
+  if (name === NO_AGENT) return name;
+  let s = name;
+  if (s.includes("/")) s = s.split("/").slice(1).join("/");
+  let norm = s.toLowerCase().trim().replace(/\s+/g, "-");
+  norm = norm.replace(/^claude-(opus|sonnet|haiku|fable)/, "$1");
+  if (!/\d/.test(norm)) {
+    if (norm === "codex" || norm === "claude-code" || norm === "zcode" || norm === "opencode" || norm === "gemini-cli") {
+      return `${norm}, model not recorded`;
+    }
+    return `${norm}, version not recorded`;
+  }
+  return norm;
+}
+
 // Commits before `cutoff` (unix seconds), newest first as git logs them.
 export function buildImported(commits: ImportedCommit[], cutoff: number | null, complete: boolean): ImportedHistory {
   // A baseline that starts partway through a project's history begins with a
@@ -75,8 +91,10 @@ export function buildImported(commits: ImportedCommit[], cutoff: number | null, 
   for (const c of before) {
     const agents = agentsIn(c.message);
     if (agents.length) attributed++;
-    for (const label of agents.length ? agents : [NO_AGENT]) {
-      const lane = lanes.get(label) ?? { label, count: 0, first: c.committedAt, last: c.committedAt, times: [] };
+    for (const rawLabel of agents.length ? agents : [NO_AGENT]) {
+      const label = rawLabel === NO_AGENT ? NO_AGENT : normaliseAgentName(rawLabel);
+      const lane = lanes.get(label) ?? { label, names: [], count: 0, first: c.committedAt, last: c.committedAt, times: [] };
+      if (rawLabel !== NO_AGENT && !lane.names.includes(rawLabel)) lane.names.push(rawLabel);
       lane.count++; lane.last = c.committedAt; lane.times.push(c.committedAt);
       lanes.set(label, lane);
     }

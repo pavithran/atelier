@@ -11,7 +11,7 @@ import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
 import { shortStamp, stamp } from "./time.ts";
 
-export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
+export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
 
 // Which family an actor belongs to, by the harness it runs in. The colour is
 // the vendor's, so a reader can see a thread change hands between companies.
@@ -19,11 +19,11 @@ export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "dee
 // They are the platform's work, not an agent's, and are never counted as moves.
 export const isAtelier = (actor: string) => actor.startsWith("atelier/");
 
-// The model's family decides, by its name (src/models/pool.ts), so a new
-// release is coloured on the day it appears. Work through OpenCode is home
-// work, in the Studio's colour, unless the model is built for a local server
-// or belongs to a family only served from the cloud. A name no family claims
-// falls back to its harness's usual family.
+// The model's family decides the colour, by its name (src/models/pool.ts), so
+// a new release is coloured on the day it appears; a name no family claims
+// falls back to its harness's usual family. Where the model ran is a separate
+// mark (isLocalRun): work through OpenCode ran on the owner's Studio unless the
+// model belongs to a family only served from the cloud and is not a local build.
 const CLOUD_ONLY = new Set(["google", "openai", "anthropic"]);
 
 export function vendorOf(actor: string, owner: string): Vendor {
@@ -31,13 +31,18 @@ export function vendorOf(actor: string, owner: string): Vendor {
   const { harness, model } = splitActor(actor);
   const h = harness.toLowerCase();
   const family = familyOf(model);
-  if (h === "opencode" && (LOCAL_BUILD.test(model) || !CLOUD_ONLY.has(family))) return "studio";
   if (family !== "other") return family;
   if (h === "claude-code") return "anthropic";
   if (h === "codex") return "openai";
   if (h === "zcode") return "zai";
   if (h === "gemini-cli" || h === "gemini" || h === "antigravity") return "google";
   return "other";
+}
+
+export function isLocalRun(actor: string): boolean {
+  const { harness, model } = splitActor(actor);
+  const family = familyOf(model);
+  return harness.toLowerCase() === "opencode" && (LOCAL_BUILD.test(model) || !CLOUD_ONLY.has(family));
 }
 
 export type BeadKind = "push" | "pass" | "fail" | "reported" | "submit" | "approve" | "reject" | "handoff" | "accept" | "dispatch";
@@ -62,6 +67,7 @@ export interface Tally {
   checks: number;
   inCloud: number;
   sentBack: number;
+  localRuns: number;
   agents: string[];            // every agent that acted, first appearance first
   byVendor: Partial<Record<Vendor, number>>;
   planned: number; claims: number; handoffs: number; pushes: number;
@@ -83,7 +89,7 @@ const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "ite
 const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched"]);
 
 export function emptyTally(): Tally {
-  return { agentMoves: 0, decisions: 0, checks: 0, inCloud: 0, sentBack: 0, agents: [], byVendor: {},
+  return { agentMoves: 0, decisions: 0, checks: 0, inCloud: 0, sentBack: 0, localRuns: 0, agents: [], byVendor: {},
     planned: 0, claims: 0, handoffs: 0, pushes: 0, approvals: 0, accepts: 0, merges: 0 };
 }
 
@@ -93,7 +99,7 @@ export function addTally(a: Tally, b: Tally): Tally {
   const sum = (k: keyof Tally) => (a[k] as number) + (b[k] as number);
   return {
     agentMoves: sum("agentMoves"), decisions: sum("decisions"), checks: sum("checks"), inCloud: sum("inCloud"),
-    sentBack: sum("sentBack"), agents: [...new Set([...a.agents, ...b.agents])], byVendor,
+    sentBack: sum("sentBack"), localRuns: sum("localRuns"), agents: [...new Set([...a.agents, ...b.agents])], byVendor,
     planned: sum("planned"), claims: sum("claims"), handoffs: sum("handoffs"), pushes: sum("pushes"),
     approvals: sum("approvals"), accepts: sum("accepts"), merges: sum("merges"),
   };
@@ -174,6 +180,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       t.agentMoves++;
       const v = vendorOf(ev.actor, owner);
       t.byVendor[v] = (t.byVendor[v] ?? 0) + 1;
+      if (isLocalRun(ev.actor)) t.localRuns++;
       if (!seen.has(ev.actor)) { seen.add(ev.actor); t.agents.push(ev.actor); }
     }
 
@@ -353,31 +360,39 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     const live = th.end === null && (th.state === "claimed" || th.state === "submitted" || th.state === "accepted");
     const segs = th.holds.map((h, i) => ({ who: h.who, from: i ? h.pos : th.start, to: th.holds[i + 1]?.pos ?? end }));
     const g: string[] = [];
-    g.push(`<path class="g-thread draw" pathLength="1" style="--c:${c(segs[0].who)};--d:${at(th.start)};--l:0.35s" d="M${r1(xs - R)} ${MAIN}C${xs} ${MAIN} ${r1(xs - R)} ${y} ${xs} ${y}"/>`);
+    // A thread draws itself in with a dash animation measured in pathLength
+    // units. A local run is dotted instead, in user units, so it is drawn
+    // without the animation: the two dash patterns cannot share one path.
+    const thread = (who: string, cls: string, style: string, d: string) => isLocalRun(who)
+      ? `<path class="g-thread${cls} local" style="--c:${c(who)}" d="${d}"/>`
+      : `<path class="g-thread${cls} draw" pathLength="1" style="--c:${c(who)};${style}" d="${d}"/>`;
+    g.push(thread(segs[0].who, "", `--d:${at(th.start)};--l:0.35s`, `M${r1(xs - R)} ${MAIN}C${xs} ${MAIN} ${r1(xs - R)} ${y} ${xs} ${y}`));
     for (const sg of segs) {
       const a = Math.max(x(sg.from), xs), b = sg.to === end ? xe : x(sg.to);
-      if (b > a) g.push(`<path class="g-thread g-lane draw" pathLength="1" style="--c:${c(sg.who)};--d:${at(sg.from)};--l:${len(sg.from, sg.to)}" d="M${a} ${y}H${b}"/>`);
+      if (b > a) g.push(thread(sg.who, " g-lane", `--d:${at(sg.from)};--l:${len(sg.from, sg.to)}`, `M${a} ${y}H${b}`));
     }
     const lastWho = segs.at(-1)!.who;
     if (th.ending === "merged") {
-      g.push(`<path class="g-thread draw" pathLength="1" style="--c:${c(lastWho)};--d:${at(end)};--l:0.35s" d="M${xe} ${y}C${r1(xe + R)} ${y} ${xe} ${MAIN} ${r1(xe + R)} ${MAIN}"/>`);
+      g.push(thread(lastWho, "", `--d:${at(end)};--l:0.35s`, `M${xe} ${y}C${r1(xe + R)} ${y} ${xe} ${MAIN} ${r1(xe + R)} ${MAIN}`));
     } else if (closed) {
       g.push(`<path class="g-cap pop" style="--d:${at(end)}" d="M${xe} ${y - 6}V${y + 6}"/>`);
     } else {
-      g.push(`<circle class="g-head pop" style="--c:${c(lastWho)};--d:${at(end)}" cx="${xe}" cy="${y}" r="4.5"/>`);
+      const cls = isLocalRun(lastWho) ? " local" : "";
+      g.push(`<circle class="g-head pop${cls}" style="--c:${c(lastWho)};--d:${at(end)}" cx="${xe}" cy="${y}" r="4.5"/>`);
     }
     // On a card, a review is an edge: from a node in its reviewer's colour, shaped as
     // the verdict, down to the task. A sent-back edge is dashed and its node ringed.
     const edges: string[] = [];
     th.beads.forEach((b, i) => {
       const key = `${id}-${k}-${i}`;
+      const isLocal = isLocalRun(b.actor);
       if (o.mini && (b.kind === "approve" || b.kind === "reject")) {
         const bx = x(b.pos), nx = Math.max(bx - 22, X0 + 6), ny = y - 24;
         edges.push(`<g class="g-edge ${b.kind} pop" style="--c:${c(b.actor)};--d:${at(b.pos)}"><title>${esc(b.label)}</title>`
           + `<path d="M${r1(nx)} ${ny + 5}C${r1(nx)} ${y - 8} ${r1(bx - 10)} ${y - 12} ${r1(bx)} ${y - 8}"/>`
           + `<g transform="translate(${r1(nx)} ${ny})">${b.kind === "reject" ? '<circle class="ring" r="7"/><path d="M-4 -3L0 4L4 -3Z"/>' : '<path d="M-4 3L0 -4L4 3Z"/>'}</g></g>`);
       }
-      g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
+      g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key, isLocal));
       cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${shortStamp(b.at)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label, href: b.href });
     });
     g.unshift(...edges);
@@ -422,17 +437,17 @@ const STATE_NAMES: Record<string, string> = {
 
 // A mark with somewhere to go (its commit, its task's checks) is a link, so a
 // keyboard reaches it as a pointer does; one without is focusable all the same.
-function bead(b: Bead, X: number, y: number, d: string, color: string, key: string): string {
-  const mark = beadMark(b, X, y, d, color, key);
+function bead(b: Bead, X: number, y: number, d: string, color: string, key: string, isLocal = false): string {
+  const mark = beadMark(b, X, y, d, color, key, isLocal);
   return b.href ? `<a href="${esc(b.href)}" class="g-bead-link" data-key="${key}">${mark}</a>` : mark;
 }
 
-function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: string): string {
+function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: string, isLocal: boolean): string {
   // Each mark is focusable, so a keyboard reaches the same card a pointer does;
   // its accessible name is the card's text. A linked mark leaves focus to its link.
   const name = esc(`${stamp(b.at)}, ${BEAD_NAMES[b.kind]}: ${b.label}`);
   const focus = b.href ? "" : ' tabindex="0"';
-  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}" style="--d:${d}${style}" transform="translate(${X} ${y})" data-key="${key}"${focus} role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
+  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}${isLocal ? " local" : ""}" style="--d:${d}${style}" transform="translate(${X} ${y})" data-key="${key}"${focus} role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
   switch (b.kind) {
     case "push": return `${open("push")}<path d="M0 -6V6"/></g>`;
     case "pass": return `${open("pass")}<circle r="3.6"/></g>`;
@@ -451,5 +466,5 @@ function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: 
 export const VENDOR_NAMES: [Vendor, string][] = [
   ["anthropic", "Claude"], ["openai", "GPT"], ["zai", "GLM"], ["google", "Gemini"], ["deepseek", "DeepSeek"],
   ["qwen", "Qwen"], ["minimax", "MiniMax"], ["mistral", "Mistral"], ["meta", "Llama"],
-  ["studio", "Local, on your Studio"], ["other", "Other agents"], ["owner", "You"],
+  ["other", "Other agents"], ["owner", "You"],
 ];

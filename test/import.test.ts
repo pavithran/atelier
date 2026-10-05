@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentsIn, buildImported, firstTaskAt, readImported, NO_AGENT } from "../src/import/history.ts";
+import { agentsIn, buildImported, firstTaskAt, readImported, NO_AGENT, normaliseAgentName } from "../src/import/history.ts";
 import { drawImported } from "../src/import/draw.ts";
 
 test("agents are read from Co-Authored-By and Agent lines; a parenthesised variant of one name is that name", () => {
@@ -22,7 +22,7 @@ test("commits before the cutoff are grouped by agent, oldest agent first, with n
   ], 500, true);
   assert.equal(h.total, 4);
   assert.equal(h.attributed, 3);
-  assert.deepEqual(h.lanes.map((l) => [l.label, l.count]), [["Claude Opus 4.7", 2], ["Claude Opus 5", 1], [NO_AGENT, 1]]);
+  assert.deepEqual(h.lanes.map((l) => [l.label, l.count]), [["opus-4.7", 2], ["opus-5", 1], [NO_AGENT, 1]]);
   assert.deepEqual([h.first, h.last], [100, 400]);
 });
 
@@ -56,7 +56,7 @@ test("the name is the text before the email, or after it when nothing comes befo
   const [long] = agentsIn(`x\n\nAgent: codex/${"g".repeat(1200)}`);
   assert.equal(long.length, 40);
   const svg = drawImported(buildImported([c("a", 1, `x\n\nAgent: codex/${"g".repeat(60)}`)], null, true), "pavi", "Demo");
-  assert.match(svg, /…<title>codex\/g+<\/title>/, "a long name is cut in the lane and shown whole on hover");
+  assert.match(svg, /…<title>g+, version not recorded \(as the commits name it: codex\/g+\)<\/title>/, "a long name is cut in the lane and shown whole on hover");
   assert.match(svg, /aria-label="Demo before Atelier: 1 commit, 1 naming an agent"/);
 });
 
@@ -93,3 +93,16 @@ test("a baseline's own root is not the project's work, and its history is never 
   assert.equal(h.complete, false);
   assert.equal(buildImported([c("b", 100, "x")], null, true).complete, true);
 });
+
+test("agent name normalisation", () => {
+  assert.equal(normaliseAgentName("Claude Opus 5.5"), "opus-5.5");
+  assert.equal(normaliseAgentName("Claude Fable 5.1"), "fable-5.1");
+  assert.equal(normaliseAgentName("GPT-5.5"), "gpt-5.5");
+  assert.equal(normaliseAgentName("Gemini 3.1 Pro"), "gemini-3.1-pro");
+  assert.equal(normaliseAgentName("Claude Opus"), "opus, version not recorded");
+  assert.equal(normaliseAgentName("GLM"), "glm, version not recorded");
+  assert.equal(normaliseAgentName("Codex"), "codex, model not recorded");
+  assert.equal(normaliseAgentName("codex/gpt-6-astra"), "gpt-6-astra");
+  assert.equal(normaliseAgentName(NO_AGENT), NO_AGENT);
+});
+

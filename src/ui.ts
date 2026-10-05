@@ -18,7 +18,7 @@ import { clockTime, dayOf, shortStamp, stamp, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, stateLabel,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, stateLabel, modelOf,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -259,10 +259,11 @@ const taskHref = (project: string) => (th: { id: string }) => href("p", project,
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
-function legendLine(vendors: Vendor[], who = "You"): string {
+function legendLine(vendors: Vendor[], hasLocal: boolean, who = "You"): string {
   const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
     .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
-  return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}<li><i style="--c:var(--fault)"></i>sent back</li><li class="meta">times in ${e(zoneLabel())}</li></ul>`;
+  const local = hasLocal ? `<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran on your Studio</li>` : "";
+  return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}${local}<li><i style="--c:var(--fault)"></i>sent back</li><li class="meta">times in ${e(zoneLabel())}</li></ul>`;
 }
 
 function vendorsIn(stories: Story[]): Vendor[] {
@@ -294,7 +295,7 @@ function restingGraph(s: Story, owner: string): string {
   <span class="kicker">${e(s.title)} · the work so far${s.partial ? " · the most recent part of the record" : ""}</span>
   <h2><span class="you">You made ${plural(t.decisions, "decision")}.</span> ${plural(t.agents.length, "agent")} made ${t.agentMoves} moves.</h2>
   <p>Nothing is waiting on you. Each thread is a task an agent took off main; it flows back only when you accept it.</p>
-  ${legendLine(Object.keys(t.byVendor) as Vendor[])}
+  ${legendLine(Object.keys(t.byVendor) as Vendor[], t.localRuns > 0)}
   <div class="stage-scroll">${drawStory(s, owner, { compact: true, replaySeconds: 6, href: taskHref(s.project) })}</div>
   <a href="/flow">See the whole flow</a>
 </div>`;
@@ -443,7 +444,7 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
   const filtered = [sinceParam !== "all" ? `since=${e(sinceParam)}` : "", familyParam ? `family=${e(familyParam)}` : ""].filter(Boolean).join("&amp;");
   const { stages, columns, shown } = flowParts(stories, t, owner, filtered ? `/flow?${filtered}` : "/flow", (s) => taskHref(s.project), "You", imported);
   const body = shown.length
-    ? `${legendLine(vendorsIn(shown))}${stages}${columns}`
+    ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0))}${stages}${columns}`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
   
   const link = (s: string, f: string | undefined) => `?since=${e(s)}${f ? `&amp;family=${e(f)}` : ''}`;
@@ -484,7 +485,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   const who = ownerName || "the owner";
   const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who, imported);
   const body = shown.length
-    ? `${legendLine(vendorsIn(shown), cap(who))}${stages}${columns}`
+    ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0), cap(who))}${stages}${columns}`
     : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -614,10 +615,10 @@ function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): s
   const xs = b.marks.map((m) => position(m.at, floor));
   const dy = staggers(xs);
   const marks = b.marks.map((m, i) =>
-    `<svg x="${(xs[i] * 100).toFixed(2)}%" y="${MID + dy[i] * 13}" overflow="visible" class="mark"><title>${e(MARK_NAMES[m.kind])}: ${e(m.label)} · ${e(clock(m.at))}</title>${markShape(m.kind)}</svg>`).join("");
+    `<svg x="${(xs[i] * 100).toFixed(2)}%" y="${MID + dy[i] * 13}" overflow="visible" class="mark"><title>${e(MARK_NAMES[m.kind])}: ${e(m.title ?? m.label)} · ${e(clock(m.at))}</title>${markShape(m.kind)}</svg>`).join("");
   const last = b.marks[b.marks.length - 1];
   const chain = b.chain.length > 1
-    ? `<p class="chain" aria-label="Held by, in order">${b.chain.map((a) => `<span>${e(a)}</span>`).join('<span aria-hidden="true"> → </span>')}</p>`
+    ? `<p class="chain" aria-label="Held by, in order">${b.chain.map((a) => `<span title="${e(a)}">${e(splitActor(a).model || a)}</span>`).join('<span aria-hidden="true"> → </span>')}</p>`
     : "";
   const tone = b.item.state === "accepted" ? "go" : b.item.state === "submitted" ? "ask" : "";
   return `<li class="lane" id="${e(b.project)}-${e(b.item.id)}">
@@ -628,7 +629,7 @@ function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): s
     ${chain}
   </div>
   <div class="track">
-    <svg class="track-svg" width="100%" height="${TRACK_H}" role="img" aria-label="${e(`${b.marks.length} recorded events for ${b.item.id}, held by ${b.chain.join(", then ")}; latest: ${last ? `${MARK_NAMES[last.kind]} ${ago(last.at, now)}` : "none"}`)}">
+    <svg class="track-svg" width="100%" height="${TRACK_H}" role="img" aria-label="${e(`${b.marks.length} recorded events for ${b.item.id}, held by ${b.chain.map(modelOf).join(", then ")}; latest: ${last ? `${MARK_NAMES[last.kind]} ${ago(last.at, now)}` : "none"}`)}">
       ${spans}
       <line x1="0" y1="${MID}" x2="100%" y2="${MID}" class="axis"/>
       <line x1="100%" y1="4" x2="100%" y2="${TRACK_H - 4}" class="now-line"/>
@@ -905,7 +906,7 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
   const note = b ? { verdict: b.recommendation.verdict, tone: VERDICT_TONE[b.recommendation.verdict] as "go" | "ask" | "bad", text: b.recommendation.reason } : undefined;
   return `<section class="review-section task-thread" id="thread" aria-label="This task's thread">
   <h3>Thread</h3>
-  ${legendLine(Object.keys(story.tally.byVendor) as Vendor[])}
+  ${legendLine(Object.keys(story.tally.byVendor) as Vendor[], story.tally.localRuns > 0)}
   <div class="stage-scroll">${drawStory(story, owner, { replaySeconds: 0, ...(note ? { note } : {}) })}</div>
 </section>`;
 }
