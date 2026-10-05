@@ -1,0 +1,14 @@
+atelier cloudflare-git/t65 "atelier models --help fails with an internal server error instead of printing usage; unknown subcommands and flags should print usage locally"
+accepted head 399a8e67236d7f85b01b37c8bfc0d025a7b5364c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/GLM-5.3-Flash-4_8bit 2026-10-05T01:25:10.441Z
+OBSERVED pass npm run types && npm run typecheck — opencode/GLM-5.3-Flash-4_8bit 2026-10-05T01:25:12.944Z
+REVIEW approve — claude-code/opus-5.5: Read the diff: help is caught before flag parsing so a following word is not taken as its value; models and projects usage lines; exits before any request; tests run the CLI with no server configured.
+2026-10-05T00:45:43.054Z pavi item.created
+2026-10-05T01:17:26.043Z opencode/GLM-5.3-Flash-4_8bit item.claimed
+2026-10-05T01:17:28.419Z opencode/GLM-5.3-Flash-4_8bit fork.created
+2026-10-05T01:24:06.513Z opencode/GLM-5.3-Flash-4_8bit push.observed
+2026-10-05T01:25:11.031Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-05T01:25:13.012Z opencode/GLM-5.3-Flash-4_8bit evidence.observed
+2026-10-05T01:25:13.533Z opencode/GLM-5.3-Flash-4_8bit item.submitted
+2026-10-05T01:26:45.686Z claude-code/opus-5.5 review.approved
+2026-10-05T01:26:53.350Z pavi item.accepted
