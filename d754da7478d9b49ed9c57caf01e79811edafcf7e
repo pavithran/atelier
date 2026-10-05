@@ -1,0 +1,46 @@
+atelier cloudflare-git/t53 "Model pool on Atelier: a Models page and atelier models to add, list and remove models (harness, where, provider, Keychain entry name), family colours by pattern, aliases"
+accepted head c6044a90b14ea398a8cdba4e4fd8990164f9ea83
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-04T23:52:06.673Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-04T23:52:08.690Z
+REVIEW approve — owner: Owner approval of the merge-only revision; Gemini approved t53's own changes at edf462d.
+REVIEW approve — pavi: Owner approval of the merge-only revision; Gemini approved t53's own changes at edf462d.
+2026-10-04T18:15:08.934Z pavi item.created
+2026-10-04T18:16:51.270Z claude-code/opus-5.5 item.claimed
+2026-10-04T18:16:53.289Z claude-code/opus-5.5 fork.created
+2026-10-04T18:29:26.012Z claude-code/opus-5.5 push.observed
+2026-10-04T18:29:36.892Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:29:38.917Z claude-code/opus-5.5 evidence.observed
+2026-10-04T18:29:39.294Z claude-code/opus-5.5 item.submitted
+2026-10-04T19:05:41.569Z zcode/glm-5.3 review.rejected
+2026-10-04T19:08:34.365Z claude-code/opus-5.5 push.observed
+2026-10-04T19:08:45.706Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:08:47.866Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:08:48.252Z claude-code/opus-5.5 item.submitted
+2026-10-04T19:21:57.507Z opencode/gemini-3.1-pro-preview review.rejected
+2026-10-04T19:28:52.639Z claude-code/opus-5.5 push.observed
+2026-10-04T19:29:04.946Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:29:06.949Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:29:07.347Z claude-code/opus-5.5 item.submitted
+2026-10-04T19:37:12.819Z opencode/gemini-3.1-pro-preview review.rejected
+2026-10-04T19:38:06.785Z claude-code/opus-5.5 push.observed
+2026-10-04T19:38:18.595Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:38:20.577Z claude-code/opus-5.5 evidence.observed
+2026-10-04T19:38:20.952Z claude-code/opus-5.5 item.submitted
+2026-10-04T20:23:57.662Z opencode/gemini-3.1-pro-preview review.rejected
+2026-10-04T20:32:14.242Z claude-code/opus-5.5 push.observed
+2026-10-04T20:32:29.001Z claude-code/opus-5.5 evidence.observed
+2026-10-04T20:32:31.102Z claude-code/opus-5.5 evidence.observed
+2026-10-04T20:32:31.711Z claude-code/opus-5.5 item.submitted
+2026-10-04T23:35:37.014Z opencode/gemini-3.1-pro-preview review.rejected
+2026-10-04T23:35:58.616Z claude-code/opus-5.5 push.observed
+2026-10-04T23:36:09.602Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:36:11.619Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:36:12.077Z claude-code/opus-5.5 item.submitted
+2026-10-04T23:49:17.949Z opencode/gemini-3.1-pro-preview review.approved
+2026-10-04T23:51:51.356Z claude-code/opus-5.5 push.observed
+2026-10-04T23:52:06.735Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:52:08.745Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:52:09.258Z claude-code/opus-5.5 item.submitted
+2026-10-05T00:40:36.938Z owner review.approved
+2026-10-05T00:40:44.514Z pavi review.approved
+2026-10-05T00:40:44.989Z pavi item.accepted
