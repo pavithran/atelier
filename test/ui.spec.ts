@@ -247,6 +247,9 @@ it('the showcase route is public only when the owner names projects, and caches 
  expect(none.status).toBe(404);
  const record={name:'shown',repo:'shown',title:'Shown project',policy:{checks:[],protected:[]},createdAt:time};
  await env.LEDGER.get(env.LEDGER.idFromName('project:shown')).setProject(record,'owner');
+ const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
+ await index.registerProject(record);
+ await index.registerProject({...record,name:'missing',repo:'missing'});
  const res=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown, missing'} as typeof env);
  expect(res.status).toBe(200);
  expect(res.headers.get('cache-control')).toBe('public, max-age=60');
@@ -255,9 +258,9 @@ it('the showcase route is public only when the owner names projects, and caches 
  expect(body).toContain('Atelier · public showcase');
  expect(body).toContain('could not be read just now');
  // A second request inside the minute is the cached copy, whatever its query.
- const again=await worker.fetch(new Request('https://atelier.test/showcase?replay=x'),{...env,SHOWCASE:'shown'} as typeof env);
+ const again=await worker.fetch(new Request('https://atelier.test/showcase?replay=x'),{...env,SHOWCASE:'shown, missing'} as typeof env);
  expect(await again.text()).toBe(body);
- await caches.default.delete(new Request('https://atelier.test/showcase'));
+ // A different set of public projects has a different cached copy.
  const only=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown'} as typeof env);
  expect(await only.text()).not.toContain('could not be read just now');
  const login=await worker.fetch(new Request('https://atelier.test/login'),{...env,SHOWCASE:'shown'} as typeof env);
@@ -307,6 +310,7 @@ it('the showcase draws a named project that has work, and survives a cache that 
  const record={name:'drawn',repo:'drawn',title:'Drawn project',policy:{checks:[],protected:[]},createdAt:time};
  const L=env.LEDGER.get(env.LEDGER.idFromName('project:drawn'));
  await L.setProject(record,'owner');
+ await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
  await L.newItem('Visible work',[],'owner');await L.claim('t1','codex/gpt-6');
  await caches.default.delete(new Request('https://atelier.test/showcase'));
  const put=caches.default.put;
