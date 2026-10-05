@@ -123,21 +123,49 @@ plan (Artifacts is in open beta there), and `wrangler` logged in.
 npm install && npm run types && npm test
 ```
 
-Write the server token into the Keychain once, by hand:
+Choose a server token and keep it somewhere you can paste it from; a random
+one is fine:
 
 ```bash
-security add-generic-password -s atelier.API_TOKEN -a "$USER" -w
+openssl rand -hex 32
 ```
 
-Deploy, then make the Worker's secret match the Keychain:
+Deploy, then give the Worker the token as its secret. Wrangler reads it from
+the prompt, so it is not written on a command line:
 
 ```bash
 npx wrangler deploy
 ```
 
 ```bash
-security find-generic-password -s atelier.API_TOKEN -w | tr -d '\n' | npx wrangler secret put ATELIER_TOKEN
+npx wrangler secret put ATELIER_TOKEN
 ```
+
+Then sign in once. `atelier login --server URL` asks for the token (typed
+without echo at a terminal, or piped in on stdin), checks it against the
+server, stores it, and says where. `atelier login --store` names the store in
+use and whether it holds a token, without showing it.
+
+```bash
+atelier login --server https://atelier.example.com
+```
+
+The token is kept in the first of these that applies:
+
+| System | Store |
+| --- | --- |
+| macOS | The Keychain, item `atelier.API_TOKEN`, through `security`. |
+| Linux | The Secret Service, through `secret-tool` (service `atelier`, account `API_TOKEN`), when it is installed and a session bus is available. |
+| Windows, and Linux without those | A file, `secrets.json` in `XDG_CONFIG_HOME/atelier` or `~/.config/atelier` (`%APPDATA%\atelier` on Windows), created with mode 0600. Atelier refuses to read or write it if its mode lets other users read it. |
+
+Windows has no Credential Manager backend: reaching it from PowerShell means
+compiling a wrapper with `Add-Type`, which is not tested here, so Windows
+uses the file. On Windows the file's mode is not checked, because the system
+reports no meaningful mode; the file sits in your own profile. Setting
+`ATELIER_SECRET_STORE` to `file`, `keychain` or `secret-service` picks a
+store outright. The `ATELIER_TOKEN` environment variable overrides every
+store. A value is handed to a store on its standard input and never as a
+command line argument, and Atelier prints no token.
 
 The project owner acts as the actor `owner`, and the inbox asks "What needs
 you now?". To use your own actor and name, set `OWNER_ACTOR` and
