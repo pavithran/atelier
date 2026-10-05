@@ -91,8 +91,16 @@ export function buildImported(commits: ImportedCommit[], cutoff: number | null, 
   for (const c of before) {
     const agents = agentsIn(c.message);
     if (agents.length) attributed++;
+    const counted = new Set<string>();
     for (const rawLabel of agents.length ? agents : [NO_AGENT]) {
       const label = rawLabel === NO_AGENT ? NO_AGENT : normaliseAgentName(rawLabel);
+      // Two trailers naming one model ("claude-code/opus-5.5", "Claude Opus 5.5") are one commit in its lane.
+      if (counted.has(label)) {
+        const lane = lanes.get(label)!;
+        if (!lane.names.includes(rawLabel)) lane.names.push(rawLabel);
+        continue;
+      }
+      counted.add(label);
       const lane = lanes.get(label) ?? { label, names: [], count: 0, first: c.committedAt, last: c.committedAt, times: [] };
       if (rawLabel !== NO_AGENT && !lane.names.includes(rawLabel)) lane.names.push(rawLabel);
       lane.count++; lane.last = c.committedAt; lane.times.push(c.committedAt);

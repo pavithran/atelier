@@ -526,7 +526,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
       ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked by ${e(m.status.by ?? "a runner")} ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
       : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
     const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
-    return `<li class="model" style="--c:var(--m-${m.where === "home" ? "studio" : m.family})">
+    return `<li class="model" style="--c:var(--m-${m.family})">
   <div class="model-head"><strong class="mono">${e(m.id)}</strong>${m.family === "other" ? tag("family not recognised", "ask") : `<span class="meta">${e(m.family)}</span>`}</div>
   <p class="meta">${how}</p>
   ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}

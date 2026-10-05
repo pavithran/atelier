@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { agentsIn, buildImported, firstTaskAt, readImported, NO_AGENT, normaliseAgentName } from "../src/import/history.ts";
-import { drawImported } from "../src/import/draw.ts";
+import { drawImported, laneColour } from "../src/import/draw.ts";
 
 test("agents are read from Co-Authored-By and Agent lines; a parenthesised variant of one name is that name", () => {
   assert.deepEqual(agentsIn("Fix it\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"), ["Claude Opus 4.7"]);
@@ -106,3 +106,16 @@ test("agent name normalisation", () => {
   assert.equal(normaliseAgentName(NO_AGENT), NO_AGENT);
 });
 
+
+test("a commit naming one model twice counts once in its lane, and keeps both names", () => {
+  const h = buildImported([c("a", 100, "one\n\nCo-Authored-By: claude-code/opus-5.5 <x>\nCo-Authored-By: Claude Opus 5.5 <y>")], null, true);
+  assert.deepEqual(h.lanes.map((l) => [l.label, l.count, l.names]), [["opus-5.5", 1, ["claude-code/opus-5.5", "Claude Opus 5.5"]]]);
+  assert.equal(h.attributed, 1);
+});
+
+test("a normalised lane keeps its family's colour", () => {
+  for (const [label, family] of [["fable-5.1", "anthropic"], ["opus, version not recorded", "anthropic"], ["opus-5.5", "anthropic"],
+    ["glm, version not recorded", "zai"], ["gpt-6-astra", "openai"], ["gemini-3.1-pro", "google"]]) {
+    assert.equal(laneColour(label, "pavi"), `var(--m-${family})`, label);
+  }
+});
