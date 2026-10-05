@@ -418,3 +418,28 @@ it('the merge preview says plainly whether a task would merge into main, and esc
  expect(bad).toContain('at least 1,000 commits');
  expect(bad).toContain('<code>&lt;b&gt;.ts</code>');
 });
+
+it('the showcase sets a project known only from git beside Atelier\'s record, and says what git cannot show',async()=>{
+ const {renderShowcase}=await import('../src/ui');
+ const {buildStory}=await import('../src/graph');
+ const {buildImported}=await import('../src/import/history');
+ const at=(m:number)=>new Date(Date.UTC(2026,9,4,12,m)).toISOString();
+ const evs=[
+  {seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}},
+  {seq:2,at:at(1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},
+ ].reverse();
+ const withs=buildStory('built',[{id:'t1',title:'Work',state:'claimed'}] as never,evs as never,'pavi',false,'Built',{redact:true,ownerLabel:'PAVI'});
+ const before=buildStory('old',[],[],'pavi',false,'<Old> project',{redact:true,ownerLabel:'PAVI'});
+ const h=buildImported([{hash:'a',committedAt:100,message:'x\n\nCo-Authored-By: Claude Opus 4.7 <n@x>'},{hash:'b',committedAt:200,message:'y'}],null,true);
+ const html=renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',h]]));
+ expect(html).toContain('class="compare"');
+ expect(html).toContain('Before Atelier · from git');
+ expect(html).toContain('&lt;Old&gt; project');
+ expect(html).toContain('href="#old"');
+ expect(html).toContain('href="#built"');
+ expect(html).toContain('It cannot say whether the checks passed');
+ expect(html).toContain('History imported from git · no Atelier tasks yet');
+ expect(html).not.toContain('0 tasks taken');
+ // With nothing imported there is nothing to compare.
+ expect(renderShowcase([withs],withs.tally,'pavi','PAVI',false,new Map())).not.toContain('class="compare"');
+});
