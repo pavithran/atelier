@@ -103,7 +103,8 @@ merged.
   such as `claude`, `gpt`, `gemini` or `qwen`, when that name is listed in
   the agent policy. An unmapped actor has no role. Claiming or receiving a
   handoff requires an available agent with `executor` in `eligible_roles`.
-  Only reviews from available agents with `assessor` count toward the gate.
+  Agent reviews count toward the gate only when the agent is available with
+  `assessor`. The project owner's reviews always count.
   `preferred_roles` records a preference and does not grant a role. The
   other roles do not grant execution or review authority.
 - Changed paths determine the class. Any protected path makes the change
@@ -112,9 +113,11 @@ merged.
   changes are `coordinated`. A class absent from `allowed_classes` is refused.
   Protected changes need approval from another model family, coordinated
   changes need approval from another actor, and direct changes need no review.
-  Required reviews must qualify as assessors. Unrecognised model families
+  Required agent reviews must qualify as assessors. The project owner can
+  also provide the required review. Unrecognised model families
   cannot establish independent protected review. Project owner acceptance is
   always required and does not replace a governed change's required review.
+  A measured empty change has nothing to merge.
   Projects without these policy files retain the existing gate rules.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with

@@ -49,7 +49,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events): Brief {
   const { item, policy, gate } = detail;
   const view = evidenceAt(policy, detail.evidence, item.head);
-  const reviews = countingReviews(detail.reviews, item.head, policy);
+  const reviews = countingReviews(detail.reviews, item.head, policy, detail.ownerActor ?? DEFAULT_OWNER);
   const rejections = reviews.filter((r) => !r.approve);
   const failed = view.checks.filter((c) => c.grade === "observed" && !c.passed);
   const pending = view.checks.filter((c) => c.grade === "pending");

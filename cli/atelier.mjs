@@ -200,12 +200,13 @@ function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git([...auth(token), "clone", "--quiet", remote, dir]);
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
-  let changed = [];
+  let changed;
   if (baseline) {
     git([...auth(baseline.token), "fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir });
     const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
     if (mb.status === 0) {
-      changed = git(["diff", "--name-only", mb.stdout.trim(), "HEAD"], { cwd: dir }).split("\n").filter(Boolean);
+      const diff = git(["diff", "--no-renames", "--name-only", "-z", mb.stdout.trim(), "HEAD"], { cwd: dir, allowFail: true });
+      if (diff.status === 0) changed = diff.stdout.split("\0").filter(Boolean);
     }
   }
   return { dir, changed };
@@ -282,7 +283,7 @@ export function readControlPlane(top) {
   };
 }
 
-function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote }) {
+function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass }) {
   const dir = join(cwd, "docs", "control-plane", "landing-receipts");
   if (!existsSync(dir)) return null;
   const template = readJson(join(cwd, "docs", "control-plane", "landing-receipt.v1.json")) ?? {};
@@ -293,7 +294,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
     kind: "control-plane.landing-receipt",
     receipt_id: `atelier-${name}-${id}-${date}`,
     project_id: template.project_id ?? name,
-    execution_class: "coordinated",
+    execution_class: changeClass ?? "coordinated",
     closure: "compact",
     implementation_commit: item.acceptedHead,
     delivery: {
@@ -881,7 +882,7 @@ const commands = {
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
-          const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote});
+          const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
           git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd});
           journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});

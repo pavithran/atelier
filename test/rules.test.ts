@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  agentOf, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
+  agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
   assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap, validActor,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
@@ -279,7 +279,6 @@ test("changed paths take the strictest class and retain implicit check protectio
     [["docs/a.md", "src/a.ts"], "coordinated"],
     [["docs/a.md", "docs/secret/key"], "protected"],
     [["src/a.ts", "AGENTS.md"], "protected"], [["package.json"], "protected"],
-    [[], "direct"],
   ] as [string[], string][]) assert.equal(changeClass(paths, governed), kind);
   assert.equal(changeClass(["docs/a.md"], { ...governed, execution: { ...governed.execution!, direct: { enabled: false, allowed_path_patterns: ["**"] } } }), "coordinated");
 });
@@ -295,7 +294,7 @@ test("direct needs no review, coordinated needs another actor, protected needs a
   assert.equal(gate(item(), governed, protectedChange, [review("claude-code/sonnet-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("opencode/opus-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6")]).ready, true);
-  assert.equal(gate(item(), governed, protectedChange, [review("owner")]).ready, false);
+  assert.equal(gate(item(), governed, protectedChange, [review("owner")]).ready, true);
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6", { head: H2 })]).ready, false);
 });
 
@@ -330,4 +329,45 @@ test("ungoverned gates retain exact-model independence and owner review", () => 
   assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("claude-code/sonnet-5.5")]).ready, true);
   assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("owner")]).ready, true);
   assert.equal(gate(item(), policy, [pass()], []).changeClass, undefined);
+});
+
+
+test("empty governed changes have no class and nothing to merge", () => {
+  assert.equal(changeClass([], governed), null);
+  const g = gate(item(), governed, [pass({ changedPaths: [] })], []);
+  assert.equal(g.changeClass, null);
+  assert.equal(g.ready, false);
+  assert.match(g.blockers.join(), /nothing to merge/);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: [] })], []).ready, true);
+});
+
+test("sandbox path measurements outrank newer runner measurements", () => {
+  const evidence = [pass({ where: "sandbox", changedPaths: ["AGENTS.md"] }), pass({ where: "runner", at: "2026-10-05", changedPaths: ["docs/a.md"] })];
+  assert.equal(gate(item(), governed, evidence, []).changeClass, "protected");
+  assert.equal(gate(item(), governed, evidence.reverse(), []).ready, false);
+});
+
+test("project owner reviews count under role policy for every class", () => {
+  for (const owner of ["owner", "pavi"]) for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
+    const evidence = [pass({ changedPaths: [path] })];
+    assert.equal(gate(item(), governed, evidence, [review(owner)], owner).ready, true);
+    const g = gate(item(), governed, evidence, [review("codex/gpt-6"), review(owner, { approve: false })], owner);
+    assert.equal(g.ready, false);
+    assert.match(g.blockers.join(), new RegExp(`rejected by ${owner}`));
+  }
+});
+
+test("non-array path measurements remain unmeasured", () => {
+  for (const changedPaths of [undefined, null, "docs/a.md", {}]) {
+    const evidence = [pass({ changedPaths } as Partial<Evidence>)];
+    assert.equal(evidenceAt(governed, evidence, H1).changedPaths, null);
+    assert.match(gate(item(), governed, evidence, []).blockers.join(), /changed paths not yet observed/);
+  }
+});
+
+
+test("path input preserves an empty measurement and rejects malformed input", () => {
+  for (const value of [undefined, null, "docs/a.md", {}, [null], [1]]) assert.equal(measuredPaths(value), null);
+  assert.deepEqual(measuredPaths([]), []);
+  assert.deepEqual(measuredPaths(["AGENTS.md", "docs/agents.md"]), ["AGENTS.md", "docs/agents.md"]);
 });
