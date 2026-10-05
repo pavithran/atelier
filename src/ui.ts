@@ -403,12 +403,26 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   return { stages, columns, shown };
 }
 
-export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map()): string {
+export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), sinceParam = "all", familyParam?: string, familiesPresent: string[] = []): string {
   const t = drawnTotal(stories);
   const { stages, columns, shown } = flowParts(stories, t, owner, "/flow", (s) => taskHref(s.project), "You", imported);
   const body = shown.length
     ? `${legendLine(vendorsIn(shown))}${stages}${columns}`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
+  
+  const link = (s: string, f: string | undefined) => `?since=${e(s)}${f ? `&amp;family=${e(f)}` : ''}`;
+  const sinceLinks = [["1d", "last day"], ["7d", "last week"], ["all", "all time"]]
+    .map(([val, label]) => `<a href="${link(val, familyParam)}"${sinceParam === val ? ' aria-current="page"' : ''}>${e(label)}</a>`).join("");
+  
+  const fams = VENDOR_NAMES.filter(([v]) => familiesPresent.includes(v));
+  const familyLinks = fams.map(([v, label]) => `<a href="${link(sinceParam, v)}"${familyParam === v ? ' aria-current="page"' : ''} style="color:var(--m-${v})">${e(label)}</a>`).join("");
+  const allFamiliesLink = `<a href="${link(sinceParam, undefined)}"${!familyParam ? ' aria-current="page"' : ''}>all families</a>`;
+  
+  const filters = `<nav class="repo-tabs" aria-label="Filters">
+    <span class="meta" style="align-self: center; margin-right: 8px">Time:</span>${sinceLinks}
+    ${familiesPresent.length > 0 ? `<span class="meta" style="align-self: center; margin: 0 8px 0 16px">Family:</span>${allFamiliesLink}${familyLinks}` : ''}
+  </nav>`;
+
   return page("Flow", `<div class="page-width flow">
   <header class="flow-hero">
     <div><span class="kicker">Atelier · every project · from the ledger</span>
@@ -416,6 +430,7 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
       <p class="lead">Each coloured thread is a task an agent took off main: its pushes, its checks, the reviews from other models, and your decision. Hover a mark for what happened; select a task to open it.</p></div>
     ${tallyBlock(t)}
   </header>
+  ${filters}
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
   ${body}
 </div>`, "Flow", ownerName);

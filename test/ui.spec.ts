@@ -548,3 +548,15 @@ it('a share that rounds to 0% or 100% without being exactly that says so',async(
  expect(lead(300,300)).toContain('<b>100%</b>');
  expect(lead(0,300)).toContain('<b>0%</b>');
 });
+
+it('Flow offers time and family filters that keep each other, and the showcase has none',async()=>{
+ const {renderFlow,renderShowcase}=await import('../src/ui');
+ const {buildStory}=await import('../src/graph');
+ const evs=[{seq:2,itemId:'t1',at:'2026-10-04T10:01:00Z',actor:'codex/gpt-6-astra',kind:'item.claimed',data:{}},{seq:1,itemId:'t1',at:'2026-10-04T10:00:00Z',actor:'pavi',kind:'item.created',data:{}}];
+ const s=buildStory('p',[{id:'t1',title:'T',state:'claimed'}] as never,evs as never,'pavi');
+ const html=renderFlow([s],s.tally,'pavi','PAVI',false,new Map(),'7d','openai',['openai']);
+ expect(html).toContain('href="?since=1d&amp;family=openai"');
+ expect(html).toContain('href="?since=7d"');
+ expect(html).toMatch(/<a href="\?since=7d&amp;family=openai" aria-current="page"/);
+ expect(renderShowcase([s],s.tally,'pavi','PAVI')).not.toContain('aria-label="Filters"');
+});
