@@ -295,11 +295,16 @@ function importedBlock(h: ImportedHistory | undefined, owner: string, title: str
 </div>`;
 }
 
+// A project with no Atelier task at all: none drawn, none planned, and a
+// record read in full. A planned task nobody has claimed draws no thread but
+// is still a task.
+const noTasks = (s: Story) => !s.threads.length && !s.tally.planned && !s.partial;
+
 // Before and with Atelier, side by side: a project known only from its git
 // history beside the record Atelier kept of its own tasks. Shown when there
 // is one of each; each side links to its drawing further down.
 export function compareBlock(stories: Story[], imported: Map<string, ImportedHistory>, t: Tally, owner: string, who: string): string {
-  const before = stories.find((s) => !s.threads.length && imported.get(s.project)?.total);
+  const before = stories.find((s) => noTasks(s) && imported.get(s.project)?.total);
   const withs = stories.filter((s) => s.threads.length);
   if (!before || !withs.length || !t.claims) return "";
   const h = imported.get(before.project)!;
@@ -340,7 +345,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.title)}">
   <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${s.threads.length
     ? `${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}`
-    : "History imported from git · no Atelier tasks yet"}</span>
+    : noTasks(s) ? "History imported from git · no Atelier tasks yet" : `${plural(s.tally.planned, "task")} planned, none taken yet${s.partial ? " · the most recent part of the record" : ""}`}</span>
   ${s.threads.length ? `<a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
   ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : imported.get(s.project)?.total ? "" : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
   ${importedBlock(imported.get(s.project), owner, s.title)}
