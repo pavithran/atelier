@@ -742,10 +742,16 @@ const commands = {
     // resolved with `git add` and its markers left in leaves no operation
     // marker or unmerged entry behind, so only the content shows it.
     const marked = [];
+    // The scan fails closed: --check exits 0 (clean) or 2 (problems) on
+    // tracked files, and 0, 1 (differs) or 3 (differs, with problems) on a new
+    // file; any other status means the check did not run, and wrap stops. A
+    // path always follows "--", so a file named like an option is a path.
     const tracked = git(["diff", "HEAD", "--check"], { cwd, allowFail: true });
+    if (![0, 2].includes(tracked.status)) die(`wrap could not check tracked changes for conflict markers (git diff exited ${tracked.status}); nothing was staged`);
     if (/leftover conflict marker/.test(tracked.stdout || "")) marked.push(tracked.stdout);
     for (const file of git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd, raw: true }).split("\0").filter(Boolean)) {
-      const fresh = git(["diff", "--no-index", "--check", "/dev/null", file], { cwd, allowFail: true });
+      const fresh = git(["diff", "--no-index", "--check", "--", "/dev/null", file], { cwd, allowFail: true });
+      if (![0, 1, 3].includes(fresh.status)) die(`wrap could not check ${sessionText(file, 200)} for conflict markers (git diff exited ${fresh.status}); nothing was staged`);
       if (/leftover conflict marker/.test(fresh.stdout || "")) marked.push(fresh.stdout);
     }
     if (marked.length) {

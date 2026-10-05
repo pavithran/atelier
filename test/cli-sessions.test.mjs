@@ -246,6 +246,10 @@ const unfinished = {
       assert.ok(!marked(f, "MERGE_HEAD") && !unmerged(f));
     },
   },
+  "a new file named like an option, holding conflict markers": {
+    say: /will not commit conflict markers: --new\.txt/,
+    make: (f) => { writeFileSync(join(f.checkout, "--new.txt"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
+  },
   "a new file holding conflict markers": {
     say: /will not commit conflict markers: copied\.md/,
     make: (f) => { writeFileSync(join(f.checkout, "copied.md"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
