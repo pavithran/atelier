@@ -320,3 +320,82 @@ it("removal counts an open item queued for a runner as live work", async () => {
   await env.LEDGER.get(env.LEDGER.idFromName(`project:${plain}`)).newItem("Just open", [], "owner");
   expect((await call("DELETE", `/projects/${plain}`, "owner")).status).toBe(200);
 });
+
+it("the standing route is readable by any signed-in actor, and by no one else", async () => {
+  const name = "standing-route", agent = "codex/gpt-6-astra", head = "a".repeat(40);
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Ready for the owner", ["src/**"], "owner");
+  await L.claim("t1", agent);
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), agent);
+  await L.recordPush("t1", agent, head, head);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" } as never);
+  await L.submit("t1", agent, "Did the work");
+  await L.newItem("Queued", [], "owner");
+  await L.dispatch("t2", "owner", { to: "home" });
+  for (const actor of ["owner", agent]) {
+    const res = await call("GET", `/projects/${name}/standing`, actor);
+    expect(res.status).toBe(200);
+    const s = await res.json() as { project: { name: string }; live: { id: string }[]; waiting: { id: string; brief: { verdict: string } | null }[]; queued: { id: string }[] };
+    expect(s.project.name).toBe(name);
+    expect(s.live.map((x) => x.id)).toEqual(["t1"]);
+    expect(s.waiting).toEqual([expect.objectContaining({ id: "t1", kind: "accept", brief: expect.objectContaining({ verdict: "accept" }) })]);
+    expect(s.queued.map((x) => x.id)).toEqual(["t2"]);
+  }
+  const anonymous = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/standing`, { headers: { "x-atelier-actor": "owner" } }), testEnv);
+  expect(anonymous.status).toBe(401);
+  const unknown = await call("GET", "/projects/not-registered-here/standing", "owner");
+  expect(unknown.status).toBe(404);
+});
+
+it("the project page carries the same standing as the route", async () => {
+  const name = "standing-page";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("A queued <task>", [], "owner");
+  await L.dispatch("t1", "owner", { to: "cloud" });
+  const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const page = await worker.fetch(new Request(`https://atelier.test/p/${name}`, { headers: { cookie: `atelier=${hex}` } }), testEnv);
+  expect(page.status).toBe(200);
+  const html = await page.text();
+  expect(html).toContain('id="standing"');
+  expect(html).toContain("Queued for a runner");
+  expect(html).toContain("A queued &lt;task&gt;");
+});
+
+it("the standing route reads each section from its own source, not a window over the whole record", async () => {
+  const name = "standing-window", agent = "codex/gpt-6-astra", H0 = "0".repeat(40), head = "a".repeat(40);
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  // t1 is merged, with a summary, and t2 is taken and handed off with a note: both older than any window of 1,000 events.
+  await L.newItem("Merged long ago", ["src/**"], "owner");
+  await L.claim("t1", agent);
+  await L.setFork("t1", `${name}--t1`, H0, agent);
+  await L.recordPush("t1", agent, head, head);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"] } as never);
+  await L.submit("t1", agent, "Merged summary");
+  await L.accept("t1", "owner", head);
+  await L.beginLanding("t1", "owner", head);
+  await L.merged("t1", "owner", "c".repeat(40), true, head);
+  await L.newItem("Handed off long ago", [], "owner");
+  await L.claim("t2", agent);
+  await L.handoff("t2", "owner", "claude-code/opus-5.5", "Start from the notes in docs/");
+  const before = (await L.item("t2")).updatedAt;
+  // A third task fills the project's recent record with pushes.
+  await L.newItem("Noisy", [], "owner");
+  await L.claim("t3", agent);
+  await L.setFork("t3", `${name}--t3`, H0, agent);
+  for (let n = 1; n <= 1010; n++) await L.recordPush("t3", agent, n.toString(16).padStart(40, "0"), null);
+  const res = await call("GET", `/projects/${name}/standing`, agent);
+  expect(res.status).toBe(200);
+  const s = await res.json() as { live: { id: string; since: string | null }[]; merged: { id: string; commit: string | null; line: string | null }[]; handoffs: { id: string; note: string }[]; partial: string[] };
+  expect(s.merged).toEqual([expect.objectContaining({ id: "t1", commit: "c".repeat(40), line: "Merged summary" })]);
+  expect(s.handoffs).toEqual([expect.objectContaining({ id: "t2", note: "Start from the notes in docs/" })]);
+  const t2 = s.live.find((x) => x.id === "t2")!;
+  expect(t2.since).not.toBeNull();
+  expect(t2.since! < before || t2.since === before).toBe(true);
+  // The noisy task's own record is longer than what is read of it: that is said, not guessed.
+  expect(s.live.find((x) => x.id === "t3")!.since).toBeNull();
+  expect(s.partial).toContain("t3: when it was taken is not shown, because its record is longer than the last 300 events read.");
+  expect(s.partial.filter((x) => x.startsWith("t1:") || x.startsWith("t2:"))).toEqual([]);
+});

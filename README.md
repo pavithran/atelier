@@ -310,6 +310,36 @@ per task and head, including failed attempts, across restarts. Delivery runs
 in the background; failures do not fail the action and are logged without
 the topic. A push that withdraws acceptance does not send a notification.
 
+## Where a project stands
+
+For a project on Atelier, this replaces ControlPlane's pickup card and a
+hand-written `STATE.md`. Atelier already records who holds each task, what is
+waiting, what merged and what each handoff said, so the summary is generated
+from that record and cannot go stale or be written wrongly by hand.
+
+- The project page leads with "Where it stands": the tasks held (claimed,
+  submitted or accepted) and since when, what waits on the owner with each
+  task's one-line brief, the tasks queued for a runner, the last five merges
+  with the agent's summary and the date, the latest handoff note on each live
+  task, and, for a project with ControlPlane policy, its protected areas,
+  eligible agents and overlap rule on one line. The record holds no ControlPlane
+  change classes, so none are shown.
+  Each part reads its own source, not a window over the project's record:
+  holders from the items, since when and handoff notes from each live task's
+  own events, merges from the merged items. A waiting task keeps the inbox's
+  own reason, with the brief after it. Where a task's record is longer than
+  what is read of it, the page and the text say what is not shown rather than
+  guess.
+- `GET /api/projects/NAME/standing` returns the same as JSON to any signed-in
+  caller, the owner or an agent.
+- `atelier status --project NAME` prints it as plain text, one line per item,
+  ready to paste into a chat. Text a person or agent wrote is flattened to one
+  line. It ends by saying whether this machine's checkout is in step with
+  Atelier: for a project set up with `--history-since`, whether the checkout's
+  head is the commit the baseline's head is paired with; otherwise whether the
+  baseline's head is in the checkout. `atelier status` with no project keeps
+  its owner's queue output.
+
 ## Removing a project
 
 The owner can run `atelier projects remove NAME` to remove a project from
