@@ -200,3 +200,46 @@ test("a public story keeps what happened and leaves out what anyone wrote", () =
   assert.equal(s.tally.sentBack, 1, "the counts are the same as the private story's");
   assert.deepEqual(s.tally, buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER).tally);
 });
+
+// A story of one task, as the task page and a Decisions card draw it.
+function oneTask() {
+  seq = 0;
+  const evs = [
+    ev("t7", "codex/gpt-6", "item.claimed"),
+    ev("t7", "codex/gpt-6", "push.observed", { head: "aaaaaaaa11" }),
+    ev("t7", "atelier/sandbox", "evidence.observed", { claim: "npm test", passed: false, where: "sandbox" }),
+    ev("t7", OWNER, "item.handoff", { from: "codex/gpt-6", to: "claude-code/opus-5.5" }),
+    ev("t7", "claude-code/opus-5.5", "item.submitted", { head: "aaaaaaaa11" }),
+    ev("t7", "zcode/glm-5.3", "review.approved"),
+    ev("t7", OWNER, "review.rejected", { note: "no" }),
+  ].reverse();
+  return buildStory("demo", [{ id: "t7", title: "One <i>task</i>", state: "submitted" } as never], evs, OWNER);
+}
+
+test("a card's drawing is narrow, has no axis, and draws each review as an edge from its reviewer", () => {
+  const svg = drawStory(oneTask(), OWNER, { mini: true, replaySeconds: 0 });
+  assert.match(svg, /^<svg class="graph compact mini"[^>]*viewBox="0 0 480 /);
+  assert.doesNotMatch(svg, /g-clock/, "no axis labels");
+  const edges = [...svg.matchAll(/<g class="g-edge (approve|reject) pop" style="--c:([^;]+);/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(edges, [["approve", "var(--m-zai)"], ["reject", "var(--m-owner)"]]);
+  assert.match(svg, /<title>glm-5\.3 approved<\/title>/);
+  assert.match(svg, /class="ring"/, "a sent-back review is ringed");
+  assert.match(svg, /aria-label="t7, One &lt;i&gt;task&lt;\/i&gt;: its thread, \d+ marks"/);
+  assert.doesNotMatch(drawStory(oneTask(), OWNER), /g-edge/, "the full drawing marks reviews as beads only");
+});
+
+test("the full drawing of one task has dated gridlines, each drawn once, and a note beside its head", () => {
+  const note = { verdict: "review", tone: "ask" as const, text: "Needs an approval <now>" };
+  const svg = drawStory(oneTask(), OWNER, { replaySeconds: 0, note });
+  const clocks = [...svg.matchAll(/class="g-clock" x="([\d.]+)"[^>]*>([^<]+)</g)];
+  assert.ok(clocks.length >= 2);
+  assert.equal(new Set(clocks.map((m) => m[1])).size, clocks.length, "no position is labelled twice");
+  assert.ok(clocks.every((m) => /^10\/04 10:\d\d$/.test(m[2])), "each carries a date and a time");
+  assert.match(svg, /<g class="g-note ask">/);
+  assert.match(svg, /<tspan class="g-note-verdict">review<\/tspan> · Needs an approval &lt;now&gt;/);
+  assert.ok(!svg.includes("<now>"));
+  const kinds = [...svg.matchAll(/class="g-bead pop (\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual(kinds, ["push", "fail", "handoff", "submit", "approve", "reject"]);
+  assert.doesNotMatch(drawStory(oneTask(), OWNER, { replaySeconds: 0 }), /g-note/, "no note unless one is given");
+  assert.doesNotMatch(drawStory(oneTask(), OWNER, { mini: true, note }), /g-note/, "a card carries no note");
+});

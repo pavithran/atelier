@@ -15,9 +15,9 @@ import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import type { MainPreview } from "./preview/merge";
-import { addTally, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
-  decisionFor, evidenceAt, latestReviews, stateLabel,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, stateLabel,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -100,7 +100,7 @@ export interface Detail {
   gate: Gate;
   events: LedgerEvent[];
 }
-export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null }
+export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean }
 export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean }
 
 const KIND: Record<InboxEntry["kind"], [string, string]> = {
@@ -167,6 +167,30 @@ function floorStrip(floor: Floor | undefined, now: Date): string {
 </section>`;
 }
 
+// The task's own thread: just its events, as a story of one. Nothing is drawn
+// when the record holds no claim for it (an older record cut at the read limit).
+function taskStory(project: string, d: Detail): Story | null {
+  const s = buildStory(project, [d.item], d.events.filter((ev) => ev.itemId === d.item.id), d.ownerActor ?? DEFAULT_OWNER);
+  return s.threads.length ? s : null;
+}
+
+// A waiting decision as a card: the row that selects it, the brief in one line,
+// the task's thread in miniature with each review as an edge, and a link to the task page.
+function decisionCard(row: string, project: string, d: Detail): string {
+  const b = briefFor(d, d.events);
+  const owner = d.ownerActor ?? DEFAULT_OWNER;
+  const story = taskStory(project, d);
+  const thread = story
+    ? `<div class="stage-scroll card-thread">${drawStory(story, owner, { mini: true, replaySeconds: 0, href: taskHref(project) })}</div>`
+    : "";
+  return `<li class="decision-card" data-task="${e(project)}/${e(d.item.id)}">${row}
+    <div class="card-body">
+      <p class="card-brief">${tag(b.recommendation.verdict, VERDICT_TONE[b.recommendation.verdict])}<span>${e(b.recommendation.reason)}</span></p>
+      ${thread}
+      <p class="meta card-links"><a href="${href("p", project, d.item.id)}">Open the task page</a></p>
+    </div></li>`;
+}
+
 export function renderInbox(
   entries: InboxEntry[],
   projects: ProjectRecord[],
@@ -177,6 +201,7 @@ export function renderInbox(
   now = new Date(),
   queued: { project: ProjectRecord; item: Item }[] = [],
   latest?: { story: Story; owner: string },
+  details: Map<string, Detail> = new Map(),
 ): string {
   const names = titleMap(projects);
   const groups = new Map<string, InboxEntry[]>();
@@ -188,8 +213,10 @@ export function renderInbox(
     const [label, tone] = KIND[lead.kind];
     const current = selected?.project.name === lead.project && selected.detail.item.id === lead.itemId;
     const extra = more.length ? `<span class="meta">${more.map((m) => e(KIND[m.kind][0])).join(" · ")}</span>` : "";
-    return `<li><a class="decision-row${current ? " selected" : ""}" href="${selectedHref(lead.project, lead.itemId)}"${current ? ' aria-current="true"' : ""}>
-      ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a></li>`;
+    const row = `<a class="decision-row${current ? " selected" : ""}" href="${selectedHref(lead.project, lead.itemId)}"${current ? ' aria-current="true"' : ""}>
+      ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a>`;
+    const detail = details.get(`${lead.project}/${lead.itemId}`);
+    return detail ? decisionCard(row, lead.project, detail) : `<li>${row}</li>`;
   }).join("");
 
   const needs = new Set(entries.map((x) => `${x.project}/${x.itemId}`));
@@ -613,7 +640,7 @@ export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null
   const closed = d.item.state === "merged" || d.item.state === "abandoned";
   return page(d.item.title, `<div class="page-width">
   <nav class="breadcrumbs"><a href="/decisions">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
-  <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff })}</article>
+  <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
 </div>`, closed ? "History" : "Decisions", ownerName);
 }
 
@@ -637,9 +664,24 @@ function briefBlock(d: Detail): string {
 </section>`;
 }
 
+// The task page's thread, full width on a time axis, with the brief's one line
+// beside its head. It scrolls inside its own box on a narrow screen.
+function threadBlock(p: ProjectRecord, d: Detail): string {
+  const story = taskStory(p.name, d);
+  if (!story) return "";
+  const owner = d.ownerActor ?? DEFAULT_OWNER;
+  const b = ["claimed", "submitted", "accepted"].includes(d.item.state) ? briefFor(d, d.events) : null;
+  const note = b ? { verdict: b.recommendation.verdict, tone: VERDICT_TONE[b.recommendation.verdict] as "go" | "ask" | "bad", text: b.recommendation.reason } : undefined;
+  return `<section class="review-section task-thread" id="thread" aria-label="This task's thread">
+  <h3>Thread</h3>
+  ${legendLine(Object.keys(story.tally.byVendor) as Vendor[])}
+  <div class="stage-scroll">${drawStory(story, owner, { replaySeconds: 0, ...(note ? { note } : {}) })}</div>
+</section>`;
+}
+
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
-function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
+function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): string {
   const { item, gate } = d;
   const view = evidenceAt(d.policy, d.evidence, item.head);
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
@@ -756,7 +798,7 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
     : "";
 
   return `${header}
-${briefBlock(d)}
+${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
