@@ -243,3 +243,25 @@ test("the full drawing of one task has dated gridlines, each drawn once, and a n
   assert.doesNotMatch(drawStory(oneTask(), OWNER, { replaySeconds: 0 }), /g-note/, "no note unless one is given");
   assert.doesNotMatch(drawStory(oneTask(), OWNER, { mini: true, note }), /g-note/, "a card carries no note");
 });
+
+test("Flow's filters keep only threads active in the window or worked by the family, and the tally counts only those", () => {
+  const all = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  assert.deepEqual(all.threads.map((t) => t.id).sort(), ["t1", "t2"]);
+  const zai = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER, false, "Demo", { family: "zai" });
+  assert.deepEqual(zai.threads.map((t) => t.id), ["t1"], "only the task GLM reviewed");
+  assert.equal(zai.tally.merges, 1);
+  const openai = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER, false, "Demo", { family: "openai" });
+  assert.deepEqual(openai.threads.map((t) => t.id), ["t2"]);
+  assert.equal(openai.tally.merges, 0, "the tally counts only what is drawn");
+  const late = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER, false, "Demo", { since: "2026-10-04T10:13:00.000Z" });
+  assert.deepEqual(late.threads.map((t) => t.id), ["t2"], "t1's last activity was at 10:12");
+});
+
+test("a card links to the commit or the task's checks, encoded; a public story has no links", () => {
+  const s = buildStory("my project", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  const svg = drawStory(s, OWNER);
+  assert.ok(svg.includes('<a href="/p/my%20project/t1/commit/aaaaaaaa11">'), "a push links to its commit");
+  assert.ok(svg.includes('<a href="/p/my%20project/t1#checks">'), "a check or review links to the task's checks");
+  const pub = drawStory(buildStory("my project", [item("t1", "merged")], night(), OWNER, false, "P", { redact: true }), OWNER);
+  assert.ok(!pub.includes("/commit/") && !pub.includes("#checks"));
+});

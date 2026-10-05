@@ -41,7 +41,7 @@ export function vendorOf(actor: string, owner: string): Vendor {
 
 export type BeadKind = "push" | "pass" | "fail" | "reported" | "submit" | "approve" | "reject" | "handoff" | "accept" | "dispatch";
 
-export interface Bead { pos: number; kind: BeadKind; actor: string; at: string; label: string }
+export interface Bead { pos: number; kind: BeadKind; actor: string; at: string; label: string; href?: string }
 export interface Hold { who: string; pos: number }
 export interface Thread {
   id: string;
@@ -105,12 +105,48 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd
 // For a public page: what an agent or the owner wrote (review notes, reports,
 // check commands, closing notes) is left out, and the owner is named rather
 // than addressed. Titles, models, kinds and times stay.
-export interface StoryOptions { redact?: boolean; ownerLabel?: string }
+export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: string; family?: string }
 
 export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
   const R = !!opts.redact;
   const you = opts.ownerLabel ?? "You";
-  const evs = [...events].sort((a, b) => a.seq - b.seq);
+  const sortedEvs = [...events].sort((a, b) => a.seq - b.seq);
+  const keptItems = new Set<string>();
+  let filterActive = false;
+  if (opts.since || opts.family) {
+    filterActive = true;
+    const activity = new Map<string, string>();
+    const families = new Map<string, Set<string>>();
+    for (const ev of sortedEvs) {
+      const id = ev.itemId;
+      if (!id) continue;
+      
+      // A family worked on a task when one of its models held it or reviewed it.
+      if (ev.kind === "item.claimed" || ev.kind === "review.approved" || ev.kind === "review.rejected") {
+         if (!families.has(id)) families.set(id, new Set());
+         families.get(id)!.add(vendorOf(ev.actor, owner));
+      } else if (ev.kind === "item.handoff") {
+         const to = String(ev.data?.to ?? "");
+         if (to) {
+           if (!families.has(id)) families.set(id, new Set());
+           families.get(id)!.add(vendorOf(to, owner));
+         }
+      }
+      
+      const currentMax = activity.get(id) ?? "";
+      if (ev.at > currentMax) activity.set(id, ev.at);
+    }
+    
+    for (const id of activity.keys()) {
+       let active = true;
+       if (opts.since && activity.get(id)! < opts.since) active = false;
+       if (opts.family && !(families.get(id)?.has(opts.family) ?? false)) active = false;
+       if (active) keptItems.add(id);
+    }
+  }
+
+  const evs = filterActive ? sortedEvs.filter(ev => !ev.itemId || keptItems.has(ev.itemId)) : sortedEvs;
+
   const posOf = new Map<number, number>();
   let p = 0;
   evs.forEach((ev, i) => { if (i) p += QUIET.has(ev.kind) ? 0.25 : 1; posOf.set(ev.seq, p); });
@@ -141,7 +177,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     }
 
     let th = threads.get(id);
-    const bead = (kind: BeadKind, label: string) => th?.beads.push({ pos, kind, actor, at: ev.at, label });
+    const bead = (kind: BeadKind, label: string, href?: string) => th?.beads.push({ pos, kind, actor, at: ev.at, label, href });
     switch (ev.kind) {
       case "item.created": t.planned++; break;
       case "item.claimed":
@@ -162,21 +198,21 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         say(`${id} handed from ${name(str(d.from))} to ${name(to)}`);
         break;
       }
-      case "push.observed": t.pushes++; bead("push", `${name(actor)} pushed ${sha8(d.head)}`); break;
+      case "push.observed": t.pushes++; bead("push", `${name(actor)} pushed ${sha8(d.head)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}/commit/${encodeURIComponent(String(d.head))}`); break;
       case "evidence.observed": {
         t.checks++;
         if (d.where === "sandbox") t.inCloud++;
         const where = d.where === "sandbox" ? "in a Cloudflare container" : "on the agent's machine";
-        if (d.passed === false) { bead("fail", R ? `Failed ${where}` : `Failed ${where}: ${str(d.claim)}`); say(`A check on ${id} failed ${where}`, "catch"); }
-        else bead("pass", R ? `Passed ${where}` : `Passed ${where}: ${str(d.claim)}`);
+        if (d.passed === false) { bead("fail", R ? `Failed ${where}` : `Failed ${where}: ${str(d.claim)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`); say(`A check on ${id} failed ${where}`, "catch"); }
+        else bead("pass", R ? `Passed ${where}` : `Passed ${where}: ${str(d.claim)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`);
         break;
       }
       case "evidence.reported": bead("reported", R ? `${name(ev.actor)} reported on its work` : `${name(ev.actor)} reported: ${clip(str(d.claim), 160)}`); break;
       case "item.submitted": bead("submit", `${name(ev.actor)} submitted ${sha8(d.head)}`); say(`${name(ev.actor)} submitted ${id} for review`); break;
-      case "review.approved": t.approvals++; bead("approve", `${name(ev.actor)} approved`); break;
+      case "review.approved": t.approvals++; bead("approve", `${name(ev.actor)} approved`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`); break;
       case "review.rejected":
         t.sentBack++;
-        bead("reject", R ? `${name(ev.actor)} sent it back` : `${name(ev.actor)} sent it back: ${clip(str(d.note), 220)}`);
+        bead("reject", R ? `${name(ev.actor)} sent it back` : `${name(ev.actor)} sent it back: ${clip(str(d.note), 220)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`);
         say(R ? `${name(ev.actor)} sent ${id} back` : `${name(ev.actor)} sent ${id} back: ${clip(str(d.note), 180)}`, "catch");
         break;
       case "item.accepted": t.accepts++; bead("accept", `${name(ev.actor)} accepted ${sha8(d.head)}`); say(`${name(ev.actor)} accepted ${id}`, ev.actor === owner ? "you" : ""); break;
@@ -260,7 +296,7 @@ export function wrap(s: string, width: number, lines: number): string[] {
   return out.map((l) => clip(l, width));
 }
 
-interface Card { key: string; x: number; y: number; head: string; body: string; color: string }
+interface Card { key: string; x: number; y: number; head: string; body: string; color: string; href?: string }
 
 function drawCard(k: Card, W: number, H: number): string {
   const lines = wrap(k.body, 46, 3);
@@ -268,11 +304,12 @@ function drawCard(k: Card, W: number, H: number): string {
   const h = 26 + lines.length * 16;
   const left = k.x + 14 + w > W - 4 ? k.x - 14 - w : k.x + 14;
   const top = Math.min(Math.max(k.y - h / 2, 4), H - h - 4);
-  return `<g class="g-card" data-card="${k.key}" style="--c:${k.color}" transform="translate(${r1(left)} ${r1(top)})" aria-hidden="true">`
+  const g = `<g class="g-card" data-card="${k.key}" style="--c:${k.color}" transform="translate(${r1(left)} ${r1(top)})" aria-hidden="true">`
     + `<rect width="${r1(w)}" height="${h}" rx="7"/>`
     + `<text class="g-card-head" x="12" y="18">${esc(k.head)}</text>`
     + lines.map((l, i) => `<text class="g-card-body" x="12" y="${36 + i * 16}">${esc(l)}</text>`).join("")
     + `</g>`;
+  return k.href ? `<a href="${esc(k.href)}">${g}</a>` : g;
 }
 
 export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string {
@@ -340,7 +377,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
           + `<g transform="translate(${r1(nx)} ${ny})">${b.kind === "reject" ? '<circle class="ring" r="7"/><path d="M-4 -3L0 4L4 -3Z"/>' : '<path d="M-4 3L0 -4L4 3Z"/>'}</g></g>`);
       }
       g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
-      cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
+      cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label, href: b.href });
     });
     g.unshift(...edges);
     const holders = th.holds.map((h) => (h.who === owner ? (o.ownerLabel ?? "you") : splitActor(h.who).model || h.who)).join(" → ");
@@ -367,7 +404,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
   }
 
   // One rule per card: show it while its mark or task label is hovered or focused.
-  const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible) [data-card="${k.key}"]`).join(",");
+  const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible,[data-card="${k.key}"]:hover) [data-card="${k.key}"]`).join(",");
   out.push(`<style>${rules ? `${rules}{opacity:1}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
   const one = s.threads.length === 1 ? s.threads[0] : null;
   const label = one ? `${one.id}, ${one.title}: its thread, ${one.beads.length} marks` : `${s.title}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`;
