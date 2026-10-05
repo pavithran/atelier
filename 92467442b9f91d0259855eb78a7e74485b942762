@@ -1,0 +1,19 @@
+atelier cloudflare-git/t71 "init --fresh-history: Atelier's baseline starts from today's tree as one new root commit, so a repository whose history holds files over 32 MB can join; atelier merge replays an accepted task onto the real commit with that tree; atelier sync carries direct commits into the baseline"
+accepted head c4dbdc61cc7d1c825556236740e10988b50b9828
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T15:05:05.710Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T15:05:08.650Z
+REVIEW approve — codex/gpt-6-astra: Re-review at HEAD: the byte-for-byte rebuild answers the encoding defect; no blocking findings. Non-blocking: its sandbox could not run the git tests; no automated CLI-level test of fresh landing or crash and retry.
+2026-10-05T14:40:44.111Z pavi item.created
+2026-10-05T14:40:44.821Z claude-code/opus-5.5 item.claimed
+2026-10-05T14:40:47.072Z claude-code/opus-5.5 fork.created
+2026-10-05T14:51:28.888Z claude-code/opus-5.5 push.observed
+2026-10-05T14:52:36.652Z claude-code/opus-5.5 evidence.observed
+2026-10-05T14:52:39.189Z claude-code/opus-5.5 evidence.observed
+2026-10-05T14:52:40.514Z claude-code/opus-5.5 item.submitted
+2026-10-05T15:02:29.417Z zcode/glm-5.3 review.approved
+2026-10-05T15:03:58.012Z claude-code/opus-5.5 push.observed
+2026-10-05T15:05:06.267Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:05:08.756Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:05:09.407Z claude-code/opus-5.5 item.submitted
+2026-10-05T15:16:44.439Z codex/gpt-6-astra review.approved
+2026-10-05T15:17:06.213Z pavi item.accepted
