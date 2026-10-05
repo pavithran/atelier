@@ -1,0 +1,23 @@
+atelier cloudflare-git/t57 "Imported history: draw a project's pre-Atelier git history as a distinct lane, from authors and Agent:/Co-Authored-By lines, marked as imported, never as ledger evidence"
+accepted head 28c49db913cabfe63c2bd4dff2d788fa123147fe
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T00:42:33.471Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T00:42:35.739Z
+REVIEW approve — pavi: Owner approval of the merge-only revision; GLM approved t57's own changes at 0c3d68c4.
+2026-10-04T19:25:35.057Z pavi item.created
+2026-10-04T23:43:18.850Z claude-code/opus-5.5 item.claimed
+2026-10-04T23:43:22.683Z claude-code/opus-5.5 fork.created
+2026-10-04T23:46:31.176Z claude-code/opus-5.5 push.observed
+2026-10-04T23:46:42.728Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:46:44.944Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:46:45.373Z claude-code/opus-5.5 item.submitted
+2026-10-04T23:53:17.376Z claude-code/opus-5.5 push.observed
+2026-10-04T23:53:29.681Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:53:31.640Z claude-code/opus-5.5 evidence.observed
+2026-10-04T23:53:32.169Z claude-code/opus-5.5 item.submitted
+2026-10-05T00:41:59.281Z zcode/glm-5.3 review.approved
+2026-10-05T00:42:21.985Z claude-code/opus-5.5 push.observed
+2026-10-05T00:42:33.805Z claude-code/opus-5.5 evidence.observed
+2026-10-05T00:42:35.810Z claude-code/opus-5.5 evidence.observed
+2026-10-05T00:42:36.399Z claude-code/opus-5.5 item.submitted
+2026-10-05T00:42:36.948Z pavi review.approved
+2026-10-05T00:42:37.370Z pavi item.accepted
