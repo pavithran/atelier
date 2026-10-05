@@ -162,7 +162,11 @@ function wsConfig(key, cwd = process.cwd()) {
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
-function actor(fallback) {
+let tokenActor;
+
+async function actor(fallback) {
+  await resolveTokenActor();
+  if (tokenActor) return args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   const a = args.as ?? process.env.ATELIER_ACTOR ?? wsConfig("actor") ?? fallback;
   if (!a) die("say who you are: --as harness/model (e.g. claude-code/opus-5.5), or set ATELIER_ACTOR");
   return a;
@@ -206,12 +210,22 @@ function itemArg(i = 1) {
   return id;
 }
 
+async function resolveTokenActor() {
+  if (tokenActor || !apiToken().startsWith("atl_")) return;
+  const config = await call("GET", "/config");
+  tokenActor = config.actor;
+  const declared = args.as ?? process.env.ATELIER_ACTOR;
+  if (tokenActor && args._[0] !== "token" && declared !== undefined && declared !== tokenActor) die("--as and ATELIER_ACTOR must match the agent token actor");
+}
+
 async function call(method, path, body, as, extra = {}) {
+  if (path !== "/config") await resolveTokenActor();
+  if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
     res = await fetch(server() + "/api" + path, {
       method,
-      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
+      headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     text = await res.text();
@@ -422,7 +436,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
 // Run the project's required checks in a Cloudflare container instead of
 // here. The Worker records the results itself; this only starts and waits.
 async function checkInSandbox() {
-  const name = project(), id = itemArg(), as = actor();
+  const name = project(), id = itemArg(), as = await actor();
   const { runId } = await call("POST", `${I(name, id)}/sandbox`, {}, as);
   process.stderr.write(`atelier: running the checks for ${id} in a Cloudflare container (run ${runId})…\n`);
   let state;
@@ -579,6 +593,27 @@ async function checkoutStatusLine(name, as) {
 }
 
 const commands = {
+  async token() {
+    const action = args._[1];
+    if (action === "issue") {
+      if (typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
+      if (args.days !== undefined && (args.days === true || !Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
+      const result = await call("POST", "/tokens", {
+        actor: args.as, ...(args.multi.project ? { projects: args.multi.project } : {}),
+        ...(args.days !== undefined ? { days: Number(args.days) } : {}),
+        ...(args.label !== undefined ? { label: args.label } : {}),
+      }, OWNER);
+      console.log(`Token ${result.id} for ${result.actor}, expires ${result.expiresAt}`);
+      console.log("This token is not shown again. Set ATELIER_TOKEN to this value in the agent's session:");
+      console.log(result.token);
+    } else if (action === "ls") {
+      const tokens = await call("GET", "/tokens", undefined, OWNER);
+      console.log(JSON.stringify(tokens.map(({ token, hash, ...record }) => record), null, 2));
+    } else if (action === "revoke" && args._[2]) {
+      const result = await call("DELETE", `/tokens/${encodeURIComponent(args._[2])}`, {}, OWNER);
+      console.log(result.revoked ? "Token revoked." : "No such token.");
+    } else die("usage: atelier token issue --as HARNESS/MODEL [--project P]... [--days N] [--label TEXT] | ls | revoke ID");
+  },
   // Reached only when `ops` is not the first word; see runOps.
   async ops() {
     die("put ops first: atelier ops COMMAND [ARGS...]; everything after it goes to the operations toolkit", 2);
@@ -590,9 +625,10 @@ const commands = {
       await runRunner(args, {
         workspacePath,
         async queue(offer, signal) {
+          await resolveTokenActor();
           const res = await fetch(server() + "/api/queue", {
             method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "content-type": "application/json" },
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
             body: JSON.stringify(offer),
           });
           if (!res.ok) throw new Error(`queue: ${res.status}`);
@@ -730,7 +766,7 @@ const commands = {
     // leaves nothing behind: no task, no claim, no workspace.
     try { adoption({ project: name, checkout: p.path, workspace: p.path, guide: guideText() }); }
     catch (error) { die(error.message); }
-    const as = actor(OWNER);
+    const as = await actor(OWNER);
     const item = await call("POST", `${P(name)}/items`, { title: `Move ${name} from ControlPlane to Atelier`, scope: SCOPE }, as);
     const { dir } = await claimWorkspace(name, item.id, as);
     let plan;
@@ -770,13 +806,13 @@ const commands = {
   async new() {
     const title = args._.slice(1).join(" ");
     if (!title) die('usage: atelier new "title" [--scope GLOB]...');
-    const item = await call("POST", `${P(project())}/items`, { title, scope: args.multi.scope ?? [] }, actor(OWNER));
+    const item = await call("POST", `${P(project())}/items`, { title, scope: args.multi.scope ?? [] }, await actor(OWNER));
     console.log(`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`);
   },
 
   async ls() {
     const name = project();
-    const { items } = await call("GET", P(name), undefined, actor(OWNER));
+    const { items } = await call("GET", P(name), undefined, await actor(OWNER));
     for (const i of items) {
       if (!args.all && (i.state === "merged" || i.state === "abandoned")) continue;
       console.log(`${i.id.padEnd(5)} ${i.state.padEnd(10)} ${(i.owner ?? "—").padEnd(26)} ${short(i.head)}  ${i.title}`);
@@ -785,13 +821,13 @@ const commands = {
 
   async show() {
     const name = project(), id = itemArg();
-    const brief = await call("GET", `${I(name, id)}/brief`, undefined, actor(OWNER));
+    const brief = await call("GET", `${I(name, id)}/brief`, undefined, await actor(OWNER));
     console.log(args.json ? JSON.stringify(brief, null, 2) : formatBrief(name, id, brief, server()));
   },
 
   async start() {
     await commands.claim();
-    const d = await call("GET", I(project(), itemArg()), undefined, actor());
+    const d = await call("GET", I(project(), itemArg()), undefined, await actor());
     console.log(formatTask(d.item));
   },
 
@@ -799,7 +835,7 @@ const commands = {
   async claim() {
     const name = project();
     const id = itemArg();
-    const as = actor();
+    const as = await actor();
     const { workspace, dir, identity } = await claimWorkspace(name, id, as, args.runner && args.runner !== true ? String(args.runner) : null);
     console.log(`${id} is yours, ${as}. Work here:\n  cd ${JSON.stringify(dir)}`);
     if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, as in the project checkout.`);
@@ -808,7 +844,7 @@ const commands = {
   },
 
   async push() {
-    const name = project(), id = itemArg(), as = actor();
+    const name = project(), id = itemArg(), as = await actor();
     const branch = wsConfig("branch") ?? "main";
     const head = git(["rev-parse", "HEAD"]);
     // --force after `atelier update` rebased the workspace; the lease refuses
@@ -821,7 +857,7 @@ const commands = {
 
   // Agents: bring the workspace up to date with what has merged since the fork.
   async update() {
-    const name = project(), id = itemArg(), as = actor();
+    const name = project(), id = itemArg(), as = await actor();
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     git([...auth(t.token), "fetch", "--quiet", t.remote, t.defaultBranch]);
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
@@ -833,7 +869,7 @@ const commands = {
   // clean clone of exactly the head Artifacts holds, and record the result.
   async check() {
     if (args.sandbox) return checkInSandbox();
-    const name = project(), id = itemArg(), as = actor();
+    const name = project(), id = itemArg(), as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
     if (d.policy.sandboxOnly) return checkInSandbox();
     const cmds = args.rest?.length ? [args.rest.join(" ")] : d.policy.checks;
@@ -869,7 +905,7 @@ const commands = {
         (args.apply && args["dry-run"]) || (args.apply !== undefined && args.apply !== true)) {
       die("usage: atelier gc [--project NAME] [--dry-run | --apply]");
     }
-    const name = project(), as = actor(OWNER);
+    const name = project(), as = await actor(OWNER);
     const { items } = await call("GET", P(name), undefined, as);
     if (!existsSync(CACHE)) { console.log("No local cache to collect."); return; }
     await collectCache({ cache: CACHE, name, items, apply: args.apply === true,
@@ -879,15 +915,15 @@ const commands = {
   async report() {
     const claim = args._.slice(1).join(" ");
     if (!claim) die('usage: atelier report "what you verified and how"');
-    const name = project(), id = itemArg(-1), as = actor();
+    const name = project(), id = itemArg(-1), as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
     await call("POST", `${I(name, id)}/evidence`, { kind: "report", claim, head: d.item.head }, as);
     console.log(`Recorded as REPORTED at ${short(d.item.head)}. Reports are shown, never counted as checks.`);
   },
 
   async submit() {
-    const name = project(), id = itemArg(), as = actor();
     summaryArg("submit");
+    const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
     if (doneStep) return d.gate;
@@ -896,7 +932,7 @@ const commands = {
 
   // Reviewers: read another agent's work without being able to change it.
   async diff() {
-    const name = project(), id = itemArg(), as = actor(OWNER);
+    const name = project(), id = itemArg(), as = await actor(OWNER);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     const { dir } = cleanClone(ws.remote, ws.token, ws.head, null, name);
@@ -913,22 +949,22 @@ const commands = {
   },
 
   async review() {
-    const name = project(), id = itemArg(), as = actor();
     if (!args.approve && !args.reject) die("usage: atelier review t3 --approve|--reject --note '…' --as harness/model");
+    const name = project(), id = itemArg(), as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
     await call("POST", `${I(name, id)}/review`, { approve: Boolean(args.approve), note: args.note === true ? "" : args.note ?? "", head: args.head ?? d.item.head }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
   },
 
   async handoff() {
-    const name = project(), id = itemArg(), as = actor();
     if (!args.to) die("usage: atelier handoff t3 --to codex/gpt-5.5 --note 'why'");
+    const name = project(), id = itemArg(), as = await actor();
     const r = await call("POST", `${I(name, id)}/handoff`, { to: args.to, note: args.note ?? "" }, as);
     console.log(`${id} now belongs to ${r.item.owner}. Your write token is revoked.\nNext: ${r.next}`);
   },
 
   async release() {
-    const name = project(), id = itemArg(), as = actor();
+    const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/release`, { note: args.note ?? "" }, as);
     console.log(`${id} released; your write token is revoked.`);
   },
@@ -959,8 +995,8 @@ const commands = {
   },
 
   async finish() {
-    const name = project(), id = itemArg(), as = actor();
     summaryArg("finish");
+    const name = project(), id = itemArg(), as = await actor();
     if (wsConfig("project") !== name || wsConfig("item") !== id) die("finish must run in this task's claimed workspace");
     const d = await call("GET", I(name,id), undefined, as);
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
@@ -1198,7 +1234,8 @@ const commands = {
 
   // Everything waiting for a runner, across projects, oldest first.
   async queue() {
-    const res = await fetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER } });
+    await resolveTokenActor();
+    const res = await fetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
     if (!res.ok) die(`queue: ${res.status} ${(await res.text()).slice(0, 200)}`);
     const incomplete = res.headers.get("x-atelier-incomplete");
     if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
@@ -1242,7 +1279,7 @@ const commands = {
   async projects() {
     const name = args._[2];
     if (args._[1] !== "remove" || !name) die("usage: atelier projects remove NAME [--force]");
-    await call("DELETE", P(name), { force: args.force === true }, actor(OWNER));
+    await call("DELETE", P(name), { force: args.force === true }, await actor(OWNER));
     // The whole local entry goes; say what it held, since some of it (notesRemote) is set by hand.
     let dropped = "";
     if (cfg.projects?.[name]) {
@@ -1256,7 +1293,7 @@ const commands = {
 
   async owners() {
     const name = project();
-    const live = await call("GET", `${P(name)}/owners`, undefined, actor(OWNER));
+    const live = await call("GET", `${P(name)}/owners`, undefined, await actor(OWNER));
     if (args.json) return console.log(JSON.stringify({ project: name, source: server(), owners: live }, null, 2));
     if (!live.length) return console.log(`Atelier: no ${name} item is owned.`);
     for (const o of live) console.log(`Atelier: ${o.item} ${o.state}, owned by ${o.owner ?? "nobody"} since ${o.since.slice(0, 16)}Z (${server()}/p/${name}/${o.item}).`);
@@ -1271,7 +1308,7 @@ const commands = {
       const key = `${x.project}/${x.itemId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const brief = await call("GET", `${I(x.project, x.itemId)}/brief`, undefined, actor(OWNER));
+      const brief = await call("GET", `${I(x.project, x.itemId)}/brief`, undefined, await actor(OWNER));
       console.log(formatBrief(x.project, x.itemId, brief, server()) + "\n");
     }
   },
@@ -1280,7 +1317,7 @@ const commands = {
   async status() {
     if (args.project !== undefined) {
       const name = args.project === true ? die("usage: atelier status [--project NAME]") : args.project;
-      const as = actor(OWNER);
+      const as = await actor(OWNER);
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + await checkoutStatus(name, as));
       return;
@@ -1319,7 +1356,7 @@ Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME 
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
 Docs       guide   (paste into a project's AGENTS.md)
 
-Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
+Tokens     token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID\nCommon flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
   },
 };
 
