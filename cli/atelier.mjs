@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { redactGitArgs } from "./runner.mjs";
 
 import { landingJournal, landingLock } from "./landing.mjs";
+import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatStatus } from "./status.mjs";
@@ -49,14 +50,14 @@ function apiToken() {
 }
 
 function git(args, opts = {}) {
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...opts.env }, input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
   }
   if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${detail}`);
-  return opts.allowFail ? r : r.stdout.trim();
+  return opts.allowFail ? r : opts.raw ? r.stdout : r.stdout.trim();
 }
 
 // Tokens go in a per-command header, never in a remote URL or the iCloud tree.
@@ -394,12 +395,36 @@ const commands = {
       ...(args.title === undefined ? {} : { title: args.title }),
       defaultBranch: branch,
     }, OWNER);
-    git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
+    // A project too large for Artifacts joins with its recent history only
+    // (cli/fresh.mjs). Once set up that way it stays that way: a later init
+    // changes the policy and pushes nothing; atelier sync carries new commits.
+    const fresh = cfg.projects?.[name]?.fresh === true;
+    const since = typeof args["history-since"] === "string" ? args["history-since"] : null;
+    if (args["history-since"] === true || args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
+    let pushed = "HEAD";
+    if (fresh) {
+      if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
+    } else if (since) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) die("--history-since takes a day, YYYY-MM-DD");
+      if (git(["status", "--porcelain"], { cwd: top })) die("commit or set aside the checkout's changes first; the baseline is built from its commits");
+      const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd: top });
+      const start = git(["rev-list", "-1", "--first-parent", `--before=${since}T00:00:00`, "HEAD"], { cwd: top });
+      if (!start) die(`${branch} has no commit before ${since}`);
+      const built = buildHistory(git, top, start, git(["rev-parse", "HEAD"], { cwd: top }));
+      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top });
+      savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
+      pushed = built.head;
+      console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
+    } else {
+      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
+    }
     cfg.projects ??= {};
-    cfg.projects[name] = { ...cfg.projects[name], path: top, branch };
+    cfg.projects[name] = { ...cfg.projects[name], path: top, branch, ...(since || fresh ? { fresh: true } : {}) };
     saveConfig(cfg);
     const pol = r.project.policy;
-    console.log(`${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
+    console.log(fresh
+      ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
+      : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
     if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
@@ -412,6 +437,7 @@ const commands = {
   async publish() {
     const name = project();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
+    if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
     git([...auth(t.token), "push", "--quiet", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
@@ -624,6 +650,39 @@ const commands = {
 
   // The project owner merges an exact revision. With --head, a submitted item
   // is first approved (with --approve) and accepted at that revision only.
+  // A baseline holding part of the history (init --history-since) does not
+  // follow the checkout by itself: commits made in the checkout outside
+  // Atelier are carried to it here, rebuilt with the same trees.
+  async sync() {
+    const name = project();
+    const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
+    if (p.fresh !== true) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
+    if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first");
+    if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
+    const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+    let unlock;
+    try { unlock = landingLock(gitDir); } catch (error) { die(error.message); }
+    try {
+      if (existsSync(join(gitDir, "atelier-landing.json"))) die("a merge is in progress; finish it or cancel it first");
+      const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+      git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
+      const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
+      const pairs = loadPairs(gitDir, name);
+      const paired = pairs[baselineHead] ?? die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
+      const head = git(["rev-parse", "HEAD"], { cwd });
+      if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
+      if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
+      let built;
+      try { built = syncHistory(git, cwd, baselineHead, paired, head); } catch (error) { die(error.message); }
+      // The pairs are saved before the push: a push that lands just before a
+      // crash is still paired, and the rebuild gives the same commits again.
+      savePairs(gitDir, name, { ...pairs, ...built.pairs });
+      git([...auth(base.token), "push", "--quiet", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd });
+      const n = Object.keys(built.pairs).length;
+      console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
+    } finally { unlock(); }
+  },
+
   async merge() {
     // Ends an interrupted merge's landing lease, so the task's owner can push
     // again; refused once the merge is on the baseline.
@@ -681,18 +740,32 @@ const commands = {
       const owners=[...new Set(d.events.filter(e=>['item.claimed','item.handoff'].includes(e.kind)).map(e=>e.data.to??e.actor))];
       const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
       const marker=`Atelier: ${name}/${id} accepted at ${item.acceptedHead}`;
+      // A project whose baseline holds part of its history (cli/fresh.mjs)
+      // merges the task's commits rebuilt onto the paired project commit.
+      const fresh=p.fresh===true, pairs=fresh?loadPairs(gitDir,name):null;
       if (!journal.state) {
-        if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
-        journal.save({start:local,phase:'prepared'});
+        if (fresh) {
+          const paired=pairs[baselineHead];
+          if (!paired) die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
+          if (local!==paired) die(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
+        }
+        else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
+        journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
       }
       if (!journal.state.mergeCommit) {
+        // What is merged: the accepted head, or its rebuilt twin on the project's commits.
+        let target=item.acceptedHead;
+        if (fresh) {
+          try { target=carryTask(git,cwd,journal.state.baselineStart??baselineHead,item.acceptedHead,pairs); } catch (error) { journal.clear(); die(error.message); }
+          if (!target) { journal.clear(); die('the accepted revision adds nothing to the baseline'); }
+        }
         // Recover a commit made just before a crash prevented the journal update.
         const parents=git(['rev-list','--parents','-n','1','HEAD'],{cwd}).split(' ');
-        const ownCommit=parents.length===3 && parents[1]===journal.state.start && parents[2]===item.acceptedHead && git(['log','-1','--format=%B'],{cwd}).split('\n').includes(marker);
+        const ownCommit=parents.length===3 && parents[1]===journal.state.start && parents[2]===target && git(['log','-1','--format=%B'],{cwd}).split('\n').includes(marker);
         if (ownCommit) journal.save({mergeCommit:local,phase:'committed'});
         else {
           if(local!==journal.state.start) die('checkout moved during an interrupted merge; inspect the journal before retrying');
-          const result=git(['merge','--no-ff','--no-commit',item.acceptedHead],{cwd,allowFail:true});
+          const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote});
@@ -717,15 +790,23 @@ const commands = {
           git(['notes','--ref=atelier','merge','FETCH_HEAD'],{cwd});
         else git(['update-ref','refs/notes/atelier','FETCH_HEAD'],{cwd});
       }
-      const priorNote=git(['notes','--ref=atelier','show',mergeCommit],{cwd,allowFail:true});
-      if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,mergeCommit],{cwd});
-      const alreadyPublished=git(['merge-base','--is-ancestor',mergeCommit,baselineHead],{cwd,allowFail:true}).status===0;
-      git([...auth(base.token),'push','--quiet',base.remote,...(alreadyPublished?[]:[`${mergeCommit}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd});
+      // The baseline gets the merge commit itself, or, for a baseline holding
+      // part of the history, its twin: the same tree, authors, dates and
+      // message on the baseline's head and the accepted head. The same inputs
+      // give the same twin, so a retry publishes the same commit.
+      const published=fresh?rebuild(git,cwd,mergeCommit,[journal.state.baselineStart??baselineHead,item.acceptedHead]):mergeCommit;
+      if(fresh)savePairs(gitDir,name,{...loadPairs(gitDir,name),[published]:mergeCommit});
+      for(const c of new Set([mergeCommit,published])){
+        const priorNote=git(['notes','--ref=atelier','show',c],{cwd,allowFail:true});
+        if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,c],{cwd});
+      }
+      const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
+      git([...auth(base.token),'push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd});
       journal.save({phase:'published'});
-      await call('POST',`${I(name,id)}/merged`,{mergeCommit},OWNER);
+      await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
       journal.clear();
       const notesPush=p.notesRemote?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
-      console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}; baseline and ledger agree.`);
+      console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}${published!==mergeCommit?` (on the baseline as ${short(published)})`:""}; baseline and ledger agree.`);
       console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
       if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
       else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
@@ -886,7 +967,7 @@ item with exactly one owner. Never edit the project checkout directly.
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
-Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] · publish\n           notes-remote [REMOTE | --off]
+Setup      login --server URL · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] · open
 Agents     claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
