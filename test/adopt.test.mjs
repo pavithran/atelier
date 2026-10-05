@@ -518,10 +518,10 @@ test("an AGENTS.md with no heading gets the section at the top", async (t) => {
   assert.ok(agents.endsWith(prose), "every line of the file is kept");
 });
 
-test("pickup-card refuses extra arguments with one line", (t) => {
+for (const typed of ["pickup-card", "unwrap"]) test(`${typed} refuses extra arguments with one line that names ${typed}`, (t) => {
   const run = entryPoint(t, "weblog");
-  const r = run("pickup-card", "extra");
+  const r = run(typed, "extra");
   assert.equal(r.status, 2);
-  assert.equal(r.stderr.trim().split("\n").length, 1);
-  assert.match(r.stderr, /takes no arguments/);
+  assert.equal(r.argv, null, "atelier must not run");
+  assert.equal(r.stderr, `control-plane: ${typed} takes no arguments.\n`);
 });

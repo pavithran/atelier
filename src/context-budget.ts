@@ -49,3 +49,14 @@ export function evaluateCeilings(policy: ContextBudget | undefined, contents: Re
   }
   return { refused, messages };
 }
+
+export const CONTEXT_BUDGET_PATH = "docs/control-plane/context-budget.v1.json";
+
+// A ceiling is the policy committed at HEAD. The working tree's copy can be edited or deleted in the
+// session that goes over it, so it is never applied; when it differs, this says so. A copy that is
+// not yet committed applies from the session after it is.
+export function policyNotice(committed: string | undefined, working: string | undefined, path = CONTEXT_BUDGET_PATH): string {
+  if (committed === undefined) return working === undefined ? "" : `${path} is not committed at HEAD, so no ceiling applies until it is.`;
+  if (working === undefined) return `${path} is deleted in the working tree. Wrap applies the policy committed at HEAD.`;
+  return working === committed ? "" : `${path} differs from HEAD. Wrap applies the policy committed at HEAD; the changed copy applies once it is committed.`;
+}

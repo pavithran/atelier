@@ -91,8 +91,47 @@ export function sessionNoteText(note?: SessionNote): string {
 }
 export const FILING_RELAY = 'Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project cloudflare-git. File a lesson worth keeping the same way with a title starting "Lesson: ".';
 export const UNWRAP_RELAY = "Say in a short paragraph what is true, what is open and what you will do. " + FILING_RELAY;
+// The line the agent relays to the owner. A failing check and each remote that
+// did not take the push are named, never folded into "closed".
 export function wrapRelay(note: SessionNote): string {
-  return note.data.checks.some((c) => !c.passed) ? "Relay: session closed with a failing check." : "Relay: session closed; checks are Reported, not Observed.";
+  const problems: string[] = [];
+  if (note.data.checks.some((c) => !c.passed)) problems.push("a failing check");
+  const failed = (note.data.pushes ?? []).filter((p) => !p.passed).map((p) => sessionText(p.remote, 200));
+  if (failed.length) problems.push(`${failed.length === 1 ? "a failed push" : "failed pushes"} to ${failed.join(", ")}`);
+  return problems.length ? `Relay: session closed with ${problems.join(" and ")}.` : "Relay: session closed; checks are Reported, not Observed.";
+}
+
+// What wrap names when it refuses because work in the checkout is unfinished.
+// Each key is a file or directory in the Git directory that marks it.
+export const WRAP_MARKERS: Record<string, string> = {
+  MERGE_HEAD: "a merge",
+  CHERRY_PICK_HEAD: "a cherry-pick",
+  REVERT_HEAD: "a revert",
+  "rebase-merge": "a rebase",
+  "rebase-apply": "a rebase",
+  "atelier-landing.json": "a landing",
+};
+
+// The paths `git ls-files -u -z` lists, each once: an entry is "MODE SHA STAGE", a tab, the path.
+export function unmergedPaths(output: string): string[] {
+  return [...new Set(output.split("\0").filter(Boolean).map((entry) => entry.slice(entry.indexOf("\t") + 1)))];
+}
+
+// Why wrap must not stage anything yet, or undefined when the checkout is ready. `inProgress` holds
+// the WRAP_MARKERS found in the Git directory and `unmerged` the paths the index holds in conflict. A
+// squash merge or a stash pop leaves conflicts with no marker, so the index is read as well, and no
+// conflict marker is committed.
+export function wrapRefusal(s: { branch: string; registered: string; inProgress: string[]; unmerged: string[] }): string | undefined {
+  if (!s.branch) return "wrap refuses a detached HEAD";
+  const kinds = [...new Set(s.inProgress.map((marker) => WRAP_MARKERS[marker] ?? marker))];
+  if (kinds.length) return `wrap refuses with ${kinds.join(" and ")} in progress; finish or abort ${kinds.length > 1 ? "them" : "it"} first`;
+  if (s.unmerged.length) {
+    const shown = s.unmerged.slice(0, 5).map((path) => sessionText(path, 200)).join(", ");
+    const more = s.unmerged.length > 5 ? ` and ${s.unmerged.length - 5} more` : "";
+    return `wrap refuses with unmerged files: ${shown}${more}; resolve each and git add it, or abort the operation, so no conflict marker is committed`;
+  }
+  if (s.branch !== s.registered) return `check out ${s.registered} before wrap`;
+  return undefined;
 }
 
 export function sessionCommitMessage(summary: string, next: string, at: string): string {

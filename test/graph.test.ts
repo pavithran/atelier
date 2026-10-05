@@ -296,3 +296,19 @@ test("a local run's beads carry their actor's colour for the outline", () => {
   assert.ok(beads.length > 0, "a local bead is drawn");
   for (const b of beads) assert.match(b, /--c:var\(--m-zai\)/);
 });
+
+test("a session note is bookkeeping: no agent's move, a quarter step on the axis, and nothing on a thread", () => {
+  const base = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  // The Ledger records a session with no task, as the owner and, once agent tokens are allowed to, as an agent.
+  const noted = night();
+  noted.unshift({ seq: 100, itemId: null, at: "2026-10-04T11:00:00.000Z", actor: "claude-code/opus-5.5", kind: "session.wrapped", data: { summary: "Stopped for the day" } } as never);
+  noted.unshift({ seq: 101, itemId: null, at: "2026-10-04T11:01:00.000Z", actor: OWNER, kind: "session.wrapped", data: { summary: "Stopped too" } } as never);
+  const story = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], noted, OWNER);
+  assert.equal(story.tally.agentMoves, base.tally.agentMoves, "the tally counts neither note");
+  assert.equal(story.tally.decisions, base.tally.decisions);
+  assert.deepEqual(story.tally.byVendor, base.tally.byVendor);
+  assert.deepEqual(story.tally.agents, base.tally.agents, "an agent that only wrapped a session did not act");
+  assert.equal(story.span, base.span + 0.5, "two notes take a quarter step each");
+  assert.deepEqual(story.threads.map((th) => th.beads.length), base.threads.map((th) => th.beads.length));
+  assert.equal(story.moments.length, base.moments.length, "a note is not told as a moment");
+});

@@ -417,7 +417,7 @@ it("the standing route reads each section from its own source, not a window over
   expect(s.partial.filter((x) => x.startsWith("t1:") || x.startsWith("t2:"))).toEqual([]);
 });
 
-it("sessions record, clean, cap and read newest first for owner and agent actors", async () => {
+it("sessions record, clean, cap and read newest first, and only the project owner records one", async () => {
   await project("sessions");
   const path = "/projects/sessions/sessions";
   const input = { summary: "First\u202e\n note", next: "n".repeat(3000), head: "a".repeat(40), dirty: true, checks: [{ command: "npm test", passed: false, grade: "observed" }] };
@@ -427,9 +427,16 @@ it("sessions record, clean, cap and read newest first for owner and agent actors
   expect(note.data.summary).toBe("First note");
   expect(note.data.next.length).toBe(2000);
   expect(note.data.checks[0].grade).toBe("reported");
-  expect((await call("POST", path, "codex/gpt-6-astra", { ...input, summary: "s".repeat(3000) })).status).toBe(201);
-  const notes = await (await call("GET", path, "owner")).json() as { actor: string; data: { summary: string } }[];
-  expect(notes[0].actor).toBe("codex/gpt-6-astra");
+  // Any token can send any actor until task t43 limits an agent's token to its own, so an agent's name on a note proves nothing.
+  const refused = await call("POST", path, "codex/gpt-6-astra", { ...input, summary: "Not the owner" });
+  expect(refused.status).toBe(403);
+  expect(((await refused.json()) as { error: string }).error).toBe("not_project_owner");
+  expect((await call("POST", path, "someone-else", input)).status).toBe(403);
+  expect((await call("POST", path, "owner", { ...input, summary: "s".repeat(3000) })).status).toBe(201);
+  // Reading stays open to any signed-in actor.
+  const notes = await (await call("GET", path, "codex/gpt-6-astra")).json() as { actor: string; data: { summary: string } }[];
+  expect(notes).toHaveLength(2);
+  expect(notes[0].actor).toBe("owner");
   expect(notes[0].data.summary.length).toBe(2000);
   expect(notes[1].data.summary).toBe("First note");
   expect((await call("POST", path, "owner", { ...input, summary: "\u200b" })).status).toBe(400);
@@ -440,6 +447,7 @@ it("sessions record, clean, cap and read newest first for owner and agent actors
   const recent = await (await call("GET", path, "owner")).json() as { data: { summary: string } }[];
   expect(recent).toHaveLength(5);
   expect(recent[0].data.summary).toBe("Note 5");
+  expect((await L.events() as unknown as { kind: string }[]).filter((e) => e.kind === "session.wrapped")).toHaveLength(8);
   const standing = await (await call("GET", "/projects/sessions/standing", "owner")).json() as { session: { data: { summary: string } } };
   expect(standing.session.data.summary).toBe("Note 5");
 });
