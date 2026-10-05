@@ -320,3 +320,45 @@ it("removal counts an open item queued for a runner as live work", async () => {
   await env.LEDGER.get(env.LEDGER.idFromName(`project:${plain}`)).newItem("Just open", [], "owner");
   expect((await call("DELETE", `/projects/${plain}`, "owner")).status).toBe(200);
 });
+
+it("the standing route is readable by any signed-in actor, and by no one else", async () => {
+  const name = "standing-route", agent = "codex/gpt-6-astra", head = "a".repeat(40);
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Ready for the owner", ["src/**"], "owner");
+  await L.claim("t1", agent);
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), agent);
+  await L.recordPush("t1", agent, head, head);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" } as never);
+  await L.submit("t1", agent, "Did the work");
+  await L.newItem("Queued", [], "owner");
+  await L.dispatch("t2", "owner", { to: "home" });
+  for (const actor of ["owner", agent]) {
+    const res = await call("GET", `/projects/${name}/standing`, actor);
+    expect(res.status).toBe(200);
+    const s = await res.json() as { project: { name: string }; live: { id: string }[]; waiting: { id: string; brief: { verdict: string } | null }[]; queued: { id: string }[] };
+    expect(s.project.name).toBe(name);
+    expect(s.live.map((x) => x.id)).toEqual(["t1"]);
+    expect(s.waiting).toEqual([expect.objectContaining({ id: "t1", kind: "accept", brief: expect.objectContaining({ verdict: "accept" }) })]);
+    expect(s.queued.map((x) => x.id)).toEqual(["t2"]);
+  }
+  const anonymous = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/standing`, { headers: { "x-atelier-actor": "owner" } }), testEnv);
+  expect(anonymous.status).toBe(401);
+  const unknown = await call("GET", "/projects/not-registered-here/standing", "owner");
+  expect(unknown.status).toBe(404);
+});
+
+it("the project page carries the same standing as the route", async () => {
+  const name = "standing-page";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("A queued <task>", [], "owner");
+  await L.dispatch("t1", "owner", { to: "cloud" });
+  const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const page = await worker.fetch(new Request(`https://atelier.test/p/${name}`, { headers: { cookie: `atelier=${hex}` } }), testEnv);
+  expect(page.status).toBe(200);
+  const html = await page.text();
+  expect(html).toContain('id="standing"');
+  expect(html).toContain("Queued for a runner");
+  expect(html).toContain("A queued &lt;task&gt;");
+});

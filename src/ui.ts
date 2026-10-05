@@ -658,13 +658,96 @@ export function renderProjects(views: ProjectView[], ownerName: string | null = 
 </div>`, "Projects", ownerName);
 }
 
+// ── where a project stands ─────────────────────────────────────────────────
+// Generated from the record, never written by hand: who holds what, what waits
+// on the owner, what is queued, what merged last and what the last handoff
+// said. The project page draws it and the JSON route returns it as it is.
+
+export interface Standing {
+  project: { name: string; title: string; repo: string };
+  generatedAt: string;
+  live: { id: string; title: string; state: string; owner: string | null; since: string }[];
+  waiting: { id: string; title: string; kind: InboxEntry["kind"]; reason: string; brief: { verdict: string; line: string } | null }[];
+  queued: { id: string; title: string; to: string; agent: string | null; model: string | null; by: string; at: string; note: string }[];
+  merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
+  handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
+  controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
+}
+
+// How many waiting tasks get a brief, and how many merges are listed.
+export const STANDING_BRIEFS = 12;
+const STANDING_MERGES = 5;
+const str = (v: unknown) => (typeof v === "string" ? v : "");
+
+// `details` holds the Ledger's detail for the waiting tasks, which the brief reads.
+export function buildStanding(p: ProjectRecord, items: Item[], events: LedgerEvent[], inbox: InboxEntry[], details: Map<string, Detail>, now: Date): Standing {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const newest = [...events].sort((a, b) => b.seq - a.seq);
+  const liveItems = items.filter((i) => ["claimed", "submitted", "accepted"].includes(i.state));
+  // Since when someone holds a task: its latest claim or handoff to the holder.
+  const heldSince = (i: Item) => newest.find((ev) => ev.itemId === i.id && (ev.kind === "item.claimed" || (ev.kind === "item.handoff" && ev.data.to === i.owner)))?.at ?? i.updatedAt;
+  const seen = new Set<string>();
+  const waiting = inbox.filter((x) => x.kind !== "failing" && byId.has(x.itemId) && !seen.has(x.itemId) && seen.add(x.itemId))
+    .sort((a, b) => b.weight - a.weight)
+    .map((x, n) => {
+      const d = n < STANDING_BRIEFS ? details.get(x.itemId) : undefined;
+      const b = d ? briefFor(d, d.events) : null;
+      return { id: x.itemId, title: byId.get(x.itemId)!.title, kind: x.kind, reason: x.reason, brief: b ? { verdict: b.recommendation.verdict, line: b.recommendation.reason } : null };
+    });
+  const merged = newest.filter((ev) => ev.kind === "item.merged" && ev.itemId && byId.has(ev.itemId)).slice(0, STANDING_MERGES).map((ev) => {
+    const i = byId.get(ev.itemId!)!;
+    return { id: i.id, title: i.title, at: ev.at, commit: str(ev.data.mergeCommit) || null, line: submission(events, i.id, str(ev.data.head) || i.acceptedHead)?.summary ?? null };
+  });
+  const handoffs = liveItems.flatMap((i) => {
+    const h = newest.find((ev) => ev.itemId === i.id && ev.kind === "item.handoff" && str(ev.data.note).trim());
+    return h ? [{ id: i.id, title: i.title, from: str(h.data.from), to: str(h.data.to), note: str(h.data.note).trim(), at: h.at }] : [];
+  });
+  return {
+    project: { name: p.name, title: titleOf(p), repo: p.repo },
+    generatedAt: now.toISOString(),
+    live: liveItems.map((i) => ({ id: i.id, title: i.title, state: i.state, owner: i.owner, since: heldSince(i) })),
+    waiting,
+    queued: items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((i) => ({
+      id: i.id, title: i.title, to: i.dispatch!.to, agent: i.dispatch!.agent ?? null, model: i.dispatch!.model ?? null, by: i.dispatch!.by, at: i.dispatch!.at, note: i.dispatch!.note ?? "",
+    })),
+    merged,
+    handoffs,
+    // A project governed by ControlPlane carries the owner's recorded approval.
+    controlPlane: p.policy.approval
+      ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
+      : null,
+  };
+}
+
+function standingSection(p: ProjectRecord, s: Standing): string {
+  const link = (id: string) => `<a href="${href("p", p.name, id)}">${e(id)}</a>`;
+  const group = (title: string, rows: string[]) => rows.length ? `<h3>${e(title)}</h3><ul class="standing-list">${rows.join("")}</ul>` : "";
+  const runner = (q: Standing["queued"][number]) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
+  const groups = [
+    group("Held now", s.live.map((i) => `<li>${link(i.id)} <strong>${e(i.title)}</strong><span class="meta">${e(stateLabel[i.state as Item["state"]] ?? i.state)} · held by ${e(i.owner ?? "nobody")} since ${e(when(i.since))}</span></li>`)),
+    group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${w.brief ? `${e(w.brief.verdict)}: ${e(w.brief.line)}` : e(w.reason)}</span></li>`)),
+    group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(q.note)}` : ""}</span></li>`)),
+    group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
+    group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`)),
+  ].join("");
+  const cp = s.controlPlane
+    ? `<p class="meta standing-policy">ControlPlane policy, approved: ${e(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(e).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(e).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.</p>`
+    : "";
+  return `<section class="standing" id="standing" aria-label="Where it stands">
+  <h2 class="section-title">Where it stands</h2>
+  <p class="meta">Generated from Atelier's record as of ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints the same as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
+  ${groups || '<p class="empty">Nothing is held, waiting, queued or recently merged.</p>'}
+  ${cp}
+</section>`;
+}
+
 function taskRows(p: ProjectRecord, items: Item[]): string {
   return `<ul class="task-list">${items.map((i) => `<li><a href="${href("p", p.name, i.id)}">
     <span><strong>${e(i.title)}</strong><span class="meta">${e(i.id)} · ${e(i.owner ?? "No current owner")}</span></span>
     ${tag(stateLabel[i.state], i.state === "merged" ? "go" : "")}<time class="meta">${when(i.updatedAt)}</time>${icon("arrow")}</a></li>`).join("")}</ul>`;
 }
 
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null): string {
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing): string {
   const closed = (i: Item) => i.state === "merged" || i.state === "abandoned";
   const live = items.filter((i) => !closed(i));
   const done = items.filter(closed);
@@ -680,6 +763,7 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   <nav class="breadcrumbs"><a href="/projects">Projects</a> / ${e(titleOf(p))}</nav>
   <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p>
   <nav class="repo-tabs" aria-label="Repository"><a href="${href("p", p.name, "code")}">Code</a><a href="${href("p", p.name, "log")}">Log</a></nav></header>
+  ${standing ? standingSection(p, standing) : ""}
   <details class="new-task"><summary>Create a task</summary>
     <form method="post" action="${href("ui", p.name, "new")}" class="stack">
       <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
