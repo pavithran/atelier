@@ -1,0 +1,18 @@
+atelier cloudflare-git/t73 "Studio's timeline fits the work it shows instead of a fixed two hours; every page shows times in the owner's time zone (a TIMEZONE setting) instead of UTC"
+accepted head 631129374dfe510229c857e1ba5a659cf81eb4d4
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T15:15:30.062Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T15:15:32.458Z
+REVIEW approve — codex/gpt-6-astra: Re-review at HEAD: the legend names the zone; showcase cache keyed on it. Non-blocking: shared zone state across a binding change in a reused isolate; helpers tested in Node, not in rendered pages or workerd Intl. Extra DST, midnight, fractional-offset and 48-hour-cap checks passed.
+2026-10-05T14:52:55.511Z pavi item.created
+2026-10-05T14:52:55.884Z claude-code/opus-5.5 item.claimed
+2026-10-05T14:52:59.648Z claude-code/opus-5.5 fork.created
+2026-10-05T14:56:34.883Z claude-code/opus-5.5 push.observed
+2026-10-05T14:57:41.151Z claude-code/opus-5.5 evidence.observed
+2026-10-05T14:57:43.342Z claude-code/opus-5.5 evidence.observed
+2026-10-05T14:57:43.974Z claude-code/opus-5.5 item.submitted
+2026-10-05T15:14:23.520Z claude-code/opus-5.5 push.observed
+2026-10-05T15:15:30.179Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:15:32.536Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:15:33.273Z claude-code/opus-5.5 item.submitted
+2026-10-05T15:33:34.531Z codex/gpt-6-astra review.approved
+2026-10-05T15:33:35.095Z pavi item.accepted
