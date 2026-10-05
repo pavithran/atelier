@@ -3,6 +3,7 @@ import { parseRuleError } from "../src/rules.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { sha256, tokenOptions } from "../src/tokens.ts";
+import type { Ledger, LedgerEvent } from "../src/ledger.ts";
 
 const OWNER_TOKEN = "token-tests-owner";
 const ACTOR = "codex/gpt-6-astra";
@@ -55,6 +56,53 @@ it("issues once, stores a hash, lists metadata and revokes", async () => {
   expect((await call("GET", "/config", issued.token)).status).toBe(401);
   expect((await issue()).token).not.toBe(issued.token);
 });
+
+it("records token issuance and revocation without secrets", async () => {
+  for (const projects of [undefined, ["audit-project"]]) {
+    const issued = await issue(projects);
+    await I().revokeAgentToken(issued.id);
+    await I().revokeAgentToken(issued.id);
+    const events = (await I().events() as unknown as LedgerEvent[]).filter((event) => event.data.id === issued.id);
+    expect(events.map((event) => event.kind)).toEqual(["token.revoked", "token.issued"]);
+    for (const event of events) {
+      expect(event.itemId).toBeNull();
+      expect(event.actor).toBe("owner");
+      expect(event.data).toEqual({ id: issued.id, actor: ACTOR, projects: projects ?? null, expiresAt: issued.expiresAt });
+    }
+    expect(JSON.stringify(events)).not.toContain(issued.token);
+    expect(JSON.stringify(events)).not.toContain(await sha256(issued.token));
+  }
+});
+
+for (const transfer of ["handoff", "release"]) {
+  it(`plain Git pushes before ${transfer} cannot make a holder independent`, async () => {
+    const name = `token-delayed-${transfer}`;
+    await project(name);
+    await L(name).setProject({ name, repo: name, policy: { checks: [], protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() }, "owner");
+    const next = "claude-code/opus-5.5", head = "c".repeat(40);
+    await L(name).claim("t1", ACTOR);
+    // The Git push has reached Artifacts but has no ledger event yet.
+    if (transfer === "handoff") await L(name).handoff("t1", ACTOR, next, "");
+    else await L(name).release("t1", ACTOR, "");
+    await L(name).observePush("t1", "b".repeat(40), null);
+    if (transfer === "release") await L(name).claim("t1", next);
+    await L(name).recordPush("t1", next, head, null);
+    await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: next, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+    await L(name).submit("t1", next);
+    const review = { itemId: "t1", by: ACTOR, head, approve: true, note: "", at: new Date().toISOString() };
+    await L(name).addReview(review);
+    expect((await L(name).detail("t1") as unknown as ReturnType<Ledger["detail"]>).gate).toMatchObject({ ready: false, needsAssessor: true });
+    await refusal(L(name).accept("t1", "owner", head), "not_ready", /protected path/);
+    await L(name).newItem("Separate history", [], "owner");
+    await L(name).claim("t2", "qwen/qwen3");
+    const items = await L(name).items();
+    expect(items[0]).toEqual(await L(name).item("t1"));
+    expect(items[1].pushActors).toEqual(["qwen/qwen3"]);
+    await L(name).addReview({ ...review, by: "opencode/glm-5.3" });
+    expect((await L(name).detail("t1") as unknown as ReturnType<Ledger["detail"]>).gate).toMatchObject({ ready: true, needsAssessor: false });
+    expect((await L(name).accept("t1", "owner", head)).state).toBe("accepted");
+  });
+}
 
 it("binds the actor, rejects impersonation and records proof only for agent requests", async () => {
   const name = "token-identity";

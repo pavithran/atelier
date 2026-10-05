@@ -305,8 +305,9 @@ Only the SHA-256 hash and token metadata are stored on the server. Lists
 never contain the token or its hash. Agent tokens can read their projects,
 claim, push, record checks and reports, submit, hand off, release, and review
 as themselves. Handoff targets must be harness/model identities other than
-the project owner. A handoff does not erase push contributors from review
-independence checks. Agent tokens cannot reopen accepted work by reviewing it.
+the project owner. Every actor who held an item counts as a contributor for
+review independence, even if a Git push was first observed after handoff or
+release. Recorded push contributors also remain. Agent tokens cannot reopen accepted work by reviewing it.
 Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
 owner token. Agent tokens cannot sign in to the browser. Events from agent

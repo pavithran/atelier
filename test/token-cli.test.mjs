@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 
 const cli = resolve("cli/atelier.mjs");
-function run(args, token = "owner-test-token") {
+function run(args, token = "owner-test-token", config = resolve(".cache/token-cli-config")) {
   const source = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}];
     globalThis.fetch = async (url, options = {}) => {
@@ -23,7 +24,7 @@ function run(args, token = "owner-test-token") {
   const childEnv = { ...process.env };
   delete childEnv.ATELIER_ACTOR;
   return spawnSync(process.execPath, ["--input-type=module", "-e", source], {
-    encoding: "utf8", env: { ...childEnv, ATELIER_TOKEN: token, ATELIER_SERVER: "https://atelier.test", ATELIER_CONFIG_DIR: resolve(".cache/token-cli-config"), ATELIER_OWNER: "owner" },
+    encoding: "utf8", env: { ...childEnv, ATELIER_TOKEN: token, ATELIER_SECRET_STORE: "file", ATELIER_SERVER: "https://atelier.test", ATELIER_CONFIG_DIR: config, ATELIER_OWNER: "owner" },
   });
 }
 
@@ -34,6 +35,28 @@ test("token issue sends repeated scopes and prints the token exactly once", () =
   assert.match(result.stdout, /not shown again/);
   assert.match(result.stdout, /ATELIER_TOKEN/);
   assert.deepEqual(JSON.parse(result.stderr.trim()), { path: "/api/tokens", actor: "owner", method: "POST", body: { actor: "codex/gpt-6-astra", projects: ["p", "q"], days: 12, label: "Test" } });
+});
+
+test("stored agent tokens resolve their actor and respect environment overrides", () => {
+  mkdirSync(".cache", { recursive: true });
+  const config = mkdtempSync(resolve(".cache/token-store-"));
+  try {
+    writeFileSync(resolve(config, "secrets.json"), JSON.stringify({ API_TOKEN: "atl_stored" }), { mode: 0o600 });
+    const result = run(["queue"], "", config);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stderr.trim().split("\n")[1]).actor, "codex/gpt-6-astra");
+    const refused = run(["queue", "--as", "owner"], "", config);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /must match/);
+    assert.doesNotMatch(refused.stderr, /\/api\/queue/);
+    const override = run(["queue"], "owner-test-token", config);
+    assert.equal(override.status, 0, override.stderr);
+    assert.doesNotMatch(override.stderr, /\/api\/config/);
+    assert.equal(JSON.parse(override.stderr.trim()).actor, "owner");
+    for (const args of [["guide"], ["init", "--title"]]) {
+      assert.doesNotMatch(run(args, "", config).stderr, /\/api\//);
+    }
+  } finally { rmSync(config, { recursive: true, force: true }); }
 });
 
 test("token list and revoke use the owner actor", () => {

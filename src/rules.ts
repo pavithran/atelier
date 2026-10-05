@@ -15,7 +15,7 @@ export interface Item {
   base: string | null;      // baseline commit the fork started from
   head: string | null;      // last head Atelier verified in the fork
   acceptedHead: string | null;
-  pushActors?: string[];     // actors who contributed through the current head
+  pushActors?: string[];     // holders and recorded push contributors
   createdAt: string;
   updatedAt: string;
   lastPushAt: string | null;
@@ -115,14 +115,19 @@ export function validActor(actor: string): boolean {
   return ACTOR.test(actor);
 }
 
-// Keep all contributors: a later push does not prove earlier commits disappeared.
+// Holding a workspace permits plain Git pushes before Atelier observes a head.
+// Keep every holder and push actor even after handoff or release.
 export function pushActors(events: { actor: string; kind: string; data: Record<string, unknown> }[]): string[] {
   const actors = new Set<string>();
   let holder: string | null = null;
   for (const event of events) {
     if (event.kind === "item.claimed") holder = event.actor;
-    if (event.kind === "item.handoff") holder = String(event.data.to);
+    if (event.kind === "item.handoff") {
+      if (typeof event.data.from === "string") actors.add(event.data.from);
+      holder = typeof event.data.to === "string" ? event.data.to : null;
+    }
     if (event.kind === "item.released") holder = null;
+    if (holder) actors.add(holder);
     if (event.kind === "push.observed") actors.add(event.actor === "atelier/events" ? holder ?? event.actor : event.actor);
   }
   return [...actors];

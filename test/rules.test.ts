@@ -392,7 +392,26 @@ test("push contributors survive handoffs and include event observations", () => 
     event("item.handoff", "codex/gpt-6", { to: "claude-code/opus-5.5" }),
     event("push.observed", "atelier/events"), event("push.observed", "claude-code/opus-5.5"),
     event("item.handoff", "owner", { to: "opencode/glm-5.3" }),
-  ]), ["codex/gpt-6", "claude-code/opus-5.5"]);
+  ]), ["codex/gpt-6", "claude-code/opus-5.5", "opencode/glm-5.3"]);
+});
+
+test("holders remain contributors when Git pushes precede observation", () => {
+  for (const kind of ["item.handoff", "item.released"]) {
+    const contributors = pushActors([
+      { kind: "item.claimed", actor: "codex/gpt-6", data: {} },
+      { kind, actor: "owner", data: { from: "codex/gpt-6", to: "claude-code/opus-5.5" } },
+      { kind: "push.observed", actor: "atelier/events", data: {} },
+      { kind: "item.claimed", actor: "claude-code/opus-5.5", data: {} },
+      { kind: "push.observed", actor: "opencode/glm-5.3", data: {} },
+    ]);
+    assert.ok(contributors.includes("codex/gpt-6"));
+    assert.ok(contributors.includes("claude-code/opus-5.5"));
+    assert.ok(contributors.includes("opencode/glm-5.3"));
+    const held = item({ pushActors: contributors });
+    const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+    assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
+    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
+  }
 });
 
 test("review independence includes every contributor after a handoff", () => {
