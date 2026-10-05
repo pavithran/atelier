@@ -1,0 +1,31 @@
+atelier cloudflare-git/t40 "Merge preview: flag a stale base after other merges, and run the checks on the would-be merge before acceptance"
+accepted head 037c57f509daf2e52a9c21a7fe28a77f9276fccd
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T01:20:32.839Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T01:20:35.687Z
+REVIEW approve — codex/gpt-6-astra: Third round: deleted paths no longer collide; file-versus-folder additions still conflict in both orders; extra lookups reuse the per-tree cache. Earlier rounds (at 96fed94 and a0a5b41) rejected for a lost final-newline change, missed file/folder collisions, an overcounted first-parent count, and deleted paths treated as collisions; all fixed with git-checked tests.
+2026-10-04T17:31:07.019Z pavi item.created
+2026-10-04T17:49:19.901Z claude-code/opus-5.5 item.claimed
+2026-10-04T17:49:22.133Z claude-code/opus-5.5 fork.created
+2026-10-05T00:48:52.320Z claude-code/opus-5.5 push.observed
+2026-10-05T00:49:06.507Z claude-code/opus-5.5 evidence.observed
+2026-10-05T00:49:08.593Z claude-code/opus-5.5 evidence.observed
+2026-10-05T00:49:22.490Z claude-code/opus-5.5 item.submitted
+2026-10-05T00:52:07.746Z claude-code/opus-5.5 push.observed
+2026-10-05T00:52:18.910Z claude-code/opus-5.5 evidence.observed
+2026-10-05T00:52:20.884Z claude-code/opus-5.5 evidence.observed
+2026-10-05T00:52:21.416Z claude-code/opus-5.5 item.submitted
+2026-10-05T01:01:24.781Z claude-code/opus-5.5 push.observed
+2026-10-05T01:01:38.659Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:01:40.673Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:01:41.541Z opencode/gemini-3.1-pro-preview review.rejected
+2026-10-05T01:01:41.901Z claude-code/opus-5.5 item.submitted
+2026-10-05T01:15:32.127Z claude-code/opus-5.5 push.observed
+2026-10-05T01:16:36.077Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:16:38.051Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:16:38.588Z claude-code/opus-5.5 item.submitted
+2026-10-05T01:19:29.110Z claude-code/opus-5.5 push.observed
+2026-10-05T01:20:33.543Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:20:35.761Z claude-code/opus-5.5 evidence.observed
+2026-10-05T01:20:36.426Z claude-code/opus-5.5 item.submitted
+2026-10-05T01:24:03.977Z codex/gpt-6-astra review.approved
+2026-10-05T01:26:46.597Z pavi item.accepted
