@@ -666,56 +666,100 @@ export function renderProjects(views: ProjectView[], ownerName: string | null = 
 export interface Standing {
   project: { name: string; title: string; repo: string };
   generatedAt: string;
-  live: { id: string; title: string; state: string; owner: string | null; since: string }[];
-  waiting: { id: string; title: string; kind: InboxEntry["kind"]; reason: string; brief: { verdict: string; line: string } | null }[];
+  live: { id: string; title: string; state: string; owner: string | null; since: string | null }[];
+  waiting: { id: string; title: string; kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string; brief: { verdict: string; line: string } | null }[];
   queued: { id: string; title: string; to: string; agent: string | null; model: string | null; by: string; at: string; note: string }[];
   merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
+  // What this view could not read in full, in words. Empty when it read everything it shows.
+  partial: string[];
 }
 
-// How many waiting tasks get a brief, and how many merges are listed.
+// How many waiting tasks get a brief, how many merges are listed, and how many
+// live tasks have their own record read.
 export const STANDING_BRIEFS = 12;
+export const STANDING_TASKS = 40;
 const STANDING_MERGES = 5;
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
-// `details` holds the Ledger's detail for the waiting tasks, which the brief reads.
-export function buildStanding(p: ProjectRecord, items: Item[], events: LedgerEvent[], inbox: InboxEntry[], details: Map<string, Detail>, now: Date): Standing {
+const LIVE_STATES = ["claimed", "submitted", "accepted"];
+
+// The merged items this view lists: the last five by the time each was merged,
+// which is when the item was last updated, since a merged item changes no more.
+export const lastMerged = (items: Item[]) =>
+  items.filter((i) => i.state === "merged").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, STANDING_MERGES);
+
+// The tasks whose own events the view needs: every live one, up to a cap, and the last merges.
+export function standingTasks(items: Item[]): string[] {
+  return [...items.filter((i) => LIVE_STATES.includes(i.state)).slice(0, STANDING_TASKS), ...lastMerged(items)].map((i) => i.id);
+}
+
+// `taskEvents` holds each of those tasks' own events, newest first, at most
+// `limit` of each; `details` the Ledger's detail for the waiting tasks, which
+// the brief reads. Holders come from the items, since-when and handoff notes
+// from the task's own events, and merges from the merged items. What an
+// event window may have cut off is reported in `partial`, never guessed.
+export function buildStanding(
+  p: ProjectRecord, items: Item[], taskEvents: Map<string, LedgerEvent[]>, limit: number,
+  inbox: InboxEntry[], details: Map<string, Detail>, now: Date,
+): Standing {
+  const partial: string[] = [];
   const byId = new Map(items.map((i) => [i.id, i]));
-  const newest = [...events].sort((a, b) => b.seq - a.seq);
-  const liveItems = items.filter((i) => ["claimed", "submitted", "accepted"].includes(i.state));
-  // Since when someone holds a task: its latest claim or handoff to the holder.
-  const heldSince = (i: Item) => newest.find((ev) => ev.itemId === i.id && (ev.kind === "item.claimed" || (ev.kind === "item.handoff" && ev.data.to === i.owner)))?.at ?? i.updatedAt;
-  const seen = new Set<string>();
-  const waiting = inbox.filter((x) => x.kind !== "failing" && byId.has(x.itemId) && !seen.has(x.itemId) && seen.add(x.itemId))
-    .sort((a, b) => b.weight - a.weight)
-    .map((x, n) => {
-      const d = n < STANDING_BRIEFS ? details.get(x.itemId) : undefined;
-      const b = d ? briefFor(d, d.events) : null;
-      return { id: x.itemId, title: byId.get(x.itemId)!.title, kind: x.kind, reason: x.reason, brief: b ? { verdict: b.recommendation.verdict, line: b.recommendation.reason } : null };
-    });
-  const merged = newest.filter((ev) => ev.kind === "item.merged" && ev.itemId && byId.has(ev.itemId)).slice(0, STANDING_MERGES).map((ev) => {
-    const i = byId.get(ev.itemId!)!;
-    return { id: i.id, title: i.title, at: ev.at, commit: str(ev.data.mergeCommit) || null, line: submission(events, i.id, str(ev.data.head) || i.acceptedHead)?.summary ?? null };
+  const own = (id: string) => [...(taskEvents.get(id) ?? [])].sort((a, b) => b.seq - a.seq);
+  // What is found in a task's events is right; what is not found may lie beyond them.
+  const mayBeCut = (id: string) => !taskEvents.has(id) || taskEvents.get(id)!.length >= limit;
+  const why = (id: string) => (taskEvents.has(id) ? `its record is longer than the last ${limit} events read` : "its record was not read here");
+  const liveItems = items.filter((i) => LIVE_STATES.includes(i.state));
+
+  const live = liveItems.map((i) => {
+    // Since when someone holds a task: the claim or handoff that made them the holder.
+    const made = own(i.id).find((ev) => ev.kind === "item.claimed" || (ev.kind === "item.handoff" && ev.data.to === i.owner));
+    if (!made) partial.push(`${i.id}: when it was taken is not shown, because ${why(i.id)}.`);
+    return { id: i.id, title: i.title, state: i.state, owner: i.owner, since: made?.at ?? null };
   });
+
+  // One line per waiting task: the inbox's own kind and reasons, which are what
+  // the owner must act on, and the brief's verdict after them.
+  const groups = new Map<string, InboxEntry[]>();
+  for (const x of [...inbox].sort((a, b) => b.weight - a.weight)) {
+    if (x.kind !== "failing" && byId.has(x.itemId)) groups.set(x.itemId, [...(groups.get(x.itemId) ?? []), x]);
+  }
+  const waiting = [...groups.entries()].map(([id, entries], n) => {
+    const d = n < STANDING_BRIEFS ? details.get(id) : undefined;
+    const b = d ? briefFor(d, d.events) : null;
+    return {
+      id, title: byId.get(id)!.title, kind: entries[0].kind, kinds: entries.map((x) => x.kind), reason: entries.map((x) => x.reason).join("; "),
+      brief: b ? { verdict: b.recommendation.verdict, line: b.recommendation.reason } : null,
+    };
+  });
+
+  const merged = lastMerged(items).map((i) => {
+    const events = own(i.id), ev = events.find((x) => x.kind === "item.merged");
+    const said = submission(events, i.id, str(ev?.data.head) || i.acceptedHead);
+    if (!said && mayBeCut(i.id)) partial.push(`${i.id}: its summary may be missing, because ${why(i.id)}.`);
+    return { id: i.id, title: i.title, at: ev?.at ?? i.updatedAt, commit: str(ev?.data.mergeCommit) || null, line: said?.summary ?? null };
+  });
+
   const handoffs = liveItems.flatMap((i) => {
-    const h = newest.find((ev) => ev.itemId === i.id && ev.kind === "item.handoff" && str(ev.data.note).trim());
+    const h = own(i.id).find((ev) => ev.kind === "item.handoff" && str(ev.data.note).trim());
+    if (!h && mayBeCut(i.id)) partial.push(`${i.id}: an older handoff note may exist, because ${why(i.id)}.`);
     return h ? [{ id: i.id, title: i.title, from: str(h.data.from), to: str(h.data.to), note: str(h.data.note).trim(), at: h.at }] : [];
   });
+
   return {
     project: { name: p.name, title: titleOf(p), repo: p.repo },
     generatedAt: now.toISOString(),
-    live: liveItems.map((i) => ({ id: i.id, title: i.title, state: i.state, owner: i.owner, since: heldSince(i) })),
-    waiting,
+    live, waiting,
     queued: items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((i) => ({
       id: i.id, title: i.title, to: i.dispatch!.to, agent: i.dispatch!.agent ?? null, model: i.dispatch!.model ?? null, by: i.dispatch!.by, at: i.dispatch!.at, note: i.dispatch!.note ?? "",
     })),
-    merged,
-    handoffs,
+    merged, handoffs,
     // A project governed by ControlPlane carries the owner's recorded approval.
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
       : null,
+    partial,
   };
 }
 
@@ -724,8 +768,8 @@ function standingSection(p: ProjectRecord, s: Standing): string {
   const group = (title: string, rows: string[]) => rows.length ? `<h3>${e(title)}</h3><ul class="standing-list">${rows.join("")}</ul>` : "";
   const runner = (q: Standing["queued"][number]) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const groups = [
-    group("Held now", s.live.map((i) => `<li>${link(i.id)} <strong>${e(i.title)}</strong><span class="meta">${e(stateLabel[i.state as Item["state"]] ?? i.state)} · held by ${e(i.owner ?? "nobody")} since ${e(when(i.since))}</span></li>`)),
-    group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${w.brief ? `${e(w.brief.verdict)}: ${e(w.brief.line)}` : e(w.reason)}</span></li>`)),
+    group("Held now", s.live.map((i) => `<li>${link(i.id)} <strong>${e(i.title)}</strong><span class="meta">${e(stateLabel[i.state as Item["state"]] ?? i.state)} · held by ${e(i.owner ?? "nobody")}${i.since ? ` since ${e(when(i.since))}` : ", since when is not shown"}</span></li>`)),
+    group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${e(w.reason)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
     group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(q.note)}` : ""}</span></li>`)),
     group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
     group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`)),
@@ -736,6 +780,7 @@ function standingSection(p: ProjectRecord, s: Standing): string {
   return `<section class="standing" id="standing" aria-label="Where it stands">
   <h2 class="section-title">Where it stands</h2>
   <p class="meta">Generated from Atelier's record as of ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints the same as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
+  ${s.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
   ${groups || '<p class="empty">Nothing is held, waiting, queued or recently merged.</p>'}
   ${cp}
 </section>`;

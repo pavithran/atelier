@@ -5,7 +5,7 @@ import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, typ
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
@@ -113,20 +113,26 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
-// How much of a project's record the "where it stands" view reads.
-const STANDING_EVENTS = 1000;
+// How many of each task's own events the "where it stands" view reads.
+const TASK_EVENTS = 300;
 
 // Where a project stands, from its Ledger: the page and the JSON route share it.
+// Each section reads its own source: items for holders and merges, and the
+// events of the tasks it names, never a window over the whole project's record.
 async function standingOf(env: Env, name: string): Promise<Standing> {
   const L = ledger(env, name);
   const now = new Date();
-  const [project, items, events, inbox] = await Promise.all([L.project(), L.items(), L.events(undefined, STANDING_EVENTS) as unknown as Promise<LedgerEvent[]>, L.inbox(now.toISOString())]);
+  const [project, items, inbox] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString())]);
+  const taskEvents = new Map<string, LedgerEvent[]>();
+  await Promise.all(standingTasks(items).map(async (id) => {
+    try { taskEvents.set(id, (await L.events(id, TASK_EVENTS)) as unknown as LedgerEvent[]); } catch { /* reported as not read */ }
+  }));
   const ids = [...new Set(inbox.filter((x) => x.kind !== "failing").map((x) => x.itemId))].slice(0, STANDING_BRIEFS);
   const details = new Map<string, Detail>();
   await Promise.all(ids.map(async (id) => {
-    try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line falls back to the inbox reason */ }
+    try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line keeps the inbox's own reason */ }
   }));
-  return buildStanding(project, items, events, inbox, details, now);
+  return buildStanding(project, items, taskEvents, TASK_EVENTS, inbox, details, now);
 }
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;

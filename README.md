@@ -311,6 +311,12 @@ from that record and cannot go stale or be written wrongly by hand.
   task, and, for a project with ControlPlane policy, its protected areas,
   eligible agents and overlap rule on one line. The record holds no ControlPlane
   change classes, so none are shown.
+  Each part reads its own source, not a window over the project's record:
+  holders from the items, since when and handoff notes from each live task's
+  own events, merges from the merged items. A waiting task keeps the inbox's
+  own reason, with the brief after it. Where a task's record is longer than
+  what is read of it, the page and the text say what is not shown rather than
+  guess.
 - `GET /api/projects/NAME/standing` returns the same as JSON to any signed-in
   caller, the owner or an agent.
 - `atelier status --project NAME` prints it as plain text, one line per item,
