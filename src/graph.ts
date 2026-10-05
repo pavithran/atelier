@@ -218,8 +218,13 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
 
 // ── drawing ────────────────────────────────────────────────────────────────
 
+// A one-line note drawn beside a thread's head: the task page puts its decision brief there.
+export interface HeadNote { verdict: string; tone: "go" | "ask" | "bad"; text: string }
+
 export interface DrawOptions {
   compact?: boolean;           // the Decisions page's version: no hashes, no clock
+  mini?: boolean;              // a card's version: compact and narrow, each review drawn as an edge from its reviewer
+  note?: HeadNote;             // beside the head of the first thread; the full drawing only
   replaySeconds?: number;      // how long the draw-in takes; 0 draws it at rest
   href?: (thread: Thread) => string;
   ownerLabel?: string;         // how the owner is named in cards; "you" on the owner's own pages
@@ -273,10 +278,11 @@ function drawCard(k: Card, W: number, H: number): string {
 export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string {
   const id = `g${(++drawings).toString(36)}`;
   const cards: Card[] = [];
-  const W = o.compact ? 760 : 1200, X0 = o.compact ? 46 : 64, MAIN = o.compact ? 26 : 50;
-  const R = o.compact ? 18 : 26, X1 = W - R - 34;   // room for the last merge to curve home
-  const LANE = o.compact ? 20 : 30, TOP = MAIN + (o.compact ? 34 : 46);
-  const H = TOP + Math.max(s.threads.length - 1, 0) * LANE + (o.compact ? 22 : 30);
+  const compact = !!(o.compact || o.mini);
+  const W = o.mini ? 480 : compact ? 760 : 1200, X0 = o.mini ? 54 : compact ? 46 : 64, MAIN = compact ? 26 : 50;
+  const R = compact ? 18 : 26, X1 = W - R - 34;   // room for the last merge to curve home
+  const LANE = compact ? 20 : 30, TOP = MAIN + (compact ? 34 : 46);
+  const H = TOP + Math.max(s.threads.length - 1, 0) * LANE + (compact ? 22 : 30);
   const x = (pos: number) => r1(X0 + (pos / s.span) * (X1 - X0));
   const T = o.replaySeconds ?? 9;
   const at = (pos: number) => `${r1((pos / s.span) * T)}s`;
@@ -284,9 +290,13 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
   const c = (actor: string) => `var(--m-${vendorOf(actor, owner)})`;
   const out: string[] = [];
 
-  if (!o.compact) {
+  if (!compact) {
+    let lastX = -Infinity;
     for (const tm of s.times) {
       const X = x(tm.pos);
+      // A short record repeats its first and last moments across the axis; each is drawn once.
+      if (X === lastX) continue;
+      lastX = X;
       out.push(`<line class="g-grid" x1="${X}" x2="${X}" y1="14" y2="${H - 6}"/>`);
       const anchor = X > X1 - 40 ? "end" : X < X0 + 40 ? "start" : "middle";
       if (tm.at) out.push(`<text class="g-clock" x="${X}" y="10" text-anchor="${anchor}">${esc(tm.at.slice(5, 10).replace("-", "/"))} ${esc(tm.at.slice(11, 16))}</text>`);
@@ -318,11 +328,21 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     } else {
       g.push(`<circle class="g-head pop" style="--c:${c(lastWho)};--d:${at(end)}" cx="${xe}" cy="${y}" r="4.5"/>`);
     }
+    // On a card, a review is an edge: from a node in its reviewer's colour, shaped as
+    // the verdict, down to the task. A sent-back edge is dashed and its node ringed.
+    const edges: string[] = [];
     th.beads.forEach((b, i) => {
       const key = `${id}-${k}-${i}`;
+      if (o.mini && (b.kind === "approve" || b.kind === "reject")) {
+        const bx = x(b.pos), nx = Math.max(bx - 22, X0 + 6), ny = y - 24;
+        edges.push(`<g class="g-edge ${b.kind} pop" style="--c:${c(b.actor)};--d:${at(b.pos)}"><title>${esc(b.label)}</title>`
+          + `<path d="M${r1(nx)} ${ny + 5}C${r1(nx)} ${y - 8} ${r1(bx - 10)} ${y - 12} ${r1(bx)} ${y - 8}"/>`
+          + `<g transform="translate(${r1(nx)} ${ny})">${b.kind === "reject" ? '<circle class="ring" r="7"/><path d="M-4 -3L0 4L4 -3Z"/>' : '<path d="M-4 3L0 -4L4 3Z"/>'}</g></g>`);
+      }
       g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
       cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
     });
+    g.unshift(...edges);
     const holders = th.holds.map((h) => (h.who === owner ? (o.ownerLabel ?? "you") : splitActor(h.who).model || h.who)).join(" → ");
     const tkey = `${id}-${k}`;
     cards.push({ key: tkey, x: X0 - 4, y, color: c(th.holds[0].who), head: `${th.id} · ${STATE_NAMES[th.state] ?? th.state} · ${holders}`, body: th.title });
@@ -333,16 +353,25 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     out.push(`<g class="g-task${closed ? " closed" : ""}${live ? " live" : ""}" data-task="${tkey}">${title}${band}${o.href ? `<a href="${esc(o.href(th))}" data-key="${tkey}">${label}</a>` : label}${g.join("")}</g>`);
     if (th.merge) {
       const mx = r1(xe + R);
-      out.push(`<g class="pop" style="--d:${at(end)}"><circle class="g-merge" cx="${mx}" cy="${MAIN}" r="${o.compact ? 4 : 5.5}"><title>${esc(`${th.id} merged as ${th.merge.sha.slice(0, 12)}`)}</title></circle>${
-        !o.compact && th.merge.sha && mx - lastLabel > 62 ? `<text class="g-sha" x="${mx}" y="${MAIN - 11}" text-anchor="middle">${esc(th.merge.sha.slice(0, 7))}</text>` : ""}</g>`);
-      if (!o.compact && th.merge.sha && mx - lastLabel > 62) lastLabel = mx;
+      out.push(`<g class="pop" style="--d:${at(end)}"><circle class="g-merge" cx="${mx}" cy="${MAIN}" r="${compact ? 4 : 5.5}"><title>${esc(`${th.id} merged as ${th.merge.sha.slice(0, 12)}`)}</title></circle>${
+        !compact && th.merge.sha && mx - lastLabel > 62 ? `<text class="g-sha" x="${mx}" y="${MAIN - 11}" text-anchor="middle">${esc(th.merge.sha.slice(0, 7))}</text>` : ""}</g>`);
+      if (!compact && th.merge.sha && mx - lastLabel > 62) lastLabel = mx;
     }
   });
+
+  if (o.note && s.threads.length && !compact) {
+    const th = s.threads[0], hx = th.end === null ? X1 + 6 : x(th.end);
+    const text = clip(o.note.text, 72);
+    out.push(`<g class="g-note ${o.note.tone}"><title>${esc(`${o.note.verdict}: ${o.note.text}`)}</title>`
+      + `<text x="${r1(hx)}" y="${TOP - 18}" text-anchor="end"><tspan class="g-note-verdict">${esc(o.note.verdict)}</tspan> · ${esc(text)}</text></g>`);
+  }
 
   // One rule per card: show it while its mark or task label is hovered or focused.
   const rules = cards.map((k) => `.graph:has([data-key="${k.key}"]:hover,[data-key="${k.key}"]:focus-visible) [data-card="${k.key}"]`).join(",");
   out.push(`<style>${rules ? `${rules}{opacity:1}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
-  return `<svg class="graph${o.compact ? " compact" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${s.title}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`)}">${out.join("")}</svg>`;
+  const one = s.threads.length === 1 ? s.threads[0] : null;
+  const label = one ? `${one.id}, ${one.title}: its thread, ${one.beads.length} marks` : `${s.title}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`;
+  return `<svg class="graph${compact ? " compact" : ""}${o.mini ? " mini" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">${out.join("")}</svg>`;
 }
 
 const BEAD_NAMES: Record<BeadKind, string> = {

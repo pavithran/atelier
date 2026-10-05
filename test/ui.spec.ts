@@ -405,6 +405,64 @@ it('the log stops offering older pages at its last page instead of looping',asyn
  expect(renderLog({project,item:null,at:null},head,[head],3,true)).toContain('>Older<');
 });
 
+// ── a task's thread and Decisions as cards ──
+const tev=(seq:number,itemId:string,actor:string,kind:string,data:Record<string,unknown>={})=>({seq,itemId,at:`2026-10-04T10:${String(seq).padStart(2,'0')}:00.000Z`,actor,kind,data});
+function threaded(id='t1',title='A <b>bold</b> task'):Detail{
+ const d=detail();d.item.id=id;d.item.title=title;d.item.owner='claude-code/opus-5.5';
+ d.events=[
+  tev(1,id,'codex/gpt-6','item.claimed'),tev(2,id,'codex/gpt-6','push.observed',{head}),
+  tev(3,id,'atelier/sandbox','evidence.observed',{claim:'npm test',passed:true,where:'sandbox'}),
+  tev(4,id,'pavi','item.handoff',{from:'codex/gpt-6',to:'claude-code/opus-5.5'}),
+  tev(5,id,'claude-code/opus-5.5','item.submitted',{head}),
+  tev(6,id,'zcode/glm-5.3','review.approved'),tev(7,id,'codex/gpt-5.5','review.rejected',{note:'n'}),
+ ].reverse();
+ return d;
+}
+it('the task page draws its own thread above the brief, with its beads, and escapes the title',()=>{
+ const html=renderItem(project,threaded(),'PAVI',null);
+ const thread=html.slice(html.indexOf('id="thread"'),html.indexOf('id="brief"'));
+ expect(html.indexOf('id="thread"')).toBeGreaterThan(-1);
+ expect(html.indexOf('id="thread"')).toBeLessThan(html.indexOf('id="brief"'));
+ expect(thread).toContain('<svg class="graph"');
+ for(const kind of ['push','pass','handoff','submit','approve','reject'])expect(thread).toContain(`class="g-bead pop ${kind}"`);
+ expect(thread).toContain('--c:var(--m-zai)');
+ expect(thread).toContain('--c:var(--m-openai)');
+ expect(thread).toContain('class="g-clock"');
+ expect(thread).toContain('A &lt;b&gt;bold&lt;/b&gt; task');
+ expect(thread).not.toContain('<b>bold</b>');
+ expect(thread).toContain('<g class="g-note ask">');
+ expect(html.match(/<svg class="graph/g)).toHaveLength(1);
+});
+it('the thread is left off when the record holds no claim, and the note when the task is closed',()=>{
+ const bare=detail();
+ expect(renderItem(project,bare,'PAVI',null)).not.toContain('id="thread"');
+ const merged=threaded();merged.item.state='merged';merged.item.acceptedHead=head;
+ const html=renderItem(project,merged,'PAVI',null);
+ expect(html).toContain('id="thread"');expect(html).not.toContain('<g class="g-note');
+});
+it('Decisions draws one card per waiting entry, each with its brief and a mini-thread',()=>{
+ const a=threaded('t1','First'),b=threaded('t2','Second <i>x</i>');
+ const entries=[{project:'example',itemId:'t2',title:'Second <i>x</i>',kind:'assess' as const,reason:'r',weight:80},{project:'example',itemId:'t1',title:'First',kind:'accept' as const,reason:'r',weight:100}];
+ const html=renderInbox(entries,[project],'PAVI',undefined,[],undefined,new Date(),[],undefined,new Map([['example/t1',a],['example/t2',b]]));
+ expect(html.match(/class="decision-card"/g)).toHaveLength(2);
+ expect(html.match(/<svg class="graph compact mini"/g)).toHaveLength(2);
+ expect(html.indexOf('data-task="example/t2"')).toBeLessThan(html.indexOf('data-task="example/t1"'));
+ expect(html).toContain('href="/decisions?project=example&task=t1#review"');
+ expect(html).toContain('href="/p/example/t1">Open the task page</a>');
+ expect(html).toContain('class="card-brief"');
+ expect(html).toContain('<span class="tag ask">review</span>');
+ expect(html).toContain('class="g-edge approve pop"');expect(html).toContain('class="g-edge reject pop"');
+ expect(html).toContain('Second &lt;i&gt;x&lt;/i&gt;');expect(html).not.toContain('<i>x</i>');
+});
+it('a waiting entry without its record stays a plain row, and an empty inbox renders as before',()=>{
+ const entries=[{project:'example',itemId:'t1',title:'First',kind:'accept' as const,reason:'r',weight:100}];
+ const plain=renderInbox(entries,[project],'PAVI');
+ expect(plain).toContain('class="decision-row"');expect(plain).not.toContain('class="decision-card"');
+ const empty=renderInbox([],[project],'PAVI');
+ expect(empty).toContain('You’re clear.');expect(empty).toContain('Nothing is waiting on you.');expect(empty).not.toContain('class="decision-card"');
+ const selected=renderInbox(entries,[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
+ expect(selected).toContain('aria-current="true"');expect(selected).toContain('aria-label="Selected task"');
+});
 it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
  const {renderMainPreview}=await import('../src/ui');
  expect(renderMainPreview(undefined)).toBe('');

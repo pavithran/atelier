@@ -527,6 +527,33 @@ body.public main { margin: 0 auto; padding: 28px 16px 64px; }
 button.quiet { background: transparent; color: var(--text-muted); border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 5px 12px; font-size: 13px; cursor: pointer; }
 button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 
+/* ── a task's thread, and Decisions as cards ──────────────────────────────── */
+/* The task page's thread scrolls inside its own box when the screen is narrow. */
+.task-thread .stage-scroll { border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--inset); padding: 10px 8px 12px; }
+.task-thread .legend-line { margin-bottom: 10px; }
+.task-thread .graph { min-width: 760px; }
+.graph tspan.g-note-verdict { font-weight: 600; }
+.g-note.go tspan.g-note-verdict { fill: var(--observed); }
+.g-note.ask tspan.g-note-verdict { fill: var(--caution); }
+.g-note.bad tspan.g-note-verdict { fill: var(--fault); }
+.graph .g-note text { font-size: 12.5px; fill: var(--text); }
+/* On a card each review is an edge from its reviewer's node to the task. */
+.graph.mini { min-width: 300px; }
+.mini .g-name { font-size: 15px; }
+.g-edge > path { fill: none; stroke: var(--c); stroke-width: 1.6; stroke-linecap: round; }
+.g-edge.reject > path { stroke-dasharray: 3 3; }
+.g-edge g path { fill: var(--c); }
+.g-edge .ring { fill: none; stroke: var(--fault); stroke-width: 1.8; }
+.decision-card { background: var(--sheet); border: 1px solid var(--line); border-radius: var(--radius-medium); margin: 0 0 12px; min-width: 0; overflow: hidden; }
+.decision-card > .decision-row { margin: 0; border-radius: 0; }
+.card-body { padding: 0 14px 12px; min-width: 0; }
+.card-brief { display: flex; gap: 10px; align-items: baseline; margin: 0 0 6px; font-size: 14px; color: var(--text-muted); }
+.card-brief .tag { flex: none; }
+.card-brief span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.card-thread { padding: 0; margin: 0 -4px 4px; }
+.card-links { margin: 0; }
+@media (max-width: 720px) { .card-body { padding: 0 10px 10px; } }
+
 /* ── merge preview: the task against main as it is now ───────────────────── */
 .merge-preview { margin: 8px 0 12px; }
 .merge-preview .tag { margin-right: 6px; }
