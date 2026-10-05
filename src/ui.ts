@@ -14,6 +14,7 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
+import { clockTime, shortStamp, stamp, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
@@ -39,8 +40,8 @@ export function escapeText(s: string): string {
 }
 const e = escapeText;
 const short = (sha: string | null) => (sha ? sha.slice(0, 8) : "—");
-const when = (iso: string | null) => (iso ? iso.replace("T", " ").slice(0, 16) + " UTC" : "—");
-const clock = (iso: string) => iso.slice(11, 16) + " UTC";
+const when = (iso: string | null) => (iso ? stamp(iso) : "—");
+const clock = (iso: string) => clockTime(iso);
 const href = (...p: string[]) => "/" + p.map(encodeURIComponent).join("/");
 const selectedHref = (project: string, task: string) =>
   `/decisions?project=${encodeURIComponent(project)}&task=${encodeURIComponent(task)}#review`;
@@ -261,7 +262,7 @@ const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? o
 function legendLine(vendors: Vendor[], who = "You"): string {
   const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
     .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
-  return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}<li><i style="--c:var(--fault)"></i>sent back</li></ul>`;
+  return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}<li><i style="--c:var(--fault)"></i>sent back</li><li class="meta">times in ${e(zoneLabel())}</li></ul>`;
 }
 
 function vendorsIn(stories: Story[]): Vendor[] {
@@ -397,7 +398,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
   const columns = `<div class="flow-cols">
   <section aria-label="What happened"><h2>What happened</h2><ol class="moments">${moments.map((m) =>
-    `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(m.at.slice(5, 10).replace("-", "/"))} ${e(m.at.slice(11, 16))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>
+    `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(shortStamp(m.at))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>
   <section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol></section>
 </div>`;
   return { stages, columns, shown };

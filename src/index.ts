@@ -1,5 +1,6 @@
 import { itemDiff, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
+import { setTimeZone } from "./time";
 import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
@@ -39,7 +40,7 @@ function sameString(a: string, b: string): boolean {
   return diff === 0;
 }
 
-type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string };
+type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string; TIMEZONE?: string };
 
 // The projects the owner shows publicly at /showcase, by name, comma-separated
 // in the SHOWCASE setting. Unset shows nothing.
@@ -63,7 +64,7 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   // Read index membership before using a cached page. Removed projects must
   // not remain visible through a previously cached showcase.
   const names = await liveShowcase(env);
-  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}`);
+  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
   const hit = await caches.default.match(key);
   if (hit) return hit;
   const owner = ownerActor(env);
@@ -783,6 +784,8 @@ export default {
   },
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    // Pages show times in the owner's zone (src/time.ts).
+    setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
       if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
       if (url.pathname === "/login") {
