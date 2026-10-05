@@ -38,6 +38,16 @@ test("each agent's family has a colour; the owner has their own", () => {
   assert.equal(vendorOf("opencode/glm-5.3-flash", OWNER), "studio");
   assert.equal(vendorOf("pavi", OWNER), "owner");
   assert.equal(vendorOf("someone/else", OWNER), "other");
+  // A family is recognised by name, so new releases are coloured on day one.
+  assert.equal(vendorOf("codex/gpt-6.1-nova", OWNER), "openai");
+  assert.equal(vendorOf("zcode/glm-5.4", OWNER), "zai");
+  assert.equal(vendorOf("gemini-cli/gemini-3.1-pro", OWNER), "google");
+  assert.equal(vendorOf("opencode/gemini-3.1-pro", OWNER), "google", "a cloud-only family through OpenCode keeps its own colour");
+  assert.equal(vendorOf("opencode/deepseek-v4-flash", OWNER), "studio", "DeepSeek through OpenCode is home work: its family is not cloud-only (no local-build suffix here)");
+  assert.equal(vendorOf("opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX", OWNER), "studio", "a local build is home work");
+  assert.equal(vendorOf("opencode/gemini-3.1-pro-mlx-4bit", OWNER), "studio", "a local build is home work even in a cloud-only family");
+  assert.equal(vendorOf("someharness/deepseek-v4-pro", OWNER), "deepseek");
+  assert.equal(vendorOf("someharness/qwen3.9-coder", OWNER), "qwen");
 });
 
 test("a story has a thread per claimed task, with who held it and how it ended", () => {
