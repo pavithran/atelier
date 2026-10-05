@@ -325,6 +325,16 @@ including items, evidence and history. Deleting a repository requires a
 separate, deliberate action by the owner. Reinitialising the same project
 can register its retained Ledger again.
 
+## Operations
+
+`atelier ops COMMAND [ARGS...]` runs an operations toolkit kept outside this
+repository: work on the machines and services around the projects, such as
+surveys of every project, devices, backups and archives, which belongs to
+one owner's setup rather than to the Git platform. `ops` comes first:
+Atelier hands everything after it, unchanged and before reading anything
+itself, to the executable `ATELIER_OPS` names or to `atelier-ops` on `PATH`,
+and exits as it exits. Without one, `atelier ops` says so and exits 2.
+
 ## Local cache cleanup
 
 `atelier gc --project NAME` previews local directories eligible for removal.

@@ -8,10 +8,10 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { homedir } from "node:os";
+import { constants as osConstants, homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { redactGitArgs } from "./runner.mjs";
@@ -105,8 +105,45 @@ function parseArgs(argv) {
   return out;
 }
 
-const args = parseArgs(process.argv.slice(2));
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+
+// Portfolio operations (surveys, devices and shipping, backups, Observatory,
+// the findings ledger) live in a private toolkit, not in this public command.
+// `atelier ops ...` hands everything after `ops` to it before this command
+// parses or reads anything, so no argument is changed on the way, and exits
+// as it exits. The toolkit is the program ATELIER_OPS names, or atelier-ops on
+// PATH; only an executable file counts.
+const runnable = (path) => {
+  try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
+};
+export function findOps(env = process.env) {
+  if (env.ATELIER_OPS) { const named = resolve(env.ATELIER_OPS); return runnable(named) ? named : null; }
+  // An empty PATH entry is the current directory, as a shell reads it.
+  for (const dir of (env.PATH ?? "").split(":").map((d) => d || ".")) {
+    const candidate = resolve(dir, "atelier-ops");
+    if (runnable(candidate)) return candidate;
+  }
+  return null;
+}
+function runOps(argv) {
+  const exe = findOps();
+  if (!exe) {
+    process.stderr.write("atelier: atelier ops runs the operations toolkit, atelier-ops, which is not installed on this machine: put it on PATH or set ATELIER_OPS to its path\n");
+    process.exit(2);
+  }
+  const r = spawnSync(exe, argv, { stdio: "inherit" });
+  if (r.error) { process.stderr.write(`atelier: could not run ${exe}: ${r.error.message}\n`); process.exit(2); }
+  // A toolkit ended by a signal ends this command the same way; a signal Node
+  // will not die of (SIGPIPE, SIGUSR1) gives the shell's 128 + its number.
+  if (r.signal) {
+    process.kill(process.pid, r.signal);
+    process.exit(128 + (osConstants.signals[r.signal] ?? 0));
+  }
+  process.exit(r.status ?? 1);
+}
+if (isMain && process.argv[2] === "ops") runOps(process.argv.slice(3));
+
+const args = parseArgs(process.argv.slice(2));
 const cfg = isMain ? loadConfig() : {};
 
 // The server says which actor stands for the project owner; `login` records it.
@@ -404,6 +441,11 @@ const usage = {
 };
 
 const commands = {
+  // Reached only when `ops` is not the first word; see runOps.
+  async ops() {
+    die("put ops first: atelier ops COMMAND [ARGS...]; everything after it goes to the operations toolkit", 2);
+  },
+
   async runner() {
     const { runRunner } = await import("./runner.mjs");
     try {
@@ -1121,6 +1163,7 @@ Models     models · models add ID --harness H --where home|cloud [--provider P]
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects remove NAME [--force] · init --name NAME --rename-local
 Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]
+Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
 Docs       guide   (paste into a project's AGENTS.md)
 
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
