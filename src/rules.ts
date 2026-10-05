@@ -35,7 +35,7 @@ export interface Evidence {
   passed: boolean | null;   // null for reports
   by: string;
   at: string;
-  changedPaths?: string[];  // observed checks record what the item actually changes
+  changedPaths?: string[] | null;  // observed checks record what the item actually changes
   outputTail?: string;
   // Where an observed check ran: "sandbox" is a Cloudflare container started by
   // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
@@ -221,11 +221,16 @@ export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): 
   return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
 }
 
-export function countingReviews(reviews: Review[], head: string | null, policy: ProjectPolicy): Review[] {
-  return latestReviews(reviews, head).filter((r) => hasRole(r.by, policy, "assessor"));
+export function countingReviews(reviews: Review[], head: string | null, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
+  return latestReviews(reviews, head).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
 }
 
-export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass {
+export function measuredPaths(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((p) => typeof p === "string") ? value : null;
+}
+
+export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass | null {
+  if (!paths.length) return null;
   const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? [])];
   if (paths.some((p) => matchesAny(p, guarded))) return "protected";
   const direct = policy.execution?.direct;
@@ -283,7 +288,8 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
       ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner" }
       : { claim, grade: "pending" as Grade, passed: null };
   });
-  const measured = atHead.filter((e) => counts(e) && e.changedPaths).sort((a, b) => a.at.localeCompare(b.at)).pop();
+  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
+    Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   return {
     checks,
     reports: atHead.filter((e) => e.grade === "reported"),
@@ -325,7 +331,7 @@ export interface Gate {
 }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Gate {
-  reviews = countingReviews(reviews, item.head, policy);
+  reviews = countingReviews(reviews, item.head, policy, owner);
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
   if (!item.head) blockers.push("no verified push");
@@ -338,14 +344,17 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   const changed = view.changedPaths ?? [];
   const kind = view.changedPaths === null ? null : changeClass(changed, policy);
   const governed = policy.execution !== undefined;
-  const requirement = kind ? classRequirement(kind) : "Change class pending: changed paths not yet observed";
+  if (governed && view.changedPaths?.length === 0) blockers.push("nothing to merge");
+  const requirement = kind ? classRequirement(kind) : view.changedPaths === null ? "Change class pending: changed paths not yet observed" : "Nothing to merge";
   let needsAssessor = false;
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
   if (kind === "protected" || (governed && kind === "coordinated")) {
     const ownerModel = item.owner ? modelOf(item.owner) : "";
     const ownerFamily = familyOf(ownerModel);
     const independent = reviews.some((r) => {
-      if (!r.approve || r.by === item.owner) return false;
+      if (!r.approve) return false;
+      if (r.by === owner) return true;
+      if (r.by === item.owner) return false;
       if (!governed) return r.by === owner || (r.by.includes("/") && modelOf(r.by) !== ownerModel);
       if (!r.by.includes("/")) return false;
       if (kind === "coordinated") return true;
@@ -489,7 +498,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
   if (item.state === "submitted" && g.needsAssessor) return { title: "Your review is needed", detail: g.requirement ?? "This task changes protected files. Review the changes and approve this revision, or request changes.", action: "review", tone: "ask", passed };
   if (item.state === "submitted" && g.ready) return { title: "Ready to accept", detail: "Required checks passed for this revision. Accept it to prepare the local merge.", action: "accept", tone: "go", passed };
-  if (countingReviews(reviews, item.head, policy).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
+  if (countingReviews(reviews, item.head, policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
   return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The task owner is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
 }
 

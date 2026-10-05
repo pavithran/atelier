@@ -280,3 +280,10 @@ test("governed briefs show the class requirement even after approval", () => {
   assert.match(b.recommendation.reason, /Coordinated change/);
   assert.doesNotMatch(b.recommendation.reason, /protected/);
 });
+
+
+test("the project owner's rejection stays visible under role policy", () => {
+  const b = briefFor(detail({ policy: { ...policy, agents: {} }, reviews: [rev({ by: OWNER, approve: false, note: "Fix this" })] }));
+  assert.equal(b.recommendation.verdict, "send back");
+  assert.match(b.evidence.join(), /project owner asked for changes/);
+});
