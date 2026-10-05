@@ -392,7 +392,7 @@ test("CLI git failure output removes credential arguments and echoed values", ()
   const gitSource = source.slice(source.indexOf("function git("), source.indexOf("// Tokens go"));
   let message;
   const git = runInNewContext(`${gitSource}; git`, {
-    process: { env: {} }, redactGitArgs,
+    process: { env: {} }, redactGitArgs, gitEnv: (base, extra) => ({ ...base, ...extra }),
     spawnSync: (_, args) => ({ status: 1, stderr: args.join(" ") }),
     die: (text) => { message = text; throw new Error("failed"); },
   });
