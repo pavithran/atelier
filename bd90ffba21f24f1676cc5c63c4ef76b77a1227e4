@@ -1,0 +1,16 @@
+atelier cloudflare-git/t87 "Imported history's cache key carries the format's version, so a change to how lanes are named shows at once instead of after the cache expires"
+accepted head fd2434314fe48684d7fdd16ec5b2a6d348be7c81
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T19:05:33.669Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T19:05:36.542Z
+REVIEW approve — codex/gpt-6-astra: Key unique per repository, head, cutoff and format; read and write share it; the comment says when to raise IMPORTED_FORMAT.
+REVIEW approve — pavi: gpt-6-astra approved; suite and typecheck pass.
+2026-10-05T19:02:47.614Z pavi item.created
+2026-10-05T19:02:55.737Z claude-code/opus-5.5 item.claimed
+2026-10-05T19:02:59.622Z claude-code/opus-5.5 fork.created
+2026-10-05T19:04:20.004Z claude-code/opus-5.5 push.observed
+2026-10-05T19:05:33.822Z claude-code/opus-5.5 evidence.observed
+2026-10-05T19:05:36.624Z claude-code/opus-5.5 evidence.observed
+2026-10-05T19:05:37.513Z claude-code/opus-5.5 item.submitted
+2026-10-05T19:13:18.333Z codex/gpt-6-astra review.approved
+2026-10-05T19:13:48.585Z pavi review.approved
+2026-10-05T19:13:49.226Z pavi item.accepted
