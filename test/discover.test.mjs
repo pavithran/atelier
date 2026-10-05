@@ -365,7 +365,7 @@ test("a Gemini models list answers whether the provider lists the model", () => 
 
 // ── the mismatch ───────────────────────────────────────────────────────────
 
-const ctxFor = (e, over = {}) => ({ offered: true, plan: probePlan(e, {}), probe: undefined, log: undefined, now: NOW, siblings: POOL.filter((m) => m.harness === e.harness), ...over });
+const ctxFor = (e, over = {}) => ({ offered: true, plan: probePlan(e, {}), probe: undefined, log: undefined, now: NOW, ...over });
 
 test("the registered model and the served one differ: zcode recorded as glm-5.3, serving deepseek-flash", () => {
   const e = POOL[1];
@@ -395,23 +395,57 @@ test("the same model under another spelling is not a mismatch, and a stale recor
   assert.match(stale.detail, /nothing recent/);
   assert.equal(stale.post, true);
 
+  // Absent from the record is no evidence: it is shown, and nothing is posted.
   const absent = decideRow(e, ctxFor(e, { log: { seen: [] } }));
-  assert.equal(absent.state, "unknown");
+  assert.deepEqual([absent.state, absent.label, absent.post, absent.source, absent.served, absent.mismatch], ["unknown", "no recent record", false, "none", null, false]);
   assert.match(absent.detail, /glm-5\.3 is not in the record/);
+  assert.match(renderTable([absent]), /^glm-5\.3 +zcode +subscription +not known +no recent record +none$/m);
 });
 
-test("the model can be served by another name if the pool registers that name for the harness, or the harness names each request", () => {
-  const two = [POOL[1], entry("deepseek-flash", "zcode", "subscription")];
+test("a registered sibling that answers in place of the model is a mismatch: zcode and Codex name the model the harness chose", () => {
+  // zcode is registered as glm-5.3 and has been serving deepseek-flash, which the pool registers for zcode too.
+  const zcode = [POOL[1], entry("deepseek-flash", "zcode", "subscription")];
   const log = { seen: parseZcodeRows(ZCODE_ROWS) };
-  assert.equal(judgeLog(two[0], log, two, NOW).mismatch, undefined, "a registered sibling answering is not a stranger");
-  assert.equal(judgeLog(two[0], log, two, NOW).state, "available");
-  // OpenCode records the model each call asked for, so another model in its record is no substitution.
+  const swapped = decideRow(zcode[0], ctxFor(zcode[0], { log }));
+  assert.deepEqual([swapped.state, swapped.mismatch, swapped.served, swapped.post], ["refused", true, "deepseek-flash", true]);
+  assert.match(swapped.detail, /deepseek-flash answered at 2026-10-05T20:00Z, after GLM-5\.3 last answered at 2026-10-03T21:00Z/);
+  assert.match(mismatchLines([swapped])[0], /^zcode\/glm-5\.3 is registered as glm-5\.3 but is served as deepseek-flash\./);
+  // The model that is being served is not itself a mismatch.
+  const serving = judgeLog(zcode[1], log, NOW);
+  assert.deepEqual([serving.state, serving.mismatch], ["available", undefined]);
+  // Nothing of the registered model in the record at all, and a registered sibling answering: still a substitution.
+  const none = judgeLog(zcode[0], { seen: parseZcodeRows(ZCODE_ROWS.slice(0, 2)) }, NOW);
+  assert.deepEqual([none.state, none.mismatch, none.served], ["refused", true, "deepseek-flash"]);
+  assert.match(none.detail, /glm-5\.3 is not in the record/);
+  // The other model answering before the registered one last did is not what is served now.
+  const before = judgeLog(zcode[0], { seen: [{ model: "GLM-5.3", at: hoursAgo(1) }, { model: "deepseek-flash", at: hoursAgo(30) }] }, NOW);
+  assert.deepEqual([before.state, before.mismatch], ["available", undefined]);
+
+  // The same for Codex: its CLI serves gpt-6-nova, another GPT model the pool registers.
+  const codex = [POOL[2], entry("gpt-6-nova", "codex", "subscription")];
+  const codexLog = { seen: [{ model: "gpt-6-nova", at: hoursAgo(1) }, { model: "gpt-6-astra", at: hoursAgo(30) }] };
+  const astra = decideRow(codex[0], ctxFor(codex[0], { log: codexLog }));
+  assert.deepEqual([astra.state, astra.mismatch, astra.served], ["refused", true, "gpt-6-nova"]);
+  assert.match(mismatchLines([astra])[0], /^codex\/gpt-6-astra is registered as gpt-6-astra but is served as gpt-6-nova\./);
+  assert.deepEqual([judgeLog(codex[1], codexLog, NOW).state, judgeLog(codex[1], codexLog, NOW).mismatch], ["available", undefined]);
+  // Under another spelling, or an alias the pool gives, it is the same model.
+  assert.equal(judgeLog(codex[0], { seen: [{ model: "GPT-6_Astra", at: hoursAgo(1) }, { model: "gpt-6-nova", at: hoursAgo(30) }] }, NOW).state, "available");
+  const aliased = entry("glm-5.3", "zcode", "subscription", "home", { aliases: ["deepseek-flash"] });
+  assert.equal(judgeLog(aliased, log, NOW).state, "available");
+});
+
+test("opencode's record names the model each call asked for, so several models in it are no substitution", () => {
   const studio = [entry("GLM-5.3-Flash-4_8bit", "opencode", "google"), entry("DeepSeek-V4-Flash", "opencode", "google")];
   const opencode = { seen: parseOpencodeRows([opencodeRow("gemini-3.1-pro-preview", hoursAgo(1)), opencodeRow("DeepSeek-V4-Flash", hoursAgo(5)), opencodeRow("GLM-5.3-Flash-4_8bit", hoursAgo(9))]) };
-  for (const e of studio) assert.equal(judgeLog(e, opencode, studio, NOW).state, "available", e.id);
-  // An alias is the same model.
-  const aliased = entry("glm-5.3", "zcode", "subscription", "home", { aliases: ["deepseek-flash"] });
-  assert.equal(judgeLog(aliased, log, [aliased], NOW).state, "available");
+  for (const e of studio) {
+    const judged = judgeLog(e, opencode, NOW);
+    assert.deepEqual([judged.state, judged.mismatch, judged.absent], ["available", undefined, undefined], e.id);
+    const row = decideRow(e, ctxFor(e, { log: opencode }));
+    assert.deepEqual([row.state, row.mismatch, row.post], ["available", false, true], e.id);
+  }
+  // A model of its own that is simply not in a record full of others is not a mismatch either; it has no record.
+  const missing = decideRow(entry("qwen-3", "opencode", "local"), ctxFor(entry("qwen-3", "opencode", "local"), { log: opencode }));
+  assert.deepEqual([missing.label, missing.mismatch, missing.post], ["no recent record", false, false]);
 });
 
 test("a probe that is answered by another model is a mismatch; one that could not run says nothing about the model", () => {
@@ -501,6 +535,59 @@ test("each finding is reported under the runner's name, with the served model; m
   }
   const [text] = calls.printed;
   assert.match(text, /Reported 3 statuses to Atelier; 2 had nothing to report\.$/);
+});
+
+test("a harness serving another registered model is reported as refused with the model it served, for zcode and Codex", async (t) => {
+  const pool = [POOL[1], entry("deepseek-flash", "zcode", "subscription"), POOL[2], entry("gpt-6-nova", "codex", "subscription")];
+  const { io, calls } = fakeIo(t, {
+    pool,
+    io: { readCodex: () => ({ seen: [{ model: "gpt-6-nova", at: hoursAgo(1) }, { model: "gpt-6-astra", at: hoursAgo(30) }], limits: null }) },
+  });
+  await runDiscover(args("name=home:studio"), io);
+  const sent = bodies(calls);
+  assert.deepEqual(Object.keys(sent).sort(), ["deepseek-flash", "glm-5.3", "gpt-6-astra", "gpt-6-nova"]);
+  assert.deepEqual([sent["glm-5.3"].state, sent["glm-5.3"].served], ["refused", "deepseek-flash"]);
+  assert.deepEqual([sent["gpt-6-astra"].state, sent["gpt-6-astra"].served], ["refused", "gpt-6-nova"]);
+  assert.equal(sent["deepseek-flash"].state, "available");
+  assert.equal(sent["gpt-6-nova"].state, "available");
+  const [text] = calls.printed;
+  assert.match(text, /Mismatch:\n  zcode\/glm-5\.3 is registered as glm-5\.3 but is served as deepseek-flash\./);
+  assert.match(text, /\n  codex\/gpt-6-astra is registered as gpt-6-astra but is served as gpt-6-nova\./);
+  assert.doesNotMatch(text, /codex\/gpt-6-nova is registered|zcode\/deepseek-flash is registered/, "the model being served is not a mismatch");
+});
+
+test("a model absent from its harness's record is shown as no recent record, and nothing is reported for it", async (t) => {
+  const pool = [
+    entry("qwen-3", "opencode", "local"),             // opencode's record holds other models, not this one
+    entry("deepseek-v4", "opencode", "local"),        // and this one, which is reported as usual
+    entry("glm-5.3", "zcode", "subscription"),        // zcode's record is empty
+    entry("gpt-6-astra", "codex", "subscription"),    // no Codex turn names it
+  ];
+  const { io, calls } = fakeIo(t, {
+    pool,
+    rows: { zcode: [], opencode: [opencodeRow("deepseek-v4", hoursAgo(2)), opencodeRow("gemini-3.1-pro-preview", hoursAgo(1))] },
+    io: { readCodex: () => ({ seen: [], limits: { at: hoursAgo(1), windows: [{ name: "weekly", minutes: 10080, usedPercent: 81, resetsAt: NOW + 4 * 86_400_000 }] } }) },
+  });
+  await runDiscover(args("name=home:studio"), io);
+  assert.deepEqual(calls.report.map((r) => r.id), ["deepseek-v4"], "only the model with a record is reported; the others keep the status they had");
+  const [text] = calls.printed;
+  for (const re of [
+    /^qwen-3 +opencode +local +not known +no recent record +none$/m,
+    /^glm-5\.3 +zcode +subscription +not known +no recent record +none$/m,
+    /^gpt-6-astra +codex +subscription +not known +no recent record +none$/m,
+    /^deepseek-v4 +opencode +local +deepseek-v4 +available +log$/m,
+  ]) assert.match(text, re);
+  assert.doesNotMatch(text, /Mismatch:/);
+  assert.match(text, /qwen-3: qwen-3 is not in the record; not probed; add --probe/);
+  assert.match(text, /gpt-6-astra: gpt-6-astra is not in the record; 5-hour not reported; weekly 81% used.*; Codex is never probed/);
+  assert.match(text, /Codex use, from its log: .*weekly 81% used/, "its use is still shown");
+  assert.match(text, /Reported 1 status to Atelier; 3 had nothing to report\.$/);
+
+  // A dry run says the same and reports nothing.
+  const dry = fakeIo(t, { pool, rows: { zcode: [], opencode: [] }, io: { readCodex: () => ({ seen: [], limits: null }) } });
+  await runDiscover(args("dry-run"), dry.io);
+  assert.deepEqual(dry.calls.report, []);
+  assert.match(dry.calls.printed[0], /^qwen-3 +opencode +local +not known +no recent record +none$/m);
 });
 
 test("with --probe, one minimal request per model that may be probed, and never the Studio or Codex", async (t) => {
