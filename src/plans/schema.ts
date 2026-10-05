@@ -1,3 +1,4 @@
+import { TEXT_CONTROLS } from "../text.ts";
 import type { TaskKind } from "../models/registry.ts";
 
 export interface PlanPart {
@@ -24,29 +25,45 @@ export interface Plan {
 
 export type PlanResult = { ok: true; plan: Plan } | { ok: false; errors: string[] };
 
+// Limits for the design's small plans. Lengths count UTF-16 code units after
+// NFC normalization and cleaning; list limits count entries before deduplication.
+export const PLAN_LIMITS = {
+  parts: 12,
+  goal: 2000, title: 80, key: 80, brief: 2000, actor: 80, reason: 2000,
+  scope: { count: 6, entry: 2000 },
+  dependsOn: { count: 12, entry: 80 },
+  provides: { count: 12, entry: 80 },
+  uses: { count: 12, entry: 80 },
+  acceptance: { count: 12, entry: 2000 },
+  tests: { count: 12, entry: 2000 },
+} as const;
+
 const TASK_KINDS = ["mechanical-edit", "feature", "refactor", "tests", "docs", "ui", "research"] as const satisfies readonly TaskKind[];
 const PART_FIELDS = ["key", "title", "kind", "taskKind", "scope", "dependsOn", "provides", "uses", "brief", "acceptance", "tests", "size", "prefer"];
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim();
+const plain = (s: string) => s.normalize("NFC").replace(TEXT_CONTROLS, " ").trim();
 
 export function parsePlan(value: unknown): PlanResult {
   const errors: string[] = [];
   const unknownFields = (v: Record<string, unknown>, allowed: readonly string[], at: string) => {
     for (const field of Object.keys(v)) if (!allowed.includes(field)) errors.push(`${at}.${plain(field)}: unknown field`);
   };
-  const string = (v: unknown, at: string): string => {
+  const string = (v: unknown, at: string, max: number): string => {
     if (typeof v !== "string" || !plain(v)) {
       errors.push(`${at}: must be a non-empty string`);
       return "";
     }
-    return plain(v);
+    const cleaned = plain(v);
+    if (cleaned.length > max) errors.push(`${at}: must contain at most ${max} characters`);
+    return cleaned;
   };
-  const list = (v: unknown, at: string): string[] => {
+  const list = (v: unknown, at: string, limit: { count: number; entry: number }, unit = "entries"): string[] => {
     if (!Array.isArray(v)) {
       errors.push(`${at}: must be an array of strings`);
       return [];
     }
-    return v.map((entry, i) => string(entry, `${at}[${i}]`));
+    if (v.length > limit.count) errors.push(`${at}: must contain at most ${limit.count} ${unit}`);
+    return v.map((entry, i) => string(entry, `${at}[${i}]`, limit.entry));
   };
   const choice = <T extends string>(v: unknown, choices: readonly T[], at: string): T => {
     const cleaned = typeof v === "string" ? plain(v) : "";
@@ -56,9 +73,10 @@ export function parsePlan(value: unknown): PlanResult {
   if (!object(value)) return { ok: false, errors: ["plan: must be an object"] };
   unknownFields(value, ["schema", "goal", "parts"], "plan");
   const schema = choice(value.schema, ["atelier.plan.v1"], "plan.schema");
-  const goal = string(value.goal, "plan.goal");
+  const goal = string(value.goal, "plan.goal", PLAN_LIMITS.goal);
   if (!Array.isArray(value.parts)) return { ok: false, errors: [...errors, "plan.parts: must be an array"] };
-  if (value.parts.length > 12) errors.push("plan.parts: must contain at most 12 parts");
+  if (!value.parts.length) errors.push("plan.parts: must contain at least one part");
+  if (value.parts.length > PLAN_LIMITS.parts) errors.push(`plan.parts: must contain at most ${PLAN_LIMITS.parts} parts`);
   const parts: PlanPart[] = [];
   for (const [i, raw] of value.parts.entries()) {
     if (!object(raw)) {
@@ -67,27 +85,26 @@ export function parsePlan(value: unknown): PlanResult {
     }
     const at = typeof raw.key === "string" && plain(raw.key) ? `part ${plain(raw.key)}` : `part[${i}]`;
     unknownFields(raw, PART_FIELDS, at);
-    const key = string(raw.key, `${at}.key`);
-    const title = string(raw.title, `${at}.title`);
+    const key = string(raw.key, `${at}.key`, PLAN_LIMITS.key);
+    if (key && !/^[A-Za-z0-9-]+$/.test(key)) errors.push(`${at}.key: must contain only letters (A-Z, a-z), digits (0-9) and hyphens`);
+    const title = string(raw.title, `${at}.title`, PLAN_LIMITS.title);
     const kind = choice(raw.kind, ["interface", "build", "tests", "docs"], `${at}.kind`);
     const taskKind = choice(raw.taskKind, TASK_KINDS, `${at}.taskKind`);
-    const scope = list(raw.scope, `${at}.scope`);
+    const scope = list(raw.scope, `${at}.scope`, PLAN_LIMITS.scope, "globs");
     if (!scope.length) errors.push(`${at}.scope: must contain at least one glob`);
-    if (scope.length > 6) errors.push(`${at}.scope: must contain at most 6 globs`);
-    const dependsOn = list(raw.dependsOn, `${at}.dependsOn`);
-    const provides = list(raw.provides, `${at}.provides`);
-    const uses = list(raw.uses, `${at}.uses`);
-    const brief = string(raw.brief, `${at}.brief`);
-    if (brief.length > 2000) errors.push(`${at}.brief: must contain at most 2000 characters`);
-    const acceptance = list(raw.acceptance, `${at}.acceptance`);
-    const tests = list(raw.tests, `${at}.tests`);
+    const dependsOn = list(raw.dependsOn, `${at}.dependsOn`, PLAN_LIMITS.dependsOn);
+    const provides = list(raw.provides, `${at}.provides`, PLAN_LIMITS.provides);
+    const uses = list(raw.uses, `${at}.uses`, PLAN_LIMITS.uses);
+    const brief = string(raw.brief, `${at}.brief`, PLAN_LIMITS.brief);
+    const acceptance = list(raw.acceptance, `${at}.acceptance`, PLAN_LIMITS.acceptance);
+    const tests = list(raw.tests, `${at}.tests`, PLAN_LIMITS.tests);
     const size = choice(raw.size, ["S", "M"], `${at}.size`);
     let prefer: PlanPart["prefer"];
     if (Object.hasOwn(raw, "prefer")) {
       if (!object(raw.prefer)) errors.push(`${at}.prefer: must be an object`);
       else {
         unknownFields(raw.prefer, ["actor", "reason"], `${at}.prefer`);
-        prefer = { actor: string(raw.prefer.actor, `${at}.prefer.actor`), reason: string(raw.prefer.reason, `${at}.prefer.reason`) };
+        prefer = { actor: string(raw.prefer.actor, `${at}.prefer.actor`, PLAN_LIMITS.actor), reason: string(raw.prefer.reason, `${at}.prefer.reason`, PLAN_LIMITS.reason) };
       }
     }
     parts.push({ key, title, kind, taskKind, scope, dependsOn, provides, uses, brief, acceptance, tests, size, ...(prefer ? { prefer } : {}) });
@@ -95,11 +112,12 @@ export function parsePlan(value: unknown): PlanResult {
   return errors.length ? { ok: false, errors } : { ok: true, plan: { schema, goal, parts } };
 }
 
-// Object keys are sorted recursively. Array order remains part of the document.
+// Object keys are sorted recursively and string values are normalized to NFC,
+// so NFC and NFD forms hash alike. Array order remains part of the document.
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (object(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
-  return JSON.stringify(value);
+  return JSON.stringify(typeof value === "string" ? value.normalize("NFC") : value);
 }
 
 export async function planHash(plan: Plan): Promise<string> {

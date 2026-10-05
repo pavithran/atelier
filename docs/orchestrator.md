@@ -43,11 +43,16 @@ A plan is an item with `kind = "plan"`. That gives it everything an item already
 
 **Schema `atelier.plan.v1`.** A document with `schema: "atelier.plan.v1"`, a
 `goal` and a list of `parts`. Unknown fields are refused, including fields
-inside parts and preferences. Strings have control characters replaced with
-spaces and surrounding whitespace removed. Text fields and list entries
-must be non-empty strings. The brief limit applies after cleaning.
-Object keys are sorted recursively for the SHA-256 content hash; array
-order is preserved. Each part has:
+inside parts and preferences. Strings are normalized to NFC before validation.
+Controls, bidi controls and default ignorable code points are replaced with spaces, then surrounding
+whitespace is removed. Text fields and list entries must remain non-empty.
+Keys contain only ASCII letters, digits and hyphens.
+`PLAN_LIMITS` in `src/plans/schema.ts` defines all caps after cleaning,
+measured in UTF-16 code units. The caps retain the design's part, scope and
+brief sizes, use the display title size for short labels, and bound the other
+lists by the part budget. Object keys are sorted recursively for the SHA-256
+content hash; string values are normalized to NFC and array order is preserved.
+Each part has:
 - `key`, `title`
 - `kind`: interface, build, tests or docs
 - `taskKind`, from the registry's `TaskKind`
@@ -58,8 +63,8 @@ order is preserved. Each part has:
 - an optional preference: `prefer {actor, reason}`
 
 **Validation.** Pure functions in `src/plans/validate.ts`:
-- keys are unique, and a plan has at most 12 parts;
-- the dependency graph is acyclic (Kahn's algorithm), and an error names the cycle;
+- keys are unique, and a plan has at least one part and at most 12 parts;
+- the dependency graph is acyclic; Kahn's algorithm removes ready parts, then a traversal names cycles in every remaining branch;
 - any two parts whose scopes overlap under `scopesOverlap` must be ordered, one reachable from the other;
 - every `uses` resolves to a part that `provides` it and that the user reaches through its dependencies; interface parts depend only on interface parts;
 - sizing: at most 6 scope globs per part. Step 3 will allow size M only for models with a context window of 64K or more, or unknown. Qwen3-Coder is recorded as 32K.
