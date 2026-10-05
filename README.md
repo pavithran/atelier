@@ -97,6 +97,19 @@ merged.
   the policy says `overlapping_claims: refuse`; protected paths are the
   adapter's protected surfaces, the maintenance paths, and the agent and
   ControlPlane files themselves. Atelier never writes these files.
+- `atelier sync` and normal `atelier merge` re-read these files and refresh
+  the stored protected paths, eligible agents and overlap rule. The refresh
+  preserves paths recorded locally by `init --protect`. Approval, checks and
+  other project settings are kept. For a baseline with full history, `sync`
+  only refreshes this policy. Malformed or empty policy files produce a
+  warning and skip the refresh. Merge then uses the acceptance policy.
+- Acceptance records the project's protected paths on the server. Every
+  merge attempt compares the current ControlPlane paths with that snapshot.
+  If the accepted revision touches a newly protected path, review the task
+  and accept again, or pass `--policy-changed-ok` after reviewing the change.
+  Older acceptances without a snapshot are treated as having no recorded
+  protected paths. Re-acceptance checks the current gate and records a new
+  snapshot. `merge --cancel` does not read or refresh ControlPlane policy.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
@@ -341,6 +354,16 @@ Removal retains the Artifacts repository and all project Ledger data,
 including items, evidence and history. Deleting a repository requires a
 separate, deliberate action by the owner. Reinitialising the same project
 can register its retained Ledger again.
+
+## Operations
+
+`atelier ops COMMAND [ARGS...]` runs an operations toolkit kept outside this
+repository: work on the machines and services around the projects, such as
+surveys of every project, devices, backups and archives, which belongs to
+one owner's setup rather than to the Git platform. `ops` comes first:
+Atelier hands everything after it, unchanged and before reading anything
+itself, to the executable `ATELIER_OPS` names or to `atelier-ops` on `PATH`,
+and exits as it exits. Without one, `atelier ops` says so and exits 2.
 
 ## Local cache cleanup
 
