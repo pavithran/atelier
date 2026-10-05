@@ -1,0 +1,19 @@
+atelier cloudflare-git/t41 "Notifications: tell the owner when a decision is waiting, with its one-line brief"
+accepted head c18ae82d0b6c2f29bc8919e9544819ac951ed536
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-05T01:33:43.194Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-05T01:33:45.287Z
+REVIEW approve — pavi: Owner approval of the merge-only revision; GLM approved t41's own changes at 76e2868e.
+2026-10-04T17:31:07.306Z pavi item.created
+2026-10-05T01:17:18.846Z codex/gpt-6-astra item.claimed
+2026-10-05T01:17:23.427Z codex/gpt-6-astra fork.created
+2026-10-05T01:25:15.739Z codex/gpt-6-astra push.observed
+2026-10-05T01:26:20.103Z codex/gpt-6-astra evidence.observed
+2026-10-05T01:26:22.198Z codex/gpt-6-astra evidence.observed
+2026-10-05T01:26:22.736Z codex/gpt-6-astra item.submitted
+2026-10-05T01:31:30.440Z zcode/glm-5.3 review.approved
+2026-10-05T01:32:38.403Z codex/gpt-6-astra push.observed
+2026-10-05T01:33:43.276Z codex/gpt-6-astra evidence.observed
+2026-10-05T01:33:45.352Z codex/gpt-6-astra evidence.observed
+2026-10-05T01:33:45.944Z codex/gpt-6-astra item.submitted
+2026-10-05T01:33:46.451Z pavi review.approved
+2026-10-05T01:33:47.078Z pavi item.accepted
