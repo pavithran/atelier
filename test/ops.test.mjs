@@ -65,6 +65,9 @@ test("only an executable file counts: a directory or a plain file earlier on PAT
     mkdirSync(good); toolkit(good);
     const r = run(["ops", "fleet"], { PATH: `${asDir}:${plain}:${good}:/usr/bin:/bin` });
     assert.equal(r.status, 7, r.stderr);
+    // An empty PATH entry is the current directory, found before later entries.
+    const here = spawnSync(process.execPath, [cli, "ops", "fleet"], { cwd: good, encoding: "utf8", env: { PATH: `:${plain}:/usr/bin:/bin`, HOME: process.env.HOME } });
+    assert.equal(here.status, 7, here.stderr);
     // A relative ATELIER_OPS is the file it names from here, never a PATH lookup.
     const rel = spawnSync(process.execPath, [cli, "ops", "fleet"], { cwd: good, encoding: "utf8", env: { PATH: `${plain}:/usr/bin:/bin`, HOME: process.env.HOME, ATELIER_OPS: "atelier-ops" } });
     assert.equal(rel.status, 7, rel.stderr);
@@ -79,5 +82,11 @@ test("a toolkit ended by a signal ends atelier ops the same way", () => {
     chmodSync(exe, 0o755);
     const r = run(["ops", "fleet"], { ATELIER_OPS: exe });
     assert.equal(r.signal, "SIGTERM");
+    // Signals Node will not die of come back as the shell's 128 + number.
+    for (const [sig, num] of [["PIPE", 13], ["USR1", 30]]) {
+      writeFileSync(exe, `#!/bin/sh\nkill -${sig} $$\n`);
+      const q = run(["ops", "fleet"], { ATELIER_OPS: exe });
+      assert.ok(q.signal === `SIG${sig}` || q.status === 128 + num, `${sig}: status ${q.status}, signal ${q.signal}`);
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
