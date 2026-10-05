@@ -623,6 +623,39 @@ atelier runner --name home:studio
 Add `--once` to handle at most one task and exit, including when the queue
 is empty.
 
+`atelier runner --discover` reports what each home model's harness actually
+serves, which can differ from the model the pool registers. It reads the pool
+from Atelier and, for each home model, the record its harness keeps (Codex's
+session logs, zcode's `model_usage` table, opencode's `message` table), which
+it only reads and which needs no request. It prints a table and reports each
+model through the status route under the runner's name (`--name home:NAME`,
+which defaults to this machine's). `--probe` also sends one short prompt per
+model that can be probed (a Claude Code, zcode or Gemini API model; never a
+Codex or an AI Studio model). `--dry-run` prints the table and reports
+nothing. A harness that answers with a different model from the one
+registered is reported as refused, with the model it served, and listed under
+Mismatch. For zcode and Codex, whose records name the model the harness
+chose, any other model answering after the registered one last did counts,
+whether or not the pool registers it too; opencode's record names the model
+each call asked for, so it is not judged this way. A model with no recent
+record is shown as "no recent record" and nothing is reported for it, so its
+earlier status stands.
+
+A probe of a model that needs an API key finds it by a `keychain` map in the
+runner config, from the model's id to the name of its Keychain entry:
+
+```json
+"keychain": { "gemini-3.1-pro": "gemini.API_KEY" }
+```
+
+A name is looked up as `atelier.NAME` in the macOS Keychain, so this one is
+the item `atelier.gemini.API_KEY` (other systems use the store `atelier login
+--store` names). The map holds a name, never a key: a config that carries
+something shaped like a key is refused. A key is read only by that exact name,
+only for a model that is probed, and goes only into the environment of the
+process that needs it. It is never printed, reported or put in a URL, and no
+other Keychain entry is listed or read.
+
 The CLI's exit codes let the runner tell a task's own failure from the
 server's: 0 success, 1 a refusal or failure of the command, 3 a claim the
 server refused, 4 the server unavailable or a request that failed in
