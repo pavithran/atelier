@@ -558,5 +558,7 @@ it('Flow offers time and family filters that keep each other, and the showcase h
  expect(html).toContain('href="?since=1d&amp;family=openai"');
  expect(html).toContain('href="?since=7d"');
  expect(html).toMatch(/<a href="\?since=7d&amp;family=openai" aria-current="page"/);
+ expect(html).toMatch(/class="replay" href="\/flow\?since=7d&amp;family=openai&amp;replay=[0-9a-z]+#p"/);
+ expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).toMatch(/class="replay" href="\/flow\?replay=[0-9a-z]+#p"/);
  expect(renderShowcase([s],s.tally,'pavi','PAVI')).not.toContain('aria-label="Filters"');
 });
