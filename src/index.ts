@@ -3,7 +3,7 @@ import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, typ
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { cleanSummary } from "./brief";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type ReviewContext, type ProjectView } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, type Detail, type ReviewContext, type ProjectView } from "./ui";
 import { firstTaskAt, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
@@ -102,6 +102,8 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
+// Waiting decisions drawn as cards; the rest of the list stays as plain rows.
+const CARD_LIMIT = 12;
 
 // The actor that stands for the project owner, and the name the pages use.
 function ownerActor(env: Env): string {
@@ -698,9 +700,16 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const selectedItem = await L.item(task);
       selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
     }
+    // Each waiting decision is drawn as a card with its brief and its thread, which
+    // need the task's own record; a dozen cards is enough for one screen of work.
+    const details = new Map<string, Detail>();
+    const seen = new Set<string>();
+    await Promise.all(entries.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
+      try { details.set(`${x.project}/${x.itemId}`, (await ledger(env, x.project).detail(x.itemId)) as unknown as Detail); } catch { /* the row stays without its card */ }
+    }));
     const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
     const latest = busiest && !selected ? await story(busiest) : null;
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined));
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details));
   }
   if (parts[0] === "p" && parts.length === 2) {
     const L = ledger(env, parts[1]);
