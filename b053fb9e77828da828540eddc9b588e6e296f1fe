@@ -1,0 +1,49 @@
+atelier cloudflare-git/t88 "wrap and unwrap as Atelier commands for every project (proposed, awaiting PAVI): atelier unwrap prints where the project stands (status, the checkout's state, the state file, open handoff notes) and writes nothing; atelier wrap runs the project's check, refreshes the state file, commits, and records a session note on the ledger in place of ControlPlane's session receipt; atelier guide teaches both"
+accepted head b5a8880fe1ad67114844162f5bc40abd6bf3cb1b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-05T21:45:49.526Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-05T21:45:51.788Z
+REVIEW approve — pavi: glm-5.3 approved f28bab7e after six rounds of review; since then a merge of main whose only change beyond the merge is awaiting actor() in unwrap and wrap, which t43 made asynchronous. Suite passes with and without an agent token; typecheck passes.
+2026-10-05T19:34:14.260Z pavi item.created
+2026-10-05T19:37:51.259Z codex/gpt-6-astra item.claimed
+2026-10-05T19:37:54.827Z codex/gpt-6-astra fork.created
+2026-10-05T20:07:46.017Z codex/gpt-6-astra push.observed
+2026-10-05T20:08:55.315Z codex/gpt-6-astra evidence.observed
+2026-10-05T20:08:57.583Z codex/gpt-6-astra evidence.observed
+2026-10-05T20:08:58.285Z codex/gpt-6-astra item.submitted
+2026-10-05T20:19:03.147Z claude-code/sonnet-5.5 review.rejected
+2026-10-05T20:19:03.563Z codex/gpt-6-astra item.handoff
+2026-10-05T20:34:16.392Z claude-code/sonnet-5.5 push.observed
+2026-10-05T20:35:22.866Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T20:35:24.988Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T20:35:25.636Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T20:41:15.006Z codex/gpt-6-astra review.rejected
+2026-10-05T20:41:16.707Z claude-code/sonnet-5.5 push.observed
+2026-10-05T20:42:23.171Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T20:42:25.308Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T20:42:25.933Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T20:57:58.697Z codex/gpt-6-astra review.rejected
+2026-10-05T20:59:55.436Z claude-code/sonnet-5.5 push.observed
+2026-10-05T21:01:04.065Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:01:06.316Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:01:07.103Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T21:08:13.302Z codex/gpt-6-astra review.rejected
+2026-10-05T21:09:43.324Z claude-code/sonnet-5.5 push.observed
+2026-10-05T21:10:50.280Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:10:52.731Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:10:53.385Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T21:28:33.360Z codex/gpt-6-astra review.rejected
+2026-10-05T21:29:34.507Z claude-code/sonnet-5.5 push.observed
+2026-10-05T21:30:40.322Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:30:43.076Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:30:43.743Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T21:32:04.454Z claude-code/sonnet-5.5 push.observed
+2026-10-05T21:33:12.783Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:33:14.897Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:33:15.507Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T21:39:30.779Z opencode/glm-5.3 review.approved
+2026-10-05T21:44:35.274Z claude-code/sonnet-5.5 push.observed
+2026-10-05T21:45:49.625Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:45:51.867Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T21:45:52.643Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T21:45:53.460Z pavi review.approved
+2026-10-05T21:45:54.022Z pavi item.accepted
