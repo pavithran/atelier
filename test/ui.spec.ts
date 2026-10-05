@@ -562,3 +562,91 @@ it('the front door and the login link follow a showcase only while its project i
  expect(await (await go('/login')).text()).not.toContain('href="/showcase"');
  expect((await go('/showcase')).status).toBe(404);
 });
+
+// ── the comparison of one project with itself ──
+async function sameParts(){
+ const {renderShowcase}=await import('../src/ui');
+ const {buildStory}=await import('../src/graph');
+ const {buildImported}=await import('../src/import/history');
+ const unix=(d:string)=>Math.floor(Date.parse(d)/1000);
+ const at=(d:number,m=0)=>new Date(Date.UTC(2026,9,d,12,m)).toISOString();
+ // Two tasks taken from 5 Oct; the second is sent back once and approved once.
+ const evs=(p:string)=>[
+  {seq:1,at:at(5,0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}},
+  {seq:2,at:at(5,1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},
+  {seq:3,at:at(5,2),actor:'atelier/sandbox',kind:'evidence.observed',itemId:'t1',data:{claim:'npm test',passed:true,where:'sandbox'}},
+  {seq:4,at:at(6,0),actor:'claude-code/opus-5.5',kind:'item.claimed',itemId:'t2',data:{}},
+  {seq:5,at:at(6,1),actor:'zcode/glm-5.3',kind:'review.rejected',itemId:'t2',data:{}},
+  {seq:6,at:at(6,2),actor:'zcode/glm-5.3',kind:'review.approved',itemId:'t2',data:{}},
+  {seq:7,at:at(6,3),actor:'pavi',kind:'item.accepted',itemId:'t2',data:{}},
+ ].reverse();
+ const items=[{id:'t1',title:'One',state:'claimed'},{id:'t2',title:'Two',state:'accepted'}] as never;
+ const story=(p:string,title:string,partial=false)=>buildStory(p,items,evs(p) as never,'pavi',partial,title,{redact:true,ownerLabel:'PAVI'});
+ const history=(complete=true)=>buildImported([
+  {hash:'a',committedAt:unix('2026-09-04T12:00:00Z'),message:'x\n\nCo-Authored-By: Claude Opus 4.7 <n@x>'},
+  {hash:'b',committedAt:unix('2026-09-20T12:00:00Z'),message:'y'},
+  {hash:'c',committedAt:unix('2026-10-04T12:00:00Z'),message:'z\n\nAgent: codex/gpt-6'},
+ ],unix('2026-10-05T00:00:00Z'),complete);
+ return {renderShowcase,story,history};
+}
+const side=(html:string,cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</a>')[0];
+it('a project with history before its first task and tasks since is compared with itself',async()=>{
+ const {renderShowcase,story,history}=await sameParts();
+ const photo=story('photograph','<Photograph>');
+ const html=renderShowcase([photo],photo.tally,'pavi','PAVI',false,new Map([['photograph',history()]]));
+ const before=side(html,'before'),withs=side(html,'with');
+ expect(html).toContain('class="compare"');
+ expect(before).toContain('&lt;Photograph&gt;');expect(withs).toContain('&lt;Photograph&gt;');
+ expect(before).not.toContain('<Photograph>');
+ expect(before).toContain('<p class="meta compare-dates">4 Sept to 4 Oct</p>');
+ expect(withs).toContain('since 5 Oct · the same project');
+ expect(before).toContain('<b>67%</b> of commits name an agent');
+ expect(before).toContain('<b>3</b> commits');
+ expect(withs).toContain('<b>50%</b> of reviews sent the work back: 1 of 2.');
+ expect(withs).toContain('<b>2</b> tasks taken');
+ expect(withs).toContain('<b>1</b> checks run');
+ expect(withs).toContain('<b>2</b> reviews, 1 sending work back');
+ expect(withs).toContain('<b>1</b> decisions by PAVI');
+ expect(before).toContain('href="#before-photograph"');expect(withs).toContain('href="#photograph"');
+ expect(html).toContain('id="before-photograph"');expect(html).toContain('id="photograph"');
+ expect(before).toContain('It cannot say whether the checks passed');
+ expect(withs).toContain('Atelier records each step as it happens');
+});
+it('the comparison says when only the recent part of a history or record was read',async()=>{
+ const {renderShowcase,story,history}=await sameParts();
+ const photo=story('photograph','Photograph',true);
+ const html=renderShowcase([photo],photo.tally,'pavi','PAVI',false,new Map([['photograph',history(false)]]));
+ expect(side(html,'before')).toContain('4 Sept to 4 Oct · only the most recent part of the history was read');
+ expect(side(html,'before')).toContain('<b>3</b> commits (the most recent part)');
+ expect(side(html,'with')).toContain('since 5 Oct · only the most recent part of the record was read · the same project');
+ const whole=renderShowcase([story('photograph','Photograph')],photo.tally,'pavi','PAVI',false,new Map([['photograph',history(true)]]));
+ expect(side(whole,'before')).not.toContain('only the most recent part');
+ expect(side(whole,'with')).not.toContain('only the most recent part');
+});
+it('with no project holding both, the comparison stays across projects, and with several the busiest is chosen',async()=>{
+ const {renderShowcase,story,history}=await sameParts();
+ const {buildStory}=await import('../src/graph');
+ const built=story('built','Built');
+ const idle=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
+ const cross=renderShowcase([built,idle],built.tally,'pavi','PAVI',false,new Map([['old',history()]]));
+ expect(side(cross,'before')).toContain('href="#old"');expect(side(cross,'with')).toContain('href="#built"');
+ expect(cross).not.toContain('compare-dates');expect(cross).not.toContain('the same project');
+ expect(side(cross,'before')).toContain('>Old<');
+ // Two projects with both: the one with more tasks.
+ const one=buildStory('small',[{id:'t1',title:'One',state:'claimed'}] as never,[
+  {seq:2,at:'2026-10-05T12:01:00Z',actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}}] as never,'pavi',false,'Small',{redact:true,ownerLabel:'PAVI'});
+ const both=renderShowcase([one,built],one.tally,'pavi','PAVI',false,new Map([['small',history()],['built',history()]]));
+ expect(side(both,'before')).toContain('>Built<');expect(side(both,'with')).toContain('>Built<');
+ expect(side(both,'with')).toContain('<b>2</b> tasks taken');
+ expect(both.match(/class="compare-card before"/g)).toHaveLength(1);
+});
+it('the comparison dates follow the owner\'s time zone',async()=>{
+ const {renderShowcase,story,history}=await sameParts();
+ const {setTimeZone}=await import('../src/time');
+ const photo=story('photograph','Photograph');
+ try{
+  setTimeZone('Pacific/Kiritimati');
+  const html=renderShowcase([photo],photo.tally,'pavi','PAVI',false,new Map([['photograph',history()]]));
+  expect(side(html,'before')).toContain('5 Sept to 5 Oct');
+ }finally{setTimeZone(undefined);}
+});
