@@ -25,6 +25,10 @@ export interface ImportedHistory {
 }
 
 export const NO_AGENT = "No agent named";
+// The shape of an ImportedHistory and how its lanes are named. Cached copies
+// are keyed by it, so a change to either reaches the pages at once: raise it
+// whenever buildImported or agentsIn would give a different result.
+export const IMPORTED_FORMAT = 2;
 const FRESH_ROOT = /^Atelier-Fresh-History: [0-9a-f]{40,64}$/m;
 const NAME_LIMIT = 40;
 
