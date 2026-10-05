@@ -1,0 +1,14 @@
+atelier cloudflare-git/t97 "The LFS push test splits its hook log on spaces, so it fails when the fixture lives under a path with a space (the main checkout's .cache under Mobile Documents); separate the fields with a tab"
+accepted head c5f42405d000b787bd0234f88852cb1c7f76ed2b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T21:50:51.365Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T21:50:53.374Z
+REVIEW approve — pavi: Test-only fix; the fixed test passes in the main checkout, where the old one failed; suite passes.
+2026-10-05T21:48:16.747Z pavi item.created
+2026-10-05T21:48:17.569Z claude-code/opus-5.5 item.claimed
+2026-10-05T21:48:21.867Z claude-code/opus-5.5 fork.created
+2026-10-05T21:49:42.728Z claude-code/opus-5.5 push.observed
+2026-10-05T21:50:51.449Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:50:53.451Z claude-code/opus-5.5 evidence.observed
+2026-10-05T21:50:54.099Z claude-code/opus-5.5 item.submitted
+2026-10-05T21:51:01.238Z pavi review.approved
+2026-10-05T21:51:02.005Z pavi item.accepted
