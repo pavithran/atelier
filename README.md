@@ -186,6 +186,25 @@ config entry and then returns. It does not rename a server project, update
 its title or policy, or push a baseline. The server refuses a new project
 when its baseline repository belongs to another registered project.
 
+## Owner notifications
+
+Set `NTFY_TOPIC` to receive an ntfy notification when submission, review or
+check results put a submitted task in the owner's inbox:
+
+```sh
+printf 'TOPIC' | npx wrangler secret put NTFY_TOPIC
+```
+
+Topics on ntfy.sh are readable by anyone who knows the name. Use a long,
+random topic. The notification carries the task title and the task page's
+one-line decision brief, capped at 500 characters, with a link to that page.
+See [ntfy publishing](https://docs.ntfy.sh/publish/) for topic and header details.
+
+Without the setting, nothing is sent. The Ledger records at most one attempt
+per task and head, including failed attempts, across restarts. Delivery runs
+in the background; failures do not fail the action and are logged without
+the topic. A push that withdraws acceptance does not send a notification.
+
 ## Removing a project
 
 The owner can run `atelier projects remove NAME` to remove a project from
