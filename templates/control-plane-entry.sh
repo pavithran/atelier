@@ -6,8 +6,8 @@
 # runs it. It never contacts ControlPlane's checkout, its tools or its state.
 set -eu
 
-# Filled in when the project was adopted.
-atelier_project='__ATELIER_PROJECT__'
+# Filled in when the project was adopted, as one single-quoted shell word.
+atelier_project=__ATELIER_PROJECT__
 
 # What each ControlPlane command became, kept in the project so the list
 # travels with it and `bin/control-plane help` answers on its own.
