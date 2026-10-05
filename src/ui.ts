@@ -1,3 +1,4 @@
+import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. No scripts: every action is a plain form post, and the
 // Studio refreshes itself with a meta refresh, so the CSP can forbid script.
 // Colours, type, spacing and radii come from the portfolio theme (theme.css);
@@ -684,6 +685,7 @@ export function renderProjects(views: ProjectView[], ownerName: string | null = 
 export interface Standing {
   project: { name: string; title: string; repo: string };
   generatedAt: string;
+  session?: SessionNote;
   live: { id: string; title: string; state: string; owner: string | null; since: string | null }[];
   waiting: { id: string; title: string; kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string; brief: { verdict: string; line: string } | null }[];
   queued: { id: string; title: string; to: string; agent: string | null; model: string | null; by: string; at: string; note: string }[];
@@ -800,6 +802,7 @@ function standingSection(p: ProjectRecord, s: Standing): string {
   <p class="meta">Generated from Atelier's record as of ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints the same as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
   ${s.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
   ${groups || '<p class="empty">Nothing is held, waiting, queued or recently merged.</p>'}
+  ${s.session ? `<h3>Newest session</h3>${sessionNoteText(s.session).split("\n").map((line) => `<p class="meta">${e(line)}</p>`).join("")}` : ""}
   ${cp}
 </section>`;
 }

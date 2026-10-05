@@ -776,3 +776,14 @@ it('the last merges come from the merged items, however much newer work there is
  expect(s.merged[1]).toMatchObject({id:'t9',commit:null,at:'2026-10-04T10:15:00.000Z'});
  expect(s.partial.some((x)=>x.startsWith('t9: its summary may be missing'))).toBe(true);
 });
+
+it('the standing page shows the newest session with escaped reported text', async () => {
+ const f = await standingFixture();
+ const s = f.buildStanding(f.p, [], new Map(), 100, [], new Map(), new Date(time));
+ s.session = { actor: 'codex/gpt-6-astra', at: time, data: { summary: '<script>session</script>', next: 'Continue', head, dirty: true, checks: [{ command: 'npm test', passed: false, grade: 'reported' }], checksSkipped: false } };
+ const html = f.renderProject(f.p, [], [], 'PAVI', s);
+ expect(html).toContain('Newest session');
+ expect(html).toContain('&lt;script&gt;session&lt;/script&gt;');
+ expect(html).not.toContain('<script>session');
+ expect(html).toContain('Reported: npm test: failed');
+});
