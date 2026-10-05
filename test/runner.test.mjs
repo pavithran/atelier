@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, taskKey } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey } from "../cli/runner.mjs";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -576,7 +576,7 @@ test("CLI help lists the runner command", () => {
   assert.match(source.slice(source.indexOf("  help() {")), /runner --name home:NAME \[--once\] \[--config PATH\]/);
 });
 
-test("claim child failures release possible claims and do not retire a task", async (t) => {
+test("claim child failures release possible claims and retire the task after three failures", async (t) => {
   const { workspace, args } = gitWorkspace(t);
   for (const [claimCode, releaseFails] of [[1, false], [1, true], [4, false]]) {
     const commands = [], logs = [];
@@ -584,7 +584,7 @@ test("claim child failures release possible claims and do not retire a task", as
     await runRunner(args, {
       workspacePath: () => workspace, wait: async () => {},
       queue: async () => {
-        if (++polls === 4) { process.emit("SIGINT"); return []; }
+        if (++polls === 5) { process.emit("SIGINT"); return []; }
         return [assignment];
       },
       taskIO: { log: (s) => logs.push(s) },
@@ -597,7 +597,7 @@ test("claim child failures release possible claims and do not retire a task", as
     });
     assert.deepEqual(commands, ["claim", "release", "claim", "release", "claim", "release"]);
     assert.equal(logs.filter((s) => s.includes(releaseFails ? "release failed" : "released after claim step failed")).length, 3);
-    assert.ok(!logs.some((s) => s.includes("needs the owner's attention")));
+    assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
   }
 });
 
@@ -623,6 +623,7 @@ test("runner resets tracked edits and untracked files before every harness attem
         if (attempts === 1) {
           writeFileSync(join(workspace, "tracked"), "first attempt");
           mkdirSync(join(workspace, "leftover"));
+          execFileSync("git", ["init", "--quiet"], { cwd: join(workspace, "leftover") });
           writeFileSync(join(workspace, "leftover", "file"), "first attempt");
           return { code: 1 };
         }
@@ -645,7 +646,7 @@ test("runner resets tracked edits and untracked files before every harness attem
   assert.equal(logs.filter((s) => s === "workspace reset to HEAD and untracked files removed").length, 2);
 });
 
-test("server failures in finish do not retire a healthy task", async (t) => {
+test("server failures in finish retire the task after three failures", async (t) => {
   const { args } = gitWorkspace(t);
   const { io, logs } = fixture();
   const { cli, ...taskIO } = io;
@@ -654,7 +655,7 @@ test("server failures in finish do not retire a healthy task", async (t) => {
   await runRunner(args, {
     workspacePath: io.workspacePath, taskIO, wait: async () => {},
     queue: async () => {
-      if (++polls === 4) { process.emit("SIGINT"); return []; }
+      if (++polls === 5) { process.emit("SIGINT"); return []; }
       return [assignment];
     },
     executeChild: async (argv, options) => {
@@ -663,7 +664,7 @@ test("server failures in finish do not retire a healthy task", async (t) => {
     },
   });
   assert.equal(finishes, 3);
-  assert.ok(!logs.some((s) => s.includes("needs the owner's attention")));
+  assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
 });
 
 test("CLI marks network and server failures distinctly from task errors", async () => {
@@ -692,4 +693,80 @@ test("workspace preparation and HEAD read failures do not count as task failures
     assert.equal(failureCount(1, state), 1);
     if (failure === "reset") assert.ok(!calls.some((c) => c.harness));
   }
+});
+
+test("infrastructure failures are consecutive and separate from task failures", () => {
+  assert.equal(infrastructureFailureCount(2, { phase: "failed", taskFailure: false }), 3);
+  for (const state of [{ phase: "submitted" }, { phase: "failed", taskFailure: true },
+    { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
+    assert.equal(infrastructureFailureCount(2, state), 0);
+  }
+});
+
+test("real runner caps reset, claim and finish failures while serving the next task each poll", async (t) => {
+  for (const failure of ["reset", "claim", "finish"]) {
+    const { dir, workspace, args } = gitWorkspace(t);
+    const healthy = join(dir, "t14");
+    execFileSync("git", ["clone", "--quiet", workspace, healthy]);
+    execFileSync("git", ["config", "user.name", "Runner test"], { cwd: healthy });
+    execFileSync("git", ["config", "user.email", "runner@example.test"], { cwd: healthy });
+    if (failure === "reset") writeFileSync(join(workspace, ".git", "index.lock"), "stale");
+    const claims = [], releases = [], runs = [], finishes = [], logs = [];
+    let polls = 0;
+    await runRunner(args, {
+      workspacePath: (_, id) => join(dir, id), wait: async () => {},
+      queue: async () => {
+        if (++polls === 5) { process.emit("SIGINT"); return []; }
+        return [assignment, { ...assignment, item: { ...assignment.item, id: "t14" } }]
+          .map((task) => ({ ...task, item: { ...task.item, updatedAt: String(polls) } }));
+      },
+      taskIO: { log: (s) => logs.push(s) },
+      executeChild: async (argv, options) => {
+        if (argv[0] === "git") return execute(argv, options);
+        if (argv[0] === "opencode") {
+          runs.push([polls, options.cwd]);
+          return execute(["git", "commit", "--quiet", "--allow-empty", "-m", "work"], options);
+        }
+        const [command, id] = argv.slice(2);
+        if (command === "claim") claims.push([polls, id]);
+        if (command === "release") releases.push(id);
+        if (command === "finish") finishes.push(id);
+        const code = id === "t13" && command === failure ? 4 : 0;
+        return execute([process.execPath, "-e", `if (${code}) console.error('${failure} unavailable'); process.exit(${code})`], options);
+      },
+    });
+    assert.deepEqual(claims, [[1, "t13"], [1, "t14"], [2, "t13"], [2, "t14"], [3, "t13"], [3, "t14"], [4, "t14"]]);
+    assert.equal(runs.filter(([, cwd]) => cwd === workspace).length, failure === "finish" ? 3 : 0);
+    assert.equal(finishes.filter((id) => id === "t13").length, failure === "finish" ? 3 : 0);
+    assert.deepEqual(releases, failure === "finish" ? [] : ["t13", "t13", "t13"]);
+    const attention = logs.filter((s) => s.includes("needs the owner's attention"));
+    assert.equal(attention.length, 1);
+    assert.match(attention[0], /atelier\/t13.*3 consecutive infrastructure failures/);
+    assert.ok(attention[0].includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
+    if (failure === "reset") assert.equal(readFileSync(join(workspace, ".git", "index.lock"), "utf8"), "stale");
+  }
+});
+
+test("interrupt during the initial HEAD read releases the claim without resetting", async (t) => {
+  const { workspace, args } = gitWorkspace(t);
+  const commands = [], logs = [];
+  let reads = 0;
+  await runRunner({ ...args, once: true }, {
+    workspacePath: () => workspace, queue: async () => [assignment],
+    taskIO: { log: (s) => logs.push(s) },
+    executeChild: async (argv, options) => {
+      if (argv[0] === "git") {
+        assert.equal(argv[1], "rev-parse");
+        if (++reads === 1) process.emit("SIGINT");
+        assert.equal(options.signal, undefined);
+        assert.equal(options.timeoutMs, 5000);
+        return execute(argv, options);
+      }
+      commands.push(argv[2]);
+      return execute([process.execPath, "-e", ""], options);
+    },
+  });
+  assert.deepEqual(commands, ["claim", "release"]);
+  assert.equal(reads, 2);
+  assert.ok(logs.includes("released: no new commit"));
 });

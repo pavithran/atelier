@@ -134,7 +134,8 @@ export async function runTask(assignment, config, name, io) {
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
     claimed = true;
     advance({ type: "claim" });
-    before = await io.head(workspace);
+    before = await io.head(workspace, { cleanup: true });
+    if (io.stopped()) throw new Error("interrupted");
     await io.reset(workspace);
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
@@ -187,6 +188,10 @@ export function failureCount(count, state) {
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
 
+export function infrastructureFailureCount(count, state) {
+  return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped ? count + 1 : 0;
+}
+
 export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
@@ -200,7 +205,7 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
   };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) process.on(signal, stop);
-  const refused = new Set(), failures = new Map();
+  const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   const io = {
     workspacePath, log: line, stopped: () => controller.signal.aborted,
@@ -210,8 +215,8 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     reset: async (cwd) => {
-      for (const args of [["reset", "--hard", "HEAD"], ["clean", "-fd"]]) {
-        await checked(["git", ...args], { cwd, capture: true, signal: controller.signal }, executeChild);
+      for (const args of [["reset", "--hard", "HEAD"], ["clean", "-ffd"]]) {
+        await checked(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
       }
     },
     harness: (argv, cwd) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }),
@@ -225,14 +230,18 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         const tasks = await queue(offer, controller.signal);
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
-        for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2)) {
+        for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
+          (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
           state = await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
           const key = taskKey(task), count = failureCount(failures.get(key) ?? 0, state);
           failures.set(key, count);
           if (count === 2) io.log(`${task.project}/${task.item.id} needs the owner's attention after 2 failures; skipped for this process`);
-          if (!state.claimRefused && !state.skipped) break;
-          refused.add(refusedKey(task));
+          const infrastructureCount = infrastructureFailureCount(infrastructureFailures.get(key) ?? 0, state);
+          infrastructureFailures.set(key, infrastructureCount);
+          if (infrastructureCount === 3) io.log(`${task.project}/${task.item.id} needs the owner's attention after 3 consecutive infrastructure failures: ${state.reason}; skipped for this process`);
+          if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }

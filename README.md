@@ -270,9 +270,19 @@ and runs its configured harness in the claimed workspace. The brief is kept
 outside that workspace. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
-in place for inspection. After two failures, that task is skipped for the rest
-of the runner process and logged as needing the owner's attention. Project
-names rejected by runner validation are skipped and remembered so other tasks
+in place for inspection. Two counters are kept for each project and task id,
+across revision changes. The task counter never resets. Two task failures,
+including harness failures and finish failures other than exit 4, skip the
+task for the rest of the process. A separate counter skips it after three consecutive infrastructure failures,
+including claim errors other than refusals, workspace preparation errors,
+HEAD read errors after successful harness exits, and finish exit 4. This
+counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
+increase either counter. Interruptions stop the runner without updating either
+counter. An infrastructure failure moves on to the next offered task in the
+same poll; `--once` still handles at most one task.
+Reaching either cap logs that the task needs the owner's attention; the
+infrastructure message includes the reason. Project names rejected by runner
+validation are skipped and remembered so other tasks
 can run.
 SIGINT stops polling and interrupts the active child process. A second
 interrupt exits immediately.
