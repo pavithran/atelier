@@ -68,3 +68,16 @@ test("CLI removal keeps local config on refusal and removes it on success", () =
   assert.deepEqual(JSON.parse(calls()[1].body), { force: true });
   assert.match(removed.stdout, /Artifacts repository and project Ledger data are retained/);
 }));
+
+test("CLI removal says which local settings were dropped, including notesRemote", () => fixture(({ command, initial }) => {
+  const removed = command(["projects", "remove", "weblog", "--force"]);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.match(removed.stdout, /Local settings dropped: path .+, branch main, notesRemote origin\./);
+  assert.ok(removed.stdout.includes(`path ${initial.projects.weblog.path}`));
+}));
+
+test("CLI removal of a project with no local entry names no dropped settings", () => fixture(({ command }) => {
+  const removed = command(["projects", "remove", "elsewhere"]);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.doesNotMatch(removed.stdout, /Local settings dropped/);
+}));
