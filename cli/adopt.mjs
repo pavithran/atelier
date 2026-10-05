@@ -222,7 +222,10 @@ export function linkedPart(root, path) {
 // same checks hold there — and again with the task's workspace, which is what
 // the agent finishing the task works in.
 export function adoption({ project, checkout, workspace, guide, template = readFileSync(TEMPLATE, "utf8") }) {
-  const paste = existsSync(join(workspace, "bin", "control-plane-paste"));
+  // Any entry counts, a dangling link included: it may resolve again once the
+  // move is merged back, and would then still run ControlPlane's paste.
+  const pastePath = join(workspace, "bin", "control-plane-paste");
+  const paste = existsSync(pastePath) || isLink(pastePath);
   const paths = ["bin/control-plane", ...(paste ? ["bin/control-plane-paste"] : []), "AGENTS.md"];
   // A symlinked directory above a written path refuses the move; a symlinked
   // file is the move's to replace (writeMove unlinks it), except AGENTS.md,

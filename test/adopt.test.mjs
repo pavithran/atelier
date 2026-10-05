@@ -426,6 +426,21 @@ test("a symlinked bin/control-plane is replaced, not written through", async (t)
   assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");
 });
 
+test("a dangling bin/control-plane-paste link is replaced too", async (t) => {
+  // The link's target is never written, so it dangles in the checkout and in
+  // the workspace alike.
+  const f = await fixture(t, { links: { "bin/control-plane-paste": "gone/paste" } });
+  const before = tree(f.dir);
+  const r = await f.run(["adopt", "--project", "weblog"]);
+  assert.equal(r.status, 0, r.output);
+  const at = join(f.workspace, "bin", "control-plane-paste");
+  assert.ok(!lstatSync(at).isSymbolicLink(), "the dangling link is replaced by a regular file");
+  assert.match(f.read("bin/control-plane-paste"), /atelier handoff/);
+  assert.match(f.workspaceGit("ls-tree", "HEAD", "bin/control-plane-paste"), /^100755/);
+  assert.ok(!existsSync(join(f.outside, "gone")), "nothing is created where the link pointed");
+  assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");
+});
+
 test("a written path is refused when any directory above it is a symlink", (t) => {
   const root = mkdtempSync(join(tmpdir(), "atelier-links-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
