@@ -1,0 +1,22 @@
+atelier cloudflare-git/t74 "The CLI and runner skip Git LFS uploads on every push to Artifacts, which has no LFS: a project tracking files with LFS could not push a baseline, a workspace or a merge"
+accepted head 33f5a162f212bec8be11f2c31a08a53d64796512
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T15:43:54.781Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T15:43:57.201Z
+REVIEW approve — codex/gpt-6-astra: Re-review at HEAD: only clones skip LFS downloads; pushes skip uploads; the owner's checkout writes real LFS files on merge and reset. No blocking findings.
+2026-10-05T15:22:02.631Z pavi item.created
+2026-10-05T15:22:07.433Z claude-code/opus-5.5 item.claimed
+2026-10-05T15:22:11.590Z claude-code/opus-5.5 fork.created
+2026-10-05T15:23:52.835Z claude-code/opus-5.5 push.observed
+2026-10-05T15:25:00.410Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:25:03.422Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:25:04.188Z claude-code/opus-5.5 item.submitted
+2026-10-05T15:26:25.677Z claude-code/opus-5.5 push.observed
+2026-10-05T15:27:32.833Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:27:35.011Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:27:35.627Z claude-code/opus-5.5 item.submitted
+2026-10-05T15:42:47.668Z claude-code/opus-5.5 push.observed
+2026-10-05T15:43:55.103Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:43:57.302Z claude-code/opus-5.5 evidence.observed
+2026-10-05T15:43:58.116Z claude-code/opus-5.5 item.submitted
+2026-10-05T15:55:38.757Z codex/gpt-6-astra review.approved
+2026-10-05T15:55:39.404Z pavi item.accepted
