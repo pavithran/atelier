@@ -8,14 +8,15 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { redactGitArgs } from "./runner.mjs";
 
+import { adoption, SCOPE } from "./adopt.mjs";
 import { landingJournal, landingLock } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
@@ -192,6 +193,29 @@ function workspacePath(name, id) {
   return join(CACHE, "work", name, id);
 }
 
+// Take an item and prepare its workspace clone. The claim mints the write
+// token for this actor alone, and the clone is reused when it already exists.
+async function claimWorkspace(name, id, as, runner) {
+  const r = await call("POST", `${I(name, id)}/claim`, {}, as, runner ? { "x-atelier-runner": runner } : {});
+  const dir = workspacePath(name, id);
+  const fresh = !existsSync(join(dir, ".git"));
+  if (fresh) {
+    mkdirSync(dir, { recursive: true });
+    git([...auth(r.workspace.token), "clone", "--quiet", r.workspace.remote, dir]);
+  }
+  // The workspace keeps its token in its own .git/config, under Caches, not
+  // iCloud. Replace it before any fetch: git sends every configured header,
+  // and a revoked one alongside the fresh one is refused.
+  git(["config", "--local", "--replace-all", `http.${r.workspace.remote}.extraHeader`, `Authorization: Bearer ${r.workspace.token}`], { cwd: dir });
+  if (!fresh) git(["fetch", "--quiet", "origin"], { cwd: dir });
+  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch: r.workspace.defaultBranch })) {
+    git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
+  }
+  // Commit as the project's checkout does, not as this machine's global identity.
+  const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
+  return { item: r.item, workspace: r.workspace, dir, identity };
+}
+
 // ── clean-room checks ──────────────────────────────────────────────────────
 
 function cleanClone(remote, token, head, baseline, name) {
@@ -365,12 +389,41 @@ export function formatBrief(project, id, brief, origin) {
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 
+// The text `atelier guide` prints, and, without its heading, the section
+// `atelier adopt` inserts into a project's AGENTS.md. Kept in one place so the
+// two cannot drift apart.
+export function guideText() {
+  return `## Working through Atelier
+
+Several agents may work on this project at once. Each piece of work is an
+item with exactly one owner. Never edit the project checkout directly.
+
+1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
+   and prints its workspace, title, scope and note. Work only there.
+2. Commit your changes, then run \`atelier done "summary"\` in that workspace.
+   It pushes, runs required checks and submits only after they pass. Relay
+   its final line to the owner. The project owner accepts and merges.
+3. \`atelier inbox\` and \`atelier show ID\` print briefs you can relay to the owner.
+4. \`atelier ls --project NAME\` lists tasks. Ask the owner to create one if needed.
+5. Individual steps remain available: \`atelier claim\`, \`atelier push\`,
+   \`atelier check\` and \`atelier submit --summary "summary"\`.
+   \`atelier report "…"\` records a Reported claim, never an Observed pass.
+6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
+   or \`atelier release ID\`. Your write token is revoked either way.
+7. Reviewing someone else's item: \`atelier diff ID\`, then
+   \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
+   paths need approval from a different model than the owner's.
+8. \`atelier update\` rebases your workspace onto whatever has merged since.
+`;
+}
+
 // ── commands ───────────────────────────────────────────────────────────────
 
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 const usage = {
   start: "usage: atelier start ID [--as harness/model]",
   done: 'usage: atelier done "summary"',
+  adopt: "usage: atelier adopt --project NAME [--as harness/model]",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   projects: "usage: atelier projects remove NAME [--force]",
 };
@@ -503,6 +556,41 @@ const commands = {
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   },
 
+  // Move one project from ControlPlane to Atelier. This is itself an Atelier
+  // task: adopt creates it, claims it, and writes the forwarding entry point
+  // and the Atelier guide into its workspace, where the agent that finishes
+  // the task works. The checkout is read and reported on, never changed.
+  async adopt() {
+    const name = project();
+    const p = cfg.projects?.[name];
+    if (!p?.path) die(`${name} is not registered on this Mac; run atelier init in its checkout first`);
+    if (git(["status", "--porcelain"], { cwd: p.path })) die(`${p.path} has uncommitted changes; commit or set them aside before moving ${name}`);
+    const as = actor(OWNER);
+    const item = await call("POST", `${P(name)}/items`, { title: `Move ${name} from ControlPlane to Atelier`, scope: SCOPE }, as);
+    const { dir } = await claimWorkspace(name, item.id, as);
+    let plan;
+    try { plan = adoption({ project: name, checkout: p.path, workspace: dir, guide: guideText() }); }
+    catch (error) { die(error.message); }
+    for (const file of plan.files) {
+      const path = join(dir, file.path);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, file.text, file.mode ? { mode: file.mode } : {});
+      if (file.mode) chmodSync(path, file.mode);
+    }
+    git(["add", "--", ...plan.files.map((f) => f.path)], { cwd: dir });
+    git(["commit", "--quiet", "-m", plan.message], { cwd: dir });
+    console.log(`${item.id} is yours, ${as}. The move is committed here and not pushed:\n  cd ${JSON.stringify(dir)}`);
+    console.log(plan.leftovers.length
+      ? `\nLeftovers in ${p.path} for the agent finishing ${item.id}:`
+      : `\nNothing in ${p.path} is left over from ControlPlane.`);
+    for (const line of plan.leftovers) console.log(`  ${line}`);
+    // A task has no note field of its own, so the same list is recorded on it
+    // as reported claims, which the task's page shows to the reviewer and the
+    // owner. Reports are never counted as evidence.
+    for (const line of plan.leftovers) await call("POST", `${I(name, item.id)}/evidence`, { kind: "report", claim: line, head: item.head }, as);
+    if (plan.leftovers.length) console.log(`The same lines are recorded on ${item.id} as reported notes.`);
+  },
+
   // The project owner: push commits made directly in the checkout so new forks start from them.
   async publish() {
     const name = project();
@@ -546,26 +634,10 @@ const commands = {
     const name = project();
     const id = itemArg();
     const as = actor();
-    const r = await call("POST", `${I(name, id)}/claim`, {}, as, args.runner && args.runner !== true ? { "x-atelier-runner": String(args.runner) } : {});
-    const dir = workspacePath(name, id);
-    const fresh = !existsSync(join(dir, ".git"));
-    if (fresh) {
-      mkdirSync(dir, { recursive: true });
-      git([...auth(r.workspace.token), "clone", "--quiet", r.workspace.remote, dir]);
-    }
-    // The workspace keeps its token in its own .git/config, under Caches, not
-    // iCloud. Replace it before any fetch: git sends every configured header,
-    // and a revoked one alongside the fresh one is refused.
-    git(["config", "--local", "--replace-all", `http.${r.workspace.remote}.extraHeader`, `Authorization: Bearer ${r.workspace.token}`], { cwd: dir });
-    if (!fresh) git(["fetch", "--quiet", "origin"], { cwd: dir });
-    for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch: r.workspace.defaultBranch })) {
-      git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
-    }
-    // Commit as the project's checkout does, not as this machine's global identity.
-    const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
+    const { workspace, dir, identity } = await claimWorkspace(name, id, as, args.runner && args.runner !== true ? String(args.runner) : null);
     console.log(`${id} is yours, ${as}. Work here:\n  cd ${JSON.stringify(dir)}`);
     if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, as in the project checkout.`);
-    console.log(`Write token expires ${r.workspace.expiresAt}; run \`atelier claim ${id}\` again to refresh it.`);
+    console.log(`Write token expires ${workspace.expiresAt}; run \`atelier claim ${id}\` again to refresh it.`);
     console.log(args._[0] === "start" ? 'Then: commit, then atelier done "summary"' : `Then: commit → atelier push → atelier check → atelier submit`);
   },
 
@@ -1041,28 +1113,7 @@ const commands = {
   },
 
   guide() {
-    process.stdout.write(`## Working through Atelier
-
-Several agents may work on this project at once. Each piece of work is an
-item with exactly one owner. Never edit the project checkout directly.
-
-1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
-   and prints its workspace, title, scope and note. Work only there.
-2. Commit your changes, then run \`atelier done "summary"\` in that workspace.
-   It pushes, runs required checks and submits only after they pass. Relay
-   its final line to the owner. The project owner accepts and merges.
-3. \`atelier inbox\` and \`atelier show ID\` print briefs you can relay to the owner.
-4. \`atelier ls --project NAME\` lists tasks. Ask the owner to create one if needed.
-5. Individual steps remain available: \`atelier claim\`, \`atelier push\`,
-   \`atelier check\` and \`atelier submit --summary "summary"\`.
-   \`atelier report "…"\` records a Reported claim, never an Observed pass.
-6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
-   or \`atelier release ID\`. Your write token is revoked either way.
-7. Reviewing someone else's item: \`atelier diff ID\`, then
-   \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
-   paths need approval from a different model than the owner's.
-8. \`atelier update\` rebases your workspace onto whatever has merged since.
-`);
+    process.stdout.write(guideText());
   },
 
   help() {
@@ -1076,6 +1127,7 @@ Owner      accept ID · merge ID [--head SHA [--approve]] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects remove NAME [--force] · init --name NAME --rename-local
+           adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
 Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]
 Docs       guide   (paste into a project's AGENTS.md)
 
