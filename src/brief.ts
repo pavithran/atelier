@@ -7,7 +7,7 @@ import { DEFAULT_OWNER, evidenceAt, countingReviews, modelOf, stateLabel } from 
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
-export type Verdict = "accept" | "merge" | "review" | "wait" | "send back" | "decide";
+export type Verdict = "accept" | "merge" | "review" | "wait" | "send back" | "decide" | "none";
 
 export interface Brief {
   decided: string;
@@ -114,6 +114,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   const subject = `${item.id} ${rev}: ${title}.`;
   const decided =
     item.state === "merged" || item.state === "abandoned" ? `Nothing to decide: ${item.id} is ${stateLabel[item.state].toLowerCase()} ${rev}: ${title}.`
+    : recommendation.verdict === "none" ? `Nothing to decide: ${subject}`
     : recommendation.verdict === "merge" ? `Merge ${subject}`
     : recommendation.verdict === "send back" ? `Send ${item.id} back ${rev}: ${title}.`
     : recommendation.verdict === "review" ? `Review ${subject}`
@@ -142,7 +143,8 @@ interface Picture {
 // accept when the gate is ready; merge when accepted; send back when a review
 // at this head rejects or a required check failed; review when only an
 // independent approval of a protected change is missing; wait while checks are
-// pending; decide otherwise. A closed task has nothing to decide.
+// pending; decide otherwise. A closed task gets none: it is closed, so nothing
+// is waiting on the owner.
 function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   const { item, gate } = d;
   const state = item.state === "claimed" ? "in progress" : stateLabel[item.state].toLowerCase();
@@ -150,7 +152,11 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     return { verdict: "merge", reason: "Approval is recorded for this revision, and the merge runs in your local checkout." };
   }
   if (item.state === "merged" || item.state === "abandoned") {
-    return { verdict: "decide", reason: `The task is ${state}, so nothing is waiting on you.` };
+    // A merged task's own event carries the merge commit, when the record has it.
+    const merge = d.events.find((ev) => ev.itemId === item.id && ev.kind === "item.merged");
+    const commit = typeof merge?.data.mergeCommit === "string" ? merge.data.mergeCommit : "";
+    const closed = item.state === "abandoned" ? "abandoned" : commit ? `merged as ${commit.slice(0, 8)}` : "merged";
+    return { verdict: "none", reason: `The task is closed (${closed}), so nothing is waiting on you.` };
   }
   if (item.state === "submitted" && gate.ready) {
     return {
