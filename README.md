@@ -20,7 +20,7 @@ It rests on three rules.
    unless the deployment names another (see Setup).
    Work reaches the project only when the project owner accepts it and
    merges it. Changes to protected paths also need approval from a model
-   other than the item owner's, or from the project owner.
+   other than every recorded contributor's, or from the project owner.
 
 The web inbox answers one question, *what needs the project owner now?*, and ranks the
 things a person must decide above the things an agent must fix.
@@ -117,22 +117,22 @@ In detail:
 | Step | Who | What happens |
 | --- | --- | --- |
 | `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths, and an optional display title. |
-| `atelier new "title" --scope 'src/**'` | anyone | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
+| `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/`. |
 | `atelier push` | the item's owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
 | `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, measures which paths changed since the baseline, and records the results as Observed. A result for a head that has since moved is refused. |
 | `atelier report "…"` | anyone | Records a Reported claim. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
-| `atelier review t3 --approve` | a different agent, or the project owner | Required when the item changes a protected path. A reviewer of the same model as the owner does not count. |
+| `atelier review t3 --approve` | a different agent, or the project owner | Required when the item changes a protected path. A reviewer of the same model as any recorded contributor does not count. |
 | `atelier accept t3` | the project owner, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. |
 | `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
 observed; no rejection at that head; and, if a protected path changed, an
-approval at that head from a different model or from the project owner. What a check
-executes is protected automatically: a script it runs (`./check.sh`,
+approval at that head from a model different from each recorded contributor's
+model or from the project owner. What a check executes is protected automatically: a script it runs (`./check.sh`,
 `node scripts/verify.mjs`), and `package.json` when it goes through a package
 manager, whose scripts an item could otherwise rewrite. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such
@@ -154,7 +154,9 @@ merged.
   agent instructions, ControlPlane files and the files that run checks.
   Atelier never writes these policy files.
 - `claude-code/*` maps to `claude`, `codex/*` to `codex`, and `zcode/*`
-  and `opencode/glm*` to `glm`. Other actors map by model family name,
+  and `opencode/glm*` to `glm`. `antigravity/*` maps to `antigravity` for a
+  Gemini model; Antigravity also serves other vendors' models, which map by
+  their own family. Other actors map by model family name,
   such as `claude`, `gpt`, `gemini` or `qwen`, when that name is listed in
   the agent policy. An unmapped actor has no role. Claiming or receiving a
   handoff requires an available agent with `executor` in `eligible_roles`.
@@ -166,8 +168,9 @@ merged.
   `protected`. Otherwise it is `direct` only when direct execution is enabled
   and every changed path matches `direct.allowed_path_patterns`; all other
   changes are `coordinated`. A class absent from `allowed_classes` is refused.
-  Protected changes need approval from another model family, coordinated
-  changes need approval from another actor, and direct changes need no review.
+  Protected changes need approval from a model family different from every
+  recorded contributor, coordinated changes need approval from an actor who
+  did not contribute, and direct changes need no review.
   Required agent reviews must qualify as assessors. The project owner can
   also provide the required review. Unrecognised model families
   cannot establish independent protected review. Project owner acceptance is
@@ -270,12 +273,12 @@ Enforced by construction:
 
 Trusted, and stated here so nobody assumes otherwise:
 
-- **Identity is declared.** Every caller shares one API token, and the actor
-  name (`harness/model`) is what the caller says it is. The token proves only
-  that the caller is one of the project owner's own tools. The write token is what stops
-  a non-owner from pushing.
+- **Agent tokens prove identity.** An agent token binds requests to one actor
+  and optionally to projects. The owner token still permits declared actors
+  for orchestration. Keep it with the owner's tools. A workspace write token
+  controls Git pushes and is separate from an API token.
 - **Check execution is explicit.** Local checks run in a clean clone at
-  the verified head, but a caller with the shared token can forge local
+  the verified head, but a caller authorised to record checks can forge local
   evidence. Cloudflare container checks execute on the server and are
   available with `--sandbox`; `sandboxOnly` policy requires that evidence.
   The container integration still needs deployment and a live runtime check.
@@ -336,7 +339,37 @@ reports no meaningful mode; the file sits in your own profile. Setting
 `ATELIER_SECRET_STORE` to `file`, `keychain` or `secret-service` picks a
 store outright. The `ATELIER_TOKEN` environment variable overrides every
 store. A value is handed to a store on its standard input and never as a
-command line argument, and Atelier prints no token.
+command line argument, and login prints no token.
+
+Give each agent its own token from an owner session:
+
+```sh
+atelier token issue --as codex/gpt-6-astra --project my-project --days 30 --label "Task runner"
+atelier token ls
+atelier token revoke ID
+```
+
+Issuing prints the token once. Set `ATELIER_TOKEN` to that value in the
+agent's session. The issue command never writes it to a file. The CLI
+obtains the bound actor from the server, so `--as` is optional and must
+match when supplied. Tokens expire after 30 days by default; `--days`
+accepts 1 through 365. Repeat `--project` to grant several projects; omitting
+it grants all projects. Revocation prevents later API requests. Existing
+Artifacts Git credentials have their own lifetime and are not revoked by
+revoking an API token.
+
+Only the SHA-256 hash and token metadata are stored on the server. Lists
+never contain the token or its hash. Agent tokens can read their projects,
+claim, push, record checks and reports, submit, hand off, release, and review
+as themselves. Handoff targets must be harness/model identities other than
+the project owner. Every actor who held an item counts as a contributor for
+review independence, even if a Git push was first observed after handoff or
+release. Recorded push contributors also remain. Agent tokens cannot reopen accepted work by reviewing it.
+Creating tasks, owner decisions, project settings, model
+registry access, dispatch configuration and token management require the
+owner token. Agent tokens cannot sign in to the browser. Events from agent
+requests show `token proved` beside the actor; this proves identity, not the
+truth of a reported result.
 
 The project owner acts as the actor `owner`, and the inbox asks "What needs
 you now?". To use your own actor and name, set `OWNER_ACTOR` and
@@ -589,7 +622,7 @@ the dispatch. A runner that gives up releases the task, and it waits in the
 queue again. `atelier queue` lists everything waiting. If a project cannot be read, the
 response names it in the `X-Atelier-Incomplete` header and `atelier queue` says so.
 
-A runner's name is declared, like every actor's; what a dispatch guarantees
+A runner's name is declared independently of its actor token; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits.
 
@@ -631,7 +664,7 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
 }
 ```
 
-Agent ids are `opencode`, `claude-code`, `codex`, or `zcode`. Set model ids
+Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
 arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
 the runner invokes them directly without a shell. The example requires that
@@ -647,6 +680,39 @@ atelier runner --name home:studio
 
 Add `--once` to handle at most one task and exit, including when the queue
 is empty.
+
+`atelier runner --discover` reports what each home model's harness actually
+serves, which can differ from the model the pool registers. It reads the pool
+from Atelier and, for each home model, the record its harness keeps (Codex's
+session logs, zcode's `model_usage` table, opencode's `message` table), which
+it only reads and which needs no request. It prints a table and reports each
+model through the status route under the runner's name (`--name home:NAME`,
+which defaults to this machine's). `--probe` also sends one short prompt per
+model that can be probed (a Claude Code, zcode or Gemini API model; never a
+Codex or an AI Studio model). `--dry-run` prints the table and reports
+nothing. A harness that answers with a different model from the one
+registered is reported as refused, with the model it served, and listed under
+Mismatch. For zcode and Codex, whose records name the model the harness
+chose, any other model answering after the registered one last did counts,
+whether or not the pool registers it too; opencode's record names the model
+each call asked for, so it is not judged this way. A model with no recent
+record is shown as "no recent record" and nothing is reported for it, so its
+earlier status stands.
+
+A probe of a model that needs an API key finds it by a `keychain` map in the
+runner config, from the model's id to the name of its Keychain entry:
+
+```json
+"keychain": { "gemini-3.1-pro": "gemini.API_KEY" }
+```
+
+A name is looked up as `atelier.NAME` in the macOS Keychain, so this one is
+the item `atelier.gemini.API_KEY` (other systems use the store `atelier login
+--store` names). The map holds a name, never a key: a config that carries
+something shaped like a key is refused. A key is read only by that exact name,
+only for a model that is probed, and goes only into the environment of the
+process that needs it. It is never printed, reported or put in a URL, and no
+other Keychain entry is listed or read.
 
 The CLI's exit codes let the runner tell a task's own failure from the
 server's: 0 success, 1 a refusal or failure of the command, 3 a claim the
