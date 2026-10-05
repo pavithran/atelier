@@ -863,7 +863,7 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
   if (!events.length) return '<p class="empty">No activity recorded yet.</p>';
   return `<ol class="timeline">${events.map((v) => `<li><span class="timeline-dot"></span><div>
     <strong>${e(v.kind.replaceAll(".", " ").replaceAll("_", " "))}</strong>${withItem && v.itemId ? ` · ${e(v.itemId)}` : ""}
-    <p class="meta">${e(v.actor)} · ${when(v.at)}</p>
+    <p class="meta">${e(v.actor)}${v.proved ? " · token proved" : ""} · ${when(v.at)}</p>
     <details><summary>Details</summary><pre>${e(JSON.stringify(v.data, null, 2))}</pre></details></div></li>`).join("")}</ol>`;
 }
 
