@@ -876,7 +876,7 @@ export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null
 </div>`, closed ? "History" : "Decisions", ownerName);
 }
 
-const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad" };
+const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad", none: "" };
 
 // The brief sits above the diff: what is decided, what the agent said, what the
 // record shows, and what it points to.
