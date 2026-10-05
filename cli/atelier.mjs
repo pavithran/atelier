@@ -3,16 +3,20 @@
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
-// sees in Artifacts. Only `atelier merge`, run by the project owner, touches
-// the checkout.
+// sees in Artifacts. Session checks run in the registered checkout and are
+// Reported. Wrap commits and updates the baseline; checkout remote pushes are opt-in.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
+
+import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
@@ -63,17 +67,24 @@ function apiToken() {
 }
 
 // The environment a git command runs with. Artifacts has no Git LFS: a push
-// would try to upload a project's LFS objects and fail, so every push skips
-// the upload and Artifacts holds pointer files. A clone, always a disposable
-// copy (a task workspace, a check run), keeps the pointers rather than trying
-// to download what they point to. Nothing else skips the download: a merge or
-// reset in the owner's own checkout writes real LFS files as git-lfs would.
-export function gitEnv(base = process.env, extra = {}, args = []) {
-  return { ...base, GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_PUSH: "1", ...(args.includes("clone") ? { GIT_LFS_SKIP_SMUDGE: "1" } : {}), ...extra };
+// would try to upload a project's LFS objects and fail, so every push to
+// Atelier skips the upload and Artifacts holds pointer files. A clone, always
+// a disposable copy (a task workspace, a check run), keeps the pointers rather
+// than trying to download what they point to. Nothing else skips the download:
+// a merge or reset in the owner's own checkout writes real LFS files as
+// git-lfs would. `ownerRemote` marks a push to one of the owner's own remotes
+// (wrap --push). Those remotes need the project's LFS objects, so the upload
+// runs: GIT_LFS_SKIP_PUSH is left out whatever the caller's environment holds,
+// and a remote that has the commits without their LFS objects is never
+// reported as pushed.
+export function gitEnv(base = process.env, extra = {}, args = [], ownerRemote = false) {
+  const env = { ...base, GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_PUSH: "1", ...(args.includes("clone") ? { GIT_LFS_SKIP_SMUDGE: "1" } : {}), ...extra };
+  if (ownerRemote) delete env.GIT_LFS_SKIP_PUSH;
+  return env;
 }
 
 function git(args, opts = {}) {
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env, args), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
@@ -549,6 +560,18 @@ item with exactly one owner. Never edit the project checkout directly.
    \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
    paths need approval from a different model than the owner's.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
+
+For each session the project owner runs in the registered checkout:
+
+1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
+2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout; it commits and updates the baseline. Add \`--push\` to push each checkout remote. It never deploys or publishes a release.
+3. ${FILING_RELAY} Use repeatable \`--found TEXT\` on wrap to file tasks in this project.
+
+Session notes keep metadata only, never prompts, transcripts or file contents.
+Material for the owner to copy is one complete fenced block with a language
+tag: bash for a command the owner runs, text for prose, a brief or an envelope.
+Never leave prose the owner must select by hand. Save a copy under
+~/Documents/ai-project-data/<project>/, never the portfolio root.
 `;
 }
 
@@ -556,6 +579,8 @@ item with exactly one owner. Never edit the project checkout directly.
 
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 const usage = {
+  unwrap: "usage: atelier unwrap [--project P]",
+  wrap: 'usage: atelier wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]',
   start: "usage: atelier start ID [--as harness/model]",
   done: 'usage: atelier done "summary"',
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
@@ -571,13 +596,17 @@ async function checkoutStatus(name, as) {
   return flat(await checkoutStatusLine(name, as));
 }
 
-async function checkoutStatusLine(name, as) {
+async function checkoutStatusLine(name, as, readOnly = false) {
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) return checkoutLine({ name, registered: false });
   const cwd = p.path, fresh = p.fresh === true;
-  const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-  const listed = git([...auth(base.token), "ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd });
-  const baselineHead = listed.split(/\s/)[0];
+  let baselineHead;
+  if (readOnly) baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
+  else {
+    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    const listed = git([...auth(base.token), "ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd });
+    baselineHead = listed.split(/\s/)[0];
+  }
   if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
   // The registered branch is compared, whatever is checked out: the line
   // names that branch, so its head is what it must describe.
@@ -591,6 +620,77 @@ async function checkoutStatusLine(name, as) {
     contains: !fresh && has(baselineHead) && is(baselineHead, head),
     ahead: !!paired && head !== paired && is(paired, head),
   });
+}
+
+function sessionCheckout(name, requireHere = false) {
+  const cwd = cfg.projects?.[name]?.path;
+  if (!cwd || !existsSync(cwd)) {
+    if (requireHere) die("wrap needs a registered local checkout");
+    return null;
+  }
+  if (requireHere) {
+    const top = git(["rev-parse", "--show-toplevel"]);
+    if (realpathSync(top) !== realpathSync(cwd)) die("run wrap in the registered project checkout");
+  }
+  return cwd;
+}
+
+function sessionFiles(cwd) {
+  const paths = ["docs/STATE.md", "STATE.md"].filter((p) => existsSync(join(cwd, p)));
+  const state = stateFile(paths);
+  const contents = state ? readFileSync(join(cwd, state), "utf8") : "";
+  const scan = (dir, recursive) => {
+    if (!existsSync(join(cwd, dir))) return;
+    for (const entry of readdirSync(join(cwd, dir), { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isFile() && entry.name.endsWith(".md")) paths.push(path);
+      else if (recursive && entry.isDirectory()) scan(path, true);
+    }
+  };
+  scan("docs/handoffs", true);
+  scan("docs", false);
+  const modified = Object.fromEntries(paths.map((path) => [path, statSync(join(cwd, path)).mtime.toISOString()]));
+  return { state, contents, paths, modified };
+}
+
+function sessionTree(cwd) {
+  return git(["--no-optional-locks", "status", "--short", "--untracked-files=all"], { cwd });
+}
+
+// What wrap needs before it stages anything: asked first, and again after the
+// registered checks, which can change the tree. It refuses a detached HEAD, a
+// merge, cherry-pick, revert, rebase or landing in progress, unmerged files in
+// the index (a squash merge or a stash pop leaves those with no marker file),
+// another branch than the registered one, and a surface over its ceiling. The
+// ceiling is the policy committed at HEAD: the working tree's copy can be
+// edited or deleted in the session that goes over it, so it is only compared.
+// `report` prints advisories; a refusal always prints what it counted.
+function wrapReady(name, cwd, report) {
+  const branch = git(["branch", "--show-current"], { cwd });
+  const inProgress = Object.keys(WRAP_MARKERS).filter((marker) => existsSync(resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))));
+  const unmerged = unmergedPaths(git(["ls-files", "-u", "-z"], { cwd, raw: true }));
+  const refusal = wrapRefusal({ branch, registered: cfg.projects[name].branch, inProgress, unmerged });
+  if (refusal) die(refusal);
+  const committed = git(["ls-tree", "--name-only", "HEAD", "--", CONTEXT_BUDGET_PATH], { cwd }) ? git(["show", `HEAD:${CONTEXT_BUDGET_PATH}`], { cwd, raw: true }) : undefined;
+  let working;
+  try { working = readFileSync(join(cwd, CONTEXT_BUDGET_PATH), "utf8"); } catch { /* absent or unreadable: it differs from HEAD's */ }
+  const notice = policyNotice(committed, working);
+  if (notice && report) console.log(notice);
+  if (committed === undefined) return branch;
+  let policy;
+  try { policy = contextBudget(JSON.parse(committed)); }
+  catch (err) { die(`${CONTEXT_BUDGET_PATH} at HEAD is not a valid policy: ${err.message}`); }
+  const contents = Object.create(null);
+  for (const surface of policy.surfaces) {
+    const path = join(cwd, surface.path);
+    if (!existsSync(path)) continue;
+    if (!realpathSync(path).startsWith(realpathSync(cwd) + "/")) die(`context surface escapes checkout: ${surface.path}`);
+    contents[surface.path] = readFileSync(path, "utf8");
+  }
+  const result = evaluateCeilings(policy, contents);
+  if (report || result.refused) result.messages.forEach((message) => console.log(message));
+  if (result.refused) die("wrap refused: context ceiling exceeded");
+  return branch;
 }
 
 // The pool is read as `atelier models` reads it. A status goes to the status
@@ -621,6 +721,138 @@ async function discoverModels() {
 }
 
 const commands = {
+  async unwrap() {
+    const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
+    const standing = await call("GET", `${P(name)}/standing`, undefined, as);
+    console.log(formatStanding(standing, OWNER_NAME));
+    console.log(await checkoutStatusLine(name, as, true));
+    if (cwd) {
+      console.log(`Current branch: ${git(["branch", "--show-current"], { cwd }) || "detached HEAD"}`);
+      console.log(`Uncommitted files:\n${sessionTree(cwd) || "none"}`);
+    }
+    const [note] = await call("GET", `${P(name)}/sessions`, undefined, as);
+    console.log(sessionNoteText(note));
+    if (cwd) {
+      const files = sessionFiles(cwd);
+      if (files.state) console.log(fileExcerpt(files.state, files.contents));
+      for (const path of handoffNotes(files.contents, files.paths, note?.at, files.modified)) console.log(fileExcerpt(path, readFileSync(join(cwd, path), "utf8")));
+    }
+    console.log(UNWRAP_RELAY);
+  },
+
+  async wrap() {
+    const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name, true);
+    // Until task t43 limits an agent's token to its own actor, the server
+    // records a session only for the project owner. Refuse here, before wrap
+    // commits or pushes anything the server would then not take a note for.
+    if (as !== OWNER) die(`only the project owner records a session: run wrap as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
+    const head = git(["rev-parse", "HEAD"], { cwd });
+    let data;
+    // An unquoted summary reaches here as several words: they are one summary.
+    try { data = cleanSession({ summary: args._.slice(1).join(" "), next: args.next, head, dirty: false, checks: [] }); }
+    catch (err) { die(err.message); }
+    if (args.next !== undefined && typeof args.next !== "string") die("--next needs text");
+    const found = args.multi.found ?? [];
+    if (found.length > 100 || found.some((text) => typeof text !== "string" || !sessionText(text))) die("--found needs text, at most 100 times");
+    if (args.push !== undefined && args.push !== true) die("--push takes no value");
+    wrapReady(name, cwd, true);
+    const { project: record } = await call("GET", P(name), undefined, as);
+    data.checksSkipped = args["no-check"] === true;
+    if (!data.checksSkipped) for (const command of record.policy.checks) {
+      const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+      data.checks.push({ command, passed: result.status === 0, grade: "reported" });
+      console.log(`Reported: ${command}: ${result.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+    }
+    const [previous] = await call("GET", `${P(name)}/sessions`, undefined, as);
+    const { state } = sessionFiles(cwd);
+    if (state && previous) {
+      const before = git(["show", `${previous.data.head}:${state}`], { cwd, allowFail: true });
+      const warning = staleState(state, previous.data.head, before.status === 0 && before.stdout === readFileSync(join(cwd, state), "utf8"));
+      if (warning) console.log(warning);
+      if (before.status !== 0) console.log(`Could not compare ${state} with the previous session HEAD.`);
+    }
+    const tree = sessionTree(cwd);
+    console.log(`Uncommitted files:\n${tree || "none"}`);
+    const branch = wrapReady(name, cwd, false);
+    const remotes = args.push ? git(["remote"], { cwd }).split("\n").filter(Boolean) : [];
+    if (remotes.length > 100) die("wrap supports at most 100 remote results");
+    data = cleanSession(data);
+    data.sessionAt = new Date().toISOString();
+    // Conflict markers refuse the commit, checked before anything is staged so
+    // a refusal leaves the index as the owner had it: tracked changes against
+    // HEAD, staged or not, and each new file against nothing. A conflict
+    // resolved with `git add` and its markers left in leaves no operation
+    // marker or unmerged entry behind, so only the content shows it.
+    // The scan reads the lines the commit would add, never Git's diff
+    // attributes: a file marked -diff or binary skips git diff --check, so
+    // tracked changes are read with --text and new files are read whole. A
+    // line opening or closing a conflict (seven < or > then a space or the
+    // end) refuses the commit; a bare ======= alone does not, since Markdown
+    // underlines headings with it. The scan fails closed: if git cannot
+    // diff a path, wrap stops. Paths are literal, so none is read as an
+    // option, a pathspec or standard input.
+    const opensOrCloses = /^(<{7}|>{7})( |$)/;
+    const marked = [];
+    const changed = git(["diff", "HEAD", "--name-only", "--no-renames", "-z"], { cwd, raw: true }).split("\0").filter(Boolean);
+    for (const file of changed) {
+      const added = git(["--literal-pathspecs", "diff", "HEAD", "--text", "--no-ext-diff", "--no-textconv", "-U0", "--", file], { cwd, allowFail: true });
+      if (added.status !== 0) die(`wrap could not read the changes to ${sessionText(file, 200)} (git diff exited ${added.status}); nothing was staged`);
+      if ((added.stdout || "").split("\n").some((line) => line.startsWith("+") && !line.startsWith("+++") && opensOrCloses.test(line.slice(1)))) marked.push(file);
+    }
+    for (const file of git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd, raw: true }).split("\0").filter(Boolean)) {
+      const path = join(cwd, file);
+      let stat;
+      try { stat = lstatSync(path); } catch { die(`wrap could not read ${sessionText(file, 200)}; nothing was staged`); }
+      if (!stat.isFile()) continue; // a symbolic link is committed as a link, not as the content it names
+      if (readFileSync(path).toString("latin1").split("\n").some((line) => opensOrCloses.test(line))) marked.push(file);
+    }
+    if (marked.length) {
+      die(`wrap will not commit conflict markers: ${marked.map((p) => sessionText(p, 200)).join(", ")}; resolve them first. Nothing was staged.`);
+    }
+    git(["add", "-A"], { cwd });
+    // Whitespace is checked on what the commit will hold, after staging: the
+    // index against HEAD takes in staged changes and new files, which a diff of
+    // the working tree against the index leaves out.
+    const diff = git(["diff", "--cached", "--check"], { cwd, allowFail: true });
+    data.checks.push({ command: "git diff --cached --check", passed: diff.status === 0, grade: "reported" });
+    console.log(`Reported: git diff --cached --check: ${diff.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+    if (diff.stdout || diff.stderr) console.log(diff.stdout || diff.stderr);
+    const staged = git(["diff", "--cached", "--quiet"], { cwd, allowFail: true });
+    if (staged.status === 1) {
+      git(["commit", "-F", "-"], { cwd, input: sessionCommitMessage(data.summary, data.next, data.sessionAt) });
+      data.commit = git(["rev-parse", "HEAD"], { cwd });
+      console.log(`Committed session as ${data.commit}.`);
+    } else if (staged.status === 0) console.log("Nothing to commit.");
+    else die("could not inspect staged changes");
+    data.pushes = [];
+    for (const remote of remotes) {
+      // The owner's own remotes: a normal push, LFS objects included (see gitEnv).
+      const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true, ownerRemote: true });
+      data.pushes.push({ remote, passed: result.status === 0 });
+      console.log(`Remote ${sessionText(remote, 200)}: ${result.status === 0 ? "pushed" : "failed"}.`);
+    }
+    if (!args.push) console.log("Checkout remotes not pushed (no --push).");
+    data.found = [];
+    for (const text of found) {
+      const item = await call("POST", `${P(name)}/items`, { title: sessionText(text), scope: [] }, as);
+      data.found.push(item.id);
+      console.log(`Filed ${item.id}: ${sessionText(text)}`);
+    }
+    data.dirty = !!sessionTree(cwd);
+    data.head = git(["rev-parse", "HEAD"], { cwd });
+    const note = await call("POST", `${P(name)}/sessions`, cleanSession(data), as);
+    console.log(sessionNoteText(note));
+    if (cfg.projects[name].fresh === true) await commands.sync();
+    else await commands.publish();
+    console.log("Nothing deployed or published as a release.");
+    console.log(FILING_RELAY);
+    console.log(wrapRelay(note));
+    // Every remote was tried, the note is recorded and the baseline is in
+    // step; only now does a remote that did not take the push fail the command.
+    const failed = data.pushes.filter((p) => !p.passed);
+    if (failed.length) die(`the session is recorded, but the push failed for ${failed.length} remote${failed.length === 1 ? "" : "s"}: ${failed.map((p) => sessionText(p.remote, 200)).join(", ")}`);
+  },
+
   async token() {
     const action = args._[1];
     if (action === "issue") {
@@ -760,12 +992,12 @@ const commands = {
       const start = git(["rev-list", "-1", "--first-parent", `--before=${since}T00:00:00`, "HEAD"], { cwd: top });
       if (!start) die(`${branch} has no commit before ${since}`);
       const built = buildHistory(git, top, start, git(["rev-parse", "HEAD"], { cwd: top }));
-      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top });
+      git([...auth(r.baseline.token), "push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top });
       savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
       pushed = built.head;
       console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
     } else {
-      git([...auth(r.baseline.token), "push", "--quiet", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
+      git([...auth(r.baseline.token), "push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
     }
     cfg.projects ??= {};
     cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
@@ -829,7 +1061,7 @@ const commands = {
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
     if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
-    git([...auth(t.token), "push", "--quiet", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
+    git([...auth(t.token), "push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
   },
 
@@ -879,7 +1111,7 @@ const commands = {
     const head = git(["rev-parse", "HEAD"]);
     // --force after `atelier update` rebased the workspace; the lease refuses
     // to overwrite anything pushed since this workspace last fetched.
-    git(["push", "--quiet", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
+    git(["push", "--quiet", "--recurse-submodules=no", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
     const item = await call("POST", `${I(name, id)}/push`, { head }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
@@ -1077,7 +1309,7 @@ const commands = {
       // The pairs are saved before the push: a push that lands just before a
       // crash is still paired, and the rebuild gives the same commits again.
       savePairs(gitDir, name, { ...pairs, ...built.pairs });
-      git([...auth(base.token), "push", "--quiet", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd });
+      git([...auth(base.token), "push", "--quiet", "--recurse-submodules=no", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd });
       const n = Object.keys(built.pairs).length;
       console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
     } finally { unlock(); }
@@ -1373,6 +1605,7 @@ const commands = {
   help() {
     console.log(`atelier — one owner per item, observed evidence, the project owner decides.
 
+Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]

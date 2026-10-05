@@ -129,7 +129,7 @@ async function standingOf(env: Env, name: string): Promise<Standing> {
   await Promise.all(ids.map(async (id) => {
     try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line keeps the inbox's own reason */ }
   }));
-  return buildStanding(project, items, taskEvents, TASK_EVENTS, inbox, details, now);
+  return { ...buildStanding(project, items, taskEvents, TASK_EVENTS, inbox, details, now), session: (await L.sessions(1))[0] };
 }
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;
@@ -356,6 +356,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts.length === 2 && m === "GET") {
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
+  }
+  if (parts[2] === "sessions" && parts.length === 3) {
+    if (m === "GET") return json(await L.sessions());
+    if (m === "POST") {
+      // Any bearer token can send any X-Atelier-Actor, so until agent tokens
+      // are limited to the actor they were issued for, a note's actor proves
+      // nothing, and only the project owner records a session. Task t43 adds
+      // that allowlist; it will let an agent's token record its own session.
+      requireOwner(env, actor);
+      return json(await L.wrapSession(body, actor), 201);
+    }
+  }
+  if (parts[2] === "baseline-head" && parts.length === 3 && m === "GET") {
+    return json({ head: await headOf(env, (await L.project()).repo) });
   }
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, project));

@@ -37,7 +37,7 @@ function tree(root) {
 // The commands the real atelier understands. The stub fails for anything else,
 // the way the real one does, so a mapping that names a command the real
 // atelier has not got cannot pass a test.
-const COMMANDS = ["login", "init", "sync", "publish", "notes-remote", "new", "ls", "show", "owners", "inbox", "status", "open",
+const COMMANDS = ["unwrap", "wrap", "login", "init", "sync", "publish", "notes-remote", "new", "ls", "show", "owners", "inbox", "status", "open",
   "start", "claim", "finish", "push", "update", "check", "report", "submit", "handoff", "release", "diff", "review",
   "accept", "merge", "abandon", "done", "models", "dispatch", "undispatch", "queue", "projects", "adopt", "gc", "runner", "ops", "guide", "help"];
 
@@ -69,9 +69,9 @@ test("the entry point runs the Atelier command each ControlPlane command became"
   const run = entryPoint(t);
   const ops = ["audit", "context-budget", "ship-check", "observe", "observatory-bundle", "observatory-run", "backup-status", "validate-backup"];
   const cases = [
-    [["pickup-card"], ["status", "--project", "weblog"]],
-    [["wrap"], ["done"]],
-    [["session-receipt", "the day's work"], ["done", "the day's work"]],
+    [["pickup-card"], ["unwrap", "--project", "weblog"]],
+    [["wrap"], ["wrap", "--project", "weblog"]],
+    [["session-receipt", "the day's work"], ["wrap", "the day's work", "--project", "weblog"]],
     [["report", "the build is green"], ["new", "the build is green", "--project", "weblog"]],
     ...ops.map((c) => [[c, "--json"], ["ops", c, "--json"]]),
   ];
@@ -86,7 +86,7 @@ test("the entry point runs the Atelier command each ControlPlane command became"
 });
 
 test("a mapping to a command the real atelier has not got fails loudly", (t) => {
-  const broken = template.replace("pickup-card) run status --project", "pickup-card) run statuss --project");
+  const broken = template.replace("run unwrap --project", "run statuss --project");
   assert.notEqual(broken, template, "the mapping was renamed");
   const run = entryPoint(t, "weblog", broken);
   const r = run("pickup-card");
@@ -107,8 +107,8 @@ test("help, and no command, list the mappings without running atelier", (t) => {
     const r = run(...argv);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.argv, null, "help must not run atelier");
-    for (const text of ["works through Atelier", "pickup-card", "atelier status --project weblog",
-      "session-receipt", "atelier done", "report TEXT", "atelier new TEXT --project weblog", "audit", "atelier ops"]) {
+    for (const text of ["works through Atelier", "pickup-card", "atelier unwrap --project weblog",
+      "session-receipt", "atelier wrap", "report TEXT", "atelier new TEXT --project weblog", "audit", "atelier ops"]) {
       assert.ok(r.stdout.includes(text), text);
     }
   }
@@ -144,7 +144,7 @@ test("a name full of shell and replacement syntax arrives as one argument", (t) 
   const run = entryPoint(t, "a$&b `c` 'd'");
   const r = run("pickup-card");
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(r.argv, ["status", "--project", "a$&b `c` 'd'"]);
+  assert.deepEqual(r.argv, ["unwrap", "--project", "a$&b `c` 'd'"]);
 });
 
 // ── the Atelier section in AGENTS.md ───────────────────────────────────────
@@ -516,4 +516,12 @@ test("an AGENTS.md with no heading gets the section at the top", async (t) => {
   const agents = f.read("AGENTS.md");
   assert.ok(agents.startsWith("## This project works through Atelier\n"), agents.slice(0, 60));
   assert.ok(agents.endsWith(prose), "every line of the file is kept");
+});
+
+for (const typed of ["pickup-card", "unwrap"]) test(`${typed} refuses extra arguments with one line that names ${typed}`, (t) => {
+  const run = entryPoint(t, "weblog");
+  const r = run(typed, "extra");
+  assert.equal(r.status, 2);
+  assert.equal(r.argv, null, "atelier must not run");
+  assert.equal(r.stderr, `control-plane: ${typed} takes no arguments.\n`);
 });
