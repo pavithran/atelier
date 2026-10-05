@@ -1,8 +1,10 @@
+import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
+import { cleanSummary } from "./brief";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
@@ -20,6 +22,7 @@ export interface LedgerEvent {
 }
 
 export interface ProjectRecord {
+  revision?: number;      // one more on every init; the index keeps the newest copy
   name: string;           // the key: storage, links, commands
   title?: string;         // what people read; the name when absent
   repo: string;
@@ -28,6 +31,47 @@ export interface ProjectRecord {
 }
 
 type Row = Record<string, SqlStorageValue>;
+
+// What an init asks for. A field present replaces the project's current
+// value; a field absent keeps it. `reset` starts from the defaults, as a
+// first init does. `title: null` clears the title.
+export interface ProjectInit {
+  name: string;
+  repo: string;
+  reset: boolean;
+  title?: string | null;
+  checks?: string[];
+  protected?: string[];
+  eligible?: string[];
+  refuseOverlap?: boolean;
+  sandboxOnly?: boolean;
+  approval?: string | null;
+}
+
+export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+
+// `reset` starts the policy over; the project's identity (its title, when the
+// init does not name one, and when it was created) is kept either way.
+export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: string): ProjectRecord {
+  const p = i.reset ? undefined : current?.policy;
+  const title = i.title === undefined ? current?.title : i.title ?? undefined;
+  const approval = i.approval === undefined ? p?.approval : i.approval ?? undefined;
+  return {
+    revision: (current?.revision ?? 0) + 1,
+    name: i.name,
+    ...(title ? { title } : {}),
+    repo: i.repo,
+    policy: {
+      checks: i.checks ?? p?.checks ?? [],
+      protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
+      eligible: i.eligible ?? p?.eligible ?? [],
+      refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
+      sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
+      ...(approval ? { approval } : {}),
+    },
+    createdAt: current?.createdAt ?? at,
+  };
+}
 
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -42,6 +86,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -66,7 +111,11 @@ export class Ledger extends DurableObject<Env> {
 
   // ── index instance ───────────────────────────────────────────────────────
 
+  // Two inits finishing out of order must not leave the older copy listed.
   registerProject(record: ProjectRecord): void {
+    const row = this.sql.exec(`SELECT json FROM projects WHERE name = ?`, record.name).toArray()[0];
+    const held = row ? (JSON.parse(row.json as string) as ProjectRecord).revision ?? 0 : -1;
+    if ((record.revision ?? 0) < held) return;
     this.sql.exec(`INSERT OR REPLACE INTO projects (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
   }
 
@@ -74,7 +123,50 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => JSON.parse(r.json as string));
   }
 
+  // The model pool, on the index instance like the project list: shared by
+  // every project, written by the owner, read by runners.
+  models(): ModelEntry[] {
+    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  putModel(entry: ModelEntry): ModelEntry {
+    const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, entry.id).toArray()[0];
+    // A status is kept only while the entry is reached the way it was when
+    // the status was observed; a change there makes it a new, unchecked model.
+    const kept = row ? (JSON.parse(row.json as string) as ModelEntry) : undefined;
+    const status = kept && OBSERVED_UNDER.every((k) => kept[k] === entry[k]) ? kept.status : undefined;
+    const record = { ...entry, ...(status ? { status } : {}) };
+    this.sql.exec(`INSERT OR REPLACE INTO models (id, json) VALUES (?, ?)`, entry.id, JSON.stringify(record));
+    return record;
+  }
+
+  removeModel(id: string): boolean {
+    return this.sql.exec(`DELETE FROM models WHERE id = ?`, id).rowsWritten > 0;
+  }
+
+  // Only a runner of the kind the model runs on may report it: a home model
+  // by a home runner, a cloud model by a cloud runner.
+  setModelStatus(id: string, status: ModelStatus, kind: "home" | "cloud"): ModelEntry {
+    const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, id).toArray()[0];
+    if (!row) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    const entry = JSON.parse(row.json as string) as ModelEntry;
+    if (entry.where !== kind) throw new RuleError("wrong_runner", `${id} runs ${entry.where === "home" ? "at home" : "in the cloud"}; a ${kind} runner cannot report it`, 403);
+    const record = { ...entry, status };
+    this.sql.exec(`UPDATE models SET json = ? WHERE id = ?`, JSON.stringify(record), id);
+    return record;
+  }
+
   // ── project instance ─────────────────────────────────────────────────────
+
+  // An init, merged into the current record in one step: the Durable Object
+  // runs one call at a time, so no other init can change the project between
+  // the read and the write.
+  initProject(init: ProjectInit, actor: string): ProjectRecord {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
+    const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, new Date().toISOString());
+    this.setProject(record, actor);
+    return record;
+  }
 
   setProject(record: ProjectRecord, actor: string): void {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
@@ -183,16 +275,29 @@ export class Ledger extends DurableObject<Env> {
 
   // The worker has already read the fork's head from Artifacts; what is logged
   // here is what Atelier saw, not what the agent said it pushed.
+  // An accepted task can still take a new revision, as when its merge
+  // conflicts and the owner rebases: the push withdraws the acceptance, and
+  // the task is back in progress until it is checked and submitted again.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null): Item {
     const item = this.item(id);
-    assertLive(item);
+    if (item.state !== "accepted") assertLive(item);
     assertOwner(item, actor);
+    const landing = this.landing(id);
+    if (item.state === "accepted" && landing && item.head !== observedHead) {
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)}; push again once it has landed`, 409);
+    }
     if (item.head === observedHead) return item;
     const now = new Date().toISOString();
-    this.update(id, { head: observedHead, last_push_at: now, state: item.state === "submitted" ? "submitted" : "claimed" });
+    const reopened = item.state === "accepted";
+    this.update(id, {
+      head: observedHead, last_push_at: now,
+      state: item.state === "submitted" ? "submitted" : "claimed",
+      ...(reopened ? { accepted_head: null } : {}),
+    });
     this.log(id, actor, "push.observed", {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
+      ...(reopened ? { approvalInvalidated: true } : {}),
     });
     return this.item(id);
   }
@@ -200,6 +305,9 @@ export class Ledger extends DurableObject<Env> {
   observePush(id: string, observedHead: string, expectedHead: string | null): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
+    // While the accepted revision is landing, a push to the fork does not
+    // change what is merged; it is left for after the merge.
+    if (item.state === "accepted" && this.landing(id)) return item;
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
       state: item.state === "accepted" ? "submitted" : item.state });
@@ -227,13 +335,16 @@ export class Ledger extends DurableObject<Env> {
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head });
   }
 
-  submit(id: string, actor: string): Item {
+  // The summary is recorded in the event and nowhere else; a later submit
+  // without one leaves the new revision with none.
+  submit(id: string, actor: string, summary?: string): Item {
     const item = this.item(id);
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
     this.update(id, { state: "submitted" });
-    this.log(id, actor, "item.submitted", { head: item.head });
+    const text = cleanSummary(summary);
+    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) });
     return this.item(id);
   }
 
@@ -270,12 +381,45 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  merged(id: string, actor: string, mergeCommit: string, observed: boolean): Item {
+  // A merge lands the accepted revision under a lease: while it is held,
+  // the task's owner cannot push a new revision over the one being merged.
+  // It has no expiry, because a merge may have published the revision even
+  // if it never recorded it. Recording the merge ends it; the project owner
+  // can cancel it only while the merge is not on the baseline (see the
+  // landing route), and running the merge again resumes it.
+  private landing(id: string): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing:${id}`).toArray()[0];
+    return row ? (JSON.parse(row.value as string) as { head: string }).head : null;
+  }
+
+  cancelLanding(id: string, actor: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
+    return this.item(id);
+  }
+
+  beginLanding(id: string, actor: string, head: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    const item = this.item(id);
+    if (item.state !== "accepted" || item.acceptedHead !== head) {
+      throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify({ head, at: Date.now() }));
+    return item;
+  }
+
+  merged(id: string, actor: string, mergeCommit: string, observed: boolean, acceptedHead?: string | null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
     const item = this.item(id);
     if (item.state === "merged" && this.events(id).some((e) => e.kind === "item.merged" && e.data.mergeCommit === mergeCommit)) return item;
     if (!observed) throw new RuleError("unverified_merge", "merge commit is not on the baseline");
     if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}`);
+    // The merge commit was verified against one accepted revision; if the
+    // acceptance has moved since, this record would name the wrong one.
+    if (acceptedHead !== undefined && item.acceptedHead !== acceptedHead) {
+      throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409);
+    }
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
     this.update(id, { state: "merged", owner: null });
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed });
     return this.item(id);

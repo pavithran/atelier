@@ -8,8 +8,13 @@ import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
+import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
-import { drawStory, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { drawImported } from "./import/draw";
+import { NO_AGENT, type ImportedHistory } from "./import/history";
+import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
+import type { ModelRecord } from "./models/record";
+import { addTally, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -19,9 +24,11 @@ import {
 // forms and commands always use the name.
 export const titleOf = (p: { name: string; title?: string }) => p.title || p.name;
 // A project's display title as stored: one line of plain text, at most 80
-// characters, or nothing.
+// characters, or nothing. No control or zero-width character survives: C0 and
+// C1 controls, U+00AD, U+061C, all Bidi_Control characters and all
+// Default_Ignorable_Code_Point characters are replaced with a space.
 export function cleanTitle(v: unknown): string | undefined {
-  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 80);
   return s || undefined;
 }
 const titleMap = (ps: ProjectRecord[]) => new Map(ps.map((p) => [p.name, titleOf(p)]));
@@ -35,7 +42,7 @@ const when = (iso: string | null) => (iso ? iso.replace("T", " ").slice(0, 16) +
 const clock = (iso: string) => iso.slice(11, 16) + " UTC";
 const href = (...p: string[]) => "/" + p.map(encodeURIComponent).join("/");
 const selectedHref = (project: string, task: string) =>
-  `/?project=${encodeURIComponent(project)}&task=${encodeURIComponent(task)}#review`;
+  `/decisions?project=${encodeURIComponent(project)}&task=${encodeURIComponent(task)}#review`;
 const tag = (label: string, tone = "") => `<span class="tag ${tone}">${e(label)}</span>`;
 
 const ICONS: Record<string, string> = {
@@ -43,6 +50,7 @@ const ICONS: Record<string, string> = {
   studio: '<path d="M3 20h18M5 20V9l7-5 7 5v11M9 20v-6h6v6"/>',
   projects: '<path d="M3 6h7l2 3h9v11H3V6Z"/>',
   history: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/>',
+  models: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13v7M13 16.5h7"/>',
   flow: '<path d="M3 6h18"/><path d="M6 6c3 0 2 6 5 6h7c3 0 2-6 5-6M6 6c3 0 2 12 5 12h4"/>',
   arrow: '<path d="m9 6 6 6-6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
@@ -53,16 +61,17 @@ const icon = (name: string) =>
   `<svg aria-hidden="true" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ""}</svg>`;
 
 const NAV: [string, string, string][] = [
-  ["Decisions", "/", "decisions"],
+  ["Decisions", "/decisions", "decisions"],
   ["Flow", "/flow", "flow"],
   ["Studio", "/studio", "studio"],
+  ["Models", "/models", "models"],
   ["Projects", "/projects", "projects"],
   ["History", "/history", "history"],
 ];
 
 const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
-function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
@@ -127,7 +136,7 @@ function trustLine(checks: { grade: string; passed: boolean | null; where?: "san
 
 // ── sign in ────────────────────────────────────────────────────────────────
 
-export function renderLogin(error?: string): string {
+export function renderLogin(error?: string, showcase = false): string {
   return page("Sign in", `<section class="login">
   <h1>Many agents.<br>One decision at a time.</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
@@ -139,6 +148,7 @@ export function renderLogin(error?: string): string {
     <p class="meta">Use the token stored in your Keychain as <code>atelier.API_TOKEN</code>.</p>
     <button class="primary">Sign in</button>
   </form>
+  ${showcase ? '<p class="meta">Not the owner? <a href="/showcase">See the public showcase</a>.</p>' : ""}
 </section>`, "");
 }
 
@@ -216,11 +226,13 @@ export function renderInbox(
 // counted from the Ledger's events by graph.ts; nothing is estimated.
 
 const taskHref = (project: string) => (th: { id: string }) => href("p", project, th.id);
+// The owner's label at the start of a sentence.
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
-function legendLine(vendors: Vendor[]): string {
+function legendLine(vendors: Vendor[], who = "You"): string {
   const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
-    .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`);
+    .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
   return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}<li><i style="--c:var(--fault)"></i>sent back</li></ul>`;
 }
 
@@ -228,22 +240,22 @@ function vendorsIn(stories: Story[]): Vendor[] {
   return [...new Set(stories.flatMap((s) => Object.keys(s.tally.byVendor) as Vendor[]))];
 }
 
-function tallyBlock(t: Tally): string {
+function tallyBlock(t: Tally, who = "You"): string {
   const total = t.agentMoves + t.decisions || 1;
   const bar = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
     .map(([v]) => `<span style="--c:var(--m-${v});width:${((t.byVendor[v]! / total) * 100).toFixed(2)}%"></span>`).join("")
     + `<span style="--c:var(--m-owner);width:${((t.decisions / total) * 100).toFixed(2)}%"></span>`;
   return `<div class="tally"><div class="tally-bar" aria-hidden="true">${bar}</div><dl>
   <div><dt>agent moves</dt><dd>${t.agentMoves}</dd></div>
-  <div class="you"><dt>your decisions</dt><dd>${t.decisions}</dd></div>
+  <div class="you"><dt>${who === "You" ? "your" : e(`${who}'s`)} decisions</dt><dd>${t.decisions}</dd></div>
   <div class="cloud"><dt>checks run on a clean copy${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}</dt><dd>${t.checks}</dd></div>
   <div class="catch"><dt>times a model sent work back</dt><dd>${t.sentBack}</dd></div>
 </dl></div>`;
 }
 
-function headline(t: Tally): string {
+function headline(t: Tally, who = "You"): string {
   const agents = t.agents.length;
-  return `<span class="you">You made ${plural(t.decisions, "decision")}.</span> <span class="them">${
+  return `<span class="you">${e(cap(who))} made ${plural(t.decisions, "decision")}.</span> <span class="them">${
     agents ? `${plural(agents, "agent")} did the other ${t.agentMoves} moves${t.sentBack ? `, and sent work back ${plural(t.sentBack, "time")}` : ""}.` : "No agent has started yet."}</span>`;
 }
 
@@ -262,8 +274,28 @@ function restingGraph(s: Story, owner: string): string {
 const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
   m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : `var(--m-${vendorFor(m.actor, owner)})`;
 
-export function renderFlow(stories: Story[], total: Tally, owner: string, ownerName: string | null = null, unavailable = false): string {
-  const shown = stories.filter((s) => s.threads.length);
+// A page's numbers count only the projects whose threads it draws, so the
+// headline and the picture agree. Callers' totals are not used.
+const drawnTotal = (stories: Story[]) => stories.filter((s) => s.threads.length).reduce((acc, s) => addTally(acc, s.tally), emptyTally());
+
+interface FlowParts { stages: string; columns: string; shown: Story[] }
+
+// The parts Flow and the public showcase share. `where` is the page the replay
+// link reloads; `href` links a task, or nothing on the public page.
+// A project's history before Atelier, read from git: drawn below its
+// threads, framed and labelled as imported, never counted in the tally.
+function importedBlock(h: ImportedHistory | undefined, owner: string, title: string): string {
+  if (!h?.total) return "";
+  const named = h.lanes.filter((l) => l.label !== NO_AGENT).length;
+  return `<div class="imported-box">
+  <div class="imported-head"><h3>Before Atelier · imported from git</h3><span class="meta">${h.total.toLocaleString("en")} commits${h.complete ? "" : " (the most recent part of the history)"}, ${h.attributed.toLocaleString("en")} naming ${plural(named, "agent")}</span></div>
+  <p class="meta">Who took part is read from each commit message's Co-Authored-By and Agent lines. It is what the commits say, not evidence Atelier observed.</p>
+  <div class="stage-scroll">${drawImported(h, owner, title)}</div>
+</div>`;
+}
+
+function flowParts(stories: Story[], t: Tally, owner: string, where: string, href?: (s: Story) => (th: { id: string }) => string, who = "You", imported: Map<string, ImportedHistory> = new Map()): FlowParts {
+  const shown = stories.filter((s) => s.threads.length || imported.get(s.project)?.total);
   const moments = shown
     .flatMap((s) => s.moments.map((m) => ({ ...m, project: s.title })))
     .sort((a, b) => b.at.localeCompare(a.at))
@@ -271,27 +303,33 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
   const many = shown.length > 1;
   const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.title)}">
   <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}</span>
-  <a class="replay" href="/flow?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a></div>
-  <div class="stage-scroll">${drawStory(s, owner, { href: taskHref(s.project) })}</div>
+  ${s.threads.length ? `<a class="replay" href="${where}?replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
+  ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
+  ${importedBlock(imported.get(s.project), owner, s.title)}
 </section>`).join("");
-  const t = total;
+  const yours = who === "You" ? "your" : `${who}'s`;
   const journey = [
-    ["Planned", "You describe an outcome; it becomes a task with a scope.", `${plural(t.planned, "task")} planned`, "var(--main-line)"],
+    ["Planned", `${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope.`, `${plural(t.planned, "task")} planned`, "var(--main-line)"],
     ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
-    ["Worked", "The agent commits and pushes to its fork, never to your checkout.", `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
+    ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
     ["Checked", "The project's checks run on a clean copy of the exact revision: in a Cloudflare container, or, where the project allows it, on the agent's machine.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
-    ["Reviewed", "Changes to protected files need a model from another family, or you.", `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
-    ["Decided", "You see the diff, the evidence and the reviews, and accept one revision.", `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
-    ["Merged", "It merges into main on your machine, with its whole history attached as a git note.", `${t.merges} merged`, "var(--main-line)"],
+    ["Reviewed", `Changes to protected files need a model from another family, or ${who === "You" ? "you" : who}.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
+    ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
+    ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
   ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
-
-  const body = shown.length
-    ? `${legendLine(vendorsIn(shown))}${stages}
-<div class="flow-cols">
+  const columns = `<div class="flow-cols">
   <section aria-label="What happened"><h2>What happened</h2><ol class="moments">${moments.map((m) =>
     `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(m.at.slice(5, 10).replace("-", "/"))} ${e(m.at.slice(11, 16))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>
   <section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol></section>
-</div>`
+</div>`;
+  return { stages, columns, shown };
+}
+
+export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map()): string {
+  const t = drawnTotal(stories);
+  const { stages, columns, shown } = flowParts(stories, t, owner, "/flow", (s) => taskHref(s.project), "You", imported);
+  const body = shown.length
+    ? `${legendLine(vendorsIn(shown))}${stages}${columns}`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
   return page("Flow", `<div class="page-width flow">
   <header class="flow-hero">
@@ -303,6 +341,96 @@ export function renderFlow(stories: Story[], total: Tally, owner: string, ownerN
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
   ${body}
 </div>`, "Flow", ownerName);
+}
+
+// ── showcase ───────────────────────────────────────────────────────────────
+// The public page: the projects the owner chose to show, read only. Stories
+// arrive redacted (graph.ts): no review notes, reports, check commands or
+// closing notes, no diffs, no forms and no links into the signed-in pages.
+
+export const REPO_URL = "https://github.com/pavithran/atelier";
+
+export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false, imported: Map<string, ImportedHistory> = new Map()): string {
+  const total = drawnTotal(stories);
+  const who = ownerName || "the owner";
+  const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who, imported);
+  const body = shown.length
+    ? `${legendLine(vendorsIn(shown), cap(who))}${stages}${columns}`
+    : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
+  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="${FONTS}">
+<title>Atelier · public showcase</title><style>${theme}\n${layout}</style></head><body class="public">
+<header class="public-bar"><a class="brand" href="/showcase">Atelier</a><nav aria-label="Elsewhere"><a href="${REPO_URL}">Source on GitHub</a><a href="/login">Sign in</a></nav></header>
+<main id="main" class="page-width flow">
+  <header class="flow-hero">
+    <div><span class="kicker">Public showcase · read only · from the ledger</span>
+      <h1>${headline(total, who)}</h1>
+      <p class="lead">Atelier is a Git platform for several coding agents working on one codebase at once, built on Cloudflare Workers, Durable Objects and Artifacts. Every task has exactly one owner and its own fork; checks run on a clean copy of the exact revision; protected changes are reviewed by a model from another family; and nothing reaches main until ${e(who)} accepts it. Each coloured thread below is one task. Hover a mark for what happened.</p></div>
+    ${tallyBlock(total, who)}
+  </header>
+  ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
+  ${body}
+  <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded.</p>
+</main></body></html>`;
+}
+
+// ── models ─────────────────────────────────────────────────────────────────
+// The pool: every model the owner has made available, where it runs, how it
+// is reached, what the runner last found, and what the record says it did.
+
+const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
+
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }): string {
+  const card = (m: ModelEntry) => {
+    const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
+    const r = actors.map((a) => record.get(a)).filter(Boolean).reduce((acc, x) => ({
+      claimed: acc.claimed + x!.itemsClaimed, merges: acc.merges + x!.merges, pass: acc.pass + x!.checkPasses,
+      fail: acc.fail + x!.checkFailures, back: acc.back + x!.reviewsRejected,
+    }), { claimed: 0, merges: 0, pass: 0, fail: 0, back: 0 });
+    const status = m.status
+      ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked by ${e(m.status.by ?? "a runner")} ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
+      : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
+    const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
+    return `<li class="model" style="--c:var(--m-${m.where === "home" ? "studio" : m.family})">
+  <div class="model-head"><strong class="mono">${e(m.id)}</strong>${m.family === "other" ? tag("family not recognised", "ask") : `<span class="meta">${e(m.family)}</span>`}</div>
+  <p class="meta">${how}</p>
+  ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
+  <p class="model-status">${status}</p>
+  <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
+  ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
+  <form method="post" action="/models/remove" class="inline"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
+</li>`;
+  };
+  const group = (where: "home" | "cloud", title: string, none: string) => {
+    const list = entries.filter((m) => m.where === where);
+    return `<h2 class="section-title">${title} · ${list.length}</h2>${list.length ? `<ul class="model-grid">${list.map(card).join("")}</ul>` : `<p class="empty">${none}</p>`}`;
+  };
+  const opts = (values: readonly string[]) => values.map((v) => `<option>${e(v)}</option>`).join("");
+  return page("Models", `<div class="page-width">
+  <header><h1>Models</h1><p class="lead">${plural(entries.length, "model")} in the pool. The runner on your machine checks each one and reports what it found.</p>
+  <p class="meta">Each model's record counts the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? `; ${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted` : ""}.</p></header>
+  ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
+  ${group("home", "At home", "No home models yet. Add one served by your Studio or another local server.")}
+  ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
+  <details class="new-task"${entries.length ? "" : " open"}><summary>Add a model</summary>
+    <form method="post" action="/models/add" class="stack">
+      <label>Model id, as the harness names it<input name="id" required maxlength="128" placeholder="gemini-3.1-pro, GLM-5.3-Flash-4_8bit"></label>
+      <label>Harness<select name="harness">${opts(HARNESSES)}</select></label>
+      <label>Where it runs<select name="where"><option>home</option><option>cloud</option></select></label>
+      <label>Provider<select name="provider">${opts(PROVIDERS)}</select></label>
+      <label>Endpoint, for an OpenAI-compatible server<input name="endpoint" type="url" placeholder="http://10.0.0.110:8000/v1"></label>
+      <label>Keychain entry holding its key<input name="keychain" maxlength="100" placeholder="gemini.API_KEY"></label>
+      <p class="meta">Atelier stores the entry's name, never the key. Create the entry yourself on the runner's machine.</p>
+      <label>Other names for it, separated by commas<input name="aliases" maxlength="300"></label>
+      <label>Note<input name="note" maxlength="300"></label>
+      <button class="primary">Add to the pool</button>
+    </form>
+  </details>
+</div>`, "Models", ownerName);
 }
 
 // ── studio ─────────────────────────────────────────────────────────────────
@@ -437,7 +565,8 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   </dl>`;
   return page(titleOf(p), `<div class="page-width">
   <nav class="breadcrumbs"><a href="/projects">Projects</a> / ${e(titleOf(p))}</nav>
-  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p></header>
+  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p>
+  <nav class="repo-tabs" aria-label="Repository"><a href="${href("p", p.name, "code")}">Code</a><a href="${href("p", p.name, "log")}">Log</a></nav></header>
   <details class="new-task"><summary>Create a task</summary>
     <form method="post" action="${href("ui", p.name, "new")}" class="stack">
       <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
@@ -482,9 +611,29 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null): string {
   const closed = d.item.state === "merged" || d.item.state === "abandoned";
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
+  <nav class="breadcrumbs"><a href="/decisions">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff })}</article>
 </div>`, closed ? "History" : "Decisions", ownerName);
+}
+
+const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad" };
+
+// The brief sits above the diff: what is decided, what the agent said, what the
+// record shows, and what it points to.
+function briefBlock(d: Detail): string {
+  if (!["claimed", "submitted", "accepted"].includes(d.item.state)) return "";
+  const b = briefFor(d, d.events);
+  const said = submission(d.events, d.item.id, d.item.head);
+  const summary = said
+    ? `<div class="review-note"><p>“${e(said.summary)}”</p><p class="meta">Summary from ${e(said.by)}, not verified</p></div>`
+    : "";
+  return `<section class="review-section brief" id="brief" aria-label="Decision brief">
+  <h3>${e(b.decided)}</h3>
+  ${summary}
+  ${b.evidence.length ? `<p class="section-title">What the evidence shows</p><ul>${b.evidence.map((l) => `<li>${e(l)}</li>`).join("")}</ul>` : ""}
+  <p class="section-title">Recommendation</p>
+  <p>${tag(b.recommendation.verdict, VERDICT_TONE[b.recommendation.verdict])} ${e(b.recommendation.reason)}</p>
+</section>`;
 }
 
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
@@ -606,11 +755,12 @@ function reviewBody({ project: p, detail: d, diff }: ReviewContext): string {
     : "";
 
   return `${header}
-<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a></nav>
+${briefBlock(d)}
+<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
-  <p class="meta">${decision.passed} of ${view.checks.length} required checks passed at this revision.${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
-  ${checkRows}${!view.checks.length ? '<p class="meta">No required checks are configured.</p>' : ""}${reports}${reviews}${blockers}
+  <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : "This project requires no checks."}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
+  ${checkRows}${reports}${reviews}${blockers}
 </section>
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
@@ -633,15 +783,17 @@ const STATUS: Record<FileChange["status"], [string, string]> = {
   mode: ["Mode", ""],
   binary: ["Binary", ""],
   "too-large": ["Too large", "ask"],
+  submodule: ["Submodule", ""],
 };
 
 // Each line keeps its +, - or space, so the diff reads without colour.
-function renderFile(f: FileChange, open: boolean): string {
+export function renderFile(f: FileChange, open: boolean): string {
   const [label, tone] = STATUS[f.status];
   const counts = f.added || f.removed ? `<span class="counts">+${f.added} −${f.removed}</span>` : "";
   const note = f.status === "binary" ? "Binary file; not shown."
     : f.status === "too-large" ? "Too large to diff here; use <code>atelier diff</code>."
-    : f.status === "mode" ? "Only the file mode changed." : "";
+    : f.status === "mode" ? "Only the file mode changed."
+    : f.status === "submodule" ? "A submodule: the commit it points to changed. Its contents are in another repository." : "";
   const body = f.hunks.length
     ? `<pre class="diff" tabindex="0">${f.hunks.map((h) =>
         `<span class="hunk">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</span>` +
