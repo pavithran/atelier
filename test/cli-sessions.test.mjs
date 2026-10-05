@@ -254,6 +254,22 @@ const unfinished = {
     say: /will not commit conflict markers: -(\.|;)/,
     make: (f) => { writeFileSync(join(f.checkout, "-"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
   },
+  "a file marked -diff whose conflict was added with its markers": {
+    say: /will not commit conflict markers: notes\.txt/,
+    make: (f) => {
+      writeFileSync(join(f.checkout, ".gitattributes"), "*.txt -diff\n");
+      writeFileSync(join(f.checkout, "notes.txt"), "base\n");
+      f.git("add", ".gitattributes", "notes.txt");
+      f.git("commit", "-qm", "Notes");
+      writeFileSync(join(f.checkout, "notes.txt"), "base\n<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n");
+      f.git("add", "notes.txt");
+      assert.ok(!unmerged(f));
+    },
+  },
+  "a cherry-pick sequence paused with nothing else to show it": {
+    say: /a cherry-pick or revert sequence/,
+    make: (f) => { mkdirSync(join(f.checkout, ".git", "sequencer"), { recursive: true }); writeFileSync(join(f.checkout, ".git", "sequencer", "todo"), "pick 0000000 next\n"); },
+  },
   "a new file holding conflict markers": {
     say: /will not commit conflict markers: copied\.md/,
     make: (f) => { writeFileSync(join(f.checkout, "copied.md"), "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n"); },
@@ -472,4 +488,12 @@ test("wrap cannot force a divergent remote even when its push refspec requests f
   assert.equal(r.status, 1, "a remote that refused the push fails the command");
   assert.match(r.stdout, /Remote origin: failed/);
   assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), ahead);
+});
+
+test("a line of equals signs alone, as Markdown underlines a heading, is not a conflict marker", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.checkout, "guide.md"), "Title\n=======\n\nText.\n");
+  const r = f.run("wrap", "Guide", "--no-check");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.git("ls-tree", "-r", "--name-only", "HEAD"), /guide\.md/);
 });

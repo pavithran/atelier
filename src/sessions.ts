@@ -110,6 +110,9 @@ export const WRAP_MARKERS: Record<string, string> = {
   "rebase-merge": "a rebase",
   "rebase-apply": "a rebase",
   "atelier-landing.json": "a landing",
+  // A multi-commit cherry-pick or revert paused on a conflict, which may
+  // leave no CHERRY_PICK_HEAD or REVERT_HEAD once the conflict is staged.
+  sequencer: "a cherry-pick or revert sequence",
 };
 
 // The paths `git ls-files -u -z` lists, each once: an entry is "MODE SHA STAGE", a tab, the path.
