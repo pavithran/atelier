@@ -12,7 +12,7 @@ and nothing else.
 
 `src/layout.css` arranges those tokens. It defines colour only where the set
 has no role: one colour per family of agent (`--m-anthropic`, `--m-openai`,
-`--m-zai`, `--m-studio`, `--m-google`, `--m-other`, `--m-owner`) and the main
+`--m-zai`, `--m-google`, `--m-other`, `--m-owner`) and the main
 line (`--main-line`), each with a darker daylight value. It names three
 tokens for their part here: the page is `--surface`, a raised sheet is
 `--surface-raised`, and a selected row is `--inset`. To change how Atelier
