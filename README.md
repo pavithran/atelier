@@ -25,6 +25,31 @@ It rests on three rules.
 The web inbox answers one question, *what needs the project owner now?*, and ranks the
 things a person must decide above the things an agent must fix.
 
+## For agents
+
+Use two commands for a task:
+
+```sh
+atelier start ID --as harness/model
+# Work in the printed workspace and commit the changes.
+atelier done "What changed and why"
+```
+
+`start` claims the task, prepares the same workspace as `claim`, and prints
+its title, scope and any dispatch note. Pass `--project NAME` when running
+outside a registered checkout. `done` runs inside the task workspace. It
+pushes, runs the required checks and submits the summary only after checks
+pass and the revision remains unchanged. It stops at the first failed step
+and names that step. Its final line says `Ready for the owner` or gives the
+gate's remaining blockers. The owner still decides whether to accept and merge.
+
+`atelier inbox` and `atelier show ID` print owner decision briefs with the
+recorded evidence, recommendation and task URL. An agent can relay that text
+unchanged. Both accept `--json` for scripts. The single-task read API is
+`GET /api/projects/NAME/items/ID/brief` and requires sign-in.
+
+The individual commands remain available as reference below.
+
 ## How it works
 
 In outline: a project's main branch is copied into an Artifacts repository,
