@@ -440,6 +440,16 @@ it('the showcase sets a project known only from git beside Atelier\'s record, an
  expect(html).toContain('It cannot say whether the checks passed');
  expect(html).toContain('History imported from git · no Atelier tasks yet');
  expect(html).not.toContain('0 tasks taken');
+ const card=(cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</a>')[0];
+ expect(card('before')).toContain('&lt;Old&gt; project');
+ expect(card('before')).not.toContain('<Old>');
+ expect(card('with')).toContain('>Built<');
+ // A planned task nobody has claimed is still a task: that project is not "before".
+ const planned=buildStory('planned',[{id:'t1',title:'Later',state:'open'}] as never,[{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Planned',{redact:true,ownerLabel:'PAVI'});
+ const both=renderShowcase([withs,planned,before],withs.tally,'pavi','PAVI',false,new Map([['old',h],['planned',h]]));
+ expect(both.split('class="compare-card before"')[1].split('</a>')[0]).toContain('href="#old"');
+ expect(both).toContain('1 task planned, none taken yet');
+ expect(renderShowcase([withs,planned],withs.tally,'pavi','PAVI',false,new Map([['planned',h]]))).not.toContain('class="compare"');
  // With nothing imported there is nothing to compare.
  expect(renderShowcase([withs],withs.tally,'pavi','PAVI',false,new Map())).not.toContain('class="compare"');
 });
