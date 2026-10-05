@@ -25,11 +25,31 @@ test("the text is one line per item under plain headings, and says what each par
   assert.equal(out[0], "Demo project (demo) as of 2026-10-05 10:46 UTC, from Atelier's record");
   assert.ok(out.includes("  t1  claimed  held by claude-code/opus-5.5 since 2026-10-05 09:00 UTC  Held task"));
   assert.ok(out.includes("Waiting on PAVI:"));
-  assert.ok(out.includes("  t2  accept  Ready one  accept: 1 of 1 required checks passed at this revision and nothing blocks it."));
+  assert.ok(out.includes("  t2  accept  Ready one  all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it."));
   assert.ok(out.includes("  t3  for home codex/gpt-6  Queued one  note: Keep it small"));
   assert.ok(out.includes("  t0  2026-10-04 11:00 UTC  abcdef01  Earlier  summary: Fixed the thing"));
   assert.ok(out.includes("  t1  codex/gpt-6 to claude-code/opus-5.5, 2026-10-05 09:00 UTC  Tests are in test/x"));
   assert.equal(out.filter((l) => /^\s+t\d/.test(l)).length, 5);
+});
+
+test("a waiting line keeps the inbox's reason, so a stale task and an overlap say what to do", () => {
+  const out = formatStanding(standing({ waiting: [
+    { id: "t4", title: "Stale", kind: "stale", kinds: ["stale"], reason: "claude-code/opus-5.5 has not pushed for 14h; hand it off or release it", brief: { verdict: "wait", line: "The task is in progress and has not been submitted for a decision." } },
+    { id: "t5", title: "Overlap", kind: "overlap", kinds: ["accept", "overlap"], reason: "all checks observed passing; scope overlaps t9 (codex/gpt-6)", brief: null },
+  ] })).split("\n");
+  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision."));
+  assert.ok(out.includes("  t5  overlap  Overlap  all checks observed passing; scope overlaps t9 (codex/gpt-6)"));
+});
+
+test("what the record could not show is said, and a held task with no known start is not given one", () => {
+  const out = formatStanding(standing({
+    live: [{ id: "t1", title: "Held", state: "claimed", owner: "a/b", since: null }],
+    partial: ["t1: when it was taken is not shown, because its record is longer than the last 300 events read."],
+  })).split("\n");
+  assert.ok(out.includes("  t1  claimed  held by a/b, since when is not shown  Held"));
+  assert.ok(out.includes("Part of this record is not shown:"));
+  assert.ok(out.includes("  t1: when it was taken is not shown, because its record is longer than the last 300 events read."));
+  assert.ok(!formatStanding(standing()).includes("not shown"));
 });
 
 test("text a person or agent wrote cannot start a line of its own or carry terminal codes", () => {
@@ -117,24 +137,50 @@ test("status --project says the checkout is out of step when the baseline has mo
   assert.match(r.output, /\nCheckout: out of step\. main @ [0-9a-f]{8} does not hold the baseline's head [0-9a-f]{8}; reconcile/);
 });
 
+// As cli/fresh.mjs builds a baseline: the same tree under a different commit
+// (here a later committer date), so the baseline's head is not the checkout's.
+function rebuilt(bare, dir, name) {
+  const work = join(dir, `rebuild-${name}`);
+  git(dir, "clone", "-q", bare, work);
+  execFileSync("git", ["commit", "-q", "--amend", "--no-edit", "--date", "2020-01-01T00:00:00Z"], {
+    cwd: work, env: { ...process.env, GIT_COMMITTER_DATE: "2020-01-02T00:00:00Z", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@x.test" },
+  });
+  git(work, "push", "-q", "--force", "origin", "main");
+  return git(work, "rev-parse", "HEAD");
+}
+
 test("a project set up with --history-since is compared through its pairs", async (t) => {
-  let head, pairedWrong;
+  const seenHashes = {};
   const inStep = await run(t, ({ checkout, bare, dir }) => {
-    head = git(checkout, "rev-parse", "HEAD");
-    const baselineHead = git(bare, "rev-parse", "main");
-    mkdirSync(join(checkout, ".git"), { recursive: true });
+    const head = git(checkout, "rev-parse", "HEAD");
+    const baselineHead = rebuilt(bare, dir, "a");
+    assert.notEqual(baselineHead, head, "the baseline's commit differs from the checkout's");
+    assert.equal(git(checkout, "rev-parse", "HEAD^{tree}"), git(bare, "rev-parse", "main^{tree}"), "but names the same tree");
     writeFileSync(join(checkout, ".git", "atelier-baseline-map.json"), JSON.stringify({ demo: { [baselineHead]: head } }));
+    Object.assign(seenHashes, { head, baselineHead });
     return { project: { fresh: true } };
   });
   assert.match(inStep.output, /\nCheckout: in step\. main @ [0-9a-f]{8} is the commit the baseline's head [0-9a-f]{8} matches\.\s*$/);
-  const behind = await run(t, ({ checkout, bare }) => {
-    const baselineHead = git(bare, "rev-parse", "main");
-    writeFileSync(join(checkout, ".git", "atelier-baseline-map.json"), JSON.stringify({ demo: { [baselineHead]: baselineHead } }));
+  assert.ok(inStep.output.includes(`main @ ${seenHashes.head.slice(0, 8)} is the commit the baseline's head ${seenHashes.baselineHead.slice(0, 8)} matches`));
+  // The checkout has moved past the commit the baseline's head is paired with.
+  const behind = await run(t, ({ checkout, bare, dir }) => {
+    const paired = git(checkout, "rev-parse", "HEAD");
+    const baselineHead = rebuilt(bare, dir, "b");
+    writeFileSync(join(checkout, ".git", "atelier-baseline-map.json"), JSON.stringify({ demo: { [baselineHead]: paired } }));
     writeFileSync(join(checkout, "c.txt"), "three\n");
     git(checkout, "add", "."); git(checkout, "commit", "-q", "-m", "three");
     return { project: { fresh: true } };
   });
   assert.match(behind.output, /\nCheckout: out of step\. main has commits the baseline lacks; run atelier sync --project demo\.\s*$/);
+  // The checkout is the baseline's own commit, which is not a project commit: the pair names another.
+  const wrong = await run(t, ({ checkout, bare, dir }) => {
+    const baselineHead = rebuilt(bare, dir, "c");
+    git(checkout, "fetch", "-q", bare, "main");
+    git(checkout, "reset", "-q", "--hard", baselineHead);
+    writeFileSync(join(checkout, ".git", "atelier-baseline-map.json"), JSON.stringify({ demo: { [baselineHead]: "f".repeat(40) } }));
+    return { project: { fresh: true } };
+  });
+  assert.match(wrong.output, /Checkout: out of step\. main @ [0-9a-f]{8} is not the commit the baseline's head [0-9a-f]{8} matches \(ffffffff\)/);
   const unpaired = await run(t, () => ({ project: { fresh: true } }));
   assert.match(unpaired.output, /Checkout: out of step\. The baseline's head [0-9a-f]{8} has no pair in this checkout/);
 });

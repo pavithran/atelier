@@ -362,3 +362,40 @@ it("the project page carries the same standing as the route", async () => {
   expect(html).toContain("Queued for a runner");
   expect(html).toContain("A queued &lt;task&gt;");
 });
+
+it("the standing route reads each section from its own source, not a window over the whole record", async () => {
+  const name = "standing-window", agent = "codex/gpt-6-astra", H0 = "0".repeat(40), head = "a".repeat(40);
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  // t1 is merged, with a summary, and t2 is taken and handed off with a note: both older than any window of 1,000 events.
+  await L.newItem("Merged long ago", ["src/**"], "owner");
+  await L.claim("t1", agent);
+  await L.setFork("t1", `${name}--t1`, H0, agent);
+  await L.recordPush("t1", agent, head, head);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"] } as never);
+  await L.submit("t1", agent, "Merged summary");
+  await L.accept("t1", "owner", head);
+  await L.beginLanding("t1", "owner", head);
+  await L.merged("t1", "owner", "c".repeat(40), true, head);
+  await L.newItem("Handed off long ago", [], "owner");
+  await L.claim("t2", agent);
+  await L.handoff("t2", "owner", "claude-code/opus-5.5", "Start from the notes in docs/");
+  const before = (await L.item("t2")).updatedAt;
+  // A third task fills the project's recent record with pushes.
+  await L.newItem("Noisy", [], "owner");
+  await L.claim("t3", agent);
+  await L.setFork("t3", `${name}--t3`, H0, agent);
+  for (let n = 1; n <= 1010; n++) await L.recordPush("t3", agent, n.toString(16).padStart(40, "0"), null);
+  const res = await call("GET", `/projects/${name}/standing`, agent);
+  expect(res.status).toBe(200);
+  const s = await res.json() as { live: { id: string; since: string | null }[]; merged: { id: string; commit: string | null; line: string | null }[]; handoffs: { id: string; note: string }[]; partial: string[] };
+  expect(s.merged).toEqual([expect.objectContaining({ id: "t1", commit: "c".repeat(40), line: "Merged summary" })]);
+  expect(s.handoffs).toEqual([expect.objectContaining({ id: "t2", note: "Start from the notes in docs/" })]);
+  const t2 = s.live.find((x) => x.id === "t2")!;
+  expect(t2.since).not.toBeNull();
+  expect(t2.since! < before || t2.since === before).toBe(true);
+  // The noisy task's own record is longer than what is read of it: that is said, not guessed.
+  expect(s.live.find((x) => x.id === "t3")!.since).toBeNull();
+  expect(s.partial).toContain("t3: when it was taken is not shown, because its record is longer than the last 300 events read.");
+  expect(s.partial.filter((x) => x.startsWith("t1:") || x.startsWith("t2:"))).toEqual([]);
+});
