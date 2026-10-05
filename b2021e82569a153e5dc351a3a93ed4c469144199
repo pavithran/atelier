@@ -1,0 +1,12 @@
+atelier cloudflare-git/t76 "House style: hover over, not hover, in Atelier's pages and comments"
+accepted head 180f7790ea45069e75090ff44d3d18d789b387c9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T16:05:50.530Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T16:05:52.809Z
+2026-10-05T16:03:02.398Z pavi item.created
+2026-10-05T16:03:02.748Z claude-code/opus-5.5 item.claimed
+2026-10-05T16:03:06.825Z claude-code/opus-5.5 fork.created
+2026-10-05T16:04:44.183Z claude-code/opus-5.5 push.observed
+2026-10-05T16:05:50.706Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:05:52.888Z claude-code/opus-5.5 evidence.observed
+2026-10-05T16:05:53.511Z claude-code/opus-5.5 item.submitted
+2026-10-05T16:05:54.108Z pavi item.accepted
