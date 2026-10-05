@@ -32,8 +32,10 @@ export function drawImported(h: ImportedHistory, owner: string, title: string): 
     const counts = new Array(BINS).fill(0);
     for (const t of lane.times) counts[bin(t)]++;
     const peak = Math.max(...counts);
-    const cells = counts.map((n, b) => n ? `<rect x="${(X0 + b * bw).toFixed(1)}" y="${y - 8}" width="${Math.max(1, bw - 1).toFixed(1)}" height="16" rx="2" style="fill:${laneColour(lane.label, owner)};opacity:${(0.25 + 0.75 * n / peak).toFixed(2)}"><title>${esc(`${lane.label}: ${n} commit${n === 1 ? "" : "s"} around ${day(h.first + (b + 0.5) * span / BINS)}`)}</title></rect>` : "").join("");
-    return `<g class="imp-lane"><text class="imp-name" x="${X0 - 12}" y="${y + 4}" text-anchor="end">${esc(shortName(lane.label))}<title>${esc(lane.label)}</title></text><text class="imp-count" x="${X0 - 12}" y="${y + 16}" text-anchor="end">${lane.count.toLocaleString("en")}</text>${cells}</g>`;
+    const namesTitle = lane.names && lane.names.length ? ` (as the commits name it: ${lane.names.join(", ")})` : "";
+    const cells = counts.map((n, b) => n ? `<rect x="${(X0 + b * bw).toFixed(1)}" y="${y - 8}" width="${Math.max(1, bw - 1).toFixed(1)}" height="16" rx="2" style="fill:${laneColour(lane.label, owner)};opacity:${(0.25 + 0.75 * n / peak).toFixed(2)}"><title>${esc(`${lane.label}: ${n} commit${n === 1 ? "" : "s"} around ${day(h.first + (b + 0.5) * span / BINS)}${namesTitle}`)}</title></rect>` : "").join("");
+    const hoverTitle = esc(lane.label + namesTitle);
+    return `<g class="imp-lane"><text class="imp-name" x="${X0 - 12}" y="${y + 4}" text-anchor="end">${esc(shortName(lane.label))}<title>${hoverTitle}</title></text><text class="imp-count" x="${X0 - 12}" y="${y + 16}" text-anchor="end">${lane.count.toLocaleString("en")}</text>${cells}</g>`;
   }).join("");
   const axis = [0, 0.25, 0.5, 0.75, 1].map((f) => {
     const x = X0 + f * (X1 - X0);

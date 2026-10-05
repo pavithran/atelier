@@ -4,10 +4,13 @@
 // "Co-Authored-By:" and "Agent:" lines, or to no agent. This is what the
 // commits claim, not evidence Atelier observed, and the pages say so.
 
+import { TEXT_CONTROLS } from "../text.ts";
+
 export interface ImportedCommit { hash: string; message: string; committedAt: number }
 
 export interface ImportedLane {
-  label: string;               // as the commits name it, e.g. "Claude Opus 4.7"
+  label: string;               // normalized model name, e.g. "opus-5.5"
+  names: string[];             // as the commits name it, e.g. ["Claude Opus 4.7"]
   count: number;
   first: number;               // unix seconds
   last: number;
@@ -24,6 +27,10 @@ export interface ImportedHistory {
 }
 
 export const NO_AGENT = "No agent named";
+// The shape of an ImportedHistory and how its lanes are named. Cached copies
+// are keyed by it, so a change to either reaches the pages at once: raise it
+// whenever buildImported or agentsIn would give a different result.
+export const IMPORTED_FORMAT = 2;
 const FRESH_ROOT = /^Atelier-Fresh-History: [0-9a-f]{40,64}$/m;
 const NAME_LIMIT = 40;
 
@@ -43,7 +50,7 @@ export function agentsIn(message: string): string[] {
     const before = email ? m[1].slice(0, email.index) : m[1];
     const side = email && !before.replace(/<[^>]*>/g, "").trim() ? m[1].slice(email.index + email[0].length) : before;
     const name = side.replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ")
+      .replace(TEXT_CONTROLS, " ")
       .replace(/\s+/g, " ").trim();
     // A human co-author is a person, not an agent: keep only names that
     // read as a model or an agent harness and model. The whole name is
@@ -65,6 +72,21 @@ export function firstTaskAt(items: { createdAt: string }[]): number | null {
   return times.length ? Math.min(...times) : null;
 }
 
+export function normaliseAgentName(name: string): string {
+  if (name === NO_AGENT) return name;
+  let s = name;
+  if (s.includes("/")) s = s.split("/").slice(1).join("/");
+  let norm = s.toLowerCase().trim().replace(/\s+/g, "-");
+  norm = norm.replace(/^claude-(opus|sonnet|haiku|fable)/, "$1");
+  if (!/\d/.test(norm)) {
+    if (norm === "codex" || norm === "claude-code" || norm === "zcode" || norm === "opencode" || norm === "gemini-cli") {
+      return `${norm}, model not recorded`;
+    }
+    return `${norm}, version not recorded`;
+  }
+  return norm;
+}
+
 // Commits before `cutoff` (unix seconds), newest first as git logs them.
 export function buildImported(commits: ImportedCommit[], cutoff: number | null, complete: boolean): ImportedHistory {
   // A baseline that starts partway through a project's history begins with a
@@ -75,8 +97,18 @@ export function buildImported(commits: ImportedCommit[], cutoff: number | null, 
   for (const c of before) {
     const agents = agentsIn(c.message);
     if (agents.length) attributed++;
-    for (const label of agents.length ? agents : [NO_AGENT]) {
-      const lane = lanes.get(label) ?? { label, count: 0, first: c.committedAt, last: c.committedAt, times: [] };
+    const counted = new Set<string>();
+    for (const rawLabel of agents.length ? agents : [NO_AGENT]) {
+      const label = rawLabel === NO_AGENT ? NO_AGENT : normaliseAgentName(rawLabel);
+      // Two trailers naming one model ("claude-code/opus-5.5", "Claude Opus 5.5") are one commit in its lane.
+      if (counted.has(label)) {
+        const lane = lanes.get(label)!;
+        if (!lane.names.includes(rawLabel)) lane.names.push(rawLabel);
+        continue;
+      }
+      counted.add(label);
+      const lane = lanes.get(label) ?? { label, names: [], count: 0, first: c.committedAt, last: c.committedAt, times: [] };
+      if (rawLabel !== NO_AGENT && !lane.names.includes(rawLabel)) lane.names.push(rawLabel);
       lane.count++; lane.last = c.committedAt; lane.times.push(c.committedAt);
       lanes.set(label, lane);
     }
