@@ -14,6 +14,7 @@ import { drawImported } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
+import type { MainPreview } from "./preview/merge";
 import { addTally, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
   decisionFor, evidenceAt, latestReviews, stateLabel,
@@ -813,5 +814,22 @@ function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string 
     : "";
   const summary = `${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} changed, +${added} −${removed}, from <span class="mono">${short(diff.base)}</span> to <span class="mono">${short(diff.head)}</span>.`;
   return `${moved}<p class="meta">${summary}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
+${renderMainPreview(diff.main)}
 ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
+}
+
+// Whether the task would merge into main as main is now. Read only; the merge
+// itself is still made by atelier merge.
+export function renderMainPreview(m: MainPreview | null | undefined): string {
+  if (m === undefined) return "";
+  if (m === null) return `<p class="meta">Whether this merges cleanly into main could not be read just now.</p>`;
+  const plural = (n: number, w: string) => `${n.toLocaleString("en")} ${w}${n === 1 ? "" : "s"}`;
+  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date", "go")} Main has not moved since this task forked; it merges as it is.</p>`;
+  const moved = `Main has gained ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} since this task forked, changing ${plural(m.merge.ours, "path")}`;
+  if (m.merge.clean) {
+    const shared = m.merge.both.length ? `; both sides changed ${plural(m.merge.both.length, "path")}, and the changes do not overlap` : "; none of them are paths this task changed";
+    return `<p class="merge-preview">${tag("Merges cleanly", "go")} ${moved}${shared}.</p>`;
+  }
+  const rows = m.merge.conflicts.map((c) => `<li><code>${e(c.path)}</code> <span class="meta">${e(c.reason)}</span></li>`).join("");
+  return `<div class="merge-preview">${tag(plural(m.merge.conflicts.length, "conflict"), "bad")} ${moved}. Merging now would stop at:<ul class="merge-conflicts">${rows}</ul><p class="meta">Bring main into the task's workspace and resolve these before accepting.</p></div>`;
 }

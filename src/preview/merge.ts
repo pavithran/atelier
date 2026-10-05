@@ -6,7 +6,7 @@
 // base, as git's own merge would decide, and is otherwise a conflict. Nothing
 // here writes; `atelier merge` still makes the merge.
 
-import { changedPaths, diffLines, splitLines, type Reader } from "../diff.ts";
+import { changedPaths, diffLines, repoReader, splitLines, type Reader } from "../diff.ts";
 
 export interface Conflict { path: string; reason: string }
 export interface Mergeability {
@@ -43,10 +43,13 @@ function locator(r: Reader) {
 
 // The base lines each side's changes occupy: [start, end) in base line
 // numbers, where an insertion between lines is the empty range at its place.
-export function changedRegions(base: string[], side: string[]): [number, number][] {
+// Null when the files are too different to diff within the line-diff budget.
+export function changedRegions(base: string[], side: string[]): [number, number][] | null {
+  const ops = diffLines(base, side);
+  if (!ops) return null;
   const out: [number, number][] = [];
   let i = 0, start = -1;
-  for (const op of diffLines(base, side)) {
+  for (const op of ops) {
     if (op.op === " ") {
       if (start >= 0) { out.push([start, i]); start = -1; }
       i++;
@@ -60,9 +63,11 @@ export function changedRegions(base: string[], side: string[]): [number, number]
 }
 
 // Two sides' changes to one file conflict when any of their regions overlap
-// or touch, which is where git's merge stops and asks a person.
-export function linesConflict(base: string[], ours: string[], theirs: string[]): boolean {
+// or touch, which is where git's merge stops and asks a person. Null when
+// either side is too different from the base to compare here.
+export function linesConflict(base: string[], ours: string[], theirs: string[]): boolean | null {
   const a = changedRegions(base, ours), b = changedRegions(base, theirs);
+  if (!a || !b) return null;
   return a.some(([s1, e1]) => b.some(([s2, e2]) => s1 <= e2 && s2 <= e1));
 }
 
@@ -86,9 +91,9 @@ export async function mergeability(
     if ([bb, ob, tb].some((x) => x.length > BLOB_LIMIT)) { conflicts.push({ path, reason: "too large to compare here" }); continue; }
     if ([bb, ob, tb].some(isBinary)) { conflicts.push({ path, reason: "a binary file changed on both sides" }); continue; }
     const d = new TextDecoder();
-    if (linesConflict(splitLines(d.decode(bb)), splitLines(d.decode(ob)), splitLines(d.decode(tb)))) {
-      conflicts.push({ path, reason: b ? "both sides changed the same lines" : "added on both sides with different contents" });
-    }
+    const clash = linesConflict(splitLines(d.decode(bb)), splitLines(d.decode(ob)), splitLines(d.decode(tb)));
+    if (clash === null) conflicts.push({ path, reason: "too large to compare here" });
+    else if (clash) conflicts.push({ path, reason: b ? "both sides changed the same lines" : "added on both sides with different contents" });
   }
   return { clean: conflicts.length === 0, conflicts, both, ours: oursPaths.length, theirs: theirsPaths.length };
 }
@@ -105,4 +110,29 @@ export function overlaps(tasks: { id: string; paths: string[] }[]): { a: string;
     }
   }
   return out;
+}
+
+// Where a task stands against main as it is now: how many commits main has
+// gained since the task's fork point, and whether the task would merge.
+export interface MainPreview {
+  head: string;                 // main's head now
+  ahead: number;                // commits on main since the fork point
+  aheadCapped: boolean;         // the fork point is older than the log read; `ahead` is a floor
+  merge: Mergeability;
+}
+
+const MAIN_LOG = 1000;
+
+export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, base: string, baseTree: string, headTree: string): Promise<MainPreview | null> {
+  using baseline = await artifacts.get(baselineRepo);
+  using fork = await artifacts.get(workspaceRepo);
+  const log = await baseline.log({ limit: MAIN_LOG });
+  const head = log[0];
+  if (!head) return null;
+  const at = log.findIndex((c) => c.hash === base);
+  const ahead = at < 0 ? log.length : at;
+  const merge = head.hash === base
+    ? { clean: true, conflicts: [], both: [], ours: 0, theirs: 0 }
+    : await mergeability(repoReader(baseline), repoReader(fork), baseTree, head.treeHash, headTree);
+  return { head: head.hash, ahead, aheadCapped: at < 0, merge };
 }

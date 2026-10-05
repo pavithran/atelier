@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedRegions, linesConflict, mergeability, overlaps } from "../src/preview/merge.ts";
+import { changedRegions, linesConflict, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
 import type { Reader } from "../src/diff.ts";
 
 // A content-addressed toy: files are named by their text, trees by a label.
@@ -73,4 +73,38 @@ test("live tasks touching the same paths are paired, with the paths", () => {
     { id: "t2", paths: ["src/c.ts"] },
     { id: "t3", paths: ["src/b.ts", "src/a.ts"] },
   ]), [{ a: "t1", b: "t3", paths: ["src/a.ts", "src/b.ts"] }]);
+});
+
+// Artifacts as the binding presents it: a log newest first, trees and blobs.
+function artifactsOf(repos: Record<string, { log: string[]; trees: Record<string, Record<string, string>> }>) {
+  return {
+    get: async (name: string) => {
+      const r = repos[name];
+      const reader = repo(r.trees);
+      return {
+        log: async () => r.log.map((h) => ({ hash: h, treeHash: h })),
+        readTree: (h: string) => reader.tree(h),
+        readBlob: async (h: string) => { const b = await reader.blob(h); return b ? new Blob([b]) : null; },
+        [Symbol.dispose]() {},
+      };
+    },
+  } as unknown as Artifacts;
+}
+
+test("the preview against main counts main's new commits and finds a conflict", async () => {
+  const trees = { base: { "a.ts": "1\n2\n3\n" }, m1: { "a.ts": "1\nTWO\n3\n" }, m2: { "a.ts": "1\nTWO\n3\n", "n.ts": "n\n" }, task: { "a.ts": "1\n2b\n3\n" } };
+  const A = artifactsOf({ main: { log: ["m2", "m1", "base"], trees }, fork: { log: ["task", "base"], trees } });
+  const p = await previewAgainstMain(A, "main", "fork", "base", "base", "task");
+  assert.equal(p?.ahead, 2);
+  assert.equal(p?.aheadCapped, false);
+  assert.deepEqual(p?.merge.conflicts, [{ path: "a.ts", reason: "both sides changed the same lines" }]);
+  assert.equal(p?.merge.ours, 2);
+});
+
+test("the preview says main has not moved when its head is the fork point, and floors an old fork point", async () => {
+  const trees = { base: { "a.ts": "1\n" }, task: { "a.ts": "2\n" }, m1: { "b.ts": "b\n" } };
+  const still = await previewAgainstMain(artifactsOf({ main: { log: ["base"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
+  assert.deepEqual([still?.ahead, still?.merge.clean], [0, true]);
+  const old = await previewAgainstMain(artifactsOf({ main: { log: ["m1"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
+  assert.deepEqual([old?.ahead, old?.aheadCapped], [1, true]);
 });
