@@ -400,7 +400,7 @@ const commands = {
     // changes the policy and pushes nothing; atelier sync carries new commits.
     const fresh = cfg.projects?.[name]?.fresh === true;
     const since = typeof args["history-since"] === "string" ? args["history-since"] : null;
-    if (args["history-since"] === true) die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
+    if (args["history-since"] === true || args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
     let pushed = "HEAD";
     if (fresh) {
       if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
@@ -437,6 +437,7 @@ const commands = {
   async publish() {
     const name = project();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
+    if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
     git([...auth(t.token), "push", "--quiet", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);

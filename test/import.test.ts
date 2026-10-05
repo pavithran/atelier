@@ -60,3 +60,11 @@ test("the cutoff is the first task created, however long the event record", () =
   assert.equal(firstTaskAt([]), null);
   assert.equal(firstTaskAt([{ createdAt: "2026-10-02T00:00:00Z" }, { createdAt: "2026-09-30T12:00:00Z" }]), Date.parse("2026-09-30T12:00:00Z") / 1000);
 });
+
+test("a baseline's own root is not the project's work, and its history is never complete", () => {
+  const root = { hash: "r", committedAt: 50, message: `Atelier baseline: history from 2026-09-05, starting at ${"a".repeat(40)}\n\nAtelier-Fresh-History: ${"a".repeat(40)}\n` };
+  const h = buildImported([c("b", 100, "x\n\nCo-Authored-By: Claude Opus 4.7 <x>"), root], null, true);
+  assert.equal(h.total, 1);
+  assert.equal(h.complete, false);
+  assert.equal(buildImported([c("b", 100, "x")], null, true).complete, true);
+});
