@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { briefFor, cleanSummary } from "../src/brief.ts";
-import { gate, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
+import { gate, inboxFor, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 
 const H1 = "a".repeat(40);
@@ -147,11 +147,38 @@ test("a task still in progress follows the page: a failed check or a rejection s
   assert.match(quiet.recommendation.reason, /^The task is in progress/);
 });
 
-test("a merged or closed task has nothing to decide", () => {
+test("a merged or closed task gets the verdict none, and the lines agree", () => {
   for (const state of ["merged", "abandoned"] as const) {
     const b = briefFor(detail({ item: { state } }), []);
-    assert.equal(b.recommendation.verdict, "decide");
+    assert.equal(b.recommendation.verdict, "none");
     assert.match(b.decided, new RegExp(`^Nothing to decide: t21 is ${state === "merged" ? "merged" : "closed"} at aaaaaaaa`));
+    assert.equal(`Recommendation: ${b.recommendation.verdict}. ${b.recommendation.reason}`, `Recommendation: none. ${b.recommendation.reason}`);
+    assert.match(b.recommendation.reason, /^The task is closed \(.*\), so nothing is waiting on you\.$/);
+  }
+});
+
+test("an abandoned task's recommendation says the task is closed, not decide", () => {
+  const b = briefFor(detail({ item: { state: "abandoned" } }), []);
+  assert.equal(b.recommendation.verdict, "none");
+  assert.equal(b.recommendation.reason, "The task is closed (abandoned), so nothing is waiting on you.");
+  assert.equal(b.decided, "Nothing to decide: t21 is closed at aaaaaaaa: Fix the thing.");
+});
+
+test("a merged task's recommendation names the merge commit when the record has it", () => {
+  const mergeEvent = (seq: number, commit: string): LedgerEvent =>
+    ({ seq, itemId: "t21", at: T, actor: OWNER, kind: "item.merged", data: { mergeCommit: commit, head: H1 } });
+  const withCommit = briefFor(detail({ item: { state: "merged" }, events: [mergeEvent(1, "c".repeat(40))] }), []);
+  assert.equal(withCommit.recommendation.verdict, "none");
+  assert.equal(withCommit.recommendation.reason, "The task is closed (merged as cccccccc), so nothing is waiting on you.");
+  assert.match(withCommit.decided, /^Nothing to decide: t21 is merged at aaaaaaaa/);
+  const withoutCommit = briefFor(detail({ item: { state: "merged" } }), []);
+  assert.equal(withoutCommit.recommendation.reason, "The task is closed (merged), so nothing is waiting on you.");
+});
+
+test("a closed task never appears in the inbox as waiting on the owner", () => {
+  for (const state of ["merged", "abandoned"] as const) {
+    const entries = inboxFor("proj", [item({ state })], policy, [pass()], [], new Date(T), OWNER);
+    assert.deepEqual(entries.filter((x) => x.itemId === "t21"), []);
   }
 });
 
