@@ -8,8 +8,9 @@
 import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
+import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
 
-export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "owner" | "other";
+export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
 
 // Which family an actor belongs to, by the harness it runs in. The colour is
 // the vendor's, so a reader can see a thread change hands between companies.
@@ -17,15 +18,24 @@ export type Vendor = "anthropic" | "openai" | "zai" | "studio" | "google" | "own
 // They are the platform's work, not an agent's, and are never counted as moves.
 export const isAtelier = (actor: string) => actor.startsWith("atelier/");
 
+// The model's family decides, by its name (src/models/pool.ts), so a new
+// release is coloured on the day it appears. Work through OpenCode is home
+// work, in the Studio's colour, unless the model is built for a local server
+// or belongs to a family only served from the cloud. A name no family claims
+// falls back to its harness's usual family.
+const CLOUD_ONLY = new Set(["google", "openai", "anthropic"]);
+
 export function vendorOf(actor: string, owner: string): Vendor {
   if (actor === owner) return "owner";
   const { harness, model } = splitActor(actor);
-  const h = harness.toLowerCase(), m = model.toLowerCase();
-  if (h === "claude-code" || m.startsWith("claude") || m.startsWith("opus") || m.startsWith("sonnet")) return "anthropic";
-  if (h === "codex" || m.startsWith("gpt")) return "openai";
-  if (h === "opencode") return "studio";
-  if (h === "zcode" || m.startsWith("glm")) return "zai";
-  if (h === "gemini" || h === "antigravity" || m.startsWith("gemini")) return "google";
+  const h = harness.toLowerCase();
+  const family = familyOf(model);
+  if (h === "opencode" && (LOCAL_BUILD.test(model) || !CLOUD_ONLY.has(family))) return "studio";
+  if (family !== "other") return family;
+  if (h === "claude-code") return "anthropic";
+  if (h === "codex") return "openai";
+  if (h === "zcode") return "zai";
+  if (h === "gemini-cli" || h === "gemini" || h === "antigravity") return "google";
   return "other";
 }
 
@@ -39,7 +49,7 @@ export interface Thread {
   state: Item["state"];
   start: number;               // position of the first claim
   end: number | null;          // position of the merge or closure; null while live
-  ending: "merged" | "closed" | null;
+  ending: "merged" | "closed" | "released" | null;
   holds: Hold[];               // who held it, from which position
   beads: Bead[];
   merge?: { pos: number; sha: string };
@@ -92,7 +102,14 @@ const sha8 = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
 
-export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project): Story {
+// For a public page: what an agent or the owner wrote (review notes, reports,
+// check commands, closing notes) is left out, and the owner is named rather
+// than addressed. Titles, models, kinds and times stay.
+export interface StoryOptions { redact?: boolean; ownerLabel?: string }
+
+export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
+  const R = !!opts.redact;
+  const you = opts.ownerLabel ?? "You";
   const evs = [...events].sort((a, b) => a.seq - b.seq);
   const posOf = new Map<number, number>();
   let p = 0;
@@ -112,7 +129,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     const holder = threads.get(id)?.holds.at(-1)?.who;
     // An event Atelier recorded is told, and coloured, as part of the holder's thread.
     const actor = isAtelier(ev.actor) && holder ? holder : ev.actor;
-    const name = (a: string) => (a === owner ? "You" : isAtelier(a) ? "Atelier" : splitActor(a).model || a);
+    const name = (a: string) => (a === owner ? you : isAtelier(a) ? "Atelier" : splitActor(a).model || a);
     const say = (text: string, tone: Moment["tone"] = "") => moments.push({ pos, at: ev.at, actor: ev.actor, item: id, kind: ev.kind, text, tone });
 
     if (ev.actor === owner) { if (DECISIONS.has(ev.kind)) t.decisions++; }
@@ -150,17 +167,17 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         t.checks++;
         if (d.where === "sandbox") t.inCloud++;
         const where = d.where === "sandbox" ? "in a Cloudflare container" : "on the agent's machine";
-        if (d.passed === false) { bead("fail", `Failed ${where}: ${str(d.claim)}`); say(`A check on ${id} failed ${where}`, "catch"); }
-        else bead("pass", `Passed ${where}: ${str(d.claim)}`);
+        if (d.passed === false) { bead("fail", R ? `Failed ${where}` : `Failed ${where}: ${str(d.claim)}`); say(`A check on ${id} failed ${where}`, "catch"); }
+        else bead("pass", R ? `Passed ${where}` : `Passed ${where}: ${str(d.claim)}`);
         break;
       }
-      case "evidence.reported": bead("reported", `${name(ev.actor)} reported: ${clip(str(d.claim), 160)}`); break;
+      case "evidence.reported": bead("reported", R ? `${name(ev.actor)} reported on its work` : `${name(ev.actor)} reported: ${clip(str(d.claim), 160)}`); break;
       case "item.submitted": bead("submit", `${name(ev.actor)} submitted ${sha8(d.head)}`); say(`${name(ev.actor)} submitted ${id} for review`); break;
       case "review.approved": t.approvals++; bead("approve", `${name(ev.actor)} approved`); break;
       case "review.rejected":
         t.sentBack++;
-        bead("reject", `${name(ev.actor)} sent it back: ${clip(str(d.note), 220)}`);
-        say(`${name(ev.actor)} sent ${id} back: ${clip(str(d.note), 180)}`, "catch");
+        bead("reject", R ? `${name(ev.actor)} sent it back` : `${name(ev.actor)} sent it back: ${clip(str(d.note), 220)}`);
+        say(R ? `${name(ev.actor)} sent ${id} back` : `${name(ev.actor)} sent ${id} back: ${clip(str(d.note), 180)}`, "catch");
         break;
       case "item.accepted": t.accepts++; bead("accept", `${name(ev.actor)} accepted ${sha8(d.head)}`); say(`${name(ev.actor)} accepted ${id}`, ev.actor === owner ? "you" : ""); break;
       case "item.dispatched": say(`${name(ev.actor)} sent ${id} to ${str(d.to) === "any" ? "any runner" : `a ${str(d.to)} runner`}`, ev.actor === owner ? "you" : ""); break;
@@ -171,11 +188,24 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         break;
       case "item.abandoned":
         if (th) { th.end = pos; th.ending = "closed"; }
-        say(`${name(ev.actor)} closed ${id}${d.note ? `: ${clip(str(d.note), 140)}` : ""}`, ev.actor === owner ? "you" : "");
+        say(`${name(ev.actor)} closed ${id}${d.note && !R ? `: ${clip(str(d.note), 140)}` : ""}`, ev.actor === owner ? "you" : "");
+        break;
+      case "item.released":
+      case "item.claim_failed":
+        // The task went back to the pool: the thread ends here, cap and all.
+        if (th) { th.end = pos; th.ending = "released"; }
         break;
     }
   }
-  for (const th of threads.values()) th.state = titles.get(th.id)?.state ?? th.state;
+  for (const th of threads.values()) {
+    th.state = titles.get(th.id)?.state ?? th.state;
+    // A record cut short can leave an open task with no end of its own on
+    // the page; such a thread ends at its last mark, or where it began.
+    if (th.state === "open" && th.end === null) {
+      th.end = th.beads.at(-1)?.pos ?? th.start;
+      th.ending = "released";
+    }
+  }
 
   const times = [0, 0.25, 0.5, 0.75, 1].map((f) => {
     const target = f * span;
@@ -192,6 +222,7 @@ export interface DrawOptions {
   compact?: boolean;           // the Decisions page's version: no hashes, no clock
   replaySeconds?: number;      // how long the draw-in takes; 0 draws it at rest
   href?: (thread: Thread) => string;
+  ownerLabel?: string;         // how the owner is named in cards; "you" on the owner's own pages
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -270,8 +301,8 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     const xs = x(th.start);
     const end = th.end ?? s.span;
     const xe = th.end === null ? X1 + 6 : x(end);
-    const closed = th.ending === "closed";
-    const live = th.end === null;
+    const closed = th.ending === "closed" || th.ending === "released";
+    const live = th.end === null && (th.state === "claimed" || th.state === "submitted" || th.state === "accepted");
     const segs = th.holds.map((h, i) => ({ who: h.who, from: i ? h.pos : th.start, to: th.holds[i + 1]?.pos ?? end }));
     const g: string[] = [];
     g.push(`<path class="g-thread draw" pathLength="1" style="--c:${c(segs[0].who)};--d:${at(th.start)};--l:0.35s" d="M${r1(xs - R)} ${MAIN}C${xs} ${MAIN} ${r1(xs - R)} ${y} ${xs} ${y}"/>`);
@@ -292,7 +323,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
       g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key));
       cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${b.at.slice(5, 10).replace("-", "/")} ${b.at.slice(11, 16)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label });
     });
-    const holders = th.holds.map((h) => (h.who === owner ? "you" : splitActor(h.who).model || h.who)).join(" → ");
+    const holders = th.holds.map((h) => (h.who === owner ? (o.ownerLabel ?? "you") : splitActor(h.who).model || h.who)).join(" → ");
     const tkey = `${id}-${k}`;
     cards.push({ key: tkey, x: X0 - 4, y, color: c(th.holds[0].who), head: `${th.id} · ${STATE_NAMES[th.state] ?? th.state} · ${holders}`, body: th.title });
     const label = `<text class="g-name" x="${X0 - 12}" y="${y + 4}" text-anchor="end" style="fill:${c(th.holds[0].who)}">${esc(th.id)}</text>`;
@@ -343,6 +374,7 @@ function bead(b: Bead, X: number, y: number, d: string, color: string, key: stri
 
 // Every vendor that appears in a story, for its legend, in a fixed order.
 export const VENDOR_NAMES: [Vendor, string][] = [
-  ["anthropic", "Claude"], ["openai", "GPT via Codex"], ["zai", "GLM via ZCode"],
-  ["studio", "Local, on your Studio"], ["google", "Gemini"], ["other", "Other agents"], ["owner", "You"],
+  ["anthropic", "Claude"], ["openai", "GPT"], ["zai", "GLM"], ["google", "Gemini"], ["deepseek", "DeepSeek"],
+  ["qwen", "Qwen"], ["minimax", "MiniMax"], ["mistral", "Mistral"], ["meta", "Llama"],
+  ["studio", "Local, on your Studio"], ["other", "Other agents"], ["owner", "You"],
 ];

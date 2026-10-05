@@ -58,3 +58,147 @@ it("a claim on a dispatched task is refused without the right runner header", as
   expect(((await wrong.json()) as { error: string }).error).toBe("wrong_runner");
   expect((await claim("opencode/glm-5.3-flash", "laptop")).status).toBe(400);
 });
+
+it("the model pool: anyone signed in reads it, only the owner changes it, a runner reports status", async () => {
+  const api = (method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}) =>
+    worker.fetch(new Request(`https://atelier.test/api/models${path}`, {
+      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), testEnv);
+  const entry = { harness: "opencode", where: "cloud", provider: "google", keychain: "gemini.API_KEY" };
+  expect((await api("PUT", "/gemini-3.1-pro", "codex/gpt-6-astra", entry)).status).toBe(403);
+  const added = await api("PUT", "/gemini-3.1-pro", "owner", entry);
+  expect(added.status).toBe(200);
+  expect(await added.json()).toMatchObject({ id: "gemini-3.1-pro", family: "google", keychain: "gemini.API_KEY" });
+  expect((await api("PUT", "/leaky", "owner", { ...entry, key: "AIza-secret" })).status).toBe(400);
+  const list = await (await api("GET", "", "codex/gpt-6-astra")).json() as { id: string }[];
+  expect(list.map((m) => m.id)).toContain("gemini-3.1-pro");
+  expect(JSON.stringify(list)).not.toContain("AIza");
+  expect((await api("POST", "/gemini-3.1-pro/status", "opencode/gemini-3.1-pro", { state: "available" })).status).toBe(400);
+  // A cloud model is reported by a cloud runner, never a home one.
+  expect((await api("POST", "/gemini-3.1-pro/status", "opencode/gemini-3.1-pro", { state: "available" }, { "x-atelier-runner": "home:studio" })).status).toBe(403);
+  const reported = await api("POST", "/gemini-3.1-pro/status", "opencode/gemini-3.1-pro", { state: "available", served: "gemini-3.1-pro-002" }, { "x-atelier-runner": "cloud:atelier" });
+  expect(await reported.json()).toMatchObject({ status: { state: "available", served: "gemini-3.1-pro-002", by: "cloud:atelier" } });
+  // Changing a note keeps the status; changing how the model is reached clears it.
+  expect(await (await api("PUT", "/gemini-3.1-pro", "owner", { ...entry, note: "via OpenCode" })).json()).toMatchObject({ note: "via OpenCode", status: { state: "available" } });
+  expect(await (await api("PUT", "/gemini-3.1-pro", "owner", { ...entry, keychain: "gemini.OTHER_KEY" })).json()).not.toHaveProperty("status");
+  expect((await api("POST", "/missing/status", "x/y", { state: "available" }, { "x-atelier-runner": "home:studio" })).status).toBe(404);
+  expect(await (await api("DELETE", "/gemini-3.1-pro", "owner")).json()).toEqual({ removed: true });
+});
+
+it("the submit route refuses a blank or non-text summary, and accepts a missing one", async () => {
+  await project("routes-summary");
+  const A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40);
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-summary"));
+  await L.newItem("Summary refusals", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "routes-summary--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  for (const summary of ["", "   \n", 42, ["x"], null]) {
+    const res = await call("POST", "/projects/routes-summary/items/t1/submit", A, { summary });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("a summary must be text with something in it");
+  }
+  expect(((await L.events("t1")) as unknown as { kind: string }[]).some((e) => e.kind === "item.submitted")).toBe(false);
+  expect((await call("POST", "/projects/routes-summary/items/t1/submit", A, {})).status).toBe(200);
+});
+
+it("init again changes only what it names, and --reset starts over", async () => {
+  const ARTIFACTS = {
+    create: async () => ({}),
+    get: async () => ({ info: async () => ({ remote: "https://example/r.git", defaultBranch: "main" }), createToken: async () => ({ plaintext: "t", id: "i", expiresAt: "x" }), [Symbol.dispose]() {} }),
+  } as unknown as Artifacts;
+  const put = (body: unknown) => worker.fetch(new Request("https://atelier.test/api/projects/kept", {
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  const policy = async () => (await (await put({})).json() as { project: { title?: string; policy: Record<string, unknown> } }).project;
+
+  const first = await put({ checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true, title: "Kept" });
+  expect(first.status).toBe(200);
+  // A second init that names nothing keeps every setting, the title included.
+  expect(await policy()).toMatchObject({ title: "Kept", policy: { checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true } });
+  // Naming one setting replaces that one only.
+  await put({ checks: ["npm run typecheck"] });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
+  // Only reset: true resets; anything else that is not a boolean is refused.
+  expect((await put({ reset: "false", title: "X" })).status).toBe(400);
+  expect((await put({ reset: 1 })).status).toBe(400);
+  await put({ reset: false, title: "Still kept" });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
+  // --reset rebuilds from what it is given and the defaults.
+  await put({ reset: true, checks: ["npm test"] });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], sandboxOnly: false });
+  // A first init of a new project with nothing named gets the defaults.
+  const fresh = await worker.fetch(new Request("https://atelier.test/api/projects/fresh", {
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: "{}",
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  expect((await fresh.json() as { project: { policy: unknown } }).project.policy).toMatchObject({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"] });
+});
+
+it("only the project owner can init, reset or not", async () => {
+  const res = await worker.fetch(new Request("https://atelier.test/api/projects/kept", {
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "codex/gpt-6-astra", "content-type": "application/json" }, body: JSON.stringify({ reset: true }),
+  }), testEnv);
+  expect(res.status).toBe(403);
+});
+
+it("a merge's lease cannot be cancelled once the merge is on the baseline", async () => {
+  const name = "cancel-landing";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  const H1 = "a".repeat(40), H0 = "0".repeat(40), M = "c".repeat(40);
+  await L.newItem("Land", [], "owner"); await L.claim("t1", "claude-code/opus-5.5"); await L.setFork("t1", `${name}--t1`, H0, "claude-code/opus-5.5");
+  await L.recordPush("t1", "claude-code/opus-5.5", H1, H1);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "claude-code/opus-5.5", at: new Date().toISOString(), changedPaths: ["README.md"] } as never);
+  await L.submit("t1", "claude-code/opus-5.5"); await L.accept("t1", "owner", H1); await L.beginLanding("t1", "owner", H1);
+  let published = false;
+  const ARTIFACTS = { get: async () => ({ log: async () => (published ? [{ hash: M, parents: [H0, H1] }] : [{ hash: H0, parents: [] }]), [Symbol.dispose]() {} }) } as unknown as Artifacts;
+  const cancel = () => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/landing`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  published = true;
+  const refused = await cancel();
+  expect(refused.status).toBe(409);
+  expect(((await refused.json()) as { error: string }).error).toBe("landed");
+  published = false;
+  expect((await cancel()).status).toBe(200);
+});
+
+// The Artifacts calls a PUT makes, stubbed so the route runs to completion here.
+const artifacts = {
+  create: async () => {},
+  get: async () => ({
+    info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+    createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+    [Symbol.dispose]() {},
+  }),
+} as unknown as Artifacts;
+const artifactsEnv = { ...testEnv, ARTIFACTS: artifacts };
+
+function putTitle(name: string, title: unknown) {
+  return worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...(title === undefined ? {} : { title }) }),
+  }), artifactsEnv);
+}
+
+it("the title route keeps the stored title on re-init, clears it on an empty one, and takes only strings", async () => {
+  await project("routes-title");
+  const titleOf = async (t: unknown) =>
+    (((await (await putTitle("routes-title", t)).json()) as { project: { title?: string } }).project.title);
+  expect(await titleOf("Atelier")).toBe("Atelier");
+  expect(await titleOf(undefined)).toBe("Atelier"); // re-init without a title keeps it
+  expect(await titleOf("")).toBeUndefined();
+  for (const bad of [false, null, {}, 7]) {
+    const res = await putTitle("routes-title", bad);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_title");
+  }
+});
+
+it("a first init with no title creates the project without one", async () => {
+  const res = await putTitle("routes-fresh", undefined);
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as { project: { title?: string } }).project.title).toBeUndefined();
+});

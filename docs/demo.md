@@ -1,6 +1,6 @@
 # Demo walkthrough
 
-A script for the competition video: eight to nine minutes, recorded against
+A script for the competition video: eight to ten minutes, recorded against
 the live server at `https://atelier.zone` with real agents. The entry needs
 a 5–10 minute video of what was built, what it lets agents and developers
 do, and how it works; this script covers the three in that order.
@@ -13,11 +13,12 @@ suggestions; the facts in them are the ones to keep.
 1. **Sandbox-only for the demo project.** In the `cloudflare-git` checkout:
 
    ```text
-   atelier init --check "npm ci --prefer-offline --no-audit --no-fund && npm test" --check "npm run types && npm run typecheck" --protect src/rules.ts --protect src/ledger.ts --protect src/index.ts --sandbox-only
+   atelier init --title "Atelier" --check "npm ci --prefer-offline --no-audit --no-fund && npm test" --check "npm run types && npm run typecheck" --protect src/rules.ts --protect src/ledger.ts --protect src/index.ts --sandbox-only
    ```
 
-   Re-running `init` keeps every item. From then on only checks Atelier runs
-   in a Cloudflare container count.
+   Re-running `init` keeps every item. `--title` gives the project a display
+   title on the pages; commands still use its name. From then on only checks
+   Atelier runs in a Cloudflare container count.
 
 2. **Three small items with separate scopes**, created by the owner:
 
@@ -35,10 +36,12 @@ suggestions; the facts in them are the ones to keep.
    Claude Code, Codex and GLM. Do not start them yet.
 
 4. **Screens.** Browser at `https://atelier.zone/studio`, signed in, in a
-   window wide enough for the lanes (about 1440 px). One terminal for the
-   owner. Light or dark mode both work; pick one and keep it.
+   window wide enough for the lanes and the flow graph (about 1440 px). One
+   terminal for the owner. The pages use the Night theme and follow the
+   device's light or dark setting; pick one and keep it.
 
-5. **A dry run** of sections 3 to 5 the day before. Agents take minutes, not
+5. **A dry run** of sections 3 to 5 the day before, and a look at the Flow
+   page once the items have merged, so the replay has something to draw. Agents take minutes, not
    seconds; record their work at normal speed and cut or speed it up in the
    edit, never by restaging.
 
@@ -53,8 +56,9 @@ suggestions; the facts in them are the ones to keep.
 | 3:30–5:00 | Terminal, item page | Evidence: a check in a Cloudflare container. |
 | 5:00–6:30 | Decisions, item page | A cross-model review, then the owner decides. |
 | 6:30–7:15 | Owner terminal | Merge, provenance and the receipt. |
-| 7:15–8:30 | Diagram | How it is built. |
-| 8:30–8:50 | README | Where to try it. |
+| 7:15–8:00 | Flow | The whole story as a graph, replayed. |
+| 8:00–9:15 | Diagram | How it is built. |
+| 9:15–9:35 | README | Where to try it. |
 
 ### 0:00–0:30 · The floor
 
@@ -73,9 +77,11 @@ Open on the Studio with all three agents working. Let a mark appear.
 > Atelier ran itself counts; a claim an agent makes is only reported. And the
 > project owner decides what reaches the project.
 
-Click to Decisions. Point at "On the floor" and the empty queue.
+Click to Decisions. Point at "On the floor" and the empty queue. With
+nothing waiting, the page shows the latest project's graph instead.
 
 > Decisions shows only what needs a person, and who is at work right now.
+> When nothing is waiting, it says so and draws the latest work.
 
 ### 1:15–2:30 · Three agents, three items
 
@@ -166,7 +172,23 @@ For a ControlPlane project such as ikon weblog, the merge also writes a
 landing receipt in the project's own format. Mention it; there is no need to
 show it.
 
-### 7:15–8:30 · How it is built
+### 7:15–8:00 · The flow
+
+Click to Flow. Press "Replay" on the project and let the graph draw in. Then
+hover a few marks: a push, a check, a review, a decision. Each shows a card
+saying what happened.
+
+> This is the same work as one picture. The line along the top is main. Each
+> coloured thread is a task an agent took off it, coloured by the agent's
+> family. The beads are its pushes, its checks, the reviews from other models
+> and my decision; the thread returns to main only when I accept and merge it.
+> The tally says how many moves the agents made and how many decisions were
+> mine. The agents did the work; I decided what reached the project.
+
+Point at the tally and, if it applies, the count of times a model sent work
+back. Everything on the page is drawn from the ledger; none of it is staged.
+
+### 8:00–9:15 · How it is built
 
 Show this diagram, or draw it.
 
@@ -178,7 +200,7 @@ Show this diagram, or draw it.
  │  Ledger: one Durable Object per project — items, owners,          │
  │          graded evidence, reviews, every event                    │
  │  CheckRunner: one Durable Object + container per check run        │
- │  Pages: Decisions · Studio · Projects · History (no script)       │
+ │ Pages: Decisions · Flow · Studio · Projects · History (no script) │
  └───────────────┬──────────────────────────────────┬────────────────┘
                  │ Artifacts binding                 │ egress gateway
                  ▼                                   ▼
@@ -193,7 +215,7 @@ Show this diagram, or draw it.
 > managed image: no Dockerfile, no image to build. And the CLI has no
 > dependencies; any agent that can run a shell command can use it.
 
-### 8:30–8:50 · Close
+### 9:15–9:35 · Close
 
 Show the README at `https://github.com/pavithran/atelier`.
 
@@ -209,8 +231,10 @@ Show the README at `https://github.com/pavithran/atelier`.
   exists, but no queue or subscription is set up on the live server, so
   pushes are recorded when an agent runs `atelier push`. Do not show or claim
   automatic push detection.
-- **Merging happens on the owner's machine**, in local git, because Artifacts
-  has no merge operation and the checkout is the source of truth.
+- **Merging happens on the owner's machine**, in local git, because the
+  Artifacts binding and REST API can read repositories but cannot write; the
+  only way to write is a git push with a write token. The checkout is the
+  source of truth.
 - **"Observed" from an agent's machine is weaker than from a container.**
   Under sandbox-only it does not count, and the pages say so. Do not describe
   local checks as verified.
