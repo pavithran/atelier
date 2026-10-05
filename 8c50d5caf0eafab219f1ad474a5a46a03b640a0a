@@ -1,0 +1,28 @@
+atelier cloudflare-git/t83 "Name agents by model on every page: imported lanes in the live spelling, a model's version marked when the commits omit it, family colours for local runs too, and Studio labels by model"
+accepted head d483ac6a1b832f70a451a6f9b98bd9e7be6445f9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/gemini-3.1-pro-preview 2026-10-05T19:00:47.626Z
+OBSERVED pass npm run types && npm run typecheck — opencode/gemini-3.1-pro-preview 2026-10-05T19:00:50.738Z
+REVIEW approve — pavi: gpt-6-astra approved bfd07223; since then a one-line legend wording change for the public showcase and a clean merge of main (t84). Suite and typecheck pass.
+2026-10-05T18:12:57.475Z pavi item.created
+2026-10-05T18:13:15.185Z opencode/gemini-3.1-pro-preview item.claimed
+2026-10-05T18:13:18.465Z opencode/gemini-3.1-pro-preview fork.created
+2026-10-05T18:44:23.136Z opencode/gemini-3.1-pro-preview push.observed
+2026-10-05T18:45:38.090Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T18:45:41.039Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T18:45:41.840Z opencode/gemini-3.1-pro-preview item.submitted
+2026-10-05T18:49:51.437Z codex/gpt-6-astra review.rejected
+2026-10-05T18:52:06.254Z opencode/gemini-3.1-pro-preview push.observed
+2026-10-05T18:53:22.514Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T18:53:25.550Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T18:53:26.492Z opencode/gemini-3.1-pro-preview item.submitted
+2026-10-05T18:56:53.580Z codex/gpt-6-astra review.approved
+2026-10-05T18:56:55.775Z opencode/gemini-3.1-pro-preview push.observed
+2026-10-05T18:58:10.321Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T18:58:13.189Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T18:58:14.050Z opencode/gemini-3.1-pro-preview item.submitted
+2026-10-05T18:59:32.862Z opencode/gemini-3.1-pro-preview push.observed
+2026-10-05T19:00:47.858Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T19:00:50.820Z opencode/gemini-3.1-pro-preview evidence.observed
+2026-10-05T19:00:51.748Z opencode/gemini-3.1-pro-preview item.submitted
+2026-10-05T19:00:52.550Z pavi review.approved
+2026-10-05T19:00:53.313Z pavi item.accepted
