@@ -239,6 +239,10 @@ export function agentOf(actor: string, agents: Record<string, AgentPolicy>): str
   const family = familyOf(model);
   const names: Record<string, string> = { anthropic: "claude", openai: "gpt", zai: "glm", google: "gemini", meta: "llama" };
   if (fixed) return Object.hasOwn(agents, fixed) ? fixed : null;
+  // A ControlPlane policy's "antigravity" agent means Gemini through
+  // Antigravity (its CLI is agy). Antigravity also serves other vendors'
+  // models, and those are matched by their own family, like any harness.
+  if (harness === "antigravity" && family === "google" && Object.hasOwn(agents, "antigravity")) return "antigravity";
   const name = names[family] ?? (family === "other" ? model.match(/^[a-z]+/)?.[0] : family);
   if (name && Object.hasOwn(agents, name)) return name;
   return family !== "other" && Object.hasOwn(agents, family) ? family : null;

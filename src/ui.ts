@@ -956,7 +956,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
       : `<details class="request-changes dispatch-form"><summary>Send to an agent</summary>
         <form class="stack" method="post" action="${action("dispatch")}">${revision}
           <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Studio)</option><option value="cloud">Cloud runner</option></select></label>
-          <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option></select></label>
+          <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option><option value="antigravity">Antigravity (Gemini)</option><option value="gemini-cli">Gemini CLI</option></select></label>
           <label>Model <span class="meta">optional, as the runner names it</span><input type="text" name="model" placeholder="e.g. glm-5.3-flash"></label>
           <label>Note for the agent <span class="meta">optional</span><input type="text" name="note" maxlength="500"></label>
           <button class="primary">Send</button>

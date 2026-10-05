@@ -99,7 +99,9 @@ merged.
   agent instructions, ControlPlane files and the files that run checks.
   Atelier never writes these policy files.
 - `claude-code/*` maps to `claude`, `codex/*` to `codex`, and `zcode/*`
-  and `opencode/glm*` to `glm`. Other actors map by model family name,
+  and `opencode/glm*` to `glm`. `antigravity/*` maps to `antigravity` for a
+  Gemini model; Antigravity also serves other vendors' models, which map by
+  their own family. Other actors map by model family name,
   such as `claude`, `gpt`, `gemini` or `qwen`, when that name is listed in
   the agent policy. An unmapped actor has no role. Claiming or receiving a
   handoff requires an available agent with `executor` in `eligible_roles`.
@@ -604,7 +606,7 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
 }
 ```
 
-Agent ids are `opencode`, `claude-code`, `codex`, or `zcode`. Set model ids
+Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
 arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
 the runner invokes them directly without a shell. The example requires that
