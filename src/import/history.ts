@@ -33,11 +33,15 @@ export function agentsIn(message: string): string[] {
   for (const line of message.split("\n")) {
     const m = /^\s*(?:Co-Authored-By|Agent)\s*:\s*(.+?)\s*$/i.exec(line);
     if (!m) continue;
-    // The email address goes, and the text on either side of it stays;
-    // anything else in angle brackets goes too. Invisible and
-    // direction-changing characters go, as in a project title, because the
-    // name is drawn on public pages.
-    const name = m[1].replace(/<[^<>]*@[^<>]*>/g, " ").replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
+    // The name is the text before the email address, or, when nothing comes
+    // before it, the text after it: "Jane Doe <j@x> reviewed PR #42" is Jane
+    // Doe, and "<a@b.c> Claude Opus 5.5" is Claude Opus 5.5. Anything else in
+    // angle brackets goes too. Invisible and direction-changing characters
+    // go, as in a project title, because the name is drawn on public pages.
+    const email = /<[^<>]*@[^<>]*>/.exec(m[1]);
+    const before = email ? m[1].slice(0, email.index) : m[1];
+    const side = email && !before.replace(/<[^>]*>/g, "").trim() ? m[1].slice(email.index + email[0].length) : before;
+    const name = side.replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
       .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu, " ")
       .replace(/\s+/g, " ").trim();
     // A human co-author is a person, not an agent: keep only names that
