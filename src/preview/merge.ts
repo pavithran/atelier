@@ -42,33 +42,40 @@ function locator(r: Reader) {
 }
 
 // The base lines each side's changes occupy: [start, end) in base line
-// numbers, where an insertion between lines is the empty range at its place.
-// Null when the files are too different to diff within the line-diff budget.
-export function changedRegions(base: string[], side: string[]): [number, number][] | null {
+// numbers, where an insertion between lines is the empty range at its place,
+// with the lines the side puts there. Null when the files are too different
+// to diff within the line-diff budget.
+export type Region = [number, number, string[]];
+
+export function changedRegions(base: string[], side: string[]): Region[] | null {
   const ops = diffLines(base, side);
   if (!ops) return null;
-  const out: [number, number][] = [];
-  let i = 0, start = -1;
+  const out: Region[] = [];
+  let i = 0, start = -1, added: string[] = [];
   for (const op of ops) {
     if (op.op === " ") {
-      if (start >= 0) { out.push([start, i]); start = -1; }
+      if (start >= 0) { out.push([start, i, added]); start = -1; added = []; }
       i++;
     } else {
       if (start < 0) start = i;
       if (op.op === "-") i++;
+      else added.push(op.text);
     }
   }
-  if (start >= 0) out.push([start, i]);
+  if (start >= 0) out.push([start, i, added]);
   return out;
 }
 
+const sameChange = (a: Region, b: Region) => a[0] === b[0] && a[1] === b[1] && a[2].length === b[2].length && a[2].every((l, k) => l === b[2][k]);
+
 // Two sides' changes to one file conflict when any of their regions overlap
-// or touch, which is where git's merge stops and asks a person. Null when
+// or touch, which is where git's merge stops and asks a person, unless both
+// sides made the identical change there, which git takes once. Null when
 // either side is too different from the base to compare here.
 export function linesConflict(base: string[], ours: string[], theirs: string[]): boolean | null {
   const a = changedRegions(base, ours), b = changedRegions(base, theirs);
   if (!a || !b) return null;
-  return a.some(([s1, e1]) => b.some(([s2, e2]) => s1 <= e2 && s2 <= e1));
+  return a.some((x) => b.some((y) => x[0] <= y[1] && y[0] <= x[1] && !sameChange(x, y)));
 }
 
 export async function mergeability(
