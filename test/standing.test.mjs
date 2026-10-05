@@ -137,6 +137,21 @@ test("status --project says the checkout is out of step when the baseline has mo
   assert.match(r.output, /\nCheckout: out of step\. main @ [0-9a-f]{8} does not hold the baseline's head [0-9a-f]{8}; reconcile/);
 });
 
+test("the registered branch is compared, not whatever is checked out", async (t) => {
+  // The baseline moves on; the checkout has it on a feature branch, but main is behind.
+  const r = await run(t, ({ checkout, bare, dir }) => {
+    const other = join(dir, "other");
+    git(dir, "clone", "-q", bare, other);
+    writeFileSync(join(other, "b.txt"), "two\n");
+    git(other, "add", "."); git(other, "commit", "-q", "-m", "two");
+    git(other, "push", "-q", "origin", "main");
+    git(checkout, "fetch", "-q", bare, "main");
+    git(checkout, "checkout", "-q", "-b", "feature", "FETCH_HEAD");
+  });
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /\nCheckout: out of step\. main @ [0-9a-f]{8} does not hold the baseline's head/);
+});
+
 // As cli/fresh.mjs builds a baseline: the same tree under a different commit
 // (here a later committer date), so the baseline's head is not the checkout's.
 function rebuilt(bare, dir, name) {
