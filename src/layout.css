@@ -456,12 +456,15 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 .graph:has(.g-task:hover) .g-task:not(:hover),
 .graph:has(.g-task:focus-within) .g-task:not(:focus-within) { opacity: .28; }
 .graph .g-task { transition: opacity .15s; }
-.g-cards { pointer-events: none; }
-.g-card { opacity: 0; transition: opacity .12s ease-out; }
+/* A hidden card takes no pointer: it is hidden, not merely transparent. It
+   stays visible a moment after the pointer leaves its mark, so the pointer
+   can reach the card and its link; the card's own hover then keeps it. */
+.g-card { opacity: 0; visibility: hidden; transition: opacity .12s ease-out, visibility 0s linear .3s; }
+.g-card:not(:has(a)) { pointer-events: none; }
 .g-card rect { fill: var(--shell); stroke: var(--c); stroke-width: 1.2; filter: drop-shadow(0 6px 18px rgba(var(--shadow-rgb), .35)); }
 .graph text.g-card-head { font-size: 11px; fill: var(--c, var(--text-muted)); }
 .graph text.g-card-body { font-size: 12.5px; fill: var(--text); font-family: var(--font-sans); }
-@media (prefers-reduced-motion: reduce) { .g-card, .graph .g-task, .g-bead > * { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .g-card { transition: visibility 0s linear .3s; } .graph .g-task, .g-bead > * { transition: none; } }
 
 /* Glows belong to the dark stage; on paper the lines stand on their own. */
 @media (prefers-color-scheme: light) {

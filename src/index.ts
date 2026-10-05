@@ -12,7 +12,7 @@ import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
-import { addTally, buildStory, emptyTally } from "./graph";
+import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 
 export { CheckRunner, Egress, Ledger };
@@ -728,11 +728,32 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     };
     const recent = (v: FloorView) => v.events[0]?.at ?? "";
     if (parts[0] === "flow") {
-      const stories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null)
-        .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
+      // Unknown values are ignored: the page shows all time, every family.
+      const sinceRaw = c.url.searchParams.get("since") ?? "all";
+      const sinceParam = ["1d", "7d", "all"].includes(sinceRaw) ? sinceRaw : "all";
+      const familyParam = c.url.searchParams.get("family");
+      let sinceIso: string | undefined = undefined;
+      if (sinceParam === "1d") sinceIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+      if (sinceParam === "7d") sinceIso = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+      const familyAllowed = VENDOR_NAMES.some(([v]) => v === familyParam) && familyParam ? familyParam : undefined;
+      
+      const unfilteredStories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null);
+      const familiesPresent = [...new Set(unfilteredStories.flatMap(s => Object.keys(s.tally.byVendor) as string[]))];
+      
+      const filteredStory = async (v: FloorView) => {
+        try {
+          const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+          cutoffs.set(v.project.name, firstTaskAt(v.items));
+          return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project), { since: sinceIso, family: familyAllowed });
+        } catch { return null; }
+      };
+
+      const stories = (sinceParam === "all" && !familyAllowed) ? unfilteredStories :
+        (await Promise.all(floorViews.map(filteredStory))).filter((s): s is NonNullable<typeof s> => s !== null)
+          .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
       const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
       const imported = await importedAll(env, floorViews.map((v) => v.project), cutoffs);
-      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported));
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent));
     }
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects));
     const lists = await Promise.all(views.map(async v => {
