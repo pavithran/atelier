@@ -1,0 +1,25 @@
+atelier cloudflare-git/t80 "atelier adopt: prepare a project's move from ControlPlane as an Atelier task, with a forwarding bin/control-plane entry point and the Atelier guide in AGENTS.md"
+accepted head 98b7d21a24d02bd8971a19a8825510082851eaa7
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — zcode/glm-5.3 2026-10-05T17:56:25.587Z
+OBSERVED pass npm run types && npm run typecheck — zcode/glm-5.3 2026-10-05T17:56:27.764Z
+REVIEW approve — codex/gpt-6-astra: The dangling-link fix replaces the link; the regression test covers replacement, mode, the untouched target and the unchanged checkout. Earlier findings fixed.
+REVIEW approve — pavi: Codex approved at this revision; full suite and typecheck pass.
+2026-10-05T16:32:38.979Z pavi item.created
+2026-10-05T16:32:39.356Z zcode/glm-5.3 item.claimed
+2026-10-05T16:32:43.574Z zcode/glm-5.3 fork.created
+2026-10-05T17:06:29.530Z zcode/glm-5.3 push.observed
+2026-10-05T17:07:36.050Z zcode/glm-5.3 evidence.observed
+2026-10-05T17:07:38.555Z zcode/glm-5.3 evidence.observed
+2026-10-05T17:07:39.164Z zcode/glm-5.3 item.submitted
+2026-10-05T17:48:25.918Z zcode/glm-5.3 push.observed
+2026-10-05T17:49:32.935Z zcode/glm-5.3 evidence.observed
+2026-10-05T17:49:35.049Z zcode/glm-5.3 evidence.observed
+2026-10-05T17:49:35.762Z zcode/glm-5.3 item.submitted
+2026-10-05T17:55:17.541Z codex/gpt-6-astra review.rejected
+2026-10-05T17:55:19.403Z zcode/glm-5.3 push.observed
+2026-10-05T17:56:25.717Z zcode/glm-5.3 evidence.observed
+2026-10-05T17:56:27.872Z zcode/glm-5.3 evidence.observed
+2026-10-05T17:56:28.514Z zcode/glm-5.3 item.submitted
+2026-10-05T17:57:10.549Z codex/gpt-6-astra review.approved
+2026-10-05T17:57:11.181Z pavi review.approved
+2026-10-05T17:57:11.814Z pavi item.accepted
