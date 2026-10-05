@@ -1,0 +1,20 @@
+atelier cloudflare-git/t72 "OS-neutral credentials: one store for the CLI, the runner and setup: macOS Keychain, Linux secret-tool, Windows Credential Manager, else a file readable only by the user"
+accepted head 86e12cf1f5a578d5b90cfb89af39ed879fec8790
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-05T15:36:13.300Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-05T15:36:15.889Z
+REVIEW approve — pavi: Owner approval of the merge-only revision; GLM approved t72's own changes at 71ad2060.
+2026-10-05T14:40:44.475Z pavi item.created
+2026-10-05T14:40:49.476Z claude-code/sonnet-5.5 item.claimed
+2026-10-05T14:40:51.569Z claude-code/sonnet-5.5 fork.created
+2026-10-05T15:12:46.815Z claude-code/sonnet-5.5 push.observed
+2026-10-05T15:13:52.790Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T15:13:55.047Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T15:13:55.714Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T15:33:44.190Z zcode/glm-5.3 review.approved
+2026-10-05T15:33:44.731Z pavi item.accepted
+2026-10-05T15:35:06.776Z claude-code/sonnet-5.5 push.observed
+2026-10-05T15:36:13.619Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T15:36:15.972Z claude-code/sonnet-5.5 evidence.observed
+2026-10-05T15:36:16.618Z claude-code/sonnet-5.5 item.submitted
+2026-10-05T15:36:17.311Z pavi review.approved
+2026-10-05T15:36:17.989Z pavi item.accepted
