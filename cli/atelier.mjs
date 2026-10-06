@@ -495,6 +495,7 @@ async function claimWorkspace(name, id, as, runner) {
     git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
   }
   if (was && was !== branch) console.log(`This workspace pushed to ${was}; it now pushes to ${branch}, the branch Atelier reads. Commits pushed to ${was} in the fork are not seen there: push them again with atelier push.`);
+  if (!fresh) takeForkHead(dir, id, branch);
   const reads = forkBranch(dir);
   if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
   // Commit as the project's checkout does, not as this machine's global identity.
@@ -510,6 +511,40 @@ function forkBranch(cwd) {
   const r = git(["ls-remote", "--symref", "origin", "HEAD"], { cwd, allowFail: true });
   if (r.status !== 0) return null;
   return /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(r.stdout)?.[1] ?? null;
+}
+
+// Whether `commit` holds `ancestor` in its history, and whether the
+// repository holds a commit at all, as git answers in the given directory.
+const holds = (ancestor, commit, cwd) => git(["merge-base", "--is-ancestor", ancestor, commit], { cwd, allowFail: true }).status === 0;
+const hasCommit = (sha, cwd) => git(["cat-file", "-e", `${sha}^{commit}`], { cwd, allowFail: true }).status === 0;
+const count = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+// A reused workspace holds what its last session left, and the fork's
+// branch may have moved on since: another holder pushed to it after a
+// handoff, or the same holder pushed from another machine. The fetch alone
+// leaves the workspace behind it, and from there `atelier update` would
+// carry only this workspace's commits onto the baseline and `atelier push
+// --force` would put them over the others. So the fork's commits are taken
+// here, before any work: when this workspace has no commits of its own past
+// the fork's branch, it is fast-forwarded to it; when the two have diverged,
+// the claim stops and names the commits to integrate, since replaying this
+// workspace's commits can conflict and is the agent's to do. The claim on
+// the server stands either way, and running it again after the rebase
+// finds the workspace in step. A fork branch that origin does not list is
+// left to the push to refuse (see the warning on forkBranch).
+function takeForkHead(dir, id, branch) {
+  const remote = `refs/remotes/origin/${branch}`;
+  if (git(["rev-parse", "--verify", "--quiet", remote], { cwd: dir, allowFail: true }).status !== 0) return;
+  if (holds(remote, "HEAD", dir)) return;
+  const missing = git(["log", "--oneline", `HEAD..${remote}`], { cwd: dir });
+  const n = count(missing.split("\n").filter(Boolean).length, "commit");
+  if (holds("HEAD", remote, dir)) {
+    const ff = git(["merge", "--ff-only", "--quiet", remote], { cwd: dir, allowFail: true });
+    if (ff.status !== 0) die(`${id}'s fork holds ${n} this workspace lacks:\n${missing}\nFast-forwarding ${dir} to them failed:\n${(ff.stderr || ff.stdout).trim()}\nCommit or set aside its changes, then run atelier claim ${id} again.`);
+    console.log(`This workspace was behind ${id}'s fork; it now holds the ${n} pushed there since:\n${missing}`);
+    return;
+  }
+  die(`${id}'s fork holds ${n} this workspace lacks, and this workspace holds commits the fork lacks. The fork's:\n${missing}\nPut this workspace's commits on top of them first: cd ${JSON.stringify(dir)} && git rebase ${remote}, then run atelier claim ${id} again. This workspace's commits are untouched.`);
 }
 
 // ── clean-room checks ──────────────────────────────────────────────────────
@@ -1463,18 +1498,64 @@ const commands = {
     }
     const branch = recorded ?? reads ?? "main";
     const head = git(["rev-parse", "HEAD"]);
-    // --force after `atelier update` rebased the workspace; the lease refuses
-    // to overwrite anything pushed since this workspace last fetched.
-    git(["push", "--quiet", "--recurse-submodules=no", ...(args.force === true ? ["--force-with-lease"] : []), "origin", `HEAD:${branch}`]);
-    const item = await call("POST", `${I(name, id)}/push`, { head }, as);
+    // --force is for the head `atelier update` rebuilt, which no longer holds
+    // the head Atelier recorded for the item. Two things guard what the
+    // force replaces. The lease names the recorded head, read from the
+    // Ledger, not the ref this workspace last fetched: the fork's branch must
+    // still stand exactly where Atelier last saw it, or the push is refused
+    // and nothing pushed since is overwritten. And every commit reachable
+    // from the recorded head must survive in HEAD, as git identifies commits
+    // across a rebase, by patch: a workspace whose rebuilt history dropped
+    // one is refused before anything is sent. Merge commits are left out of
+    // that comparison, since a rebase replays what they merged and not the
+    // merge itself. The push then declares the head it rebased from, so the
+    // Ledger can tell this rewrite from one it must refuse (recordPush in
+    // src/ledger.ts).
+    let rebasedFrom = null, known = null;
+    const lease = [];
+    if (args.force === true) {
+      known = (await call("GET", I(name, id), undefined, as)).item.head;
+      if (!known) die(`nothing is recorded for ${id} yet; push without --force`);
+      if (!hasCommit(known)) die(`Atelier recorded ${id}'s head as ${short(known)}, which this workspace does not hold; run atelier update to take what the fork holds, then push again`);
+      if (!holds(known, "HEAD")) {
+        const dropped = git(["rev-list", "--cherry-pick", "--left-only", "--no-merges", `${known}...HEAD`]).split("\n").filter(Boolean);
+        if (dropped.length) die(`push --force would drop ${count(dropped.length, "commit")} Atelier recorded for ${id} at ${short(known)}:\n${git(["log", "--oneline", "--no-walk", ...dropped])}\nRun atelier update to carry them onto the baseline with yours, then push again. Nothing was pushed.`);
+        rebasedFrom = known;
+      }
+      lease.push(`--force-with-lease=${branch}:${known}`);
+    }
+    const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, "origin", `HEAD:${branch}`];
+    if (!lease.length) git(pushArgs);
+    else {
+      const r = git(pushArgs, { allowFail: true });
+      if (r.status !== 0) die(`${id}'s fork no longer stands at ${short(known)}, the head Atelier recorded: something was pushed to it since. Run atelier update to take what it holds, then atelier push --force again. Nothing was pushed.\n${(r.stderr || r.stdout).trim()}`);
+    }
+    const item = await call("POST", `${I(name, id)}/push`, { head, ...(rebasedFrom ? { rebasedFrom } : {}) }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
   },
 
-  // Agents: bring the workspace up to date with what has merged since the fork.
+  // Agents: bring the workspace up to date with what has merged since the
+  // fork. The fork's own branch comes first: a workspace that lacks commits
+  // another holder pushed there (a re-claim after a handoff, a retry on
+  // another machine) takes them before its own commits move, since the
+  // rebase onto the baseline replays only what HEAD holds, and the push
+  // --force that follows would then drop the rest from the fork. A rebase
+  // that stops leaves git's own state to finish; update run again carries on
+  // from there.
   async update() {
     const name = project(), id = itemArg(), as = await actor();
     requireWorkspace("update", name, id, as);
+    const branch = wsConfig("branch") ?? forkBranch() ?? "main";
+    const remote = `refs/remotes/origin/${branch}`;
+    git(["fetch", "--quiet", "origin"]);
+    if (git(["rev-parse", "--verify", "--quiet", remote], { allowFail: true }).status === 0 && !holds(remote, "HEAD")) {
+      const missing = git(["log", "--oneline", `HEAD..${remote}`]);
+      const n = count(missing.split("\n").filter(Boolean).length, "commit");
+      const r = git(["rebase", "--quiet", remote], { allowFail: true });
+      if (r.status !== 0) die(`${id}'s fork holds ${n} this workspace lacks:\n${missing}\nRebasing this workspace's commits onto them did not complete:\n${(r.stderr || r.stdout).trim()}\nFinish that (resolve conflicts and git rebase --continue; or commit or set aside uncommitted changes), then run atelier update again.`);
+      console.log(`${id}: this workspace's commits now sit on the ${n} the fork held that it lacked:\n${missing}`);
+    }
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
