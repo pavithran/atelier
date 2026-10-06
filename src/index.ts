@@ -711,6 +711,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "evidence": {
       const item = await L.item(id);
       const check = body.kind === "check";
+      // A merged check ran on the merge of the head with a main head the
+      // caller names; it needs a workspace to be measured against.
+      const merged = check && body.merged === true;
+      if (merged && !item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const e: Evidence = {
         itemId: id,
         claim: String(body.claim ?? "").slice(0, 500),
@@ -728,11 +732,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // caller is often the item's own agent, so body.changedPaths is never
       // read. The result itself (body.passed) is the caller's word, shown as
       // run on the caller's machine; sandboxOnly is the policy for projects
-      // that will not count it.
+      // that will not count it. Each row names main's head as Atelier reads
+      // it now; a merged check is bound to the main head it merged with,
+      // which must be a commit on main's line, and measures no paths.
       if (check && item.fork) {
-        const measured = await measureWorkspace(env.ARTIFACTS, (await L.project()).repo, item.fork);
+        const p = await L.project();
+        const measured = await measureWorkspace(env.ARTIFACTS, p.repo, item.fork);
         if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
-        e.changedPaths = measured.changedPaths;
+        e.changedPaths = merged ? null : measured.changedPaths;
+        if (measured.main) e.mainHead = measured.main;
+        if (merged) {
+          const mainHead = String(body.mainHead ?? "");
+          if (mainHead !== measured.main) {
+            using baseline = await env.ARTIFACTS.get(p.repo);
+            if (!/^[a-f0-9]{40,64}$/.test(mainHead) || !(await baseline.log({ limit: 1000 })).some((x) => x.hash === mainHead)) {
+              throw new RuleError("unknown_main", `${mainHead.slice(0, 8) || "the main head given"} is not a commit on main; run atelier check --merged again`, 409);
+            }
+          }
+          e.mainHead = mainHead;
+          e.merged = true;
+        }
       }
       await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
@@ -750,6 +769,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const request: RunRequest = {
         runId, project: ref.key, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
+        ...(body.merged === true ? { merged: true } : {}),
       };
       await L.setNotificationOrigin(id, c.url.origin);
       if (c.token) await L.recordSandboxRequest(id, actor, runId);

@@ -3,7 +3,7 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, modelOf, stateLabel } from "./rules.ts";
+import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, mergedBlockers, modelOf, stateLabel } from "./rules.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
@@ -54,6 +54,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   const failed = view.checks.filter((c) => c.grade === "observed" && !c.passed);
   const pending = view.checks.filter((c) => c.grade === "pending");
   const passed = view.checks.filter((c) => c.grade === "observed" && c.passed);
+  // A failing check on the merge with main that blocks, read as the gate
+  // reads it, without the step it asks for.
+  const onMerge = mergedBlockers(policy, detail.evidence, item.head).map((b) => b.split(";")[0]);
   const rev = item.head ? `at ${item.head.slice(0, 8)}` : "with nothing pushed";
   const title = item.title.trim().replace(/[.!?]+$/, "");
 
@@ -74,6 +77,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     if (pending.length) parts.push(`${pending.length} waiting`);
     lines.push({ rank: 1, text: `Required checks at this revision: ${parts.join(", ")}.` });
   }
+  if (onMerge.length) lines.push({ rank: 0, text: `On the merge with main: ${onMerge.join("; ")}.` });
   if (reviews.length) {
     lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${reviewer(detail, r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.` });
   }
@@ -110,7 +114,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     lines.splice(drop, 1);
   }
 
-  const recommendation = recommend(detail, { passed: passed.length, total: view.checks.length, failed, pending, rejections, unmeasured: view.changedPaths === null && !!item.head });
+  const recommendation = recommend(detail, { passed: passed.length, total: view.checks.length, failed, onMerge, pending, rejections, unmeasured: view.changedPaths === null && !!item.head });
 
   // The sentence follows the recommendation, so the heading never contradicts it.
   const subject = `${item.id} ${rev}: ${title}.`;
@@ -137,6 +141,7 @@ interface Picture {
   passed: number;
   total: number;
   failed: { claim: string }[];
+  onMerge: string[];      // checks failing on the merge with main that block, as the gate words them
   pending: { claim: string }[];
   rejections: { by: string }[];
   unmeasured: boolean;
@@ -150,7 +155,8 @@ function overrideOf(d: Detail) {
 }
 
 // accept when the gate is ready; merge when accepted; send back when a review
-// at this head rejects or a required check failed; review when only an
+// at this head rejects or a required check failed, at the head or on its
+// merge with main where that blocks; review when only an
 // independent approval of a protected change is missing; wait while checks are
 // pending; decide otherwise. A closed task gets none: it is closed, so nothing
 // is waiting on the owner.
@@ -179,7 +185,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   // independent approval, which a qualifying reviewer gives or the owner
   // overrides, then a rejection.
   const asked = p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`);
-  const failedChecks = p.failed.map((c) => `\`${c.claim}\` failed at this revision`);
+  const failedChecks = [...p.failed.map((c) => `\`${c.claim}\` failed at this revision`), ...p.onMerge];
   if (failedChecks.length) return { verdict: "send back", reason: `${upper([...asked, ...failedChecks].join(" and "))}.` };
   if (item.state === "submitted" && gate.needsAssessor) {
     const also = [

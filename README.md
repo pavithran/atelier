@@ -129,7 +129,7 @@ In detail:
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
 | `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
-| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. |
+| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed, or built by the Worker with `--sandbox`. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -139,7 +139,9 @@ In detail:
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
-observed; no rejection at that head; and, if a protected path changed, an
+observed; no required check failing on the merge with a main that moved after
+the head's own checks passed (see the merge preview below); no rejection at
+that head; and, if a protected path changed, an
 approval at that head from a model of another family than every recorded
 contributor's, or the project owner's override of that review. A model's
 family is read from its name ([`src/models/pool.ts`](src/models/pool.ts)), and
@@ -184,6 +186,20 @@ behind main lists main's newer changes too, until `atelier update` brings them
 in. The item page's diff is measured the same way. The merge preview beneath
 it works from the fork's own first-parent history, says how far main has moved
 and whether the item would merge, and is advisory.
+
+Beside the preview stand the checks run on that merge. `atelier check
+--merged` makes a temporary merge commit of the head with main's head in the
+clean clone, runs the required checks there and records each result bound to
+both revisions; `--merged --sandbox` has the Worker build the merged tree, as
+the preview reads the merge, and run the checks in a Cloudflare container. A
+merge the preview finds conflicts in has no tree to check, and the command
+says so. Each result names the main head it merged with; the page marks it
+stale once main moves past that commit, and a new head retires it. A merged
+check is shown, not required, with one exception: when main moved after the
+head's own checks passed and the merged checks fail, the failure blocks
+acceptance until a later merged run passes or the head moves. Every observed
+check also records main's head as Atelier read it when the check was
+recorded, which is how the gate knows main moved.
 
 The project owner's approval is never the independent review: the owner
 decides by accepting, and that decision is not also the second opinion. When

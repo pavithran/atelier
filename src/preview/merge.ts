@@ -67,6 +67,7 @@ export function changedRegions(base: string[], side: string[]): Region[] | null 
 }
 
 const sameChange = (a: Region, b: Region) => a[0] === b[0] && a[1] === b[1] && a[2].length === b[2].length && a[2].every((l, k) => l === b[2][k]);
+const regionsConflict = (a: Region[], b: Region[]) => a.some((x) => b.some((y) => x[0] <= y[1] && y[0] <= x[1] && !sameChange(x, y)));
 
 // Two sides' changes to one file conflict when any of their regions overlap
 // or touch, which is where git's merge stops and asks a person, unless both
@@ -75,7 +76,27 @@ const sameChange = (a: Region, b: Region) => a[0] === b[0] && a[1] === b[1] && a
 export function linesConflict(base: string[], ours: string[], theirs: string[]): boolean | null {
   const a = changedRegions(base, ours), b = changedRegions(base, theirs);
   if (!a || !b) return null;
-  return a.some((x) => b.some((y) => x[0] <= y[1] && y[0] <= x[1] && !sameChange(x, y)));
+  return regionsConflict(a, b);
+}
+
+// The lines git's merge would give a file both sides changed on separate
+// lines: the base with each side's regions applied in order, a change both
+// sides made alike taken once. Null where the sides conflict or either is
+// too different from the base to diff.
+export function mergeLines(base: string[], ours: string[], theirs: string[]): string[] | null {
+  const a = changedRegions(base, ours), b = changedRegions(base, theirs);
+  if (!a || !b || regionsConflict(a, b)) return null;
+  const regions = [...a, ...b].sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const out: string[] = [];
+  let at = 0;
+  for (let k = 0; k < regions.length; k++) {
+    const r = regions[k];
+    if (k + 1 < regions.length && sameChange(r, regions[k + 1])) k++;
+    out.push(...base.slice(at, r[0]), ...r[2]);
+    at = r[1];
+  }
+  out.push(...base.slice(at));
+  return out;
 }
 
 export async function mergeability(
@@ -134,6 +155,68 @@ export function linesOf(bytes: Uint8Array): string[] {
   const lines = splitLines(text);
   if (text !== "" && !text.endsWith("\n")) lines[lines.length - 1] += NO_EOL;
   return lines;
+}
+
+// The file linesOf read, written back: a final newline unless the last line
+// says the file had none.
+export function bytesOf(lines: string[]): Uint8Array {
+  const noEol = lines.length > 0 && lines[lines.length - 1].endsWith(NO_EOL);
+  const text = lines.map((l) => (l.endsWith(NO_EOL) ? l.slice(0, -NO_EOL.length) : l)).join("\n");
+  return new TextEncoder().encode(lines.length && !noEol ? `${text}\n` : text);
+}
+
+// A leaf entry at a path: its hash and type, for the file, script or link
+// there, and null for a folder, a submodule or nothing.
+type Leaf = { hash: string; type: "blob" | "exec" | "symlink" };
+function leafLocator(r: Reader) {
+  const trees = new Map<string, ReturnType<Reader["tree"]>>();
+  const tree = (h: string) => {
+    if (!trees.has(h)) trees.set(h, r.tree(h));
+    return trees.get(h)!;
+  };
+  return async (root: string, path: string): Promise<Leaf | null> => {
+    let hash = root;
+    const parts = path.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const e = (await tree(hash))?.find((x) => x.name === parts[i]);
+      if (!e) return null;
+      if (i === parts.length - 1) return e.type === "blob" || e.type === "exec" || e.type === "symlink" ? { hash: e.hash, type: e.type } : null;
+      if (e.type !== "tree") return null;
+      hash = e.hash;
+    }
+    return null;
+  };
+}
+
+// The tree the merge would have, as changes laid over the task's head: for
+// each path main changed since the fork point, main's entry where the task
+// left the path alone (null where main deleted it), and the merged lines
+// where both sides changed a file on separate lines. A path both sides
+// changed alike needs nothing, since the head holds it. The conflicts are
+// the preview's, and with any there is no tree; a file both sides changed
+// that cannot be merged here, as one too large to diff, is a conflict too.
+export interface Patch { type: Leaf["type"]; hash?: string; data?: Uint8Array }
+
+export async function mergePatch(
+  main: Reader, task: Reader, baseTree: string, oursTree: string, theirsTree: string,
+): Promise<{ patch: Map<string, Patch | null>; conflicts: Conflict[] }> {
+  const m = await mergeability(main, task, baseTree, oursTree, theirsTree);
+  const patch = new Map<string, Patch | null>();
+  if (!m.clean) return { patch, conflicts: m.conflicts };
+  const both = new Set(m.both);
+  const atMain = leafLocator(main), atTask = leafLocator(task);
+  for (const path of baseTree === oursTree ? [] : await changedPaths(main, baseTree, oursTree)) {
+    const o = await atMain(oursTree, path);
+    if (!both.has(path)) { patch.set(path, o ? { type: o.type, hash: o.hash } : null); continue; }
+    const t = await atTask(theirsTree, path);
+    if (!o || !t || o.hash === t.hash) continue;
+    const b = await atMain(baseTree, path);
+    const [bb, ob, tb] = await Promise.all([b ? main.blob(b.hash) : Promise.resolve(new Uint8Array()), main.blob(o.hash), task.blob(t.hash)]);
+    const lines = bb && ob && tb ? mergeLines(linesOf(bb), linesOf(ob), linesOf(tb)) : null;
+    if (!lines) return { patch: new Map(), conflicts: [{ path, reason: "could not be merged here" }] };
+    patch.set(path, { type: t.type, data: bytesOf(lines) });
+  }
+  return { patch, conflicts: [] };
 }
 
 // Live tasks whose changes touch the same paths, as pairs with the shared
@@ -206,4 +289,20 @@ export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: str
     ? { clean: true, conflicts: [], both: [], ours: 0, theirs: 0 }
     : await mergeability(repoReader(baseline), repoReader(fork), baseTree, head.treeHash, theirs.treeHash);
   return { head: head.hash, ahead, aheadCapped: capped, merge };
+}
+
+// The three trees a merged check is built from, read as the preview reads
+// them: the fork point's, main's head's and the task's head's. Null when
+// either repository is empty or the fork's first-parent line meets none of
+// main's within the logs read.
+export interface MergeTrees { base: string; baseTree: string; main: string; mainTree: string; head: string; headTree: string }
+
+export async function mergeTrees(baseline: ArtifactsRepo, fork: ArtifactsRepo): Promise<MergeTrees | null> {
+  const [log, forkLog] = await Promise.all([baseline.log({ limit: MAIN_LOG }), fork.log({ limit: FORK_LOG })]);
+  const main = log[0], head = forkLog[0];
+  if (!main || !head) return null;
+  const base = mergeBase(forkLog.map((c) => c.hash), log.map((c) => c.hash));
+  if (!base) return null;
+  const baseTree = (forkLog.find((c) => c.hash === base) ?? log.find((c) => c.hash === base))!.treeHash;
+  return { base, baseTree, main: main.hash, mainTree: main.treeHash, head: head.hash, headTree: head.treeHash };
 }
