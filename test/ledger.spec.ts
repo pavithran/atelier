@@ -436,6 +436,19 @@ it("a claim belongs to the runner that made it; the same agent name from another
   expect(events.map((e) => [e.actor, e.data])).toEqual([["opencode/qwen3-coder-next", { runner: "home:laptop" }]]);
 });
 
+it("a claim held under a mixed-case runner name is refreshed by the same runner in lower case", async () => {
+  const L = await setup("runner-case");
+  const item = await L.newItem("Edit", ["a/**"], "owner");
+  // A hold recorded before runner names were normalized keeps its case.
+  const actor = "opencode/glm-5.3-flash";
+  const { item: held } = await L.claim(item.id, actor, { runner: "home:Studio", kind: "home" });
+  expect(held.runner).toBe("home:Studio");
+  // The same runner, named as its header is normalized now, still refreshes the claim.
+  expect((await L.claim(item.id, actor, { runner: "home:studio", kind: "home" })).item.runner).toBe("home:Studio");
+  // Any other runner is refused as before.
+  await refusal(L.claim(item.id, actor, { runner: "home:laptop", kind: "home" }), "owned", /held by opencode\/glm-5\.3-flash on home:Studio, not home:laptop/);
+});
+
 it("a dispatch is withdrawn only from an open task, and a refusal says why and what to do", async () => {
   const L = await setup("undispatch-refusals");
   const item = await L.newItem("Edit", ["a/**"], "owner");
