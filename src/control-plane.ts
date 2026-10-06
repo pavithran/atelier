@@ -1,6 +1,6 @@
-import { checkFiles, evidenceAt, matchesFolded, pushActors, scopesOverlap, type Evidence, type ProjectPolicy } from "./rules.ts";
+import { checkFiles, evidenceAt, matchesFolded, pushActors, scopesOverlap, SHIP_FILES, type Evidence, type ProjectPolicy } from "./rules.ts";
 
-type Policy = { protected?: string[]; checks?: string[]; eligible?: string[]; refuseOverlap?: boolean };
+type Policy = { protected?: string[]; checks?: string[]; shipRuns?: string[]; shipKinds?: string[]; eligible?: string[]; refuseOverlap?: boolean };
 
 export function controlPlaneChanges(before: Policy, after: Policy) {
   // Checks are not ControlPlane's to set, so a side that carries none, such
@@ -23,7 +23,22 @@ export function controlPlaneChanges(before: Policy, after: Policy) {
 // every field was recorded. An acceptance that recorded no protected paths
 // is taken as having protected none.
 export function acceptancePolicy(detail: { policy: Policy; acceptanceProtected?: string[] | null; acceptancePolicy?: Policy | null }, before: Policy): Policy {
-  return { ...detail.policy, eligible: before.eligible, refuseOverlap: before.refuseOverlap, checks: before.checks, ...(detail.acceptancePolicy ?? {}), protected: detail.acceptanceProtected ?? [] };
+  const accepted = detail.acceptancePolicy ?? {};
+  return {
+    ...detail.policy, eligible: before.eligible, refuseOverlap: before.refuseOverlap, checks: before.checks,
+    ...(before.shipRuns !== undefined || accepted.shipRuns !== undefined ? { shipRuns: accepted.shipRuns ?? before.shipRuns ?? [] } : {}),
+    ...accepted, protected: detail.acceptanceProtected ?? [],
+  };
+}
+
+// The ship order a checkout declares (cli/ship.mjs shipPolicy) is compared as
+// a whole, since the gate guards the files its commands run: a ship order that
+// changed since acceptance is a policy change for the merge guard, and for
+// `atelier sync`'s report.
+export function shipChanges(before: Policy, after: Policy): string[] {
+  return (["shipRuns", "shipKinds"] as const)
+    .filter((k) => JSON.stringify(before[k] ?? []) !== JSON.stringify(after[k] ?? []))
+    .map((k) => `ship ${k === "shipRuns" ? "commands" : "approval kinds"}: ${JSON.stringify(before[k] ?? [])} -> ${JSON.stringify(after[k] ?? [])}`);
 }
 
 // What the merge guard needs of the item beyond its changed paths: who
@@ -50,7 +65,7 @@ const eligible = (actor: string, list: string[] | undefined) => {
 };
 
 export function mergePolicyDecision(before: Policy, after: Policy, paths: string[], allowChanged = false, context: MergeContext = {}) {
-  const changes = controlPlaneChanges(before, after);
+  const changes = [...controlPlaneChanges(before, after), ...shipChanges(before, after)];
   // Checks are not ControlPlane's to set (controlPlaneChanges): a change among
   // them alone came from the project owner's own init, so the warning names
   // them as the required checks, not as ControlPlane.
@@ -61,7 +76,7 @@ export function mergePolicyDecision(before: Policy, after: Policy, paths: string
     ...(checkChanges.length ? [`the required checks changed since acceptance: ${checkChanges.join("; ")}`] : []),
   ];
   // Matched as changeClass matches the guarded set: whatever the letter case or Unicode form.
-  const guarded = (policy: Policy) => [...(policy.protected ?? []), ...checkFiles(policy.checks ?? [])];
+  const guarded = (policy: Policy) => [...(policy.protected ?? []), ...checkFiles(policy.checks ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])];
   const newlyProtected = paths.filter((path) => matchesFolded(path, guarded(after)) && !matchesFolded(path, guarded(before)));
   // What the accepted item satisfied under the policy it was accepted under
   // and no longer does under the policy as it is now.

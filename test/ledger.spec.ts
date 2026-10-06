@@ -97,6 +97,40 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   ]);
 });
 
+// t168: a merged revision whose declared protected actions have not run asks
+// the owner to ship it, and a recorded run of each kind retires the reminder.
+it("the inbox reminds the owner of a merged revision whose declared protected actions have not run", async () => {
+  const M = "c".repeat(40);
+  const L = await setup("ship-inbox", { ...policy, shipKinds: ["deploy"] });
+  await L.newItem("Deliver the site", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "ship-inbox--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["src/a.ts"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner");
+  await L.merged("t1", "owner", M, true);
+  const before = await L.inbox(new Date().toISOString());
+  expect(before.map((e) => [e.itemId, e.kind, e.weight])).toEqual([["t1", "ship", 75]]);
+  expect(before[0].reason).toBe(`merged at ${M.slice(0, 8)} with deploy declared by the ship files and not yet run; in the registered checkout run atelier ship --dry-run, then approve and ship`);
+  // A ship that runs the kind after the merge, at any revision, retires it.
+  await L.approveAction({ kind: "deploy", commit: H2 }, "owner");
+  await L.consumeAction({ kind: "deploy", commit: H2 }, "owner");
+  await L.recordActionRun({ step: "deploy", kind: "deploy", approval: "a1", command: "npx wrangler deploy", commit: H2, exitStatus: 1, durationMs: 900, passed: false, outputTail: "boom", ship: "s-1" }, "owner");
+  expect(await L.inbox(new Date().toISOString())).toEqual([]);
+  // Without declared kinds there is nothing to remind about.
+  const quiet = await setup("ship-quiet", policy);
+  await quiet.newItem("No delivery declared", ["src/**"], "owner");
+  await quiet.claim("t1", A);
+  await quiet.setFork("t1", "ship-quiet--t1", H0, A);
+  await quiet.recordPush("t1", A, H1, H1);
+  await quiet.addEvidence(observed("t1", H1, ["src/a.ts"]));
+  await quiet.submit("t1", A);
+  await quiet.accept("t1", "owner");
+  await quiet.merged("t1", "owner", M, true);
+  expect(await quiet.inbox(new Date().toISOString())).toEqual([]);
+});
+
 it("a protected path is accepted only after an independent approval", async () => {
   const L = await setup("protected");
   await L.newItem("Touch a protected path", ["src/**"], "owner");

@@ -2,7 +2,8 @@
 // secret is named by a short key such as API_TOKEN. The stores, in the order
 // they are chosen:
 //
-//   macOS    the Keychain, through `security` (item atelier.API_TOKEN)
+//   macOS    the Keychain, through `security` (item atelier.API_TOKEN, its
+//            access list naming /usr/bin/security alone)
 //   Linux    the Secret Service, through `secret-tool`, when it is installed
 //            and a session bus is available (service atelier, account NAME)
 //   other    a file under the user's config directory, mode 0600
@@ -80,10 +81,15 @@ const keychain = {
     return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
   },
   // `security -i` takes its commands from stdin, which keeps the value out of
-  // the argument list; the value is quoted for its parser.
+  // the argument list; the value is quoted for its parser. -U updates an
+  // existing item, and -T names the one application that may read the item
+  // without asking: /usr/bin/security itself, which is how this CLI reads it.
+  // Without -T any process the owner runs could read the value the same way,
+  // silently; running atelier login again applies the list to an item made
+  // before it was given.
   write(name, value, d) {
     const quote = (s) => `"${s.replace(/[\\"]/g, "\\$&")}"`;
-    const line = `add-generic-password -U -s ${quote(`atelier.${name}`)} -a ${quote(d.user())} -w ${quote(value)}\n`;
+    const line = `add-generic-password -U -T /usr/bin/security -s ${quote(`atelier.${name}`)} -a ${quote(d.user())} -w ${quote(value)}\n`;
     const r = d.spawn("security", ["-i"], { input: line, encoding: "utf8" });
     if (r.error || r.status !== 0) throw new Error(`could not write to the macOS Keychain (security exited ${r.status ?? "without starting"})`);
   },
