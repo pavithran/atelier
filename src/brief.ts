@@ -4,6 +4,7 @@
 // event log; nothing is inferred beyond that.
 
 import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, modelOf, stateLabel } from "./rules.ts";
+import { assertLength } from "./text.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
@@ -19,10 +20,12 @@ export interface Brief {
 export const SUMMARY_MAX = 600;
 
 // An agent's summary as stored: plain text, control characters as spaces,
-// trimmed, at most 600 characters, or nothing.
+// trimmed, or nothing. A summary still longer than SUMMARY_MAX is refused
+// with the limit named, not cut short.
 export function cleanSummary(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
-  const s = v.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, SUMMARY_MAX).trim();
+  const s = v.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  assertLength(s, SUMMARY_MAX, "the summary");
   return s || undefined;
 }
 
