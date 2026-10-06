@@ -14,7 +14,7 @@ import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type 
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
-import { buildReliability, cleanDefect, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
+import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
@@ -648,16 +648,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
-  // Runs that stalled, timed out or were refused, which the ledger never
-  // sees: a runner reports each under its name, as it reports usage. The
-  // owner reads them, and each model's reliability across every project.
+  // Runs that stalled, timed out, were refused or failed another way, which
+  // the ledger never sees: a runner reports each under its name, as it
+  // reports usage. The owner reports one by hand for a run outside the
+  // runner; the owner reads every report, and each model's reliability.
   if (parts[0] === "runs" && parts.length === 1) {
     const I = index(env);
     if (m === "GET") return json(await I.runs());
     if (m === "POST") {
-      const runner = parseRunner(req.headers.get("x-atelier-runner"));
-      if (!runner) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner", 400);
-      return json(await I.putRun(cleanRun(body, new Date().toISOString(), runner.runner)), 201);
+      const header = req.headers.get("x-atelier-runner");
+      const runner = header === null ? null : parseRunner(header);
+      if (header !== null && !runner) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner as kind:name", 400);
+      if (runner) return json(await I.putRun(cleanRun(body, new Date().toISOString(), runner.runner)), 201);
+      // The owner records a run by hand: no runner ran it, so none is named.
+      if (actor !== ownerActor(env)) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner", 400);
+      return json(await I.putRun(cleanRun(body, new Date().toISOString(), "owner")), 201);
     }
     throw new RuleError("not_found", "no such route", 404);
   }
@@ -1213,6 +1218,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const { note, foundIn } = cleanDefect(body);
       return json(await L.traceDefect(id, actor, note, foundIn), 201);
+    }
+    case "finding": {
+      requireOwner(env, actor);
+      const { head, index, verdict, note } = cleanFinding(body);
+      await L.addFinding(id, actor, head, index, verdict, note);
+      return json({ id, head, index, verdict }, 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);

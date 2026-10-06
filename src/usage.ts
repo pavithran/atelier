@@ -82,7 +82,9 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "merge ID --cancel [--discard-local]", about: "Ends an interrupted merge: the landing lease is released, so the task's owner can push again. An unpublished merge commit in the checkout is kept unless `--discard-local` removes it and returns the branch to where the merge began." },
     { form: "abandon ID [--note TEXT]", about: "Closes the task without merging it. The holder's write token is revoked; the history and evidence stay. `--note` says why." },
     { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the task was accepted at. Nothing about the task changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
+    { form: "finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT]", about: "The project owner records a verdict on one finding of a review: confirmed, that the finding was right and a fix followed; fixed, that it was right and is fixed; refuted, that it was wrong. `--head` names the review's revision and `--index` the finding's position in that review's findings, one based. The event is the record, and the reliability record counts the reviewer's findings confirmed and refuted, which measures its precision." },
   ], [
+    { form: "run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT]", about: "The project owner records a run that ended without a result the ledger saw, for a run outside the runner: an early stop, a permission stop, a duplicate design or an incomplete merge, beside stalled, timed-out and refused, which the runner reports itself. The reliability record counts it against the actor, and a review run counts as a review that never reached a verdict." },
     { form: "served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply]", about: "The project owner records which model served events recorded under another, as when zcode served deepseek-flash while its events named glm-5.3. Each event recorded as `--recorded` from `--from` up to `--to`, on the tasks `--item` names or on every task, gets an annotation of its own, and the track record, the reliability record and the graph count it under the served model; the event itself never changes. Without `--apply` it lists the matches and records nothing. `--note` says how the owner knows." },
     { form: "approve ACTION --head SHA [--note T] [--expires 24h]", about: "The project owner approves one protected action, such as `deploy`, `install`, `paid-run` or `photos-writeback`, at one exact revision of the main line: the full SHA of a commit the baseline holds. `atelier ship` uses the approval once, at that revision only, and a later revision needs its own. It stands for 24 hours unless `--expires` gives from `1m` to `30d`; `--note` records why. Any other kind must be one the project's ship files name." },
     { form: "approvals [--all]", about: "Lists the approvals that stand, each with its kind, revision and expiry. `--all` adds the used, withdrawn and expired ones." },
@@ -368,6 +370,26 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--found-in ID": "the task the defect was found or fixed in",
     },
     example: 'atelier defect t3 --note "It drops the last row" --found-in t9 --project demo',
+  },
+  finding: {
+    flags: {
+      "--head SHA": "the full revision the review was made at; required",
+      "--index N": "the finding's position in that review's findings, one based; required",
+      "--verdict V": "confirmed, refuted or fixed; required",
+      "--note TEXT": "why; kept with the verdict",
+    },
+    example: 'atelier finding t3 --head 0123456789abcdef0123456789abcdef01234567 --index 2 --verdict confirmed --note "fixed in t9"',
+  },
+  "run-report": {
+    flags: {
+      "--actor H/M": "the harness/model the run ran; required",
+      "--role build|review": "build or review; build unless given",
+      "--outcome KIND": "stalled, timed-out, refused, early_stop, permission_stop, duplicate_design or incomplete_merge; required",
+      "--project P": "the project the run was in",
+      "--item ID": "the task the run was on",
+      "--detail TEXT": "what happened",
+    },
+    example: 'atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --project atelier --item t114 --detail "stopped after a refused read"',
   },
   served: {
     flags: {
