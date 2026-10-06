@@ -18,9 +18,9 @@ const adapter = fileURLToPath(new URL("../cli/agy-review.mjs", import.meta.url))
 // The stand-in script prints the JSON `agy` would, records its arguments to
 // AGY_LOG, and exits with `code`. It never runs the real agy.
 const standIn = (stdout, code = 0) =>
-  `#!/usr/bin/env node\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.AGY_LOG, JSON.stringify(process.argv));\n${stdout ? `process.stdout.write(${JSON.stringify(stdout)});\n` : ""}process.exit(${code});\n`;
+  `#!/usr/bin/env node\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.AGY_LOG, JSON.stringify({ argv: process.argv, stdin: fs.readFileSync(0, "utf8") }));\n${stdout ? `process.stdout.write(${JSON.stringify(stdout)});\n` : ""}process.exit(${code});\n`;
 
-function review(t, { stdout = JSON.stringify({ response: "...VERDICT: APPROVE..." }), code = 0, model = "gemini-3.1-pro" } = {}) {
+function review(t, { stdout = JSON.stringify({ response: "...VERDICT: APPROVE..." }), code = 0, model = "gemini-3.1-pro", diffText = "DIFF TEXT\n" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-agy-review-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const brief = join(dir, "brief.txt");
@@ -29,7 +29,7 @@ function review(t, { stdout = JSON.stringify({ response: "...VERDICT: APPROVE...
   const log = join(dir, "args.json");
   const agy = join(dir, "agy");
   writeFileSync(brief, "BRIEF TEXT\n");
-  writeFileSync(diff, "DIFF TEXT\n");
+  writeFileSync(diff, diffText);
   writeFileSync(agy, standIn(stdout, code));
   chmodSync(agy, 0o755);
   const result = spawnSync(process.execPath, [adapter, "--model", model, "--brief", brief, "--diff", diff, "--verdict", verdict, "--workspace", dir], {
@@ -43,18 +43,28 @@ test("the adapter writes agy's response to the verdict file and maps the model i
   const { verdict, log, result } = review(t);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(verdict, "utf8"), "...VERDICT: APPROVE...");
-  const args = JSON.parse(readFileSync(log, "utf8"));
+  const { argv: args, stdin: prompt } = JSON.parse(readFileSync(log, "utf8"));
   assert.equal(args[args.indexOf("--model") + 1], "gemini-3.1-pro-high", "gemini-3.1-pro maps to gemini-3.1-pro-high");
-  const prompt = args[args.indexOf("-p") + 1];
+  assert.ok(!args.includes("-p"), "the prompt is not an argument, whose size the operating system caps");
   assert.ok(prompt.startsWith("BRIEF TEXT\n"), "the brief opens the prompt");
   assert.ok(prompt.includes("````diff\nDIFF TEXT\n````"), "the diff is fenced with four backticks");
+});
+
+test("a diff larger than an argument can hold passes on standard input, fenced past its own backticks", (t) => {
+  const big = "+" + "x".repeat(2 * 1024 * 1024) + "\n+`````five\n";
+  const { verdict, log, result } = review(t, { diffText: big });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(verdict, "utf8"), "...VERDICT: APPROVE...");
+  const { stdin } = JSON.parse(readFileSync(log, "utf8"));
+  assert.ok(stdin.includes("``````diff\n+x"), "the fence is longer than the diff's own run of five backticks");
+  assert.ok(stdin.length > 2 * 1024 * 1024);
 });
 
 test("the adapter maps gpt-oss-120b and passes any other model id through", (t) => {
   for (const [model, mapped] of [["gpt-oss-120b", "gpt-oss-120b-medium"], ["some-other-id", "some-other-id"]]) {
     const { log, result } = review(t, { model });
     assert.equal(result.status, 0, result.stderr);
-    const args = JSON.parse(readFileSync(log, "utf8"));
+    const { argv: args } = JSON.parse(readFileSync(log, "utf8"));
     assert.equal(args[args.indexOf("--model") + 1], mapped, model);
   }
 });
