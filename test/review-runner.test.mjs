@@ -130,3 +130,20 @@ test("runReview releases the request when the harness wrote no verdict file at a
   assert.equal(state.phase, "failed");
   assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is released");
 });
+
+test("runReview clones into a folder of its own, never the builder's workspace, and removes it and the verdict file", async () => {
+  const { io, calls } = fixture();
+  const removed = [];
+  io.removeFile = (f) => removed.push(f);
+  io.removeTree = (d) => removed.push(d);
+  await runReview(assignment, config, "home:studio", io);
+  await runReview(assignment, config, "home:studio", io);
+  const dirs = calls.filter((c) => c.clone).map((c) => c.clone[2]);
+  assert.equal(dirs.length, 2);
+  assert.notEqual(dirs[0], dirs[1], "each review has its own folder");
+  for (const d of dirs) {
+    assert.notEqual(d, "/cache/work/atelier/t21", "never the builder's workspace");
+    assert.ok(removed.includes(d), "the folder is removed");
+  }
+  assert.ok(removed.includes("/cache/work/atelier/verdict.txt"), "the verdict file is removed");
+});
