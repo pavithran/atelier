@@ -10,7 +10,7 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
@@ -109,19 +109,54 @@ export function gitEnv(base = process.env, extra = {}, args = [], ownerRemote = 
   return env;
 }
 
+// opts.token is an Artifacts token this one command sends as its
+// Authorization header (see auth). It is cut from any error text shown.
 function git(args, opts = {}) {
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, opts.env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  const env = { ...(opts.token ? auth(opts.token) : {}), ...opts.env };
+  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
   }
+  if (opts.token) detail = detail.split(opts.token).join("[redacted]");
   if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${detail}`);
   return opts.allowFail ? r : opts.raw ? r.stdout : r.stdout.trim();
 }
 
-// Tokens go in a per-command header, never in a remote URL or the iCloud tree.
-const auth = (token) => ["-c", `http.extraHeader=Authorization: Bearer ${token}`];
+// Tokens go in a per-command header, never in a remote URL or the iCloud
+// tree, and reach git through its environment (GIT_CONFIG_COUNT,
+// GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n), never through its arguments: every
+// local user can read a process's arguments with ps, but only its own user
+// and root can read its environment. The header takes the next free index, so
+// configuration the caller's environment already passes this way still holds.
+export function auth(token, base = process.env) {
+  const n = Number.parseInt(base.GIT_CONFIG_COUNT ?? "", 10) || 0;
+  return { GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "http.extraHeader", [`GIT_CONFIG_VALUE_${n}`]: `Authorization: Bearer ${token}` };
+}
+
+// A workspace keeps its write token in a file of its own,
+// .git/atelier-credentials, which only this user can read (0600) and which
+// .git/config includes. The CLI writes that file itself, so the token is
+// never an argument to git: git config only adds the include and removes any
+// header .git/config holds directly. The file is replaced whole, through a
+// rename, so a reader sees the old token or the new one, never part of
+// either. A newline in the remote or the token would start a new setting in
+// the file, so either is refused.
+const CREDENTIALS = "atelier-credentials";
+function storeWorkspaceToken(dir, remote, token) {
+  if (/[\n\r\0]/.test(remote + token)) die("the server sent a workspace remote or token with a line break; nothing was stored");
+  const quote = (s) => `"${s.replace(/[\\"]/g, "\\$&")}"`;
+  const file = join(dir, ".git", CREDENTIALS), tmp = `${file}.tmp`;
+  rmSync(tmp, { force: true });
+  writeFileSync(tmp, `[http ${quote(remote)}]\n\textraHeader = ${quote(`Authorization: Bearer ${token}`)}\n`, { mode: 0o600 });
+  renameSync(tmp, file);
+  // Exit status 5 means .git/config held no such header.
+  const unset = git(["config", "--local", "--unset-all", `http.${remote}.extraHeader`], { cwd: dir, allowFail: true });
+  if (unset.status !== 0 && unset.status !== 5) die(`could not remove the workspace's old header from .git/config:\n${unset.stderr.trim()}`);
+  const includes = git(["config", "--local", "--get-all", "include.path"], { cwd: dir, allowFail: true }).stdout.split("\n");
+  if (!includes.includes(CREDENTIALS)) git(["config", "--local", "--add", "include.path", CREDENTIALS], { cwd: dir });
+}
 
 // Every flag each command takes, and what it takes. `true` marks a switch:
 // it never takes the word after it, so `review --approve t2` reviews t2 and
@@ -442,12 +477,12 @@ async function claimWorkspace(name, id, as, runner) {
   const fresh = !existsSync(join(dir, ".git"));
   if (fresh) {
     mkdirSync(dir, { recursive: true });
-    git([...auth(r.workspace.token), "clone", "--quiet", r.workspace.remote, dir]);
+    git(["clone", "--quiet", r.workspace.remote, dir], { token: r.workspace.token });
   }
-  // The workspace keeps its token in its own .git/config, under Caches, not
-  // iCloud. Replace it before any fetch: git sends every configured header,
-  // and a revoked one alongside the fresh one is refused.
-  git(["config", "--local", "--replace-all", `http.${r.workspace.remote}.extraHeader`, `Authorization: Bearer ${r.workspace.token}`], { cwd: dir });
+  // The workspace keeps its token under Caches, not iCloud (see
+  // storeWorkspaceToken). It is replaced before any fetch: git sends every
+  // configured header, and a revoked one alongside the fresh one is refused.
+  storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
   if (!fresh) git(["fetch", "--quiet", "origin"], { cwd: dir });
   // Each claim writes the branch the server gives, the project's branch,
   // which is the one Atelier reads, and says so when that changes what the
@@ -483,11 +518,11 @@ function cleanClone(remote, token, head, baseline, name) {
   mkdirSync(join(CACHE, "checks"), { recursive: true });
   const dir = mkdtempSync(join(CACHE, "checks", "run-"));
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
-  git([...auth(token), "clone", "--quiet", remote, dir]);
+  git(["clone", "--quiet", remote, dir], { token });
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
   let changed;
   if (baseline) {
-    git([...auth(baseline.token), "fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir });
+    git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token });
     const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
     if (mb.status === 0) {
       const diff = git(["diff", "--no-renames", "--name-only", "-z", mb.stdout.trim(), "HEAD"], { cwd: dir, allowFail: true });
@@ -752,7 +787,7 @@ async function checkoutStatusLine(name, as, readOnly = false) {
   if (readOnly) baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
   else {
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const listed = git([...auth(base.token), "ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd });
+    const listed = git(["ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd, token: base.token });
     baselineHead = listed.split(/\s/)[0];
   }
   if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
@@ -1250,12 +1285,12 @@ const commands = {
       const start = git(["rev-list", "-1", "--first-parent", `--before=${since}T00:00:00`, "HEAD"], { cwd: top });
       if (!start) die(`${branch} has no commit before ${since}`);
       const built = buildHistory(git, top, start, git(["rev-parse", "HEAD"], { cwd: top }));
-      git([...auth(r.baseline.token), "push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top });
+      git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token });
       savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
       pushed = built.head;
       console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
     } else {
-      git([...auth(r.baseline.token), "push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${branch}:${branch}`], { cwd: top });
+      git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${branch}:${branch}`], { cwd: top, token: r.baseline.token });
     }
     cfg.projects ??= {};
     cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
@@ -1319,7 +1354,7 @@ const commands = {
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
     if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
-    git([...auth(t.token), "push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path });
+    git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path, token: t.token });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
   },
 
@@ -1390,7 +1425,7 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     requireWorkspace("update", name, id, as);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    git([...auth(t.token), "fetch", "--quiet", t.remote, t.defaultBranch]);
+    git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
     if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, \`git rebase --continue\`, then \`atelier push --force\`.\n${r.stdout}${r.stderr}`);
     console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. Push with: atelier push --force`);
@@ -1489,7 +1524,7 @@ const commands = {
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     const { dir } = cleanClone(ws.remote, ws.token, ws.head, null, name);
     try {
-      git([...auth(base.token), "fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir });
+      git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
       const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir });
       process.stdout.write(git(["log", "--format=%h %s", `${mb}..HEAD`], { cwd: dir }) + "\n\n");
       process.stdout.write(git(["diff", "--stat", mb, "HEAD"], { cwd: dir }) + "\n\n");
@@ -1591,7 +1626,7 @@ const commands = {
       try { adoptOldLanding(gitDir, landing); } catch (error) { die(error.message); }
       if (existsSync(landingJournalFile(landing))) die("a merge is in progress; finish it or cancel it first");
       const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
-      git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
+      git(["fetch", "--quiet", base.remote, p.branch], { cwd, token: base.token });
       const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
       const pairs = loadPairs(gitDir, name);
       const paired = pairs[baselineHead] ?? die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
@@ -1603,7 +1638,7 @@ const commands = {
       // The pairs are saved before the push: a push that lands just before a
       // crash is still paired, and the rebuild gives the same commits again.
       savePairs(gitDir, name, { ...pairs, ...built.pairs });
-      git([...auth(base.token), "push", "--quiet", "--recurse-submodules=no", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd });
+      git(["push", "--quiet", "--recurse-submodules=no", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd, token: base.token });
       const n = Object.keys(built.pairs).length;
       console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
     } finally { unlock(); }
@@ -1665,10 +1700,10 @@ const commands = {
       if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
       if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) die(`check out ${p.branch} in ${cwd} first`);
       const base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
-      git([...auth(base.token),'fetch','--quiet',base.remote,p.branch],{cwd});
+      git(['fetch','--quiet',base.remote,p.branch],{cwd,token:base.token});
       const baselineHead=git(['rev-parse','FETCH_HEAD'],{cwd});
       const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
-      git([...auth(ws.token),'fetch','--quiet',ws.remote,item.acceptedHead],{cwd});
+      git(['fetch','--quiet',ws.remote,item.acceptedHead],{cwd,token:ws.token});
       if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
       if (refreshed?.policy) {
         if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
@@ -1735,9 +1770,9 @@ const commands = {
       await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
       const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...(item.reviewOverride?.head===item.acceptedHead?[`REVIEW OVERRIDDEN — ${item.reviewOverride.by}: ${item.reviewOverride.reason}`]:[]),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
       // Reconcile provenance independently: a previous push can publish only one ref.
-      const remoteNotes=git([...auth(base.token),'ls-remote',base.remote,'refs/notes/atelier'],{cwd});
+      const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
       if(remoteNotes){
-        git([...auth(base.token),'fetch','--quiet',base.remote,'refs/notes/atelier'],{cwd});
+        git(['fetch','--quiet',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
         if(git(['rev-parse','--verify','refs/notes/atelier'],{cwd,allowFail:true}).status===0)
           git(['notes','--ref=atelier','merge','FETCH_HEAD'],{cwd});
         else git(['update-ref','refs/notes/atelier','FETCH_HEAD'],{cwd});
@@ -1753,7 +1788,7 @@ const commands = {
         if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,c],{cwd});
       }
       const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
-      git([...auth(base.token),'push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd});
+      git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token});
       journal.save({phase:'published'});
       await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
       journal.clear();
