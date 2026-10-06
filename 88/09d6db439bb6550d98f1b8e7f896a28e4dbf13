@@ -1,0 +1,21 @@
+atelier atelier/t120 "Audit t105, blocking (confirmed by glm-5.3): a flag that takes no value swallows the next word, so 'atelier review --approve t2' in t1's workspace approves t1 (parseArgs, cli/atelier.mjs:112); declare boolean flags so they never take a value, and refuse a positional that was consumed"
+accepted head 863a1233a6e6880a0e70c423e7dbce5eaf108408
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T02:32:05.251Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T02:32:07.928Z
+REVIEW approve — pavi: Owner approval at 863a1233 after Gemini 3.1 Pro's review at b0285464: since then only rebases onto t117, t121 and t122 (keeping t122's login) and opus-5.5's commit giving bare --check/--protect/--scope t121's wording.
+2026-10-06T01:21:06.811Z pavi item.created
+2026-10-06T01:30:59.657Z claude-code/fable-5.1 item.claimed
+2026-10-06T01:31:03.037Z claude-code/fable-5.1 fork.created
+2026-10-06T02:12:57.876Z claude-code/fable-5.1 push.observed
+2026-10-06T02:14:19.018Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:14:20.995Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:14:21.648Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:19:30.948Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:19:31.541Z pavi review.approved
+2026-10-06T02:19:32.140Z pavi item.accepted
+2026-10-06T02:30:39.930Z claude-code/fable-5.1 push.observed
+2026-10-06T02:32:05.631Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:32:08.180Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:32:09.198Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:32:17.266Z pavi review.approved
+2026-10-06T02:32:17.898Z pavi item.accepted
