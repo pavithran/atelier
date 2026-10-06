@@ -115,7 +115,7 @@ export const RULES: Rule[] = [
   {
     title: "Observed evidence only",
     enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds and posts the result as a check. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. Under `sandboxOnly`, only results from a Cloudflare container count. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
-    why: "An agent's own statement that its tests pass is not evidence; the owner needs results that Atelier produced itself.",
+    why: "An agent's own statement that its tests pass is not evidence; the owner needs results taken from a clean clone of the head, though only a container result is produced by Atelier itself, and a local Observed result is posted by the machine that ran it.",
     where: [{ file: "src/rules.ts", symbol: "evidenceAt" }, { file: "src/rules.ts", symbol: "gate" }, { file: "src/rules.ts", symbol: "mergedBlockers" }],
   },
   {
@@ -138,13 +138,13 @@ export const RULES: Rule[] = [
   },
   {
     title: "Owner acceptance and merge",
-    enforced: "Only the project owner can accept or merge. Acceptance is refused unless the gate is clear: every required check Observed passing at the current head, the changed paths measured, no rejection at that head, and a qualifying review where one is required, or the owner's recorded override of it. The merge lands only the accepted head, and the ledger records it only when the merge commit is found on the baseline with the accepted head as a parent.",
+    enforced: "Only the project owner can accept or merge. Acceptance is refused unless the task is in the submitted state and the gate is clear: every required check Observed passing at the current head, the changed paths measured, no rejection at that head, and a qualifying review where one is required, or the owner's recorded override of it. The merge lands only the accepted head, and the ledger records it only when the merge commit is found on the baseline with the accepted head as a parent.",
     why: "Work enters the project only by the owner's decision, made on evidence for one exact revision.",
     where: [{ file: "src/rules.ts", symbol: "gate" }, { file: "src/ledger.ts", symbol: "beginLanding" }],
   },
   {
     title: "Tokens scoped to an actor",
-    enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the owner token, and agent tokens cannot sign in to the browser.",
+    enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading, with these routes by name: `block`, `unblock`, `queue`, `sandbox`, `plan`, `integrated` and `integration-failed`. The Ledger still takes several of them only from the task's holder. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the owner token, and agent tokens cannot sign in to the browser.",
     why: "A leaked or misused agent token can act only as its own actor, in its own projects, and cannot decide for the owner.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }, { file: "src/tokens.ts", symbol: "tokenActive" }, { file: "src/tokens.ts", symbol: "inScope" }],
   },
