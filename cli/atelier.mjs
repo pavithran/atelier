@@ -248,6 +248,8 @@ export const FLAGS = {
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false },
   defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
+  finding: { head: false, index: false, verdict: '--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed', note: false },
+  "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
   served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
   done: { sandbox: true, summary: false },
@@ -266,6 +268,7 @@ export const FLAGS = {
   plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
   models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
+  showcase: { named: true, anonymous: true },
   projects: { force: true },
   owners: { json: true },
   inbox: { json: true },
@@ -2140,6 +2143,38 @@ const commands = {
     console.log(`Defect traced to ${id} at ${short(item.acceptedHead)}. It counts against the model that built that revision and each model that approved it; the Models page shows the record.`);
   },
 
+  // The project owner records a verdict on one finding of a review, at the
+  // head the review was made at and the finding's position in its findings.
+  async finding() {
+    const name = project(), id = itemArg();
+    const verdict = args.verdict;
+    if (!["confirmed", "refuted", "fixed"].includes(verdict)) die('--verdict must be confirmed, refuted or fixed: atelier finding ID --head SHA --index N --verdict ...');
+    if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die('--head needs the full revision the review was made at: atelier finding ID --head SHA --index N --verdict ...');
+    const index = Number(args.index);
+    if (!Number.isInteger(index) || index < 1) die('--index needs the finding\'s position in the review, one based: atelier finding ID --head SHA --index N --verdict ...');
+    await call("POST", `${I(name, id)}/finding`, { head: args.head, index, verdict, note: args.note ?? "" }, OWNER);
+    console.log(`Recorded ${verdict} on finding ${index} of ${id}'s review at ${args.head.slice(0, 8)}. The Models page counts it under the reviewer.`);
+  },
+
+  // The project owner records a run that ended without a result the ledger
+  // saw, for a run outside the runner: an early stop, a permission stop, a
+  // duplicate design or an incomplete merge, beside stalled, timed-out and
+  // refused, which the runner reports itself.
+  async "run-report"() {
+    if (typeof args.actor !== "string" || !args.actor.includes("/")) die('usage: atelier run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT]');
+    const role = args.role === undefined ? "build" : args.role;
+    if (!["build", "review"].includes(role)) die('--role must be build or review');
+    const outcomes = ["stalled", "timed-out", "refused", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge"];
+    if (!outcomes.includes(args.outcome)) die(`--outcome must be one of ${outcomes.join(", ")}`);
+    await call("POST", "/runs", {
+      actor: args.actor, role, outcome: args.outcome,
+      ...(args.project !== undefined ? { project: args.project } : {}),
+      ...(args.item !== undefined ? { item: args.item } : {}),
+      detail: args.detail ?? "",
+    }, OWNER);
+    console.log(`Recorded a ${role} run (${args.outcome}) by ${args.actor}${args.project ? ` on ${args.project}${args.item ? `/${args.item}` : ""}` : ""}.`);
+  },
+
   // The project owner records which model served events recorded under
   // another: each matching event gets an annotation, and the event itself
   // never changes. Without --apply it lists the matches and records nothing.
@@ -2756,6 +2791,30 @@ const commands = {
       const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
       console.log(`${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`);
     }
+  },
+
+  // The public showcase: which projects the owner shows, and whether each is
+  // named or anonymised. Nothing is public until this says so.
+  async showcase() {
+    const [sub, name] = args._.slice(1);
+    if (sub === "set") {
+      if (!name || args._.length !== 3) die(COMMAND_USAGE.showcase);
+      if (args.named === true && args.anonymous === true) die("give either --named or --anonymous, not both");
+      const mode = args.named === true ? "named" : "anonymous";
+      const r = await call("PUT", `/showcase/${encodeURIComponent(name)}`, { mode }, OWNER);
+      return console.log(mode === "named"
+        ? `${r.name} is shown on the public showcase at ${server()}/showcase, by name.`
+        : `${r.name} is shown on the public showcase at ${server()}/showcase, anonymised: no project name, task title, path, commit message or address is drawn.`);
+    }
+    if (sub === "remove") {
+      if (!name || args._.length !== 3) die(COMMAND_USAGE.showcase);
+      const { removed, name: current } = await call("DELETE", `/showcase/${encodeURIComponent(name)}`, undefined, OWNER);
+      return console.log(removed ? `${current ?? name} is no longer shown on the public showcase.` : `${name} was not shown on the public showcase.`);
+    }
+    if (sub) die(`${COMMAND_USAGE.showcase}\nunknown showcase command "${sub}"; use set, remove, or nothing to list`);
+    const { showcase } = await call("GET", "/showcase", undefined, OWNER);
+    if (!showcase.length) return console.log("Nothing is shown publicly. Add a project: atelier showcase set NAME");
+    for (const s of showcase) console.log(`${s.mode.padEnd(10)} ${s.name}`);
   },
 
   // The project owner renames a project on the server, or removes it.

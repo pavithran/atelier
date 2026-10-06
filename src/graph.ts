@@ -13,6 +13,7 @@ import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
 import { withServed } from "./models/served.ts";
 import { shortStamp, stamp } from "./time.ts";
 import { withoutAddresses } from "./text.ts";
+import { workKind } from "./kind.ts";
 
 export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
 
@@ -116,8 +117,11 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd
 // For a public page: what an agent or the owner wrote (review notes, reports,
 // check commands, closing notes) is left out, and the owner is named rather
 // than addressed. Titles, models, kinds and times stay, titles without any
-// email address in them.
-export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: string; family?: string }
+// email address in them. `anon` goes further, for a project the owner shows
+// anonymously: each task's title becomes its kind of work (src/kind.ts), so
+// no title the project wrote is drawn; the caller titles the story itself
+// with the project's neutral kind label.
+export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: string; family?: string; anon?: boolean }
 
 export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
   const R = !!opts.redact;
@@ -198,7 +202,8 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       case "item.claimed":
         t.claims++;
         if (!th) {
-          th = { id, title: R ? withoutAddresses(item?.title ?? id) : item?.title ?? id, state: item?.state ?? "claimed", start: pos, end: null, ending: null, holds: [], beads: [] };
+          const label = R ? (opts.anon ? workKind(item?.title ?? "") : withoutAddresses(item?.title ?? id)) : item?.title ?? id;
+          th = { id, title: label, state: item?.state ?? "claimed", start: pos, end: null, ending: null, holds: [], beads: [] };
           threads.set(id, th);
         }
         if (th.holds.at(-1)?.who !== ev.actor) th.holds.push({ who: ev.actor, pos });
