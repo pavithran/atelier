@@ -571,7 +571,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       // Re-claiming rotates the token: one live write token per item, ever.
       // If the old one cannot be revoked, the claim fails before a new one
-      // is minted, and the old one stays recorded.
+      // is minted, and the old one stays recorded. L.claim above is the
+      // claim's check, and it has already refused anyone who may not claim
+      // the item, so a refused claim revokes nothing: only the holder
+      // re-claiming, or the claimer of an item nobody holds, gets here, and
+      // `replaces` is the token this claim takes over.
       // The workspace and the baseline are both given the project's branch:
       // the fork's HEAD names it, and headOf reads HEAD.
       await revoke(env, fork, replaces);
@@ -916,13 +920,19 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
     // As on the API routes: a change of owner is checked, the holder's
-    // write token revoked, and only then the change made.
+    // write token revoked, and only then the change made. The workspace is
+    // read after the token id, not taken from `before`: a token is recorded
+    // only once its workspace exists, so the workspace read here is the
+    // one the token was made for, even if a claim made both after `before`
+    // was read. With `before.fork` that token would go unrevoked, and the
+    // change would then take it off the record while it still works.
     const moving = verb === "abandon" || verb === "release" || verb === "handoff";
     if (moving) {
       if (verb === "abandon") await L.checkAbandon(id, owner);
       else if (verb === "release") await L.checkRelease(id, owner);
       else await L.checkHandoff(id, owner, String(form.get("to") ?? ""));
-      await revoke(env, before.fork, oldToken);
+      const { fork } = await L.item(id);
+      await revoke(env, fork, oldToken);
     }
     if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
     else if (verb === "undispatch") await L.undispatch(id, owner);
