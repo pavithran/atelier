@@ -1821,6 +1821,28 @@ const commands = {
       let journal;
       try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
       const local = journal.state?.mergeCommit;
+      // A merge already on the baseline is never cancelled, and the checkout
+      // keeps it. The journal says so once the push has returned; for a push
+      // that reached the baseline just before the process stopped, the
+      // baseline's history, fetched here and read in full by Git, says so.
+      // In a project whose baseline holds part of its history, the baseline
+      // has the merge's rebuilt twin, paired with it before the push. A merge
+      // the server has recorded leaves only the journal to remove; one it has
+      // not, merge records.
+      if (local) {
+        const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
+        git(["fetch", "--quiet", base.remote, p.branch], { cwd, token: base.token });
+        const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
+        const pairs = p.fresh === true ? loadPairs(gitDir, name) : null;
+        const sent = pairs ? Object.keys(pairs).find((commit) => pairs[commit] === local) : local;
+        if (journal.state.phase === "published" || (sent && git(["merge-base", "--is-ancestor", sent, baselineHead], { cwd, allowFail: true }).status === 0)) {
+          if (item.state === "merged") {
+            journal.clear();
+            return console.log(`${id} is already merged as ${short(sent ?? local)}. The landing journal is removed; the checkout keeps the merge.`);
+          }
+          die(`${id}'s merge ${short(sent ?? local)} is already on the baseline, so the landing cannot be cancelled, and the checkout keeps it.\nRecord the merge with: atelier merge ${id}`);
+        }
+      }
       // An unpublished merge commit in the checkout is kept unless the owner
       // asks for it to go; then the checkout returns to where the merge began.
       if (local && args["discard-local"] !== true) {
