@@ -147,7 +147,8 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
   // A check required now that was not observed passing at the accepted revision.
   const lint = { ...before, checks: ["npm test", "npm run lint"] };
   d = mergePolicyDecision(before, lint, ["src/a.ts"], false, context);
-  assert.match(d.warning, /checks: \["npm test"\] -> \["npm run lint","npm test"\]/);
+  assert.match(d.warning, /^Warning: the required checks changed since acceptance: checks: \["npm test"\] -> \["npm run lint","npm test"\]$/);
+  assert.ok(!d.warning.includes("ControlPlane"), "checks are not ControlPlane's to set, so the warning does not name it");
   assert.match(d.refusal, /checks required now were not observed passing at the accepted revision: `npm run lint`\. Review/);
   assert.equal(mergePolicyDecision(before, lint, ["src/a.ts"], false, { ...context, passed: ["npm test", "npm run lint"] }).refusal, null);
   // Checks are compared only when both sides carry them: the policy read from the files does not.
@@ -159,6 +160,7 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
   // Every reason at once, and the override.
   const after = { ...lint, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true };
   d = mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], false, context);
+  assert.match(d.warning, /^Warning: ControlPlane policy changed since acceptance: .+; the required checks changed since acceptance: checks: /);
   assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; its contributors are no longer eligible here: [^;]+; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
   assert.equal(mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], true, context).refusal, null);
 });
@@ -389,8 +391,9 @@ for (const content of ["{", "", "{}", "null"]) {
     const file = /docs\/control-plane\/agent-policy\.v1\.json: \S/;
     for (let i = 0; i < 2; i++) {
       const sync = command(["sync"]);
-      assert.equal(sync.status, 0, sync.stderr);
+      assert.equal(sync.status, 1, sync.stderr);
       assert.match(sync.stdout, /Warning: ControlPlane policy could not be read: docs\/control-plane\/agent-policy\.v1\.json: .*The stored policy was not refreshed\./);
+      assert.match(sync.stderr, /^atelier: ControlPlane policy could not be read: docs\/control-plane\/agent-policy\.v1\.json: .*\. Fix the file, then run atelier sync again\.$/m);
       // A merge never skips the comparison: it stops until the file is fixed.
       const gitBefore = gitCalls().length;
       const merge = command(["merge", "t1"]);
