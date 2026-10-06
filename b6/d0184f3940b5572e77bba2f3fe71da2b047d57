@@ -1,0 +1,20 @@
+atelier atelier/t129 "Security, low (gpt-6-astra, confirmed by opus-5.5): the sandbox poll route can cross projects through colon-delimited ids: an agent scoped to alpha reads a run of alpha:private via a crafted item id (src/index.ts:462, run ids built at 546); check the run's project and item against the request, and refuse colons in new project names"
+accepted head d95060a4c23c55a875f2cf687f820ac6769ed7a9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T03:41:51.660Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T03:41:54.282Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE No blocking correctness, security, or data-loss problems found. **Findings & Analysis:** - The implemented exact match verification (`state.request.project !== ref.key || state.request.itemId !== id` in `src/index.ts:563`) provides a robust defense. Even if an attacker somehow manages to craft an `id` that successfully spoofs the prefix boundary, the subsequent exact equality checks strictly guarantee the fetched run naturally belongs to the resolved project and item. - Validation for new project names via `assertNewName(name)` (`src/index.ts:236
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T01:59:45.230Z pavi item.created
+2026-10-06T02:00:10.199Z claude-code/opus-5.5 item.claimed
+2026-10-06T02:00:13.403Z claude-code/opus-5.5 fork.created
+2026-10-06T02:44:23.357Z claude-code/opus-5.5 push.observed
+2026-10-06T02:45:48.179Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:45:50.587Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:45:51.259Z claude-code/opus-5.5 item.submitted
+2026-10-06T03:40:30.494Z claude-code/opus-5.5 push.observed
+2026-10-06T03:41:52.331Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:41:54.455Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:41:55.028Z claude-code/opus-5.5 item.submitted
+2026-10-06T04:15:41.193Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T04:15:41.713Z pavi review.approved
+2026-10-06T04:15:42.196Z pavi item.accepted
