@@ -328,14 +328,14 @@ export async function changedPaths(r: Reader, baseTree: string, headTree: string
 // and never from the caller, and never from a fork point the workspace's
 // history chooses. When either repository has no commits, nothing is
 // measured: the paths are null and the gate waits.
-export interface Measurement { head: string | null; changedPaths: string[] | null }
+export interface Measurement { head: string | null; main: string | null; changedPaths: string[] | null }
 
 export async function measureWorkspace(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<Measurement> {
   using fork = await artifacts.get(workspaceRepo);
   using baseline = await artifacts.get(baselineRepo);
   const m = await againstMain(fork, baseline);
-  if (!m) return { head: (await fork.log({ limit: 1 }))[0]?.hash ?? null, changedPaths: null };
-  return { head: m.head, changedPaths: await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree) };
+  if (!m) return { head: (await fork.log({ limit: 1 }))[0]?.hash ?? null, main: null, changedPaths: null };
+  return { head: m.head, main: m.main, changedPaths: await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree) };
 }
 
 // The item's diff against main as it is now (see againstMain).

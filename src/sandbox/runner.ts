@@ -9,7 +9,8 @@
 // which nothing posted to the public API can claim.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { againstMain, changedPaths, pairReader, repoReader } from "../diff";
+import { againstMain, changedPaths, pairReader, repoReader, type Reader } from "../diff";
+import { mergePatch, mergeTrees, type Patch } from "../preview/merge";
 import { END_OF_ARCHIVE } from "./tar";
 import { writeTree } from "./tree";
 
@@ -40,6 +41,7 @@ export interface RunRequest {
   head: string;            // the head the caller asked about; the run refuses any other
   checks: string[];
   requestedBy: string;
+  merged?: boolean;        // run on the merge of the head with main's head, not on the head alone
 }
 
 export interface CheckResult {
@@ -57,6 +59,7 @@ export interface RunState {
   startedAt?: string;
   finishedAt?: string;
   changedPaths?: string[];
+  mainHead?: string;       // main's head the checks were measured against, and merged with for a merged run
   results?: CheckResult[];
   recorded?: boolean;      // whether the Ledger accepted the results
   error?: string;
@@ -134,9 +137,24 @@ export class CheckRunner extends DurableObject<Env> {
     if (!m) throw new Error("the workspace or the baseline has no commits");
     if (m.head !== req.head) throw new Error(`the workspace moved to ${m.head.slice(0, 8)} after ${req.head.slice(0, 8)} was requested`);
     state.changedPaths = await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree);
+    state.mainHead = m.main;
     await this.ctx.storage.put("state", state);
-    // The tree the container checks is the head's, whose objects are in the fork.
-    const reader = repoReader(fork);
+    // The tree the container checks is the head's, whose objects are in the
+    // fork. A merged run checks the would-be merge instead: the head's tree
+    // with main's changes since the fork point laid over it, as the preview
+    // reads the merge, so main's newer objects are read from the baseline.
+    // Where the preview finds a conflict there is no tree to check.
+    let reader: Reader = repoReader(fork);
+    let patch: Map<string, Patch | null> | undefined;
+    if (req.merged) {
+      const trees = await mergeTrees(baseline, fork);
+      if (!trees) throw new Error("no fork point: the workspace's history meets none of main's within the commits read");
+      if (trees.main !== m.main || trees.head !== m.head) throw new Error("the workspace or main moved while the run started; start a new check run");
+      reader = pairReader(fork, baseline);
+      const merge = await mergePatch(repoReader(baseline), repoReader(fork), trees.baseTree, trees.mainTree, trees.headTree);
+      if (merge.conflicts.length) throw new Error(`the merge with main at ${m.main.slice(0, 8)} stops on conflicts: ${merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ")}; bring main into the workspace and resolve them`);
+      patch = merge.patch;
+    }
 
     const container = this.ctx.container;
     if (!container) throw new Error("no container is configured for CheckRunner");
@@ -156,7 +174,7 @@ export class CheckRunner extends DurableObject<Env> {
     const unpack = await container.exec(["tar", "-x", "-f", "-", "-C", WORKDIR], { stdin: pipe.readable, stdout: "ignore", stderr: "pipe", env: ENV });
     const written = (async () => {
       try {
-        await writeTree(reader, m.headTree, (b) => writer.write(b));
+        await writeTree(reader, m.headTree, (b) => writer.write(b), "", patch);
         await writer.write(END_OF_ARCHIVE);
         await writer.close();
       } catch (err) {
@@ -191,7 +209,10 @@ export class CheckRunner extends DurableObject<Env> {
       await this.ctx.storage.put("state", state);
     }
 
-    // Record in the Ledger. It refuses evidence for a head the item has moved past.
+    // Record in the Ledger. It refuses evidence for a head the item has moved
+    // past. Each row names main's head the run was measured against; a merged
+    // run's rows are bound to that commit too, measure no paths, and are
+    // stale once main moves on.
     const ledger = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${req.project}`));
     const current = await fork.log({ limit: 1 });
     if (current[0]?.hash !== m.head) throw new Error("the workspace changed while checks ran; record the push and check again");
@@ -205,9 +226,11 @@ export class CheckRunner extends DurableObject<Env> {
         passed: r.passed,
         by: "atelier/sandbox",
         at,
-        changedPaths: state.changedPaths,
-        outputTail: `${r.outputTail}\n[atelier] ran in a Cloudflare container in ${r.seconds}s, exit ${r.exitCode}`,
+        changedPaths: req.merged ? null : state.changedPaths,
+        outputTail: `${r.outputTail}\n[atelier] ran in a Cloudflare container in ${r.seconds}s, exit ${r.exitCode}${req.merged ? `, on the merge with main at ${m.main.slice(0, 8)}` : ""}`,
         where: "sandbox",
+        mainHead: m.main,
+        ...(req.merged ? { merged: true } : {}),
       });
     }
     state.recorded = true;
