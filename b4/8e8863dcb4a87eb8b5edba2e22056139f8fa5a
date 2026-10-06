@@ -1,0 +1,16 @@
+atelier atelier/t92 "Usage, limits and balances in Atelier: home runners report each tool's windows (5-hour, weekly, resets), served models, tokens and cost, and pay-per-use balances (DeepSeek, Gemini) to the ledger; a page shows where each tool stands; alerts through the existing notification channel at owner-set thresholds (for example a weekly window past 80%, a daily spend past a cap, a served model that differs from the registered one); routing (t86) reads availability from it instead of a hand-written map"
+accepted head 264d2720a50c828d433717e79817a6f145ab2f10
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T01:18:25.408Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T01:18:27.905Z
+REVIEW approve — opencode/glm-5.3: APPROVE. Keys: read by Keychain name into a child's environment only, scrubbed from every output and error (echoed-key test), refused server side; dry run sends nothing. Auth: owner token plus runner name, agent tokens refused, alerts scoped per tool and runner. Alerts once per crossing, not at the threshold, off honoured, past-reset windows ignored. Collectors read only and bounded. /usage behind sign-in and escaped. Tests fail on the old code. Follow-ups: a missing codex window clears held alerts (duplicate notice later); stale reports never pruned; negative balance accepted; cloud runner header accepted; README says secrets for USAGE_* settings.
+REVIEW approve — pavi: Owner approval after GLM-5.3's review.
+2026-10-05T20:21:37.697Z pavi item.created
+2026-10-06T00:47:31.072Z claude-code/fable-5.1 item.claimed
+2026-10-06T00:47:34.543Z claude-code/fable-5.1 fork.created
+2026-10-06T01:17:05.885Z claude-code/fable-5.1 push.observed
+2026-10-06T01:18:25.838Z claude-code/fable-5.1 evidence.observed
+2026-10-06T01:18:28.002Z claude-code/fable-5.1 evidence.observed
+2026-10-06T01:18:28.658Z claude-code/fable-5.1 item.submitted
+2026-10-06T01:29:12.942Z opencode/glm-5.3 review.approved
+2026-10-06T01:29:13.558Z pavi review.approved
+2026-10-06T01:29:14.337Z pavi item.accepted
