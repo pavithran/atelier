@@ -1,0 +1,16 @@
+atelier atelier/t121 "Audit t105, blocking at the boundary (confirmed by glm-5.3): a bare --check registers a required check named 'true' that always passes, and the server's asStrings coerces any non-string list entry with String() (src/index.ts:277), so scope ['true','5'] is accepted; refuse bare value flags and non-string list entries"
+accepted head 9adf46c6fad3a254452a0c95fa556fd63fd9ed37
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T02:03:09.859Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T02:03:12.120Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. listArg refuses bare or blank --check/--protect/--scope and defaults absent flags to []; asStrings refuses non-string or blank entries with 400 bad_list naming the field and still returns [] for absent fields; every Worker list (checks, protected, eligible, scope) goes through it; tests cover bare, blank and wrong-type entries.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T01:21:07.190Z pavi item.created
+2026-10-06T01:31:06.614Z claude-code/fable-5.1 item.claimed
+2026-10-06T01:31:09.594Z claude-code/fable-5.1 fork.created
+2026-10-06T02:01:48.254Z claude-code/fable-5.1 push.observed
+2026-10-06T02:03:10.083Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:03:12.229Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:03:12.936Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:14:43.440Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:14:43.946Z pavi review.approved
+2026-10-06T02:14:44.526Z pavi item.accepted
