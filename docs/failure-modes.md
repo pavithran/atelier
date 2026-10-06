@@ -151,12 +151,13 @@ at HEAD (docs/control-plane/context-budget.v1.json, `evaluateCeilings` in
 src/context-budget.ts) and refuses wrap when a surface passes its ceiling, and
 a working copy of the policy that differs from HEAD's is named. Accumulated
 workspaces are retired only against proof: `gcWorkspaceReason` in src/rules.ts
-refuses removal unless the item is merged, the head is the merged head, the
-tree is clean and no extra commits exist. Tests: test/context-budget.test.ts,
+refuses removal unless the item is merged or abandoned, the head is the
+accepted head of the merge or the last head Atelier recorded for the abandoned
+item, the tree is clean and no extra commits exist. Tests: test/context-budget.test.ts,
 the generated case "ceiling at 5 lines" (refused) and "a working copy that
 differs from HEAD's policy is named, and HEAD's is the one applied";
-test/rules.test.ts, "gc removes only clean workspaces at their confirmed
-merged head"; test/gc.test.mjs, "gc previews, then removes only clean merged
+test/rules.test.ts, "gc removes clean workspaces at a head that proves nothing
+is unpublished"; test/gc.test.mjs, "gc previews, then removes only clean closed
 clones; preserves all local work". The remaining halves, fixing a shape rather
 than an instance and counting facts rather than files, have no mechanism; the
 second is A11's question.
