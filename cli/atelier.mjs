@@ -14,7 +14,7 @@ import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync,
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay, WRAP_MARKERS, unmergedPaths, wrapRefusal, failingChecksRefusal, failingChecksOverridden } from "../src/sessions.ts";
 
@@ -384,19 +384,41 @@ export function initName(projects, top, explicit, renameLocal) {
   return { name, existing };
 }
 
+// The folder the current directory belongs to (the top of its Git repository,
+// else the directory itself) and the project registered for it, or null.
+// Compared as real paths: git reports /private/var/… for a checkout
+// registered as /var/… on macOS, and any symlinked folder the same way.
+function registeredHere() {
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const here = top.status === 0 ? top.stdout.trim() : process.cwd();
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const name = top.status === 0 ? Object.entries(cfg.projects ?? {}).find(([, p]) => real(p.path) === real(here))?.[0] ?? null : null;
+  return { here, name };
+}
+
 function project() {
   if (args.project) return args.project;
   const fromWs = wsConfig("project");
   if (fromWs) return fromWs;
-  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  if (top.status === 0) {
-    const here = top.stdout.trim();
-    // Compared as real paths: git reports /private/var/… for a checkout
-    // registered as /var/… on macOS, and any symlinked folder the same way.
-    const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
-    for (const [name, p] of Object.entries(cfg.projects ?? {})) if (real(p.path) === real(here)) return name;
-  }
-  die("which project? pass --project NAME, or run inside a registered checkout or workspace");
+  const { here, name } = registeredHere();
+  if (name) return name;
+  die(unregisteredMessage(here, cfg.projects));
+}
+
+// What a command that needs a project says when this folder is neither a
+// registered checkout nor a task workspace: the folder, every project
+// registered on this Mac with its checkout, and the one named like this
+// folder, since a copy or a second clone of a registered checkout is the
+// usual way to be in the wrong one.
+export function unregisteredMessage(here, projects) {
+  const names = Object.keys(projects ?? {}).sort();
+  const first = `which project? ${here} is not a registered checkout or a task workspace. Pass --project NAME, or run the command in a registered checkout or in a task workspace.`;
+  if (!names.length) return `${first}\nNo project is registered on this Mac: run atelier init in a project's checkout to register it.`;
+  const width = Math.max(...names.map((n) => n.length)) + 2;
+  const lines = [first, "Registered on this Mac:", ...names.map((n) => `  ${n.padEnd(width)}${projects[n].path ?? "no folder recorded"}`)];
+  const like = names.find((n) => n.toLowerCase() === basename(here).toLowerCase());
+  if (like) lines.push(`${like}, named like this folder, is registered at ${projects[like].path}; run the command there, or pass --project ${like}.`);
+  return lines.join("\n");
 }
 
 // --summary takes text: an empty or blank value is refused, not dropped. A

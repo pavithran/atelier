@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseArgs } from "../cli/atelier.mjs";
+import { parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
 
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
 // --sandbox-only) never takes the word after it, so an item id written after
@@ -107,6 +107,28 @@ globalThis.fetch = async (url, options = {}) => {
   const clear = () => rmSync(log, { force: true });
   return { dir, checkout, workspace, run, requests, clear };
 }
+
+test("a folder that is no registered checkout is named, with every registered project and its folder", (t) => {
+  const f = fixture(t);
+  const elsewhere = join(f.dir, "elsewhere");
+  mkdirSync(elsewhere);
+  const r = f.run(elsewhere, ["unwrap"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: which project\? \S*\/elsewhere is not a registered checkout or a task workspace\. Pass --project NAME, or run the command in a registered checkout or in a task workspace\.$/m);
+  assert.match(r.stderr, new RegExp(`^Registered on this Mac:\\n  demo  \\S*/checkout$`, "m"));
+  assert.doesNotMatch(r.stderr, /named like this folder/);
+  assert.deepEqual(f.requests(), []);
+  // A folder named like a registered project: a copy or a second clone of its checkout.
+  const copy = join(f.dir, "copies", "demo");
+  mkdirSync(copy, { recursive: true });
+  const named = f.run(copy, ["ls"]);
+  assert.equal(named.status, 1);
+  assert.match(named.stderr, /^demo, named like this folder, is registered at \S*\/checkout; run the command there, or pass --project demo\.$/m);
+  assert.deepEqual(f.requests(), []);
+  // With nothing registered, init is the way to register a project.
+  assert.equal(unregisteredMessage("/work/x", {}), "which project? /work/x is not a registered checkout or a task workspace. Pass --project NAME, or run the command in a registered checkout or in a task workspace.\nNo project is registered on this Mac: run atelier init in a project's checkout to register it.");
+  assert.equal(unregisteredMessage("/work/Photograph", { photograph: { path: "/p" }, demo: { path: "/d" } }).split("\n").slice(1).join("\n"), "Registered on this Mac:\n  demo        /d\n  photograph  /p\nphotograph, named like this folder, is registered at /p; run the command there, or pass --project photograph.");
+});
 
 test("abandon says whose write token is revoked, or that nobody held the item", (t) => {
   const f = fixture(t);
