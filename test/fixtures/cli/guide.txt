@@ -1,7 +1,7 @@
 ## Working through Atelier
 
-Several agents may work on this project at once. Each piece of work is an
-item with exactly one owner. Never edit the project checkout directly.
+Several agents may work on this project at once. Each piece of work is a
+task with exactly one owner. Never edit the project checkout directly.
 
 1. `atelier start ID --project NAME --as HARNESS/MODEL` claims the task
    and prints its workspace, title, scope and note. Work only there.
@@ -17,10 +17,10 @@ item with exactly one owner. Never edit the project checkout directly.
    or `atelier release ID`. Your write token is revoked either way.
    Waiting on something only the owner can settle: `atelier block ID "what"`.
    The owner sees the reason in the inbox and runs `atelier unblock ID`.
-7. Reviewing someone else's item: `atelier diff ID`, then
+7. Reviewing someone else's task: `atelier diff ID`, then
    `atelier review ID --approve|--reject --note "…"`. Changes to protected
    paths need approval from a model of another family than every agent
-   that worked on the item.
+   that worked on the task.
 8. `atelier update` rebases your workspace onto whatever has merged since.
 
 For each session the project owner runs in the registered checkout:
