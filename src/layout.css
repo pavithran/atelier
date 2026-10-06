@@ -778,3 +778,21 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .usage-table .total th, .usage-table .total td { background: var(--sheet); }
 .usage-notes { list-style: none; margin: 0 0 var(--space-xl); padding: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
 @media (max-width: 900px) { .usage-table { display: block; overflow-x: auto; } }
+
+/* The layers diagram (src/diagrams.ts), on /how and the showcase. It scrolls
+   inside its frame on a narrow screen instead of shrinking its text. */
+.lay-fig { margin: 24px 0 8px; }
+.lay-fig .scroll { overflow-x: auto; background: var(--sheet); border: 1px solid var(--line); border-radius: var(--radius-medium); }
+.lay-fig svg { display: block; width: 100%; min-width: 880px; height: auto; color: var(--text); }
+.lay-fig figcaption { max-width: 80ch; margin-top: 12px; font-size: 14px; color: var(--text-muted); }
+.lay-band { fill: rgba(var(--lift-rgb), .04); }
+.lay-band-cloud { fill: rgba(var(--observed-rgb), .07); }
+.lay-label { fill: var(--text-muted); font: 500 12px var(--font-sans); }
+.lay-node { fill: var(--surface); stroke: var(--line-bright); stroke-width: 1.25; }
+.lay-node-cloud { stroke: var(--observed); }
+.lay-name { fill: var(--text-bright); font: 600 12px var(--font-sans); }
+.lay-sub { fill: var(--text-muted); font: 400 11px var(--font-sans); }
+.lay-flow { fill: none; stroke: var(--text); stroke-width: 1.25; }
+.lay-rail { fill: none; stroke: var(--text-muted); stroke-width: 1.25; stroke-dasharray: 5 3; }
+.lay-head { fill: var(--text); }
+.lay-head-rail { fill: var(--text-muted); }
