@@ -1,12 +1,14 @@
-// Protected actions. A deploy, a device install, a push to the project's own
-// remotes, a paid model run, a Photos writeback, or another kind a project's
-// own ship files name, runs only with the project owner's approval for one
-// exact revision of the project's main line: a commit the baseline in
-// Artifacts holds, which is the main line as Atelier sees it. An approval is
-// recorded as an event, listed, withdrawn by the owner, used by exactly one
-// run (one approval, one run) and refused for any other revision or kind.
-// `atelier ship` (cli/ship.mjs) uses approvals and records each step it runs
-// as an `action.ran` event.
+// Protected actions. A deploy, a device install, a paid model run, a Photos
+// writeback, or another kind a project's own ship files name, runs only with
+// the project owner's approval for one exact revision of the project's main
+// line: a commit the baseline in Artifacts holds, which is the main line as
+// Atelier sees it. An approval is recorded as an event, listed, withdrawn by
+// the owner, used by exactly one run (one approval, one run) and refused for
+// any other revision or kind. `atelier ship` (cli/ship.mjs) uses approvals
+// and records each step it runs as an `action.ran` event. Pushing the
+// project's branch to its own remotes is none of these: ship is owner-only
+// and runs at one exact revision, so its `--push` is the owner's own act and
+// takes no approval.
 //
 // The functions here hold the rules and the storage. The Ledger (one per
 // project) calls them, so a project's approvals are serialised with the rest
@@ -15,9 +17,9 @@
 
 import { RuleError } from "./rules.ts";
 
-// The kinds Atelier knows by name. A project's ship files may name others
+// The kinds Atelier knows by name. A project's own ship files may name others
 // (cli/ship.mjs knownKinds); the Worker accepts any kind written this way.
-export const ACTION_KINDS = ["deploy", "install", "push", "paid-run", "photos-writeback"] as const;
+export const ACTION_KINDS = ["deploy", "install", "paid-run", "photos-writeback"] as const;
 export const KIND = /^[a-z][a-z0-9-]{0,62}$/;
 export const REVISION = /^[a-f0-9]{40,64}$/;
 
