@@ -14,6 +14,11 @@ until mkdir "$lock" 2>/dev/null; do sleep 20; done
 echo $$ > "$lock/pid"
 trap 'rm -rf "$lock"' EXIT
 cd "$W" || exit 1
+# A workspace an agent never built in has no dependencies yet; the type check
+# below needs them, and the project's generated types.
+if [ -f package.json ] && [ ! -d node_modules ]; then
+  npm ci --prefer-offline --no-audit --no-fund >/dev/null && { ! grep -q '"types"' package.json || npm run types >/dev/null; } || { echo "$t: npm ci failed"; exit 5; }
+fi
 git fetch -q "$M" main && git merge --no-ff -m "Merge main into $t" FETCH_HEAD 2>&1 | grep -E "CONFLICT|Merge made|Already"
 if [ -n "$(git diff --name-only --diff-filter=U)" ]; then echo "$t: CONFLICTS: $(git diff --name-only --diff-filter=U | tr '\n' ' ')"; exit 4; fi
 if [ -f tsconfig.json ]; then { npx tsc -p . && { [ ! -f test/tsconfig.json ] || npx tsc -p test; }; } || { echo "$t: TYPECHECK FAILED after merge"; exit 5; }; fi
