@@ -97,7 +97,7 @@ non-empty list of non-empty strings; the reviewer judges their content.
 - applies the claim's rule, `assertEligible`: under a governed policy only actors with the `executor` role build, otherwise the project's eligible harnesses;
 - gives a size M part only to a model whose context window is at least 64K tokens or unknown; the reviewer reads the same scope, so the rule applies to it too;
 - honours a part's `prefer {actor, reason}` only when that actor passes every rule, and the builder's reasons say what became of the preference;
-- freezes, per part, the top builder, two alternates and the reasons, in `route()`'s order: score, then model id, then actor name;
+- freezes, per part, the top builder, two alternates and the reasons, in `route()`'s order: score, then, when the input carries each model's reliability across every project (`src/models/reliability.ts`), the share of its outcomes in its favour as a tie-breaker that never changes a score, then model id, then actor name;
 - picks the first reviewer in that order whose `familyOf` differs from the builder's, both families recognised, as `gate()` counts a cross-family review, and, under a governed policy, who holds the `assessor` role.
 
 A part with no eligible builder, or no reviewer of another family, is returned unrouted with a reason that names each model passed over. Every choice carries human-readable reasons, for the task page's "why this model?".

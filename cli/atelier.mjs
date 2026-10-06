@@ -207,7 +207,12 @@ const FLAGS = {
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"' },
   adopt: {},
   publish: {},
-  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry' },
+  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
+  // edit takes the same three; one empty value clears the field, so the
+  // owner can take a framing back.
+  edit: { "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
+  block: {},
+  unblock: {},
   ls: { all: true },
   show: { json: true },
   start: { runner: false },
@@ -226,6 +231,8 @@ const FLAGS = {
   release: { note: false },
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false },
+  defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
+  served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
   done: { sandbox: true, summary: false },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
@@ -428,6 +435,28 @@ function listArg(flag, cmd) {
   const values = args.multi[flag] ?? [];
   if (values.some((v) => typeof v !== "string" || !v.trim())) die(`--${flag} needs text: atelier ${cmd} --${flag} "TEXT", once per entry`);
   return values.map((v) => v.trim());
+}
+
+// --non-goal, --stop-when and --next-gate, as new and edit send them: a list
+// per use for the first two, one line for the gate, each trimmed. A flag not
+// given is not sent, so the server keeps the item's value. For edit, one
+// empty value clears the field; for new, an empty value is refused as a
+// bare flag is, with the flag table's wording.
+function fieldsArg(cmd) {
+  const out = {};
+  for (const [flag, key] of [["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
+    const values = args.multi[flag];
+    if (values === undefined) continue;
+    if (cmd === "edit" && values.length === 1 && values[0] === "") { out[key] = []; continue; }
+    if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS[cmd][flag]);
+    out[key] = values.map((v) => v.trim());
+  }
+  const gate = args["next-gate"];
+  if (gate !== undefined) {
+    if (typeof gate !== "string" || (!gate.trim() && cmd !== "edit")) die(FLAGS[cmd]["next-gate"]);
+    out.nextGate = gate.trim() || null;
+  }
+  return out;
 }
 
 // --override-review takes the reason the override records. A bare flag is
@@ -880,14 +909,24 @@ export function formatDone(gate) {
   return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
 }
 
+// The owner's framing of a task, one line per field that is set, for the
+// task an agent starts and the brief it reads.
+export function formatFields(fields) {
+  return [
+    fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
+    fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
+    fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+  ].filter(Boolean);
+}
+
 export function formatTask(item) {
-  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`,
+  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
     item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {
   return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
-    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...brief.evidence.map(flat),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief), ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
@@ -1286,6 +1325,9 @@ const commands = {
           if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
           return res.json();
         },
+        // A run that stalled, timed out or was refused goes to the run
+        // reports, under the runner's name, as a model's status does.
+        reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
       });
     } catch (error) { die(error.message); }
   },
@@ -1534,10 +1576,40 @@ const commands = {
 
   async new() {
     const title = args._.slice(1).join(" ");
-    if (!title) die('usage: atelier new "title" [--scope GLOB]...');
+    if (!title) die(COMMAND_USAGE.new);
     const scope = listArg("scope", "new");
-    const item = await call("POST", `${P(project())}/items`, { title, scope }, await actor(OWNER));
-    console.log(`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`);
+    const item = await call("POST", `${P(project())}/items`, { title, scope, ...fieldsArg("new") }, await actor(OWNER));
+    console.log([`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`, ...formatFields(item)].join("\n"));
+  },
+
+  // The project owner changes a task's framing; the server keeps every field
+  // not named and refuses a closed task.
+  async edit() {
+    const name = project(), id = itemArg();
+    const fields = fieldsArg("edit");
+    if (!Object.keys(fields).length) die(COMMAND_USAGE.edit);
+    const item = await call("POST", `${I(name, id)}/edit`, fields, OWNER);
+    const lines = formatFields(item);
+    console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
+  },
+
+  // The holder or the owner blocks a task with what it is waiting on. The
+  // id comes first when given; in a workspace it is the workspace's item.
+  async block() {
+    const words = args._.slice(1);
+    const named = /^t\d+$/.test(words[0] ?? "") ? words.shift() : null;
+    const reason = words.join(" ");
+    if (!reason.trim()) die(COMMAND_USAGE.block);
+    const name = project(), id = named ?? wsConfig("item");
+    if (!id) die(`which item? pass its id (t3) or run inside its workspace: ${COMMAND_USAGE.block}`);
+    const item = await call("POST", `${I(name, id)}/block`, { reason }, await actor(OWNER));
+    console.log(`${id} is blocked: ${flat(item.blocked?.reason ?? reason)}. It keeps its owner and workspace; run atelier unblock ${id} when it can go on.`);
+  },
+
+  async unblock() {
+    const name = project(), id = itemArg();
+    const item = await call("POST", `${I(name, id)}/unblock`, {}, await actor(OWNER));
+    console.log(`${id} is unblocked and ${flat(item.state)} again.`);
   },
 
   async ls() {
@@ -1825,6 +1897,36 @@ const commands = {
     const name = project(), id = itemArg();
     await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
     console.log(`${id} abandoned.`);
+  },
+
+  // The project owner traces a defect to an item's accepted revision. The
+  // server refuses an item never accepted, and a blank note.
+  async defect() {
+    const name = project(), id = itemArg();
+    if (typeof args.note !== "string" || !args.note.trim()) die('a defect needs a note: atelier defect ID --note "what is wrong" [--found-in ID]');
+    const item = await call("POST", `${I(name, id)}/defect`, { note: args.note.trim(), ...(args["found-in"] !== undefined ? { foundIn: args["found-in"] } : {}) }, OWNER);
+    console.log(`Defect traced to ${id} at ${short(item.acceptedHead)}. It counts against the model that built that revision and each model that approved it; the Models page shows the record.`);
+  },
+
+  // The project owner records which model served events recorded under
+  // another: each matching event gets an annotation, and the event itself
+  // never changes. Without --apply it lists the matches and records nothing.
+  async served() {
+    const name = project(), model = args._[1];
+    if (args._.length !== 2 || ["recorded", "from", "to"].some((k) => typeof args[k] !== "string")) {
+      die("usage: atelier served MODEL --recorded HARNESS/MODEL --from TIME --to TIME [--item ID]... [--note TEXT] [--apply] [--project P]");
+    }
+    const r = await call("POST", `${P(name)}/served`, {
+      served: model, recorded: args.recorded, from: args.from, to: args.to,
+      ...(args.multi.item ? { items: args.multi.item } : {}), ...(args.note !== undefined ? { note: args.note } : {}), apply: args.apply === true,
+    }, OWNER);
+    const n = r.matched.length;
+    console.log(`${n} ${n === 1 ? "event" : "events"} on ${r.project} recorded as ${r.recorded} from ${r.from} to ${r.to}, in ${r.items ? r.items.join(" ") : "every task"}:`);
+    for (const m of r.matched) console.log(`  ${m.itemId ?? "(no task)"}  #${m.seq}  ${m.kind}  ${m.at}${m.served ? `  annotated as served by ${m.served}` : ""}`);
+    const as = `${r.recorded.slice(0, r.recorded.indexOf("/"))}/${r.served}`;
+    if (r.applied) console.log(`Annotated ${r.annotated} as served by ${r.served}; ${n - r.annotated} already were. The records count them under ${as}.`);
+    else if (r.pending) console.log(`Nothing was recorded. To annotate ${r.pending} as served by ${r.served}, run this again with --apply.`);
+    else console.log(`Nothing to record: ${n ? `each is already annotated as served by ${r.served}` : "no event matches"}.`);
   },
 
   async done() {
