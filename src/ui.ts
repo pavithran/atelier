@@ -5,6 +5,7 @@ import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // layout.css only arranges them.
 
 import { TEXT_CONTROLS } from "./text.ts";
+import { checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
@@ -711,6 +712,8 @@ export interface Standing {
   merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
+  // Each registered check, its class, and that class in words (src/checks.ts).
+  checks: { command: string; class: CheckClass; text: string }[];
   // What this view could not read in full, in words. Empty when it read everything it shows.
   partial: string[];
 }
@@ -798,6 +801,7 @@ export function buildStanding(
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
       : null,
+    checks: checkClasses(p.policy).map((v) => ({ command: v.command, class: v.class, text: classText(v) })),
     partial,
   };
 }
@@ -837,7 +841,7 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   const live = items.filter((i) => !closed(i));
   const done = items.filter(closed);
   const policy = `<dl>
-    <dt>Required checks</dt><dd>${p.policy.checks.map((c) => `<code>${e(c)}</code>`).join("<br>") || "None configured"}</dd>
+    <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
     <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or the agent's machine"}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>

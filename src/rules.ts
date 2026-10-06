@@ -1,6 +1,7 @@
 import { familyOf, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
+import type { CheckDeclaration } from "./checks.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -84,6 +85,7 @@ export interface ProjectPolicy {
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
   checks: string[];         // commands that must pass, observed, before acceptance
+  checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item

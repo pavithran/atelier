@@ -23,6 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 import { pathCollisions } from "../src/rules.ts";
+import { adapterClasses, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
@@ -197,7 +198,7 @@ const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry' },
@@ -708,6 +709,7 @@ export function readControlPlane(top) {
   }
   return {
     sources, protected: [...protectedPaths], eligible, refuseOverlap,
+    ...(adapter ? { adapter } : {}),
     ...(agent ? { agents: agent.agents ?? {} } : {}),
     ...(exec ? { execution: {
       allowed_classes: exec.allowed_classes ?? ["direct", "coordinated", "protected"],
@@ -840,6 +842,7 @@ export function formatStanding(s, ownerName = "the project owner") {
   if (s.controlPlane) {
     lines.push("", `ControlPlane policy, approved: ${flat(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(flat).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(flat).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.`);
   }
+  group("Checks", (s.checks ?? []).map((c) => `${flat(c.command)}  ${flat(c.text)}`));
   return lines.join("\n");
 }
 
@@ -1107,6 +1110,8 @@ const commands = {
     if (allowFailing && data.checksSkipped) die("--allow-failing and --no-check together: skipped checks cannot fail; give one or the other");
     wrapReady(name, cwd, true);
     const { project: record } = await call("GET", P(name), undefined, as);
+    const refused = data.checksSkipped ? [] : record.policy.checks.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+    if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
     const failing = [];
     if (!data.checksSkipped) for (const command of record.policy.checks) {
       const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
@@ -1363,6 +1368,32 @@ const commands = {
     const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
     const policy = {};
     if (args.multi.check || reset) policy.checks = checks;
+    // Each check must be read-only (src/checks.ts). One that is never
+    // read-only is refused here, before any request. The ControlPlane
+    // adapter declares the checks it lists as read-only capabilities, and
+    // --declare-read-only declares, with the owner's reason, the ones Atelier
+    // cannot tell from their words. Without --check, the checks classed are
+    // the ones registered now, and only declarations are sent.
+    const declaring = args["declare-read-only"];
+    if (declaring !== undefined && (typeof declaring !== "string" || !declaring.trim())) die('--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"');
+    let registered = null;
+    if (!policy.checks && (cp?.adapter || declaring !== undefined)) {
+      const list = await call("GET", "/projects", undefined, OWNER);
+      registered = (Array.isArray(list) ? list.find((p) => p.name === name)?.policy : null) ?? { checks: [] };
+    }
+    const classed = policy.checks ?? registered?.checks ?? [];
+    const fromAdapter = cp?.adapter ? adapterClasses(cp.adapter, classed) : { declarations: [], refusals: [] };
+    const byWords = classed.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+    const byAdapter = fromAdapter.refusals.filter((r) => !refusalOf(r.command)).map((r) => r.text);
+    if (policy.checks && (byWords.length || byAdapter.length)) die(`${[...byWords, ...byAdapter].join(".\n")}.\nNothing was sent.`);
+    // A registered check is refused at run time by its words alone; what the adapter says is read here only.
+    for (const refusal of byWords) console.log(`Warning: ${refusal}. It is registered, and Atelier runs it nowhere; replace it with atelier init --check.`);
+    for (const refusal of byAdapter) console.log(`Warning: ${refusal}. It is registered, and Atelier still runs it, since its words do not show this; replace it with atelier init --check.`);
+    const settled = new Set([...fromAdapter.refusals, ...fromAdapter.declarations, ...(registered?.checkClasses ?? [])].map((d) => d.command));
+    const needing = classed.filter((cmd) => !refusalOf(cmd) && !knownReadOnly(cmd) && !settled.has(cmd));
+    const owned = declaring === undefined ? [] : needing.map((command) => ({ command, by: "owner", note: declaring.trim() }));
+    if (declaring !== undefined && !owned.length) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
+    if (fromAdapter.declarations.length || owned.length) policy.checkClasses = [...fromAdapter.declarations, ...owned];
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
     if (cp) {
       policy.eligible = cp.eligible ?? [];
@@ -1413,6 +1444,7 @@ const commands = {
       : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
     if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
+    for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
@@ -1598,6 +1630,9 @@ const commands = {
     if (d.policy.sandboxOnly) return checkInSandbox();
     const cmds = args.rest?.length ? [args.rest.join(" ")] : d.policy.checks;
     if (!cmds.length) die("this project has no required checks; pass one: atelier check -- npm test");
+    // A command that is never read-only is not run, here or anywhere.
+    const refused = cmds.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+    if (refused.length) die(`${refused.join(".\n")}.${args.rest?.length ? "" : `\nNothing was run. Ask ${OWNER_NAME} to replace the check with atelier init --check.`}`);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     if (!ws.head) die("nothing pushed yet");
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);

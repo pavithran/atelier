@@ -124,7 +124,7 @@ In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. |
+| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. Every check must be read-only (see [Check classes](#check-classes)). |
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
@@ -321,6 +321,58 @@ directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
 names `pickup-card`, `control-plane-paste`, `session-receipt` or
 `audit record`, with its file and line number. The same list is recorded on
 the task as reported notes, so the reviewer and the owner see it there.
+
+## Check classes
+
+Atelier runs a check in a clean clone of an item's head whenever anyone asks,
+on an agent's machine or in a Cloudflare container, so a check must be
+read-only: it reads the project and writes only in its clone, the caller's
+caches and temporary files. A command that deploys, installs onto a device or
+the machine, publishes, pushes, reaches another machine or spends money is
+never read-only. `atelier init` refuses to register it, whatever is declared,
+and the sandbox route, the container runner, `atelier check`, `wrap` and the
+evidence route refuse to run or count it. The list, in
+[`src/checks.ts`](src/checks.ts), covers `wrangler deploy` and `publish`
+(and other Cloudflare writes), `npm publish` and package scripts named for a
+deploy or release (`npm run deploy`, `db:push`), `git push`, `xcrun altool`
+and `notarytool`, `fastlane`, `devicectl install` and other device installs,
+`ssh`, `scp` and remote `rsync`, `curl` or `wget` with a write method or a
+body, global package installs, `brew install`, `launchctl load`, the GitHub
+CLI's writes, cloud and cluster deploys, paid model CLIs such as `claude`
+and `codex`, and `atelier` itself. A `--dry-run` of a deploy or publish is
+allowed. Atelier reads the command as a shell would: each command joined by
+`&&`, `|` or `;`, inside `$( )`, `sh -c '…'`, `trap '…'` or `eval`, and
+behind `env`, `timeout`, `xargs`, `npx` or `sudo`, is classed.
+
+A check is read-only in one of three ways, recorded with the project:
+
+- its command is a known build or test form, such as `npm ci && npm test`,
+  `npm run typecheck`, `xcodebuild build-for-testing …`, `swift test`,
+  `python3 -m unittest …` or `git diff --exit-code`;
+- the project's ControlPlane adapter lists the same command, word for word,
+  as a capability of class `local-read-only` or `local-write` (a build's
+  writes stay in the clone); a capability of any other class (`deploy`,
+  `device`, `network` and the rest) is refused;
+- the project owner declares it, with the reason, as init records its
+  approval: `atelier init --check "./check.sh" --declare-read-only "PAVI,
+  2026-10-06: check.sh runs the unit tests and builds nothing it ships"`.
+  Without `--check`, `--declare-read-only` declares the registered checks
+  that are still undeclared.
+
+An init that names its checks with `--check` must show each one read-only,
+or it is refused before anything is created. A check registered before
+checks had classes carries none: Atelier treats it as read-only when its
+command is a known form and as undeclared otherwise. An undeclared check
+still runs, so a project's existing checks keep working, and the next init
+that names it must declare it. Each check's class, and how it is known, is
+shown in init's summary, under "Checks" in `atelier status --project NAME`
+and the standing JSON, and in the project page's policy.
+
+The class is of the command as registered. What a script it runs does is
+the item's code: an item could rewrite `package.json`'s `test` script, which
+is why the files a check executes are protected (see How it works) and why
+untrusted code belongs in the sandbox, which has no credentials and reaches
+only the npm registry.
 
 ## What is enforced and what is trusted
 

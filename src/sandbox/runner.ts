@@ -10,6 +10,7 @@
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { againstMain, changedPaths, pairReader, repoReader } from "../diff";
+import { refusalOf, refusalText } from "../checks.ts";
 import { END_OF_ARCHIVE } from "./tar";
 import { writeTree } from "./tree";
 
@@ -125,6 +126,11 @@ export class CheckRunner extends DurableObject<Env> {
 
   private async run(state: RunState): Promise<void> {
     const req = state.request;
+    // A check that is never read-only is not run here, however the run was asked for.
+    for (const claim of req.checks) {
+      const why = refusalOf(claim);
+      if (why) throw new Error(`${refusalText(claim, why)}.`);
+    }
     using fork = await this.env.ARTIFACTS.get(req.fork);
     using baseline = await this.env.ARTIFACTS.get(req.baselineRepo);
     // The paths are measured against main's head, not against a fork point
