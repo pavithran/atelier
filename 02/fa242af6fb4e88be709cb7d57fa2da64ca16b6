@@ -1,0 +1,19 @@
+atelier atelier/t192 "atelier status --project shows each claimed task's workspace on this machine: uncommitted changes, commits not yet pushed, a merge in progress, an agent's COMMIT_MSG.txt, and whether a landing is live, so a session taking over cold sees finished work and a running landing without reading each workspace by hand (found by the cold-start test of 2026-10-06)"
+accepted head 73ff9ec6efb66c602c063182386ce4aae906faad
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T21:34:15.927Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T21:34:18.719Z
+REVIEW approve — antigravity/gemini-3.1-pro: On this Mac in atelier status --project
+2026-10-06T18:57:23.272Z pavi item.created
+2026-10-06T20:42:46.108Z opencode/glm-5.3 item.claimed
+2026-10-06T20:42:53.852Z opencode/glm-5.3 fork.created
+2026-10-06T21:16:30.172Z opencode/glm-5.3 push.observed
+2026-10-06T21:19:05.318Z opencode/glm-5.3 evidence.observed
+2026-10-06T21:19:08.043Z opencode/glm-5.3 evidence.observed
+2026-10-06T21:19:08.791Z opencode/glm-5.3 item.submitted
+2026-10-06T21:24:30.385Z antigravity/gemini-3.1-pro review.rejected
+2026-10-06T21:32:20.321Z opencode/glm-5.3 push.observed
+2026-10-06T21:34:16.463Z opencode/glm-5.3 evidence.observed
+2026-10-06T21:34:19.249Z opencode/glm-5.3 evidence.observed
+2026-10-06T21:34:19.956Z opencode/glm-5.3 item.submitted
+2026-10-06T21:39:02.916Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T21:39:03.691Z pavi item.accepted
