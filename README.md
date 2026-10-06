@@ -120,7 +120,7 @@ In detail:
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records the paths the workspace changes since the baseline, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. |
+| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. |
 | `atelier report "…"` | anyone | Records a Reported claim. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -146,6 +146,16 @@ whatever the letter case or Unicode form, because the owner's Mac stores
 one file; item scopes and `direct.allowed_path_patterns` match as written, so a
 variant falls outside them. `atelier merge` refuses, before it changes the
 checkout, a merge whose tree would hold two such paths, on any platform.
+
+The changed paths are measured against main as it is now: every path whose
+content at the item's head differs from main's head. That is the set a merge
+could change on main whatever base git picks, since git keeps a path both
+sides agree on, and no history an agent pushes can shrink it; a merge commit
+that makes an older main commit the fork point hides nothing. A workspace
+behind main lists main's newer changes too, until `atelier update` brings them
+in. The item page's diff is measured the same way. The merge preview beneath
+it works from the fork's own first-parent history, says how far main has moved
+and whether the item would merge, and is advisory.
 
 ## Projects governed by ControlPlane
 

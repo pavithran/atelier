@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedPaths, diffLines, mergeBase, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
+import { againstMain, changedPaths, diffLines, itemDiff, measureWorkspace, mergeBase, pairReader, repoReader, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
 
 const replay = (ops: { op: string; text: string }[]) => ({
   a: ops.filter((o) => o.op !== "+").map((o) => o.text),
@@ -168,4 +168,70 @@ test("empty subdirectories never hide a later change, in a diff or in the protec
   const { files } = await treeDiff(r, "base", "head");
   assert.deepEqual(files.map((f) => f.path), ["z.txt"]);
   assert.deepEqual(await changedPaths(r, "base", "head"), ["z.txt"]);
+});
+
+// Two repositories as the Artifacts binding presents them: a first-parent log
+// newest first, flat trees named by a label, and blobs named by their text.
+// Each repository answers only for the objects it holds, as a fork that has
+// not taken main's newer commits does not hold their trees.
+type Commit = { hash: string; treeHash: string; parents: string[] };
+function artifactsOf(repos: Record<string, { log: Commit[]; trees: Record<string, Record<string, string>> }>) {
+  return {
+    get: async (name: string) => {
+      const r = repos[name];
+      const texts = new Set(Object.values(r.trees).flatMap((t) => Object.values(t)));
+      return {
+        log: async (opts?: { limit?: number }) => r.log.slice(0, opts?.limit ?? 50),
+        readCommit: async (h: string) => r.log.find((c) => c.hash === h) ?? null,
+        readTree: async (h: string) => r.trees[h] ? Object.entries(r.trees[h]).map(([name, text]) => ({ name, mode: "100644", hash: `blob:${text}`, type: "blob" })) : null,
+        readBlob: async (h: string) => h.startsWith("blob:") && texts.has(h.slice(5)) ? new Blob([h.slice(5)]) : null,
+        [Symbol.dispose]() {},
+      };
+    },
+  } as unknown as Artifacts;
+}
+
+test("a merge that makes an older main commit the fork point cannot hide a reverted protected file", async () => {
+  // Main moved from old (AGENTS.md v1) to new (AGENTS.md v2). The agent's work
+  // sits on new, and the head M is a merge whose first parent is old and whose
+  // tree is the work's with AGENTS.md put back to v1. M's first-parent log is
+  // [M, old], so the first-parent fork point is old, and old to M never
+  // touches AGENTS.md; git would merge M into new with new as the base and
+  // land v1. Against main's head the revert is a change like any other.
+  const v1 = "rules v1\n", v2 = "rules v2\n";
+  const old = { "AGENTS.md": v1, "a.ts": "a\n" };
+  const A = artifactsOf({
+    main: { log: [{ hash: "new", treeHash: "new", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, new: { "AGENTS.md": v2, "a.ts": "a\n" } } },
+    fork: { log: [{ hash: "M", treeHash: "M", parents: ["old", "W"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, M: { "AGENTS.md": v1, "a.ts": "a2\n" } } },
+  });
+  const diff = await itemDiff(A, "main", "fork");
+  assert.equal(diff?.base, "new", "the diff is against main's head");
+  assert.deepEqual(diff?.files.map((f) => [f.path, f.status]), [["AGENTS.md", "modified"], ["a.ts", "modified"]]);
+  assert.deepEqual(diff?.files[0].hunks[0].lines, [{ op: "-", text: "rules v2" }, { op: "+", text: "rules v1" }]);
+  // What the sandbox runner records: the same list, read across both repositories.
+  const fork = await A.get("fork"), main = await A.get("main");
+  const m = await againstMain(fork, main);
+  assert.deepEqual(m, { main: "new", mainTree: "new", head: "M", headTree: "M" });
+  assert.equal(await fork.readTree("new"), null, "the fork never holds main's newer tree");
+  assert.deepEqual(await changedPaths(pairReader(fork, main), m!.mainTree, m!.headTree), ["AGENTS.md", "a.ts"]);
+  // What the evidence route records, by the same measure.
+  assert.deepEqual(await measureWorkspace(A, "main", "fork"), { head: "M", changedPaths: ["AGENTS.md", "a.ts"] });
+  // The first-parent fork point is the one the agent built, and lists only a.ts.
+  const base = mergeBase((await fork.log({ limit: 500 })).map((c) => c.hash), (await main.log({ limit: 1000 })).map((c) => c.hash));
+  assert.equal(base, "old");
+  assert.deepEqual(await changedPaths(repoReader(fork), "old", "M"), ["a.ts"]);
+});
+
+test("a workspace behind main lists main's newer changes until it takes them; one that has them lists its own work", async () => {
+  const v1 = "rules v1\n", v2 = "rules v2\n";
+  const old = { "AGENTS.md": v1, "a.ts": "a\n" }, fresh = { "AGENTS.md": v2, "a.ts": "a\n" };
+  const main = { log: [{ hash: "new", treeHash: "new", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, new: fresh } };
+  const behind = artifactsOf({ main, fork: { log: [{ hash: "W", treeHash: "W", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, W: { "AGENTS.md": v1, "a.ts": "a2\n" } } } });
+  assert.deepEqual((await itemDiff(behind, "main", "fork"))?.files.map((f) => f.path), ["AGENTS.md", "a.ts"]);
+  const updated = artifactsOf({ main, fork: { log: [{ hash: "W", treeHash: "W", parents: ["new"] }, { hash: "new", treeHash: "new", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, new: fresh, W: { "AGENTS.md": v2, "a.ts": "a2\n" } } } });
+  assert.deepEqual((await itemDiff(updated, "main", "fork"))?.files.map((f) => f.path), ["a.ts"]);
+  // A workspace holding main's tree exactly has no changes, and an empty repository no measure.
+  const same = artifactsOf({ main, fork: { log: [{ hash: "new", treeHash: "new", parents: ["old"] }], trees: { new: fresh } } });
+  assert.deepEqual(await itemDiff(same, "main", "fork"), { base: "new", head: "new", files: [], truncated: false, baseTree: "new", headTree: "new" });
+  assert.equal(await itemDiff(artifactsOf({ main, fork: { log: [], trees: {} } }), "main", "fork"), null);
 });

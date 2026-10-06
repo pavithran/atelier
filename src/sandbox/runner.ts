@@ -9,7 +9,7 @@
 // which nothing posted to the public API can claim.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { changedPaths, forkPoint, repoReader } from "../diff";
+import { againstMain, changedPaths, pairReader, repoReader } from "../diff";
 import { END_OF_ARCHIVE } from "./tar";
 import { writeTree } from "./tree";
 
@@ -127,12 +127,16 @@ export class CheckRunner extends DurableObject<Env> {
     const req = state.request;
     using fork = await this.env.ARTIFACTS.get(req.fork);
     using baseline = await this.env.ARTIFACTS.get(req.baselineRepo);
-    const fp = await forkPoint(fork, baseline);
-    if (!fp) throw new Error("the workspace shares no history with the baseline");
-    if (fp.head !== req.head) throw new Error(`the workspace moved to ${fp.head.slice(0, 8)} after ${req.head.slice(0, 8)} was requested`);
-    const reader = repoReader(fork);
-    state.changedPaths = await changedPaths(reader, fp.baseTree, fp.headTree);
+    // The paths are measured against main's head, not against a fork point
+    // the workspace's history chooses (see againstMain in src/diff.ts), so
+    // the list the gate reads holds every path the head differs from main on.
+    const m = await againstMain(fork, baseline);
+    if (!m) throw new Error("the workspace or the baseline has no commits");
+    if (m.head !== req.head) throw new Error(`the workspace moved to ${m.head.slice(0, 8)} after ${req.head.slice(0, 8)} was requested`);
+    state.changedPaths = await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree);
     await this.ctx.storage.put("state", state);
+    // The tree the container checks is the head's, whose objects are in the fork.
+    const reader = repoReader(fork);
 
     const container = this.ctx.container;
     if (!container) throw new Error("no container is configured for CheckRunner");
@@ -152,7 +156,7 @@ export class CheckRunner extends DurableObject<Env> {
     const unpack = await container.exec(["tar", "-x", "-f", "-", "-C", WORKDIR], { stdin: pipe.readable, stdout: "ignore", stderr: "pipe", env: ENV });
     const written = (async () => {
       try {
-        await writeTree(reader, fp.headTree, (b) => writer.write(b));
+        await writeTree(reader, m.headTree, (b) => writer.write(b));
         await writer.write(END_OF_ARCHIVE);
         await writer.close();
       } catch (err) {
@@ -190,14 +194,14 @@ export class CheckRunner extends DurableObject<Env> {
     // Record in the Ledger. It refuses evidence for a head the item has moved past.
     const ledger = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${req.project}`));
     const current = await fork.log({ limit: 1 });
-    if (current[0]?.hash !== fp.head) throw new Error("the workspace changed while checks ran; record the push and check again");
+    if (current[0]?.hash !== m.head) throw new Error("the workspace changed while checks ran; record the push and check again");
     const at = new Date().toISOString();
     for (const r of state.results) {
       await ledger.addEvidence({
         itemId: req.itemId,
         claim: r.claim,
         grade: "observed",
-        head: fp.head,
+        head: m.head,
         passed: r.passed,
         by: "atelier/sandbox",
         at,
