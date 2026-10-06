@@ -860,3 +860,8 @@ test("a new head clears a failing merged check", () => {
   const next = pass({ head: H2, mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
   assert.equal(gate(item({ head: H2 }), policy, [own, failing, next], []).ready, true);
 });
+
+test("a make -C into an absolute directory guards no repository file under that name", () => {
+  const files = checkFiles(["make -C /opt/x check"]);
+  assert.equal(files.some((f) => f.startsWith("opt/")), false);
+});
