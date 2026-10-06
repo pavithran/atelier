@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "kind": "atelier.ship",
+  "class": "web",
+  "description": "Atelier's own delivery: the Worker deployed to atelier.zone, the live site checked, then main pushed to the github remote.",
+  "deploy": { "run": ["npx", "wrangler", "deploy"], "timeout_seconds": 1200 },
+  "verify-deploy": { "request": "https://atelier.zone", "status": 200 },
+  "push": { "remote": "github", "branch": "main" }
+}
