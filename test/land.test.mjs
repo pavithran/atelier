@@ -6,13 +6,17 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
+import { ROUTE_LEVEL } from "../src/route-level.ts";
+
 // atelier land (t187) against a stand-in server and local bare repositories,
 // as the other CLI tests run merge: the landing lease refuses a second
 // landing naming who holds it and since when, a conflict stops with the
 // files named and the merge left in the workspace, a clean landing merges
 // main, regenerates the project's fixtures, pushes, checks, waits for the
 // review verdict, accepts and merges, --dry-run changes nothing, and a
-// version the CLI cannot see in the server's main refuses, saying to deploy.
+// server whose route level is lower than the CLI's, or none at all, refuses
+// naming both levels and saying to deploy, while a different commit at the
+// CLI's level passes.
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -20,9 +24,10 @@ function root(t) { const p = mkdtempSync(join(tmpdir(), "atelier-landcmd-")); t.
 
 // The owner's checkout, the baseline, and each task's fork and workspace,
 // served by a stand-in ledger that answers from `box`: the items' states, the
-// landing lease, the server's version, whether the gate needs a review (the
-// reviewer approves on the first poll after the request), and every request
-// made, so a test can say what a landing changed.
+// landing lease, the server's version (route level and commit), whether the
+// gate needs a review (the reviewer approves on the first poll after the
+// request), and every request made, so a test can say what a landing
+// changed.
 async function landFixture(t, { mainChange = null, taskChange = "task\n", conflict = false } = {}) {
   const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), checkout = join(p, "checkout"), config = join(p, "config"), cache = join(p, "cache");
   mkdirSync(seed); mkdirSync(config);
@@ -32,7 +37,8 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   for (const dir of [checkout]) { git(dir, "config", "user.name", "Fixture"); git(dir, "config", "user.email", "fixture@example.invalid"); }
   const forkHead = (id) => { try { return git(p, "--git-dir", join(p, `fork-${id}.git`), "rev-parse", "main"); } catch { return null; } };
   const box = {
-    states: {}, reviews: { t1: [], t2: [] }, lease: null, version: null, review: { needed: true, reviewer: "codex/gpt-6-astra", pending: false, at: null },
+    states: {}, reviews: { t1: [], t2: [] }, lease: null, version: null, routeLevel: ROUTE_LEVEL,
+    review: { needed: true, reviewer: "codex/gpt-6-astra", pending: false, at: null },
     requests: [], regen: "echo generated > gen-fixtures.txt",
   };
   // The tasks fork from the baseline before main moves, so a landing has
@@ -72,7 +78,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const head = item ? forkHead(item) : null;
     let answer = item ? detail(item) : {};
     const fail = (status, error, detailText) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ error, detail: detailText })); };
-    if (url === "/api/version") answer = { commit: box.version ?? repoHead };
+    if (url === "/api/version") answer = { commit: box.version ?? repoHead, ...(box.routeLevel === null ? {} : { routeLevel: box.routeLevel }) };
     else if (url === "/api/projects/proj/landing-lease") {
       if (req.method === "GET") answer = { lease: box.lease };
       else if (body.cancel === true) { box.lease = null; answer = { held: true }; }
@@ -225,16 +231,38 @@ test("--dry-run prints the steps and the refusals without changing anything", as
   assert.equal(held.status, 1, held.output); assert.match(held.output, /has been landing t2 since/);
 });
 
-test("a server whose main the CLI cannot see refuses the landing, saying to deploy", async (t) => {
-  const f = await landFixture(t);
+test("a server at the CLI's route level passes whatever commit it runs", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   f.box.version = "f".repeat(40);
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.box.states.t1, "merged");
+  assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
+});
+
+test("a server a route level lower than the CLI's refuses, naming both levels and saying to deploy", async (t) => {
+  const f = await landFixture(t);
+  f.box.routeLevel = ROUTE_LEVEL - 1;
   const before = git(f.workspace("t1"), "rev-parse", "HEAD");
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /the server's main does not hold this CLI's commit/);
+  assert.match(r.output, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
+  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
   assert.match(r.output, /Deploy the server/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
+  assert.equal(f.box.lease, null);
+});
+
+test("a server that reports no route level refuses, saying to deploy", async (t) => {
+  const f = await landFixture(t);
+  f.box.routeLevel = null;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /reports no route level/);
+  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /Deploy the server/);
+  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(f.box.lease, null);
 });
