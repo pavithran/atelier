@@ -808,10 +808,15 @@ model, and refuses a claim with no runner at all until the owner withdraws
 the dispatch. A runner that gives up releases the task, and it waits in the
 queue again. `atelier queue` lists everything waiting. If a project cannot be read, the
 response names it in the `X-Atelier-Incomplete` header and `atelier queue` says so.
+`atelier undispatch` withdraws a dispatch while the task is open; a claimed
+or submitted task keeps its dispatch, which applies again if it is released.
 
 A runner's name is declared independently of its actor token; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
-else, while it waits.
+else, while it waits. Names are matched and stored in lower case, so
+`home:Studio` and `home:studio` are one runner. A claim belongs to the runner
+that made it; after a handoff, the first runner to claim as the new owner
+takes it, and the task's history records which runner that was.
 
 ## Home runner
 
@@ -820,9 +825,15 @@ and runs its configured harness in the claimed workspace. The brief is kept
 outside that workspace. Each opencode run also gets a data folder of its own
 (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
 it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
-deadlock on it. Such a run finds its provider keys in its environment and
-opencode's config, as the runner passes them; a key saved with
-`opencode auth login` lives in the shared data folder and is not seen. After a successful harness exit with a new commit,
+deadlock on it. Such a run finds its provider keys in the variables its
+config entry names and in opencode's config; a key saved with
+`opencode auth login` lives in the shared data folder and is not seen.
+A harness does not inherit the runner's environment. It gets what a local
+check gets (the toolchain's variables, such as `PATH`, `HOME`, `LANG` and
+`TMPDIR`; nothing named `ATELIER_*` and nothing whose name says it holds a
+token, key or secret) and the variables its config entry names in `env`. A
+named variable that holds the owner's Atelier token is withheld, and the
+runner says so. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
 in place for inspection. Two counters are kept for each project and task id,
@@ -839,8 +850,14 @@ Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner
 validation are skipped and remembered so other tasks
 can run.
-SIGINT stops polling and interrupts the active child process. A second
-interrupt exits immediately.
+The harness, and every command the runner starts, leads a process group of
+its own, and the group ends with it: when the harness exits, whether it
+succeeded or failed, when its deadline passes and when the runner is
+interrupted, every process left in the group gets SIGTERM, then SIGKILL after
+five seconds, before the runner goes on. A process that starts a session of
+its own (`setsid`) leaves the group and is not ended. SIGINT stops polling and
+interrupts the active child process. A second interrupt kills every group at
+once and exits.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
@@ -850,7 +867,8 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
     {
       "agent": "opencode",
       "models": ["GLM-5.3-Flash-4_8bit"],
-      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."]
+      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."],
+      "env": ["ZAI_API_KEY"]
     }
   ]
 }
@@ -860,11 +878,15 @@ Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `anti
 and command arguments to match the installed harness. Commands are argv
 arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
 the runner invokes them directly without a shell. The example requires that
-model to be configured in opencode. Atelier login and credentials are shared
+model to be configured in opencode. `env` is optional: the names of the
+runner's variables this harness also gets, such as a provider key it reads or
+`XDG_CONFIG_HOME`; a name starting with `ATELIER_` is refused. A runner started
+from a LaunchAgent has only the variables the LaunchAgent sets, so a key named
+here must be set there too. Atelier login and credentials are shared
 with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
 deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
-deadline from 60 minutes. Expiry terminates the process group, with forced
-termination after five seconds. A finish timeout leaves the claim held.
+deadline from 60 minutes. Expiry ends the process group as above. A finish
+timeout leaves the claim held.
 
 ```sh
 atelier runner --name home:studio
@@ -936,7 +958,11 @@ only and goes only into the environment of the child process that makes
 the one balance call; the child prints currencies and amounts, and any key
 a tool echoes back is removed from what the command prints. The report
 carries counts, windows, model names, costs and balances, never a prompt,
-a file name, a session id, a key or a header.
+a file name, a session id, a key or a header. Each window, model and
+provider name a tool's record gives is cleaned before it is printed or
+reported, as the server cleans it: that key, control characters and
+anything shaped like a key are removed, and it is cut to the server's
+length.
 
 The CLI's exit codes let the runner tell a task's own failure from the
 server's: 0 success, 1 a refusal or failure of the command, 2 a required
