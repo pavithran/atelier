@@ -376,7 +376,11 @@ the one named, and otherwise asks for one; it changes nothing until that
 server accepts the token, and when the server changes, the token it accepted,
 `ATELIER_TOKEN` included, replaces the stored one, so the pair is never half
 rewritten. `atelier login --store` names the store in use and whether it
-holds a token, without showing it.
+holds a token, without showing it. The server is an `https://` address:
+the token goes with every request, so a plain `http://` server, named by
+`login --server`, `ATELIER_SERVER` or `config.json`, is refused before any
+request is made, except on this machine (`localhost`, `127.0.0.1` or
+`[::1]`), which a request never leaves.
 
 ```bash
 atelier login --server https://atelier.example.com
