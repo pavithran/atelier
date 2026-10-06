@@ -2,6 +2,25 @@
 // A view is { name, title?, items, inbox }, where items are the project's items
 // and inbox holds the entries the Decisions page lists for it.
 
+// An item as `ls --json` and `status --json` print it: what the text listings
+// show, with the times a machine reader such as Observatory draws on.
+export function itemJson(i) {
+  return { id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head,
+    createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt };
+}
+
+// The queue as JSON: each project with its own decisions and its items, every
+// item carrying its times. Merged and abandoned items are included; a reader
+// that wants only live work filters by state.
+export function statusJson(views) {
+  return views.map((v) => ({
+    name: v.name,
+    ...(v.title ? { title: v.title } : {}),
+    inbox: v.inbox.filter((x) => x.project === v.name),
+    items: v.items.map(itemJson),
+  }));
+}
+
 // The command that answers an inbox entry, where there is one.
 function nextCommand(entry, project) {
   const flag = ` --project ${project}`;

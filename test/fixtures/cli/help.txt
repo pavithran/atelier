@@ -4,7 +4,7 @@ Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]..
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
            notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] · edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]
-           ls [--all] · show ID [--json] · owners [--json] · inbox [--json] · status [--project P] (with a project: where it stands, as text) · open
+           ls [--all] [--json] · show ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--json] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] [--runner home:NAME] · done "summary" [--sandbox]
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push [--force] · update · check [--sandbox] [--merged] [-- CMD] · report [ID] "what you verified and how" [--item ID] [--project P] · submit [--summary T]
            handoff ID --to H/M [--note TEXT] · release ID [--note TEXT] · block [ID] "what it is waiting on" · unblock [ID] · diff ID · review ID --approve|--reject [--note TEXT] [--head SHA] [--findings JSON] · review-claim ID [--runner home:NAME] · review-release ID [--note T]

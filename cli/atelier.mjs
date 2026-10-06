@@ -32,7 +32,7 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatStatus } from "./status.mjs";
+import { formatStatus, itemJson, statusJson } from "./status.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 export { checkEnv } from "./check-env.mjs";
@@ -224,7 +224,7 @@ export const FLAGS = {
   edit: { "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
   block: {},
   unblock: {},
-  ls: { all: true },
+  ls: { all: true, json: true },
   show: { json: true },
   start: { runner: false },
   claim: { runner: false },
@@ -267,7 +267,7 @@ export const FLAGS = {
   projects: { force: true },
   owners: { json: true },
   inbox: { json: true },
-  status: {},
+  status: { json: true },
   open: {},
   guide: {},
   help: {},
@@ -1402,7 +1402,7 @@ const commands = {
     } else if (action === "revoke" && args._[2]) {
       const result = await call("DELETE", `/tokens/${encodeURIComponent(args._[2])}`, {}, OWNER);
       console.log(result.revoked ? "Token revoked." : "No such token.");
-    } else die("usage: atelier token issue --as HARNESS/MODEL [--project P]... [--days N] [--label TEXT] | ls | revoke ID");
+    } else die(COMMAND_USAGE.token);
   },
   // Reached only when `ops` is not the first word; see runOps.
   async ops() {
@@ -1471,7 +1471,7 @@ const commands = {
       const env = process.env.ATELIER_TOKEN?.trim() ? " ATELIER_TOKEN is set in the environment and is used instead." : "";
       return console.log(`The token store is ${describeStore("API_TOKEN")}. ${held ? "A token is stored." : "No token is stored."}${env}`);
     }
-    if (!args.server || args.server === true) die("usage: atelier login --server https://atelier.example.com   or   atelier login --store");
+    if (!args.server || args.server === true) die(COMMAND_USAGE.login);
     const target = trimSlash(args.server);
     // Refused before a token is asked for or sent anywhere.
     const insecure = insecureServer(target);
@@ -1638,8 +1638,21 @@ const commands = {
       const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd: top });
       const start = git(["rev-list", "-1", "--first-parent", `--before=${since}T00:00:00`, "HEAD"], { cwd: top });
       if (!start) die(`${branch} has no commit before ${since}`);
-      const built = buildHistory(git, top, start, git(["rev-parse", "HEAD"], { cwd: top }));
-      git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token });
+      const head = git(["rev-parse", "HEAD"], { cwd: top });
+      const built = buildHistory(git, top, start, head);
+      // The baseline may already hold the project's original history, which an
+      // init that pushed in steps and stopped partway leaves behind without
+      // registering the project: --history-since replaces the baseline, so the
+      // rebuilt history is pushed over that remainder, on a lease on the tip
+      // read here. A baseline this checkout cannot account for (set up from
+      // another machine) is left to git to refuse.
+      const lease = [];
+      if (!cfg.projects?.[name]) {
+        const listed = git(["ls-remote", r.baseline.remote, `refs/heads/${branch}`], { cwd: top, token: r.baseline.token, allowFail: true });
+        const held = listed.status === 0 ? /^([0-9a-f]{40,64})\s/.exec(listed.stdout)?.[1] ?? null : null;
+        if (held && holds(held, head, top)) lease.push(`--force-with-lease=${branch}:${held}`);
+      }
+      git(["push", "--quiet", "--recurse-submodules=no", ...lease, r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token });
       savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
       pushed = built.head;
       console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
@@ -1760,11 +1773,14 @@ const commands = {
     console.log(`${id} is unblocked and ${flat(item.state)} again.`);
   },
 
+  // The items as one line each, or as JSON for a machine reader such as
+  // Observatory, which draws on the times each item carries.
   async ls() {
     const name = project();
     const { items } = await call("GET", P(name), undefined, await actor(OWNER));
-    for (const i of items) {
-      if (!args.all && (i.state === "merged" || i.state === "abandoned")) continue;
+    const shown = items.filter((i) => args.all || (i.state !== "merged" && i.state !== "abandoned"));
+    if (args.json) return console.log(JSON.stringify(shown.map(itemJson), null, 2));
+    for (const i of shown) {
       console.log(`${i.id.padEnd(5)} ${i.state.padEnd(10)} ${(i.owner ?? "—").padEnd(26)} ${short(i.head)}  ${i.title}`);
     }
   },
@@ -1946,7 +1962,7 @@ const commands = {
   },
 
   async gc() {
-    if (args._.length !== 1 || (args.apply && args["dry-run"])) die("usage: atelier gc [--project NAME] [--dry-run | --apply]");
+    if (args._.length !== 1 || (args.apply && args["dry-run"])) die(COMMAND_USAGE.gc);
     const name = project(), as = await actor(OWNER);
     const { items } = await call("GET", P(name), undefined, as);
     if (!existsSync(CACHE)) { console.log("No local cache to collect."); return; }
@@ -2007,7 +2023,7 @@ const commands = {
   },
 
   async review() {
-    if (!args.approve && !args.reject) die("usage: atelier review t3 --approve|--reject --note '…' --as harness/model");
+    if (!args.approve && !args.reject) die(COMMAND_USAGE.review);
     const name = project(), id = itemArg(), as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
     let findings;
@@ -2061,7 +2077,7 @@ const commands = {
   },
 
   async handoff() {
-    if (!args.to) die("usage: atelier handoff t3 --to codex/gpt-5.5 --note 'why'");
+    if (!args.to) die(COMMAND_USAGE.handoff);
     const name = project(), id = itemArg(), as = await actor();
     const r = await call("POST", `${I(name, id)}/handoff`, { to: args.to, note: args.note ?? "" }, as);
     console.log(`${id} now belongs to ${r.item.owner}. Your write token is revoked.\nNext: ${r.next}`);
@@ -2124,7 +2140,7 @@ const commands = {
   },
 
   async done() {
-    if (args._.length !== 2 || !args._[1].trim() || args.summary !== undefined || args.rest) die('usage: atelier done "summary"');
+    if (args._.length !== 2 || !args._[1].trim() || args.summary !== undefined || args.rest) die(COMMAND_USAGE.done);
     args.summary = args._[1];
     args._ = ["done"];
     doneStep = "prepare";
@@ -2164,9 +2180,13 @@ const commands = {
     const name = project();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
     const refreshed = await refreshControlPlane(cwd, name);
+    // A policy that cannot be read is not stepped over with a warning: the
+    // stored policy would stay stale with nothing else saying so, so sync
+    // stops as merge and init do, until the file is fixed.
+    if (refreshed?.skipped) die(`ControlPlane policy could not be read: ${refreshed.error}. Fix the file, then run atelier sync again.`);
     if (p.fresh !== true) {
       if (!refreshed) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
-      if (!refreshed.skipped && !refreshed.changes.length) console.log(`${name}: ControlPlane policy is current.`);
+      if (!refreshed.changes.length) console.log(`${name}: ControlPlane policy is current.`);
       return;
     }
     if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first");
@@ -2293,7 +2313,7 @@ const commands = {
     // was made under, so a policy it cannot read stops it here.
     if (refreshed?.skipped) die(`ControlPlane policy could not be read: ${refreshed.error}. Fix the file, then run atelier merge ${id} again.`);
     if (args.head !== undefined) {
-      if (!/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT] [--override-review REASON]] | atelier merge ID --cancel [--discard-local]");
+      if (!/^[a-f0-9]{40,64}$/.test(args.head)) die(COMMAND_USAGE.merge);
       const reason=overrideArg("merge ID --head FULL_REVISION");
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
@@ -2741,7 +2761,9 @@ const commands = {
       const name = args.project;
       const as = await actor(OWNER);
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + await checkoutStatus(name, as));
+      const checkout = await checkoutStatus(name, as);
+      if (args.json) return console.log(JSON.stringify({ project: standing, checkout }, null, 2));
+      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout);
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -2751,6 +2773,7 @@ const commands = {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
+    if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
     console.log(formatStatus(views));
   },
 

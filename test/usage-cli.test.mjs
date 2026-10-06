@@ -335,6 +335,19 @@ test("a key a tool echoes back is removed from what is printed", async (t) => {
   assert.match(printed, /deepseek: the balance call was refused \(HTTP 401\); check the key/);
 });
 
+test("a Not reported line is cleaned like a reported one, whatever an error carried", async (t) => {
+  // A database the reader cannot open, whose error holds control characters
+  // and key-shaped text, as an unreadable file's message might.
+  const { io, calls } = fakeIo(t, { io: { reader: async () => ({ via: "node:sqlite", query: () => { throw new Error("\x1b[2J wiped sk-AUDIT1234567890 " + "x".repeat(400)); } }) } });
+  await runUsage(args("name=home:test"), io);
+  const printed = calls.printed.join("\n");
+  const notReported = printed.slice(printed.indexOf("Not reported:"));
+  assert.ok(notReported.includes("zcode: record not read:"), "the line is still there");
+  assert.equal(/[\u0000-\u001f\u007f]/.test(notReported.replace(/\n/g, " ")), false, "no control characters");
+  assert.ok(!notReported.includes("sk-AUDIT1234567890"), "no key-shaped text");
+  assert.ok(!notReported.includes("x".repeat(320)), "cut to a length");
+});
+
 test("names from a tool's record are cleaned and redacted before they are printed or reported", async (t) => {
   // A key in a format no pattern knows, remembered because it was read for the balance call.
   const UNUSUAL = "dummy-deepseek-key-in-an-unusual-format";

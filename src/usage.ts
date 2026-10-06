@@ -43,11 +43,11 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: 'new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates an item with a title and, optionally, the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. The brief, `atelier start` and the item's page show them." },
     { form: "edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes an item's non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it." },
   ], [
-    { form: "ls [--all]", about: "Lists the project's items with state, owner and head. Merged and abandoned items need `--all`." },
+    { form: "ls [--all] [--json]", about: "Lists the project's items with state, owner and head. Merged and abandoned items need `--all`. `--json` prints them for scripts, each item with its created, updated and last-push times, as Observatory reads them." },
     { form: "show ID [--json]", about: "Prints an item's decision brief: what is decided, the recorded evidence, a recommendation and the item's address. `--json` prints it for scripts." },
     { form: "owners [--json]", about: "Prints one line per live item: its state, its owner and since when." },
     { form: "inbox [--json]", about: "Prints the decision brief of each item that needs the project owner, most urgent first. `--json` prints the entries for scripts." },
-    { form: "status [--project P]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline." },
+    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline. `--json` prints machine-readable records, each item with its created, updated and last-push times, as Observatory reads them." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
@@ -235,12 +235,21 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     },
     example: 'atelier edit t3 --stop-when "The schema needs to change" --project demo',
   },
-  ls: { flags: { "--all": "includes merged and abandoned items" }, example: "atelier ls --all --project demo" },
+  ls: {
+    flags: {
+      "--all": "includes merged and abandoned items",
+      "--json": "prints the items as JSON, each with its created, updated and last-push times",
+    },
+    example: "atelier ls --all --project demo",
+  },
   show: { flags: { "--json": "prints the brief as JSON" }, example: "atelier show t3 --project demo" },
   owners: { flags: { "--json": "prints the list as JSON" }, example: "atelier owners --project demo" },
   inbox: { flags: { "--json": "prints the entries as JSON" }, example: "atelier inbox" },
   status: {
-    flags: { "--project P": "where one project stands, as text, instead of the owner's queue for every project" },
+    flags: {
+      "--project P": "where one project stands, as text, instead of the owner's queue for every project",
+      "--json": "prints machine-readable records, each item with its created, updated and last-push times",
+    },
     example: "atelier status --project demo",
   },
   open: { example: "atelier open" },
