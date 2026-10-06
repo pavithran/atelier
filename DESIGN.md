@@ -86,7 +86,11 @@ the request, which the content security policy names and the script tag
 carries; no inline script and no script from elsewhere runs, and every
 other page keeps the policy that forbids script. The script only refreshes
 those pages and animates what arrived, and adds the scrubber that steps
-through a task's recorded events in order. Badges never wrap. Pages hold their layout without horizontal scrolling at 390 px,
+through a task's recorded events in order. A refresh never changes the
+revisions on screen: when the fetched copy binds its forms to revisions
+other than the ones the page shows, one moved, new or gone, the page keeps
+what it shows, says a new revision arrived with a link to reload, and
+stops refreshing. Badges never wrap. Pages hold their layout without horizontal scrolling at 390 px,
 and the navigation drops its icons below 720 px so all four destinations fit.
 
 The [orchestrator design](docs/orchestrator.md) describes plans, review and integration, with implementation status.

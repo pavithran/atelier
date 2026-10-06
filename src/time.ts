@@ -1,8 +1,8 @@
 // Times as the owner reads them: in the time zone the TIMEZONE setting names
 // (an IANA name such as America/New_York), or UTC when it is unset or not a
-// zone this runtime knows. Pages are drawn on the server, with no script, so
-// the zone is the owner's setting, not the browser's. Each request sets it
-// from the Worker's settings before any page is drawn.
+// zone this runtime knows. Pages are drawn on the server and read without
+// script, so the zone is the owner's setting, not the browser's. Each request
+// sets it from the Worker's settings before any page is drawn.
 
 let zone = "UTC";
 

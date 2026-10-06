@@ -117,9 +117,22 @@ async function showcase(env: Env, url: URL): Promise<Response> {
 async function loginPage(env: Env, error?: string, status = 200): Promise<Response> {
   const shown = await liveShowcase(env).catch(() => []);
   const backdrop = shown.length
-    ? { stories: (await publicStories(env, shown)).stories, owner: ownerActor(env), who: ownerName(env) || "The owner" }
+    ? { stories: await backdropStories(env, shown), owner: ownerActor(env), who: ownerName(env) || "The owner" }
     : undefined;
   return html(renderLogin(error, shown.length > 0, backdrop), status);
+}
+
+// The backdrop's stories, cached for a minute as the showcase page is: the
+// sign-in page is open to anyone, so a request to it must not cost a read
+// of every showcased project's record. The key names the projects shown and
+// the owner's label, which the stories carry.
+async function backdropStories(env: Env, projects: ProjectRecord[]): Promise<Story[]> {
+  const key = new Request(`https://atelier.internal/login-stories?projects=${encodeURIComponent(JSON.stringify(projects.map((p) => p.name)))}&who=${encodeURIComponent(ownerName(env) ?? "")}`);
+  const hit = await caches.default.match(key).catch(() => undefined);
+  if (hit) return (await hit.json()) as Story[];
+  const { stories } = await publicStories(env, projects);
+  await caches.default.put(key, new Response(JSON.stringify(stories), { headers: { "cache-control": "max-age=60" } })).catch(() => undefined);
+  return stories;
 }
 
 // Each project's imported history, read once per baseline head and format:
