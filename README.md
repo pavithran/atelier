@@ -481,6 +481,14 @@ so each `*` is recorded as `**`. Init's summary prints each check's globs
 and names any capability a rule requires that no registered check runs, and
 `atelier status --project NAME` and the project page show the globs. An
 adapter without change rules leaves every check applying to every change.
+A re-init that names no check takes none of the rules (PAVI's decision of
+2026-10-06): conditioning a check to some paths can drop coverage outright,
+since a change to none of the checks' paths then runs no check (on that day
+Omniscope's rules would have left a change to `family/**` or `package.json`
+running no check). Such an init keeps the paths recorded for the checks and
+names each narrowing the rules would make; the first init, and any init that
+names the checks with `--check` or starts over with `--reset`, takes the
+rules as the adapter holds them.
 
 ## What is enforced and what is trusted
 
