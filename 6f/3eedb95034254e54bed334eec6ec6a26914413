@@ -1,0 +1,20 @@
+atelier atelier/t96 "A public How it works page on atelier.zone: what Atelier is, a server-drawn diagram of the loop (task, claim, workspace, observed checks, cross-family review, owner accept, merge), the rules it enforces and why, the orchestrator marked built or not, and the full command reference generated from the CLI's own help so the page cannot drift"
+accepted head 05075cca1923ad55a24145670b3a28b951486b73
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-06T01:46:46.595Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-06T01:46:49.069Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE (re-review after rebase; GLM-5.3 approved the original commit 7548fe6). The rebase only resolves conflicts: help and usage now in src/usage.ts carry main's new commands, CLI output equals main's. Every page claim in 05075cc is true: steps 4, 8 and 11 built with the named symbols; projects rename, runner --usage, update, push, unwrap descriptions match the code; the symbol drift test fails on a wrong label; the page reads only static data.
+REVIEW approve — pavi: Owner approval after GLM-5.3's review and Gemini 3.1 Pro's re-review.
+2026-10-05T21:26:41.907Z pavi item.created
+2026-10-05T23:40:36.246Z claude-code/sonnet-5.5 item.claimed
+2026-10-05T23:40:38.813Z claude-code/sonnet-5.5 fork.created
+2026-10-06T00:03:08.492Z claude-code/sonnet-5.5 push.observed
+2026-10-06T00:04:35.325Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T00:04:38.716Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T00:04:39.689Z claude-code/sonnet-5.5 item.submitted
+2026-10-06T01:45:23.733Z claude-code/sonnet-5.5 push.observed
+2026-10-06T01:46:46.809Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T01:46:49.156Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T01:46:50.016Z claude-code/sonnet-5.5 item.submitted
+2026-10-06T01:48:24.549Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T01:48:25.176Z pavi review.approved
+2026-10-06T01:48:25.767Z pavi item.accepted
