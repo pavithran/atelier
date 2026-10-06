@@ -1,0 +1,18 @@
+atelier atelier/t186 "Comparative agent data (PAVI asked, 2026-10-06): record a verdict on each review finding (confirmed, refuted, fixed; by whom) so reviewer precision and recall can be measured; record each run's wall-clock times (claim to first push, to submit, to verdict, to merge; rework turnaround), tokens and cost per task where the harness reports them; builder honesty (commit message against diff, reported against observed checks, scope adherence); harness failures (early stops, permission stops, timeouts); integration cost per task (merges with main, conflict hunks, who resolved them); cross-family disagreements and who was right; show the comparison by model and kind of work on the Models page; seed it with the 2026-10-06 adjudications"
+accepted head 86003a333f02bbe94218656a9bf5552222bdb696
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T18:52:14.849Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T18:52:17.921Z
+REVIEW approve — antigravity/gemini-3.1-pro: Comparative agent data by model and kind of work
+2026-10-06T17:54:53.105Z pavi item.created
+2026-10-06T17:55:25.452Z opencode/deepseek-v4-pro item.claimed
+2026-10-06T17:55:34.231Z opencode/deepseek-v4-pro fork.created
+2026-10-06T18:39:41.823Z opencode/deepseek-v4-pro push.observed
+2026-10-06T18:41:24.517Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T18:41:27.829Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T18:41:28.718Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T18:50:20.606Z opencode/deepseek-v4-pro push.observed
+2026-10-06T18:52:15.556Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T18:52:18.430Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T18:52:19.333Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T18:57:27.969Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T18:57:29.245Z pavi item.accepted
