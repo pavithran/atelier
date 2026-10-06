@@ -21,6 +21,9 @@ export function withoutAddresses(text: string): string {
 export const NOTE_MAX = 2000;
 export const CLAIM_MAX = 500;
 export const OUTPUT_MAX = 4000;
+// Text only the owner writes and every runner and page reads back: the note
+// on a dispatch and the approval recorded with a policy.
+export const OWNER_TEXT_MAX = 500;
 
 export function assertLength(text: string, max: number, what: string): void {
   if (text.length > max) {

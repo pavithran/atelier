@@ -241,6 +241,23 @@ it("a first init with no title creates the project without one", async () => {
   expect(((await res.json()) as { project: { title?: string } }).project.title).toBeUndefined();
 });
 
+it("init refuses an approval over its limit instead of cutting it", async () => {
+  const put = (approval: unknown) => worker.fetch(new Request("https://atelier.test/api/projects/routes-approval", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ approval }),
+  }), artifactsEnv);
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-approval"));
+  expect((await put("PAVI, today: the copy is approved")).status).toBe(200);
+  const over = await put("a".repeat(501));
+  expect(over.status).toBe(400);
+  expect(await over.json()).toMatchObject({ error: "too_long", detail: expect.stringContaining("the approval is 501 characters; the limit is 500") });
+  // The refusal left what was recorded standing, and a note at the limit is kept whole.
+  expect((await L.project()).policy.approval).toBe("PAVI, today: the copy is approved");
+  expect((await put("b".repeat(500))).status).toBe(200);
+  expect((await L.project()).policy.approval).toBe("b".repeat(500));
+});
+
 it("init refuses another name for a registered baseline before touching Artifacts", async () => {
   await project("repo-collision");
   const res = await call("PUT", "/projects/Repo-Collision", "owner", { title: "Duplicate" });
