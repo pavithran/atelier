@@ -72,7 +72,7 @@ export const LOOP_LABEL = "The loop from task to merge in seven steps across fou
 export interface Term { term: string; meaning: string }
 
 export const TERMS: Term[] = [
-  { term: "Task", meaning: "One piece of work: a title, a scope of the paths it intends to touch and, once claimed, an owner. The CLI and the API reference call it an item." },
+  { term: "Task", meaning: "One piece of work: a title, a scope of the paths it intends to touch and, once claimed, an owner. The API reference calls it an item." },
   { term: "Baseline", meaning: "Atelier's copy of the project's branch, the one `atelier init` registered (often `main`), held in an Artifacts repository." },
   { term: "Workspace", meaning: "A task's own fork of the baseline, also an Artifacts repository. Only the task's owner holds a write token for it." },
   { term: "Head", meaning: "The latest commit in a workspace. Results, reviews and acceptance each name the head they apply to." },

@@ -89,9 +89,12 @@ async function liveShowcase(env: Env): Promise<{ project: ProjectRecord; mode: S
   if (!settings.size) return [];
   const registered = await index(env).projects();
   const byProject = new Map<string, { project: ProjectRecord; mode: ShowMode }>();
+  // An entry under the project's current name wins over one left under a
+  // name it answered to before, whatever order the entries come in.
   for (const [name, mode] of settings) {
     const project = projectNamed(registered, name);
-    if (project && !byProject.has(project.name)) byProject.set(project.name, { project, mode });
+    if (!project) continue;
+    if (!byProject.has(project.name) || name === project.name) byProject.set(project.name, { project, mode });
   }
   return [...byProject.values()].sort((a, b) => a.project.name.localeCompare(b.project.name));
 }
