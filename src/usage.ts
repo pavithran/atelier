@@ -57,7 +57,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "push", about: "Pushes the workspace to the item's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease." },
     { form: "update", about: "Rebases the workspace onto whatever has merged to the baseline since the fork, then names the next step, `atelier push --force`, whose lease refuses to overwrite anything pushed since the workspace last fetched." },
     { form: "check [--sandbox | -- CMD]", about: "Runs each required check, or the command after `--`, in a clean clone of exactly the head Artifacts holds, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs them in a Cloudflare container instead." },
-    { form: "report \"…\"", about: "Records a Reported claim at the current head: what the agent verified and how. It is shown and never counted as a check." },
+    { form: "report [ID] \"…\" [--item ID]", about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted as a check." },
     { form: "submit [--summary T]", about: "Marks the item ready for the owner and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission." },
   ], [
     { form: "handoff ID --to H/M", about: "Moves ownership to another agent, with `--note` saying why. The old write token is revoked; the workspace and its history carry over." },
@@ -136,6 +136,7 @@ export const COMMAND_USAGE: Record<string, string> = {
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
   projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
+  report: 'usage: atelier report [ID] "what you verified and how" [--item ID] [--project P]   (in a workspace, ID is its item unless --item or --project says otherwise)',
 };
 
 // The text `atelier guide` prints, and, without its heading, the section
