@@ -44,3 +44,27 @@ test("landing receipts record the computed class with the legacy fallback", () =
   }
   assert.match(source, /writeReceipt\(cwd,\{[^\n]*changeClass:d\.gate\.changeClass/);
 });
+
+// PAVI's decision, 2026-10-06: an override is recorded with its reason, so a
+// landing receipt never says no review was required when one was overridden.
+test("landing receipts record the owner's override of the independent review at the accepted head", () => {
+  const code = source.slice(source.indexOf("function writeReceipt("), source.indexOf("function writeReceipt(") + source.slice(source.indexOf("function writeReceipt(")).indexOf("\n}\n") + 3);
+  const head = "a".repeat(40);
+  const receiptFor = (item, reviews = []) => {
+    let receipt;
+    const write = runInNewContext(`${code}; writeReceipt`, {
+      join: (...parts) => parts.join("/"), existsSync: () => true, readJson: () => ({}),
+      short: (s) => s.slice(0, 8), OWNER_NAME: "Pavi", writeFileSync: (_, text) => { receipt = JSON.parse(text); },
+    });
+    write("checkout", { name: "p", id: "t1", item, owners: [], view: [], reviews, policy: {}, branch: "main", changeClass: "protected" });
+    return receipt.delivery.evidence;
+  };
+  const reviewOverride = { head, by: "owner", reason: "No model of another family is available.", at: "2026-10-06T12:00:00.000Z" };
+  const overridden = receiptFor({ acceptedHead: head, reviewOverride });
+  assert.match(overridden, /Pavi overrode the independent review at the accepted head: No model of another family is available\./);
+  assert.doesNotMatch(overridden, /No review was required/);
+  const owned = receiptFor({ acceptedHead: head, reviewOverride }, [{ by: "owner", approve: true }]);
+  assert.match(owned, /Reviews at the accepted head: owner approved\. Pavi overrode the independent review/);
+  // An override at another head is not this acceptance's.
+  assert.match(receiptFor({ acceptedHead: head, reviewOverride: { ...reviewOverride, head: "b".repeat(40) } }), /No review was required at the accepted head\./);
+});

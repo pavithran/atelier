@@ -120,6 +120,64 @@ it("a protected path is accepted only after an independent approval", async () =
   expect(merged).toMatchObject({ state: "merged", owner: null });
 });
 
+// PAVI's decision, 2026-10-06: the owner's approval is not the independent
+// review, and the owner's override, when no reviewer qualifies, is a
+// recorded act of its own with a reason, never a review.
+it("decision 2026-10-06: only the owner overrides a missing review, with a reason, and it is recorded as an override", async () => {
+  const H3 = "c".repeat(40);
+  const L = await setup("override");
+  await L.newItem("Touch a protected path", ["src/**", "AGENTS.md"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "override--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  const reason = "No model of another family is available this week";
+
+  // The owner's approval alone is refused, and so is a same-family approval.
+  await L.addReview(review("t1", "owner", H1, true));
+  await L.addReview(review("t1", "codex/sonnet-5.5", H1, true));
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /touches a protected path; needs approval from a model of another family than every contributor/);
+  expect((await L.inbox(new Date().toISOString())).map((e) => `${e.itemId}:${e.kind}`)).toEqual(["t1:assess"]);
+
+  // The override is the owner's alone and needs a reason.
+  await refusal(L.accept("t1", B, H1, reason), "not_project_owner", /only the project owner accepts/);
+  for (const blank of ["", "   "]) await refusal(L.accept("t1", "owner", H1, blank), "override_reason", /needs a reason/);
+  // It waives the missing review and nothing else, and a refused one leaves no record.
+  await L.addReview(review("t1", B, H1, false, "unsafe"));
+  await refusal(L.accept("t1", "owner", H1, reason), "not_ready", /rejected by codex\/gpt-5\.5: unsafe/);
+  expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
+  expect((await L.item("t1")).reviewOverride).toBeUndefined();
+  // Where another family has approved, there is nothing to override.
+  await L.addReview(review("t1", B, H1, true));
+  await refusal(L.accept("t1", "owner", H1, reason), "override_unneeded", /not missing an independent review/);
+
+  // At a new head the approval no longer counts, and the owner overrides.
+  await L.recordPush("t1", A, H2, H2);
+  await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  await refusal(L.accept("t1", "owner", H2), "not_ready", /protected path/);
+  const accepted = await L.accept("t1", "owner", H2, `  ${reason}  `);
+  expect(accepted).toMatchObject({ state: "accepted", acceptedHead: H2, reviewOverride: { head: H2, by: "owner", reason } });
+  const events = await L.events("t1") as unknown as LedgerEvent[];
+  expect(events.slice(0, 2).map((e) => [e.kind, e.actor])).toEqual([["item.accepted", "owner"], ["review.overridden", "owner"]]);
+  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A] });
+  expect(events[0].data).toMatchObject({ head: H2, reviewOverridden: true });
+  // It is not a review: none was recorded for it.
+  expect((await L.reviewsFor("t1")).filter((r) => r.head === H2)).toEqual([]);
+  // The inbox and the brief show it with its reason.
+  expect((await L.inbox(new Date().toISOString())).map((e) => [e.kind, e.reason])).toEqual([
+    ["merge", `accepted, with the independent review overridden by the project owner: ${reason}; run \`atelier merge\` in the project checkout`],
+  ]);
+  expect(briefFor(await L.detail("t1") as never).evidence).toContain(`The project owner overrode the independent review at this revision: ${reason}.`);
+
+  // A later push needs a review or another override.
+  await L.recordPush("t1", A, H3, H3);
+  await L.addEvidence(observed("t1", H3, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  await refusal(L.accept("t1", "owner", H3), "not_ready", /protected path/);
+});
+
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
   const L = await setup("same-model-names");
   await L.newItem("Touch a protected path", [], "owner");
@@ -289,12 +347,16 @@ it("HTTP review and acceptance preserve the displayed revision through successfu
  const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setFork('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
  const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Artifacts;
  const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token'};
- for(const action of ['approve','accept']){
-  const res=await worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://atelier.test'},body:new URLSearchParams({head:H1,note:'Reviewed'})}),bindings);
-  expect(res.status).toBe(303);
- }
- expect(await L.item('t1')).toMatchObject({state:'accepted',acceptedHead:H1});
- expect((await L.reviewsFor('t1'))[0].head).toBe(H1);
+ const post=(action:string,note:string)=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://atelier.test'},body:new URLSearchParams({head:H1,note})}),bindings);
+ // The owner's approval is recorded at the displayed revision, but it is not
+ // the independent review AGENTS.md needs, so Accept is refused; the
+ // override form, with its reason, accepts at the same revision.
+ expect((await post('approve','Reviewed')).status).toBe(303);
+ expect((await post('accept','')).status).toBe(409);
+ expect((await post('override','')).status).toBe(400);
+ expect((await post('override','No model of another family is available')).status).toBe(303);
+ expect(await L.item('t1')).toMatchObject({state:'accepted',acceptedHead:H1,reviewOverride:{head:H1,by:'owner',reason:'No model of another family is available'}});
+ expect((await L.reviewsFor('t1')).map((r)=>[r.by,r.head,r.approve])).toEqual([['owner',H1,true]]);
 });
 
 it("dispatch queues an open task for a kind of runner, and only a matching runner claims it", async () => {
@@ -561,8 +623,12 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
     await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
     expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
   }
+  // The owner's approval reopens the accepted item, but it is not the
+  // independent review the newly protected path needs; another family's is.
   await L.addReview(review("t1", "owner", H1, true));
   expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
+  await L.addReview(review("t1", B, H1, true));
   for (let i = 0; i < 2; i++) {
     await L.accept("t1", "owner", H1);
     expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(changed.protected);

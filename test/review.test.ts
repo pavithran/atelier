@@ -124,8 +124,9 @@ test("reviewNeeded: a part's need ends only with an approval from another family
   // Under a governed policy only an assessor's review counts.
   assert.ok(need({ policy: governed, reviews: [review("claude-code/opus-5.5", true)] }).needed);
   assert.equal(need({ policy: governed, reviews: [review("codex/gpt-6-astra", true)] }).needed, false);
-  // The owner's approval ends it: the gate counts the owner as independent of everyone.
-  assert.deepEqual(need({ reviews: [review(OWNER, true)] }), { needed: false, reason: "the project owner approved bbbbbbbb" });
+  // The owner's approval does not end it: it is not the independent review.
+  assert.ok(need({ reviews: [review(OWNER, true)] }).needed);
+  assert.equal(need({ reviews: [review(OWNER, true), review("codex/gpt-6-astra", true)] }).needed, false);
 });
 
 test("reviewNeeded: a rejection at this head waits for rework, and an item's need ends when the gate is satisfied", () => {
@@ -135,13 +136,20 @@ test("reviewNeeded: a rejection at this head waits for rework, and an item's nee
   assert.equal(need({ reviews: [review(OWNER, false)] }).reason, "the project owner rejected bbbbbbbb; the builder reworks it before another review");
   // A reviewer's latest review at the head is the one that counts.
   assert.equal(need({ reviews: [review("codex/gpt-6-astra", false), review("codex/gpt-6-astra", true, H2, { at: "2026-10-05T12:30:00.000Z" })] }).needed, false);
-  // Without an execution policy the gate takes a different model for a protected
-  // change, so a same-family approval satisfies an item outside a plan.
+  // The gate asks another family for a protected change in every project, so
+  // a same-family approval or the owner's leaves an item outside a plan
+  // needing one; another family's ends it, and so does the owner's override.
   const prot = { part: false, item: item({ owner: "claude-code/opus-5.5", pushActors: ["claude-code/opus-5.5"] }), evidence: [pass({ changedPaths: ["AGENTS.md"] })] };
-  assert.deepEqual(need({ ...prot, reviews: [review("claude-code/sonnet-5.5", true)] }), {
-    needed: false, reason: "the gate already counts an independent approval of bbbbbbbb (claude-code/sonnet-5.5)",
+  for (const by of ["claude-code/sonnet-5.5", "claude-code/opus-5.5", OWNER]) assert.ok(need({ ...prot, reviews: [review(by, true)] }).needed, by);
+  assert.deepEqual(need({ ...prot, reviews: [review(OWNER, true), review("codex/gpt-6-astra", true)] }), {
+    needed: false, reason: "the gate already counts an independent approval of bbbbbbbb (codex/gpt-6-astra)",
   });
-  assert.ok(need({ ...prot, reviews: [review("claude-code/opus-5.5", true)] }).needed);
+  const reviewOverride = { head: H2, by: OWNER, reason: "No model of another family is available", at: T };
+  assert.deepEqual(need({ ...prot, item: { ...prot.item, reviewOverride } }), {
+    needed: false, reason: "the project owner overrode the independent review of bbbbbbbb: No model of another family is available",
+  });
+  // A part takes no override: it still needs its review from another family.
+  assert.ok(need({ item: item({ reviewOverride }) }).needed);
 });
 
 test("reviewNeeded: a live request holds the item until its claim lapses", () => {
@@ -221,7 +229,6 @@ test("pickReviewer: the plan's routed reviewer, when it passes every rule, with 
   assert.deepEqual(r.reviewer, { actor: "codex/gpt-6-astra", reasons: [
     "The plan's routed reviewer for this part",
     "Another family (openai) than every contributor: zcode/glm-5.3 (zai)",
-    "Without an execution policy the gate needs only a different model; automatic review asks for another family, as the orchestrator design does",
     "Status not checked yet",
     "No per-token cost (subscription)",
     "Availability not set; treated as available",
@@ -330,7 +337,6 @@ test("pickReviewer: a governed project needs an assessor; otherwise the reviewer
   const r = pick({ policy: governed, pool: [opus, gpt], route: { reviewer: { actor: "claude-code/opus-5.5", reasons: [] }, alternates: [] } });
   assert.equal(r.reviewer!.actor, "codex/gpt-6-astra");
   assert.ok(r.reviewer!.reasons.includes("Governed policy: holds the assessor role"));
-  assert.ok(!r.reviewer!.reasons.some((reason) => reason.startsWith("Without an execution policy")));
   assert.deepEqual(r.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["claude-code/opus-5.5 needs an available agent with the assessor role"] }]);
   // Without agents, addReview refuses a harness the project does not make eligible.
   const legacy = pick({ policy: { ...policy, eligible: ["claude", "zcode"] }, pool: [gpt, opus] });

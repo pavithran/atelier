@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, validActor,
-  type Evidence, type Item, type ProjectPolicy, type Review,
+  decisionFor, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
+  type Evidence, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
 const H1 = "a".repeat(40);
@@ -87,21 +88,23 @@ test("the latest observation at a head wins", () => {
   assert.match(g.blockers.join(), /failed when observed/);
 });
 
-test("protected paths need a different model or the project owner", () => {
+test("protected paths need a model of another family; the project owner's approval is not that review", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
   const sameModel: Review = { itemId: "t1", by: "other-harness/opus-5.5", head: H1, approve: true, note: "", at: T };
+  const sameFamily: Review = { ...sameModel, by: "claude-code/sonnet-5.5" };
   const otherModel: Review = { ...sameModel, by: "codex/gpt-5.5" };
   const owner: Review = { ...sameModel, by: "owner" };
   const renamed: Review = { ...sameModel, by: "pavi" };
   const stale: Review = { ...otherModel, head: H2 };
   assert.equal(gate(item(), policy, [touching], []).needsAssessor, true);
   assert.equal(gate(item(), policy, [touching], [sameModel]).ready, false);
+  assert.equal(gate(item(), policy, [touching], [sameFamily]).ready, false);
   assert.equal(gate(item(), policy, [touching], [stale]).ready, false);
   assert.equal(gate(item(), policy, [touching], [otherModel]).ready, true);
-  assert.equal(gate(item(), policy, [touching], [owner]).ready, true);
-  // A deployment that names its owner "pavi" accepts that actor, and only that one.
+  assert.deepEqual(gate(item(), policy, [touching], [owner]).blockers, [PROTECTED_NEED]);
+  // Whatever the deployment calls its owner, the owner's approval is not the review.
   assert.equal(gate(item(), policy, [touching], [renamed]).ready, false);
-  assert.equal(gate(item(), policy, [touching], [renamed], "pavi").ready, true);
+  assert.equal(gate(item(), policy, [touching], [renamed], "pavi").ready, false);
 });
 
 test("a rejection at the head blocks", () => {
@@ -315,7 +318,8 @@ test("direct needs no review, coordinated needs another actor, protected needs a
   assert.equal(gate(item(), governed, protectedChange, [review("claude-code/sonnet-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("opencode/opus-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6")]).ready, true);
-  assert.equal(gate(item(), governed, protectedChange, [review("owner")]).ready, true);
+  assert.equal(gate(item(), governed, protectedChange, [review("owner")]).ready, false);
+  assert.equal(gate(item(), governed, coordinated, [review("owner")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6", { head: H2 })]).ready, false);
 });
 
@@ -345,10 +349,11 @@ test("policy parsing rejects malformed roles and execution rules", () => {
   for (const value of [null, {}, { ...governed.execution, allowed_classes: ["unknown"] }, { ...governed.execution, direct: { enabled: "true", allowed_path_patterns: [] } }]) assert.throws(() => parseExecution(value), /400\|bad_policy/);
 });
 
-test("ungoverned gates count another model, or the owner, as independent", () => {
+test("ungoverned gates need another family for a protected change, and count neither the same family nor the owner", () => {
   assert.equal(gate(item(), policy, [pass()], []).ready, true);
-  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("claude-code/sonnet-5.5")]).ready, true);
-  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("owner")]).ready, true);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("claude-code/sonnet-5.5")]).ready, false);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("owner")]).ready, false);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("codex/gpt-6")]).ready, true);
   assert.equal(gate(item(), policy, [pass()], []).changeClass, undefined);
 });
 
@@ -368,10 +373,12 @@ test("sandbox path measurements outrank newer runner measurements", () => {
   assert.equal(gate(item(), governed, evidence.reverse(), []).ready, false);
 });
 
-test("project owner reviews count under role policy for every class", () => {
+test("the project owner's rejection blocks every class, and the owner's approval is no class's independent review", () => {
   for (const owner of ["owner", "pavi"]) for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
     const evidence = [pass({ changedPaths: [path] })];
-    assert.equal(gate(item(), governed, evidence, [review(owner)], owner).ready, true);
+    // A direct change needs no review, so it is ready whoever approved it.
+    const alone = gate(item(), governed, evidence, [review(owner)], owner);
+    assert.deepEqual([path, alone.ready, alone.needsAssessor], [path, path === "docs/a.md", path !== "docs/a.md"]);
     const g = gate(item(), governed, evidence, [review("codex/gpt-6"), review(owner, { approve: false })], owner);
     assert.equal(g.ready, false);
     assert.match(g.blockers.join(), new RegExp(`rejected by ${owner}`));
@@ -431,7 +438,10 @@ test("holders remain contributors when Git pushes precede observation", () => {
     const held = item({ pushActors: contributors });
     const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
     assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
-    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
+    // After a release, the push observed while nobody held the item is
+    // recorded as atelier/events: a contributor whose family is not
+    // recognised, so no reviewer can be shown to be of another family.
+    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, kind === "item.handoff");
   }
 });
 
@@ -447,8 +457,9 @@ test("a contributor's model under another letter case, profile or registered nam
   for (const by of ["codex/Opus-5.5", "codex/opus-5.5", "antigravity/claude-opus-5-5", "opencode/OPUS-5.5:local"]) {
     assert.deepEqual([by, gate(item(), policy, touching, [review(by)]).needsAssessor], [by, true]);
   }
-  // Another model still counts, including another model of the same family.
-  assert.equal(gate(studio, policy, touching, [review("opencode/GLM-5.3-Flash-4_8bit")]).ready, true);
+  // Another model of the same family does not count; another family does.
+  assert.equal(gate(studio, policy, touching, [review("opencode/GLM-5.3-Flash-4_8bit")]).ready, false);
+  assert.equal(gate(studio, policy, touching, [review("codex/gpt-6-astra")]).ready, true);
   assert.equal(gate(item(), policy, touching, [review("codex/gpt-6-astra")]).ready, true);
 
   // Governed, coordinated: another spelling of a contributor is that
@@ -477,7 +488,99 @@ test("review independence includes every contributor after a handoff", () => {
   assert.equal(gate(handed, governed, evidence, [review("codex/gpt-7")]).ready, false);
   assert.equal(gate(handed, governed, evidence, [review("qwen/qwen3")]).ready, true);
   assert.equal(gate(handed, governed, [pass()], [review("codex/gpt-6")]).ready, false);
-  assert.equal(gate(handed, governed, evidence, [review("owner")]).ready, true);
+  assert.equal(gate(handed, governed, evidence, [review("owner")]).ready, false);
+});
+
+// PAVI's decision, 2026-10-06: "an independent review of a protected change
+// must come from a model of a different family than every contributor in
+// every project, not only those with ControlPlane policy files; the owner's
+// approval no longer counts as the independent review (the owner still
+// accepts and merges)." Each scenario below is one clause of it, in a
+// project without policy files and in a governed one.
+test("decision 2026-10-06: a protected change needs another family than every contributor, in every project", () => {
+  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  for (const p of [policy, governed]) {
+    const governedLabel = p === governed ? "governed" : "ungoverned";
+    // The same family, as a different model, is refused.
+    for (const by of ["claude-code/sonnet-5.5", "codex/opus-5.5", "opencode/haiku-5"]) {
+      const g = gate(item(), p, touching, [review(by)]);
+      assert.deepEqual([governedLabel, by, g.ready, g.needsAssessor], [governedLabel, by, false, true]);
+    }
+    // The owner's approval alone is refused, under the default name and a deployment's own.
+    for (const owner of ["owner", "pavi"]) {
+      const g = gate(item(), p, touching, [review(owner)], owner);
+      assert.deepEqual([governedLabel, owner, g.ready, g.needsAssessor], [governedLabel, owner, false, true]);
+    }
+    // Another family's approval is accepted, beside the owner's or alone.
+    assert.equal(gate(item(), p, touching, [review("codex/gpt-6-astra")]).ready, true, governedLabel);
+    assert.equal(gate(item(), p, touching, [review("owner"), review("opencode/qwen3-coder")]).ready, true, governedLabel);
+    // A family not recognised from the model's name never qualifies.
+    assert.equal(gate(item(), p, touching, [review("opencode/mystery-1")]).ready, false, governedLabel);
+  }
+});
+
+test("decision 2026-10-06: the owner's override stands in for the missing review only at its head, only from the owner, only with a reason", () => {
+  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const override = (over: Partial<ReviewOverride> = {}): ReviewOverride => ({ head: H1, by: "owner", reason: "No model of another family is available this week", at: T, ...over });
+  const overridden = item({ reviewOverride: override() });
+  const g = gate(overridden, policy, touching, [review("owner")]);
+  assert.deepEqual([g.ready, g.needsAssessor, g.blockers], [true, false, []]);
+  assert.deepEqual(g.overridden, override());
+  // Recorded by anyone but the owner, at another head, or without a reason, it is no override.
+  for (const bad of [override({ by: "codex/gpt-6" }), override({ head: H2 }), override({ reason: "  " })]) {
+    assert.equal(overrideAt(item({ reviewOverride: bad })), null);
+    assert.deepEqual(gate(item({ reviewOverride: bad }), policy, touching, []).blockers, [PROTECTED_NEED]);
+  }
+  // A deployment's own owner name is the one that counts.
+  assert.equal(gate(item({ reviewOverride: override({ by: "pavi" }) }), policy, touching, [], "pavi").ready, true);
+  // It waives the missing review and nothing else.
+  const failing = gate(overridden, policy, [pass({ changedPaths: ["AGENTS.md"], passed: false })], []);
+  assert.deepEqual(failing.blockers, ["`npm test` failed when observed"]);
+  assert.match(gate(overridden, policy, touching, [review("codex/gpt-6", { approve: false, note: "unsafe" })]).blockers.join(), /rejected by codex\/gpt-6: unsafe/);
+  // A qualifying approval makes it moot, and the gate does not report it then.
+  assert.equal(gate(overridden, policy, touching, [review("codex/gpt-6")]).overridden, undefined);
+  // In a governed project it stands in for a coordinated change's review too.
+  assert.equal(gate(overridden, governed, [pass()], []).ready, true);
+});
+
+test("decision 2026-10-06: an override is recorded only with a reason, and only where an independent review is missing", () => {
+  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const made = reviewOverrideFor(item(), policy, touching, [review("owner")], "owner", "  No other family is available\n", T);
+  assert.deepEqual(made, {
+    override: { head: H1, by: "owner", reason: "No other family is available", at: T },
+    waived: PROTECTED_NEED,
+    contributors: ["claude-code/opus-5.5"],
+  });
+  const governedMade = reviewOverrideFor(item(), governed, touching, [], "owner", "reason", T);
+  assert.equal(governedMade.waived, "Protected change: needs one review from another model family");
+  // The reason is required, as text, and bounded rather than cut.
+  for (const reason of [undefined, "", "   ", 5, true, "x".repeat(OVERRIDE_REASON_MAX + 1)]) {
+    assert.throws(() => reviewOverrideFor(item(), policy, touching, [], "owner", reason, T), /400\|override_reason\|/);
+  }
+  assert.doesNotThrow(() => reviewOverrideFor(item(), policy, touching, [], "owner", "x".repeat(OVERRIDE_REASON_MAX), T));
+  // Nothing to override: a qualifying approval exists, or the change needs no review.
+  assert.throws(() => reviewOverrideFor(item(), policy, touching, [review("codex/gpt-6")], "owner", "reason", T), /409\|override_unneeded\|t1 at aaaaaaaa is not missing an independent review, so there is nothing to override; accept it without an override/);
+  assert.throws(() => reviewOverrideFor(item(), policy, [pass()], [], "owner", "reason", T), /409\|override_unneeded\|/);
+  assert.throws(() => reviewOverrideFor(item(), governed, [pass({ changedPaths: ["docs/a.md"] })], [], "owner", "reason", T), /override_unneeded/);
+  // An earlier override at this head does not make a new one unneeded.
+  assert.doesNotThrow(() => reviewOverrideFor(item({ reviewOverride: made.override }), policy, touching, [], "owner", "again", T));
+});
+
+test("decision 2026-10-06: the inbox and the page name the override and its reason", () => {
+  const now = new Date("2026-10-06T12:00:00.000Z");
+  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const reviewOverride: ReviewOverride = { head: H1, by: "owner", reason: "No other family is available", at: T };
+  const entry = (over: Partial<Item>) => inboxFor("proj", [item({ scope: [], ...over })], policy, touching, [], now);
+  assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`]]);
+  assert.deepEqual(entry({ reviewOverride }).map((x) => [x.kind, x.reason]), [["accept", "all checks observed passing at this head, with the independent review overridden by the project owner: No other family is available"]]);
+  assert.deepEqual(entry({ reviewOverride, state: "accepted", acceptedHead: H1 }).map((x) => [x.kind, x.reason]), [["merge", "accepted, with the independent review overridden by the project owner: No other family is available; run `atelier merge` in the project checkout"]]);
+  assert.equal(entry({ state: "accepted", acceptedHead: H1 })[0].reason, "accepted; run `atelier merge` in the project checkout");
+  // The page's decision line says the owner's approval is not the review, and gives the override's reason once used.
+  const waiting = decisionFor(item(), policy, touching, [review("owner")]);
+  assert.deepEqual([waiting.title, waiting.action], ["Waiting for an independent review", "review"]);
+  assert.match(waiting.detail, /Your own approval does not count as that review\. If no reviewer qualifies, you can accept with an override and say why\.$/);
+  assert.equal(decisionFor(item({ reviewOverride }), policy, touching, []).detail, "Required checks passed for this revision, and you overrode the independent review: No other family is available. Accept it to prepare the local merge.");
+  assert.equal(decisionFor(item({ reviewOverride, state: "accepted", acceptedHead: H1 }), policy, touching, []).detail, "You accepted it with the independent review overridden: No other family is available. Run the revision-bound command below in your local checkout.");
 });
 
 // macOS's default disk stores names that differ only by letter case or
@@ -506,7 +609,10 @@ test("an ungoverned gate asks for a review when claude.md stands in for CLAUDE.m
   const observed = defaults.checks.map((claim) => pass({ claim, changedPaths: ["claude.md"] }));
   const g = gate(held, defaults, observed, []);
   assert.deepEqual({ ready: g.ready, needsAssessor: g.needsAssessor }, { ready: false, needsAssessor: true });
-  assert.equal(gate(held, defaults, observed, [review("owner")]).ready, true);
+  // As for CLAUDE.md itself (decision 2026-10-06): the owner's approval is not
+  // the review, and another family's approval is.
+  assert.equal(gate(held, defaults, observed, [review("owner")]).ready, false);
+  assert.equal(gate(held, defaults, observed, [review("codex/gpt-6-astra")]).ready, true);
 });
 
 test("item scopes and the direct allow-list are matched as written", () => {

@@ -312,3 +312,20 @@ test("a session note is bookkeeping: no agent's move, a quarter step on the axis
   assert.deepEqual(story.threads.map((th) => th.beads.length), base.threads.map((th) => th.beads.length));
   assert.equal(story.moments.length, base.moments.length, "a note is not told as a moment");
 });
+
+// PAVI's decision, 2026-10-06: the owner's override of a missing review is a
+// decision of its own, told with its reason except on a public page.
+test("the owner's override of a missing review is a decision, told with its reason", () => {
+  seq = 0;
+  const events = [
+    ev("t1", "claude-code/opus-5.5", "item.claimed"),
+    ev("t1", "claude-code/opus-5.5", "item.submitted", { head: "aaaaaaaa11" }),
+    ev("t1", OWNER, "review.overridden", { head: "aaaaaaaa11", reason: "No model of another family is available" }),
+    ev("t1", OWNER, "item.accepted", { head: "aaaaaaaa11", reviewOverridden: true }),
+  ].reverse();
+  const s = buildStory("demo", [item("t1", "accepted")], events, OWNER);
+  assert.equal(s.tally.decisions, 2, "the override and the acceptance");
+  assert.ok(s.moments.some((m) => m.text === "You overrode the independent review of t1: No model of another family is available" && m.tone === "you"));
+  const pub = buildStory("demo", [item("t1", "accepted")], events, OWNER, false, "Demo", { redact: true, ownerLabel: "PAVI" });
+  assert.ok(pub.moments.some((m) => m.text === "PAVI overrode the independent review of t1"));
+});

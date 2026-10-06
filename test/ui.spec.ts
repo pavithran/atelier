@@ -17,10 +17,28 @@ it('merged tasks show completion without actionable approval or a misleading clo
  const html=renderItem(project,d,'PAVI',null);
  expect(html).toContain('Merged into the project');expect(html).not.toContain('Approve revision');expect(html).not.toContain('Readiness details');expect(html).not.toContain('Close task without merging');
 });
-it('acceptance renders only after current owner approval and passing evidence',()=>{
+it('acceptance renders only after an independent approval and passing evidence; the owner\'s approval leaves the override instead',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.reviews=[{itemId:'t1',head,approve:true,by:'pavi',note:'approved',at:time}];
- expect(renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false})).toContain('Accept revision');
- d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false})).not.toContain('Accept revision');
+ const own=renderItem(project,d,'PAVI',diff);
+ expect(own).not.toContain('Accept revision');expect(own).toContain('Waiting for an independent review');expect(own).toContain('Your own approval does not count as that review.');
+ expect(own).toContain('Accept without an independent review');expect(own).toContain('action="/ui/example/t1/override"');expect(own).toContain('<textarea name="note" required rows="3" maxlength="500">');
+ d.reviews.push({itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'another family',at:time});d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ const independent=renderItem(project,d,'PAVI',diff);
+ expect(independent).toContain('Accept revision');expect(independent).not.toContain('Accept without an independent review');
+ d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
+});
+it('the owner\'s override is shown with its reason, apart from the reviews, and only at its head',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const reviewOverride={head,by:'pavi',reason:'No <b>other</b> family is available',at:time};
+ const d=detail();d.item.reviewOverride=reviewOverride;d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[],overridden:reviewOverride};
+ const html=renderItem(project,d,'PAVI',diff);
+ expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the project owner's override, not a review");
+ expect(html).toContain('you overrode the independent review: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('Accept revision');
+ d.item.state='accepted';d.item.acceptedHead=head;
+ expect(renderItem(project,d,'PAVI',diff)).toContain('You accepted it with the independent review overridden: No &lt;b&gt;other&lt;/b&gt; family is available.');
+ const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
+ expect(renderItem(project,moved,'PAVI',diff)).not.toContain('Review overridden');
 });
 it('empty decisions, history, project creation and unavailable projects remain actionable',()=>{
  expect(renderInbox([],[])).toContain('Bring your first project');
@@ -199,7 +217,7 @@ it('banner, brief heading and tag name one ask for a protected revision with a r
  const d=detail();d.reviews=[{itemId:'t1',head,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
  const html=renderItem(project,d,'PAVI',null);
  const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
- expect(html).toContain('Your review is needed');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
+ expect(html).toContain('Waiting for an independent review');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
 });
 it('a claimed task shows the same ask in its banner and its brief',()=>{
  const brief=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));

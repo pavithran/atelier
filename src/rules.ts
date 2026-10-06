@@ -1,4 +1,4 @@
-import { familyOf } from "./models/pool.ts";
+import { familyOf, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
@@ -22,6 +22,19 @@ export interface Item {
   lastPushAt: string | null;
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
+  reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
+}
+
+// The project owner's override of the independent review a change needs,
+// for when no reviewer qualifies. It is not a review: it approves nothing,
+// it is recorded as an event of its own (review.overridden) with a required
+// reason, and the gate counts it in place of the missing review only at the
+// head it names. The owner records it while accepting (Ledger.accept).
+export interface ReviewOverride {
+  head: string;
+  by: string;
+  reason: string;
+  at: string;
 }
 
 // Observed: Atelier ran it itself, in a clean clone, at the exact head.
@@ -174,6 +187,30 @@ export function modelKey(actor: string): string {
 export function sameActor(a: string, b: string): boolean {
   const harness = (actor: string) => (actor.includes("/") ? actor.slice(0, actor.indexOf("/")).toLowerCase() : "");
   return harness(a) === harness(b) && modelKey(a) === modelKey(b);
+}
+
+// Everyone an item's work came from, as review independence counts them:
+// every holder and push actor pushActors() recorded, and its current owner.
+export function contributorsOf(item: { owner: string | null; pushActors?: readonly string[] }): string[] {
+  return [...new Set([...(item.pushActors ?? []), ...(item.owner ? [item.owner] : [])])];
+}
+
+// The family independence compares: its model's, read from the model's name
+// by modelKey, never from the harness, a profile suffix or a family an owner
+// typed into the pool.
+export const actorFamily = (actor: string): PoolFamily => familyOf(modelKey(actor));
+
+// Null when `reviewer` is of a recognised family that no contributor shares;
+// otherwise the rule it fails. A contributor of unrecognised family fails
+// every reviewer, because no family can be shown to differ from one that is
+// not recognised.
+export function familyRefusal(reviewer: string, contributors: readonly string[]): string | null {
+  const unknown = contributors.find((c) => actorFamily(c) === "other");
+  if (unknown) return `contributor ${unknown}'s family is not recognised from its name`;
+  const family = actorFamily(reviewer);
+  if (family === "other") return "family not recognised from its name";
+  const same = contributors.find((c) => actorFamily(c) === family);
+  return same ? `same family as contributor ${same} (${family})` : null;
 }
 
 // Minimal glob: `**` crosses directories, `*` does not, everything else literal.
@@ -356,6 +393,61 @@ export function classRequirement(kind: ChangeClass): string {
   return "Direct change: needs no review";
 }
 
+// What the gate says is missing when a change in a project without an
+// execution policy lacks its independent review. Such a project has no
+// change classes to name, so the blocker names the protected path instead.
+export const PROTECTED_NEED = "touches a protected path; needs approval from a model of another family than every contributor";
+
+// Whether one review is the independent review a change needs. The project
+// owner's approval never is: the owner decides by accepting, and the
+// decision is not also the second opinion. A reviewer must be a
+// harness/model actor that is not any contributor under another spelling.
+// A protected change, in every project, needs a model of a recognised family
+// that no contributor shares (familyRefusal); a coordinated change in a
+// governed project needs any other agent.
+export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
+  if (!r.approve || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
+  if (contributors.some((actor) => sameActor(r.by, actor))) return false;
+  return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
+}
+
+// The owner's override that stands at the item's current head, if any. One
+// recorded at another head, or by anyone but the owner, or without a reason,
+// is not.
+export function overrideAt(item: Pick<Item, "head" | "reviewOverride">, owner = DEFAULT_OWNER): ReviewOverride | null {
+  const o = item.reviewOverride;
+  return o && item.head && o.head === item.head && o.by === owner && o.reason.trim() ? o : null;
+}
+
+export const OVERRIDE_REASON_MAX = 500;
+
+// The reason an override records: text, control characters as spaces,
+// trimmed. A missing, blank or over-long reason is refused, not cut or
+// filled in, because it is the record of why the owner overrode the review.
+export function overrideReason(value: unknown): string {
+  const reason = typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "";
+  if (!reason) throw new RuleError("override_reason", "an override of the independent review needs a reason", 400);
+  if (reason.length > OVERRIDE_REASON_MAX) throw new RuleError("override_reason", `an override's reason is at most ${OVERRIDE_REASON_MAX} characters`, 400);
+  return reason;
+}
+
+// The override the owner may record at an item's head, and what it waives.
+// It is refused when the gate at that head is not missing an independent
+// review, as when one has been given or the change needs none: an override
+// there would waive nothing, and recording one would blur what the owner
+// decided. Whatever else the gate asks still applies once it is recorded.
+export function reviewOverrideFor(
+  item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner: string, reason: unknown, at: string,
+): { override: ReviewOverride; waived: string; contributors: string[] } {
+  const text = overrideReason(reason);
+  const g = gate({ ...item, reviewOverride: null }, policy, evidence, reviews, owner);
+  if (!item.head || !g.needsAssessor) {
+    const where = item.head ? ` at ${item.head.slice(0, 8)}` : "";
+    throw new RuleError("override_unneeded", `${item.id}${where} is not missing an independent review, so there is nothing to override${g.ready ? "; accept it without an override" : `: ${g.blockers.join("; ")}`}`);
+  }
+  return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
+}
+
 // Live items held by someone else whose scope overlaps this one.
 export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
   return items.filter(
@@ -441,6 +533,7 @@ export interface Gate {
   blockers: string[];
   needsAssessor: boolean;
   outOfScope: string[];
+  overridden?: ReviewOverride;  // set when the owner's override stands in for a missing independent review
 }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Gate {
@@ -460,27 +553,22 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (governed && view.changedPaths?.length === 0) blockers.push("nothing to merge");
   const requirement = kind ? classRequirement(kind) : view.changedPaths === null ? "Change class pending: changed paths not yet observed" : "Nothing to merge";
   let needsAssessor = false;
+  let overridden: ReviewOverride | null = null;
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
+  // A protected change needs an independent review in every project, and a
+  // coordinated one does under an execution policy. Families and agents are
+  // compared by modelKey and sameActor, so a contributor's model under
+  // another letter case, profile or registered name is never independent of
+  // itself. Without a qualifying approval, the owner's override at this head
+  // stands in for it; the owner's approval does not.
   if (kind === "protected" || (governed && kind === "coordinated")) {
-    const contributors = [...new Set([...(item.pushActors ?? []), ...(item.owner ? [item.owner] : [])])];
-    const independent = reviews.some((r) => {
-      if (!r.approve) return false;
-      if (r.by === owner) return true;
-      if (!validActor(r.by) || !r.by.includes("/")) return false;
-      // Models and agents are compared by modelKey and sameActor, so a
-      // contributor's model under another letter case, profile or registered
-      // name never counts as independent of itself.
-      return contributors.every((actor) => {
-        if (sameActor(r.by, actor)) return false;
-        if (!governed) return modelKey(r.by) !== modelKey(actor);
-        if (kind === "coordinated") return true;
-        const family = familyOf(modelKey(r.by)), contributorFamily = familyOf(modelKey(actor));
-        return family !== "other" && contributorFamily !== "other" && family !== contributorFamily;
-      });
-    });
-    if (!independent) {
-      needsAssessor = true;
-      blockers.push(governed ? requirement : "touches a protected path; needs approval from a different model or the project owner");
+    const contributors = contributorsOf(item);
+    if (!reviews.some((r) => independentApproval(r, kind, contributors, owner))) {
+      overridden = overrideAt(item, owner);
+      if (!overridden) {
+        needsAssessor = true;
+        blockers.push(governed ? requirement : PROTECTED_NEED);
+      }
     }
   }
   const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
@@ -488,7 +576,11 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   // Scope is matched as written: a path in another letter case is reported
   // outside it, which shows the variant rather than hiding it.
   const outOfScope = item.scope.length ? changed.filter((p) => !matchesAny(p, item.scope)) : [];
-  return { ready: blockers.length === 0, blockers, needsAssessor, outOfScope, ...(governed ? { changeClass: kind, requirement } : {}) };
+  return {
+    ready: blockers.length === 0, blockers, needsAssessor, outOfScope,
+    ...(governed ? { changeClass: kind, requirement } : {}),
+    ...(overridden ? { overridden } : {}),
+  };
 }
 
 // "What needs the project owner now?" Only things a person must decide or
@@ -520,16 +612,21 @@ export function inboxFor(
     const ev = evidence.filter((e) => e.itemId === item.id);
     const rv = reviews.filter((r) => r.itemId === item.id);
     const base = { project, itemId: item.id, title: item.title };
+    // Where the owner's override stands in for the independent review, the
+    // entry says so and gives its reason. An accepted item is read as
+    // accept() reads it, as if still submitted.
+    const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the project owner: ${g.overridden.reason}` : "");
     if (item.state === "accepted") {
-      out.push({ ...base, kind: "merge", reason: "accepted; run `atelier merge` in the project checkout", weight: 90 });
+      const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner);
+      out.push({ ...base, kind: "merge", reason: `accepted${overrode(g)}; run \`atelier merge\` in the project checkout`, weight: 90 });
       continue;
     }
     if (item.state === "submitted") {
       const g = gate(item, policy, ev, rv, owner);
       if (g.ready) {
-        out.push({ ...base, kind: "accept", reason: "all checks observed passing at this head", weight: 100 });
+        out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: g.requirement ?? "touches a protected path; review it or assign a different model", weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
@@ -606,6 +703,10 @@ export const stateLabel: Record<ItemState, string> = {
   open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed",
 };
 
+// A reason as one sentence of a longer text: ended with a full stop unless
+// it already ends a sentence.
+const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
+
 export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER) {
   const g = gate(item, policy, evidence, reviews, owner);
   const view = evidenceAt(policy, evidence, item.head);
@@ -613,10 +714,28 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   const failed = view.checks.some((c) => c.grade === "observed" && !c.passed);
   if (item.state === "merged") return { title: "Merged into the project", detail: "The accepted revision is in the project baseline. Publishing and deployment are separate actions.", action: "none", tone: "go", passed };
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
-  if (item.state === "accepted") return { title: "Ready to merge", detail: "Approval is recorded. Run the revision-bound command below in your local checkout.", action: "merge", tone: "go", passed };
+  if (item.state === "accepted") {
+    const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner).overridden;
+    const detail = overridden
+      ? `You accepted it with the independent review overridden: ${sentence(overridden.reason)} Run the revision-bound command below in your local checkout.`
+      : "Approval is recorded. Run the revision-bound command below in your local checkout.";
+    return { title: "Ready to merge", detail, action: "merge", tone: "go", passed };
+  }
   if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
-  if (item.state === "submitted" && g.needsAssessor) return { title: "Your review is needed", detail: g.requirement ?? "This task changes protected files. Review the changes and approve this revision, or request changes.", action: "review", tone: "ask", passed };
-  if (item.state === "submitted" && g.ready) return { title: "Ready to accept", detail: "Required checks passed for this revision. Accept it to prepare the local merge.", action: "accept", tone: "go", passed };
+  // The owner's approval is recorded but is not the independent review, so
+  // the page asks for a qualifying reviewer, and offers the override only
+  // when the missing review is all that blocks, since it waives nothing else.
+  if (item.state === "submitted" && g.needsAssessor) {
+    const need = g.requirement ? `${g.requirement}.` : "This task changes protected files and needs an approval from a model of another family than every contributor.";
+    const override = g.blockers.length === 1 ? " If no reviewer qualifies, you can accept with an override and say why." : "";
+    return { title: "Waiting for an independent review", detail: `${need} Your own approval does not count as that review.${override}`, action: "review", tone: "ask", passed };
+  }
+  if (item.state === "submitted" && g.ready) {
+    const detail = g.overridden
+      ? `Required checks passed for this revision, and you overrode the independent review: ${sentence(g.overridden.reason)} Accept it to prepare the local merge.`
+      : "Required checks passed for this revision. Accept it to prepare the local merge.";
+    return { title: "Ready to accept", detail, action: "accept", tone: "go", passed };
+  }
   if (countingReviews(reviews, item.head, policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
   return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The task owner is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
 }

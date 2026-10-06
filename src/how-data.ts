@@ -49,12 +49,12 @@ export const LOOP: Step[] = [
   {
     name: "Review", lane: "reviewer", command: "review", moves: "a review", conditional: true,
     records: ["Verdict at that", "head; it counts", "if the reviewer", "is independent"],
-    detail: "A reviewer, another agent or the owner, reads the change with `atelier diff t3` and records `atelier review t3 --approve`, or `--reject --note \"…\"`. A review is required when the change touches a protected path and, under a ControlPlane policy, when it is a coordinated change; Independent review of protected paths says whose approval counts.",
+    detail: "A reviewer, an agent that did not work on the item, reads the change with `atelier diff t3` and records `atelier review t3 --approve`, or `--reject --note \"…\"`. A review is required when the change touches a protected path and, under a ControlPlane policy, when it is a coordinated change; Independent review of protected paths says whose approval counts. The owner may review too, and the owner's rejection blocks, but the owner's approval is never the required review.",
   },
   {
     name: "Accept", lane: "owner", command: "accept", moves: "an acceptance",
     records: ["Head pinned; the", "gate must be", "clear first"],
-    detail: "The project owner accepts with `atelier accept t3` or the Accept button. The gate, set out under Owner acceptance and merge, must be clear. Acceptance pins the head.",
+    detail: "The project owner accepts with `atelier accept t3` or the Accept button. The gate, set out under Owner acceptance and merge, must be clear. Acceptance pins the head. When a required review is all that is missing and no reviewer qualifies, the owner accepts with `atelier accept t3 --override-review \"reason\"` instead, which records an override with its reason, not a review.",
   },
   {
     name: "Merge", lane: "owner", command: "merge", moves: "a merge commit",
@@ -126,9 +126,9 @@ export const RULES: Rule[] = [
   },
   {
     title: "Independent review of protected paths",
-    enforced: "A change that touches a protected path needs an approving review from someone independent of everyone who contributed to the item, or the project owner's own approval. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md` and `wrangler.*`), the scripts a required check runs, and `package.json` when a check goes through a package manager. Independent means a different model than every contributor's. Under a ControlPlane policy it means a different model family, and a family Atelier does not recognise never qualifies; there a coordinated change, one that is neither protected nor direct, needs a review from any actor who did not contribute.",
-    why: "The model that wrote a change to the files that instruct agents or grade their work must not be the one that approves it.",
-    where: [{ file: "src/rules.ts", symbol: "changeClass" }, { file: "src/rules.ts", symbol: "checkFiles" }],
+    enforced: "A change that touches a protected path needs an approving review from a model of another family than every model that contributed to the item, in every project, with or without a ControlPlane policy. The family is read from the model's name, and a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md` and `wrangler.*`), the scripts a required check runs, and `package.json` when a check goes through a package manager. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from any agent who did not contribute, and the owner's approval is not that review either.",
+    why: "The model that wrote a change to the files that instruct agents or grade their work must not approve it, and nor should a model of its family, which is likely to share its blind spots.",
+    where: [{ file: "src/rules.ts", symbol: "changeClass" }, { file: "src/rules.ts", symbol: "checkFiles" }, { file: "src/rules.ts", symbol: "independentApproval" }, { file: "src/rules.ts", symbol: "reviewOverrideFor" }],
   },
   {
     title: "No self-review",
@@ -138,7 +138,7 @@ export const RULES: Rule[] = [
   },
   {
     title: "Owner acceptance and merge",
-    enforced: "Only the project owner can accept or merge. Acceptance is refused unless the gate is clear: every required check Observed passing at the current head, the changed paths measured, no rejection at that head, and a qualifying review where one is required. The merge lands only the accepted head, and the ledger records it only when the merge commit is found on the baseline with the accepted head as a parent.",
+    enforced: "Only the project owner can accept or merge. Acceptance is refused unless the gate is clear: every required check Observed passing at the current head, the changed paths measured, no rejection at that head, and a qualifying review where one is required, or the owner's recorded override of it. The merge lands only the accepted head, and the ledger records it only when the merge commit is found on the baseline with the accepted head as a parent.",
     why: "Work enters the project only by the owner's decision, made on evidence for one exact revision.",
     where: [{ file: "src/rules.ts", symbol: "gate" }, { file: "src/ledger.ts", symbol: "beginLanding" }],
   },
@@ -204,7 +204,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Review rules", stage: "t39, build step 8", built: true,
-    what: "`src/review/` decides when a submission gets an automatic review, and how the review is asked for and read. `reviewNeeded` asks for one once every required check is observed passing at the head and the changed paths are measured, unless that head already has an approval that suffices, a rejection awaiting rework or an open request. Every part of a plan is reviewed; any other item only when the gate needs an independent review. `pickReviewer` takes a model whose family is recognised and differs from every contributor's, available, not refused and paid only when allowed, and names each model it passed over and why. `reviewBrief` writes what the reviewer reads, fencing quoted text so it cannot pose as instructions. `parseVerdict` reads the reply and refuses one that states no verdict, states both, or gives findings that contradict its verdict; a rejection needs a blocking finding.",
+    what: "`src/review/` decides when a submission gets an automatic review, and how the review is asked for and read. `reviewNeeded` asks for one once every required check is observed passing at the head and the changed paths are measured, unless that head already has an approval that suffices, a rejection awaiting rework, an open request or, outside a plan, the owner's override. The owner's approval never suffices. Every part of a plan is reviewed; any other item only when the gate needs an independent review. `pickReviewer` takes a model whose family is recognised and differs from every contributor's, available, not refused and paid only when allowed, and names each model it passed over and why. `reviewBrief` writes what the reviewer reads, fencing quoted text so it cannot pose as instructions. `parseVerdict` reads the reply and refuses one that states no verdict, states both, or gives findings that contradict its verdict; a rejection needs a blocking finding.",
     files: ["src/review/needed.ts", "src/review/reviewer.ts", "src/review/brief.ts", "src/review/verdict.ts"],
     code: [{ file: "src/review/needed.ts", symbol: "reviewNeeded" }, { file: "src/review/reviewer.ts", symbol: "pickReviewer" }, { file: "src/review/brief.ts", symbol: "reviewBrief" }, { file: "src/review/verdict.ts", symbol: "parseVerdict" }],
   },
@@ -216,7 +216,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Integration rules", stage: "t16, build step 11", built: true,
-    what: "`src/plans/integrate.ts` holds the rules for merging parts into a plan's branch. `integrationBlockers` lets a part in only when it is submitted, every part it depends on has landed, and its head carries an approval from another model family or the owner. `verifyIntegration` accepts the integrator's merge commit only when it has exactly two parents, sits on the branch's first-parent line, and merges the part's head onto the integration head, the branch's head as the ledger last recorded it. `rollbackFor` says how a failed integration is undone, and refuses when that would discard commits it did not make. `planGate` adds to the plan item's gate: every part integrated or abandoned before integration, at least one integrated, each integrated part approved at the head that was integrated, and the branch's head at the integration head.",
+    what: "`src/plans/integrate.ts` holds the rules for merging parts into a plan's branch. `integrationBlockers` lets a part in only when it is submitted, every part it depends on has landed, and its head carries an approval from a model of another family than its builders; the owner's approval is not one, and a part takes no override. `verifyIntegration` accepts the integrator's merge commit only when it has exactly two parents, sits on the branch's first-parent line, and merges the part's head onto the integration head, the branch's head as the ledger last recorded it. `rollbackFor` says how a failed integration is undone, and refuses when that would discard commits it did not make. `planGate` adds to the plan item's gate: every part integrated or abandoned before integration, at least one integrated, each integrated part approved at the head that was integrated, and the branch's head at the integration head.",
     files: ["src/plans/integrate.ts"],
     code: [{ file: "src/plans/integrate.ts", symbol: "integrationBlockers" }, { file: "src/plans/integrate.ts", symbol: "verifyIntegration" }, { file: "src/plans/integrate.ts", symbol: "rollbackFor" }, { file: "src/plans/integrate.ts", symbol: "planGate" }],
   },

@@ -130,15 +130,19 @@ In detail:
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
-| `atelier review t3 --approve` | a different agent, or the project owner | Required when the item changes a protected path. A reviewer of the same model as any recorded contributor does not count. |
-| `atelier accept t3` | the project owner, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. |
+| `atelier review t3 --approve` | an agent that did not work on the item | Required when the item changes a protected path. Only a model of another family than every recorded contributor counts. The project owner may review too, and the owner's rejection blocks, but the owner's approval is not this review. |
+| `atelier accept t3` | the project owner, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. With `--override-review "reason"`, overrides a missing independent review when no reviewer qualifies (see below). |
 | `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
 observed; no rejection at that head; and, if a protected path changed, an
-approval at that head from a model different from each recorded contributor's
-model or from the project owner. Models are compared without letter case or a
+approval at that head from a model of another family than every recorded
+contributor's, or the project owner's override of that review. A model's
+family is read from its name ([`src/models/pool.ts`](src/models/pool.ts)), and
+a family no name pattern recognises never qualifies, whether it is the
+reviewer's or a contributor's. This holds in every project, with or without
+ControlPlane policy files. Models are compared without letter case or a
 `:profile` suffix, and a name the model registry
 ([`src/models/registry.ts`](src/models/registry.ts)) lists for a model, such as
 `claude-opus-5-5` for `opus-5.5`, is that model. What a check executes is protected automatically: a script it runs (`./check.sh`,
@@ -163,6 +167,21 @@ in. The item page's diff is measured the same way. The merge preview beneath
 it works from the fork's own first-parent history, says how far main has moved
 and whether the item would merge, and is advisory.
 
+The project owner's approval is never the independent review: the owner
+decides by accepting, and that decision is not also the second opinion. When
+no reviewer qualifies, because no model of another family is available or a
+contributor's family is not recognised, the owner can accept with
+`atelier accept t3 --override-review "reason"`, with
+`atelier merge t3 --head SHA --override-review "reason"`, or with "Accept
+without an independent review" on the task's page. The reason is required.
+The override is recorded as an event of its own, `review.overridden`, never as
+a review. It counts only at the head it names, so a later push needs a review
+or another override, and it waives that review and nothing else: a failing
+check or a rejection still refuses acceptance. Atelier refuses an override
+where no review is missing. The task page, the inbox and the decision brief
+show it with its reason, and the merge's provenance note and landing receipt
+record it.
+
 ## Projects governed by ControlPlane
 
 Atelier and ControlPlane each own different facts. ControlPlane owns policy:
@@ -185,7 +204,8 @@ merged.
   the agent policy. An unmapped actor has no role. Claiming or receiving a
   handoff requires an available agent with `executor` in `eligible_roles`.
   Agent reviews count toward the gate only when the agent is available with
-  `assessor`. The project owner's reviews always count.
+  `assessor`. The project owner's rejection always counts; the owner's
+  approval is never the required review.
   `preferred_roles` records a preference and does not grant a role. The
   other roles do not grant execution or review authority.
 - Changed paths determine the class. Any protected path makes the change
@@ -193,14 +213,15 @@ merged.
   and every changed path matches `direct.allowed_path_patterns`; all other
   changes are `coordinated`. A class absent from `allowed_classes` is refused.
   Protected changes need approval from a model family different from every
-  recorded contributor, coordinated changes need approval from an actor who
-  did not contribute, and direct changes need no review.
-  Required agent reviews must qualify as assessors. The project owner can
-  also provide the required review. Unrecognised model families
-  cannot establish independent protected review. Project owner acceptance is
-  always required and does not replace a governed change's required review.
-  A measured empty change has nothing to merge.
-  Projects without these policy files retain the existing gate rules.
+  recorded contributor, as in every project; coordinated changes need
+  approval from an agent who did not contribute; direct changes need no
+  review. Required reviews must come from assessors. The project owner's
+  approval is neither review; where no reviewer qualifies, the owner's
+  override stands in for it, as described above. Project owner acceptance is
+  always required. A measured empty change has nothing to merge.
+  Projects without these policy files have no change classes: a protected
+  change needs its review from another family, and any other change needs
+  none.
 - `atelier sync` and normal `atelier merge` re-read these files and refresh
   the stored protected paths, eligible agents and overlap rule. The refresh
   preserves paths recorded locally by `init --protect`. Approval, checks and
@@ -654,7 +675,7 @@ output. Projects contains active work and task creation. History retains
 merged and closed tasks with their evidence. Ownership and Git details
 remain available inside each task.
 
-Approval and acceptance forms carry the revision displayed on the page.
+Approval, acceptance and override forms carry the revision displayed on the page.
 The server checks both the ledger and Artifacts before accepting that
 revision. A stale page must be refreshed. Each reviewer's latest verdict
 at a revision replaces their earlier verdict; another reviewer's rejection
@@ -927,9 +948,11 @@ The project owner can complete an exact revision with:
 atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
 ```
 
-`--approve` records an explicit owner review. Without it, any required review
-must already exist. Acceptance still goes through the gate. Already accepted
-work needs only `atelier merge t9 --head FULL_COMMIT_SHA`.
+`--approve` records the owner's own review, which is not the independent
+review a protected change needs: that review must already exist, or
+`--override-review "reason"` records the owner's override of it while
+accepting. Acceptance still goes through the gate. Already accepted work
+needs only `atelier merge t9 --head FULL_COMMIT_SHA`.
 
 Merging records a journal in the registered checkout's Git directory,
 `atelier-landing.json`. If publishing the baseline or recording the merge
