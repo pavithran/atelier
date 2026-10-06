@@ -229,6 +229,14 @@ function projectNameArg(value: unknown): string {
   return value;
 }
 
+// A run id joins a project's key and an item id with colons (see the
+// sandbox route), so a name no project has had cannot hold a colon: no new
+// key then begins with another key and a colon. Names a project already
+// has, or had, keep working.
+function assertNewName(name: string): void {
+  if (name.includes(":")) throw new RuleError("bad_name", "a new project name cannot contain a colon", 400);
+}
+
 // A page reached through a name the project no longer has moves to the name
 // it has now, with the rest of its path and its query. Permanent, but not
 // cached: a rename can be reversed, and a cached redirect each way would loop.
@@ -484,6 +492,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
+    // A name is new when no project is registered under it and no Ledger,
+    // kept after a removal, holds a project under it.
+    if (!ref.registered && !await L.project().then(() => true, () => false)) assertNewName(project);
     const repo = repoName(ref.key);
     await index(env).assertRepoAvailable(project, repo);
     // Running init again changes only what it is given; the Ledger merges it
@@ -543,6 +554,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const to = projectNameArg(body.to);
     if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    // Renaming back to one of the project's own names is not a new name.
+    if (!ref.names.includes(to)) assertNewName(to);
     if (project === to) {
       if ((await L.project()).name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
       return json({ from: project, to, key: ref.key, names: ref.names, project: await L.setName(to, actor) });
@@ -592,9 +605,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
   if (verb === "sandbox" && parts[5] && m === "GET") {
+    // A run id is `${key}:${item}:${head}:${ms}`, and a project's key may
+    // hold a colon (only new names are refused one), so the prefix alone can
+    // match a run of another project whose key begins with this one's. The
+    // prefix only spares a lookup. A run is returned when the item exists
+    // here and the run's own request names this project's key and this item.
     if (!parts[5].startsWith(`${ref.key}:${id}:`)) throw new RuleError("not_found", "no such run", 404);
+    await L.item(id);
     const state = await env.RUNNER.get(env.RUNNER.idFromName(parts[5])).state();
-    if (!state) throw new RuleError("not_found", "no such run", 404);
+    if (!state || state.request.project !== ref.key || state.request.itemId !== id) throw new RuleError("not_found", "no such run", 404);
     return json(state);
   }
   if (verb === "diff" && m === "GET") {
