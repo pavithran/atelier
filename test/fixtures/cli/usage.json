@@ -6,5 +6,6 @@
   "adopt": "usage: atelier adopt --project NAME [--as harness/model]\n",
   "models": "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID\n",
   "runner": "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]\n",
-  "projects": "usage: atelier projects remove NAME [--force] · projects rename OLD NEW\n"
+  "projects": "usage: atelier projects remove NAME [--force] · projects rename OLD NEW\n",
+  "report": "usage: atelier report [ID] \"what you verified and how\" [--item ID] [--project P]   (in a workspace, ID is its item unless --item or --project says otherwise)\n"
 }
