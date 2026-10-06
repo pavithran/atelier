@@ -20,7 +20,7 @@ Git stores files, commits, branches, and merges. Cloudflare Artifacts stores the
 
 ## Capabilities and Constraints
 
-One owner per task. Evidence and approval bind to exact revisions. Protected changes require an independent review from a model of another family than every contributor; PAVI's approval is not that review, and when no reviewer qualifies PAVI overrides it with a recorded reason. The existing server renders HTML and uses form posts with a script-free content security policy. Credentials stay outside the source tree. The generated src/theme.css is maintained by bin/sync-theme and must not be edited.
+One owner per task. Evidence and approval bind to exact revisions. Protected changes require an independent review from a model of another family than every contributor; PAVI's approval is not that review, and when no reviewer qualifies PAVI overrides it with a recorded reason. The existing server renders HTML and uses form posts under a content security policy that admits only Atelier's own live script, by a per-request nonce, on the pages that refresh. Credentials stay outside the source tree. The generated src/theme.css is maintained by bin/sync-theme and must not be edited.
 
 ## Product Principles
 
