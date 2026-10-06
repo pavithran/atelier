@@ -13,6 +13,8 @@ import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
+import type { RunReport } from "./models/reliability.ts";
+import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import { parsePlan, planHash, type Plan } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
@@ -93,6 +95,9 @@ export interface ProjectInit {
 }
 
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+
+// How many run reports the index returns: the most recent, for the reliability record.
+export const RUN_REPORTS = 1000;
 
 // How many of the project's most recent events make the track record a plan
 // is routed on, as the Models page reads a project's record.
@@ -199,6 +204,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -453,6 +459,21 @@ export class Ledger extends DurableObject<Env> {
       this.log(null, this.owner, "usage.cleared", { key, runner: report.runner }, at);
     }
     return { report, alerts };
+  }
+
+  // ── runs ─────────────────────────────────────────────────────────────────
+  // Runs that ended without a result the ledger could record, as the runners
+  // reported them (src/models/reliability.ts), on the index instance beside
+  // the usage reports. Each report is kept as it arrived; none replaces another.
+
+  putRun(report: RunReport): RunReport {
+    this.sql.exec(`INSERT INTO runs (json) VALUES (?)`, JSON.stringify(report));
+    return report;
+  }
+
+  // The most recent reports, newest first.
+  runs(limit = RUN_REPORTS): RunReport[] {
+    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
   }
 
   // ── project instance ─────────────────────────────────────────────────────
@@ -798,7 +819,11 @@ export class Ledger extends DurableObject<Env> {
     this.afterPlanChange(e.itemId);
   }
 
-  addReview(r: Review, origin?: string, proved = false): void {
+  // `via` says where a review by the project owner was recorded: "page" is a
+  // form on the task page, which only the signed-in owner reaches; "api" is
+  // the owner token, as the orchestrator and the CLI use it. The reliability
+  // record (src/models/reliability.ts) counts the two apart.
+  addReview(r: Review, origin?: string, proved = false, via?: "page" | "api"): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertLength(r.note, NOTE_MAX, "the review note");
     // Under a role policy any agent may record a review, and the gate counts
@@ -816,7 +841,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     this.notify(r.itemId, origin);
     this.afterPlanChange(r.itemId);
   }
@@ -997,6 +1022,43 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "item.abandoned", { note }, at);
     this.afterPlanChange(id);
     return this.item(id);
+  }
+
+  // The owner traces a defect to the revision this item was accepted at,
+  // merged or not. Nothing about the item changes: the event is the record,
+  // and the reliability record counts it against the model that built that
+  // revision and every model that approved it. An item never accepted
+  // carries no approved change, so it is refused.
+  traceDefect(id: string, actor: string, note: string, foundIn: string | null): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner traces a defect to a change", 403);
+    const item = this.item(id);
+    if (!item.acceptedHead) {
+      throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
+    }
+    const at = new Date().toISOString();
+    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) }, at);
+    return item;
+  }
+
+  // The owner records which model served events recorded under another
+  // (src/models/served.ts): one event.served for each matching event that
+  // no annotation already says this model served. The annotated events
+  // never change. Without `apply` nothing is written, and the answer says
+  // what matches and what would be annotated.
+  annotateServed(sel: ServedSelection, actor: string, apply: boolean): { matched: ServedMatch[]; pending: number; annotated: number; applied: boolean } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records which model served an event", 403);
+    this.project();
+    const events = this.sql.exec(`SELECT * FROM events WHERE (at >= ? AND at < ?) OR kind = ? ORDER BY seq`, sel.from, sel.to, SERVED).toArray()
+      .map((r) => ({ seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string, actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }));
+    const { matched, pending } = matchServed(events, sel);
+    if (matched.length > SERVED_LIMIT) {
+      throw new RuleError("too_many_events", `${matched.length} events match, more than the ${SERVED_LIMIT} one request may annotate; name the tasks or narrow the window`, 400);
+    }
+    if (apply) {
+      const at = new Date().toISOString();
+      for (const m of pending) this.log(m.itemId, actor, SERVED, { seq: m.seq, recorded: m.actor, served: sel.served, ...(sel.note ? { note: sel.note } : {}) }, at);
+    }
+    return { matched, pending: pending.length, annotated: apply ? pending.length : 0, applied: apply };
   }
 
   evidenceFor(id: string): Evidence[] {
