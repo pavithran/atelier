@@ -60,6 +60,12 @@ export interface Evidence {
   // An observed record that the check does not apply at this head: its paths
   // match none of the changed paths Atelier measured. It carries no result.
   notApplicable?: boolean;
+  // A merged run: the check ran at this head merged with main as it was then,
+  // and `merged` names that main head. It never satisfies a required check
+  // (the head's own tree is not what it ran), and a failing one blocks the
+  // gate until a passing merged run at the same head or a new head
+  // (mergedBlockers).
+  merged?: string;
 }
 
 export interface Review {
@@ -510,7 +516,9 @@ export function checkApplies(policy: Pick<ProjectPolicy, "checkPaths">, command:
 // may apply while the changed paths are unmeasured, is observed-pass,
 // observed-fail, or pending; a check whose paths the change does not touch is
 // listed as not applicable and never blocks. Reports are listed but never
-// satisfy a check.
+// satisfy a check. A merged run (Evidence.merged) is read apart from this, by
+// mergedBlockers: it says nothing about the head's own tree, so it neither
+// satisfies a check nor measures the changed paths.
 export interface EvidenceView {
   checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner" }[];
   notApplicable: string[];
@@ -523,8 +531,8 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
   // Under sandboxOnly, a check run on someone's machine is still shown but does not count.
   const counts = (e: Evidence) => e.grade === "observed" && (!policy.sandboxOnly || e.where === "sandbox");
   const latest = (claim: string) =>
-    atHead.filter((e) => counts(e) && !e.notApplicable && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
-  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
+    atHead.filter((e) => counts(e) && !e.notApplicable && !e.merged && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+  const measured = atHead.filter((e) => counts(e) && !e.merged && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
     Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   const changedPaths = measured?.changedPaths ?? null;
   const applies = (claim: string) => checkApplies(policy, claim, changedPaths) !== false;
@@ -540,6 +548,25 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
     reports: atHead.filter((e) => e.grade === "reported"),
     changedPaths,
   };
+}
+
+// A merged run (Evidence.merged) proves something other than what a plain run
+// at the head proves: that the change behaves beside the main it was merged
+// with, which the head's own tree passing was never evidence against. So the
+// two kinds are read apart, and neither clears the other's failure: a failing
+// merged run at the item's head blocks the gate until a later merged run at
+// that head passes, and a plain passing run clears nothing. Only a passing
+// merged run or a new head ends it; main moving on does not, because the
+// change has been shown to fail beside a main the baseline held.
+export function mergedBlockers(policy: ProjectPolicy, evidence: Evidence[], head: string | null): string[] {
+  const counts = (e: Evidence) => e.grade === "observed" && (!policy.sandboxOnly || e.where === "sandbox");
+  const runs = (head ? evidence : []).filter((e) => e.head === head && e.merged && !e.notApplicable && counts(e))
+    .sort((a, b) => a.at.localeCompare(b.at));
+  // The latest merged run at the head for each claim, as evidenceAt takes the
+  // latest plain one.
+  const latest = new Map(runs.map((e) => [e.claim, e]));
+  return [...latest.values()].filter((e) => e.passed === false)
+    .map((e) => `\`${e.claim}\` failed when observed at this head merged with main at ${e.merged!.slice(0, 8)}; only a passing merged run or a new head clears it`);
 }
 
 // A check runs from the item's own head, so an item could weaken the check it
@@ -716,6 +743,8 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
     else if (!c.passed) blockers.push(`\`${c.claim}\` failed when observed`);
   }
   if (view.changedPaths === null) blockers.push("changed paths not yet observed");
+  // A failing merged run blocks whatever the plain runs say (mergedBlockers).
+  blockers.push(...mergedBlockers(policy, evidence, item.head));
   const changed = view.changedPaths ?? [];
   const kind = view.changedPaths === null ? null : changeClass(changed, policy);
   const governed = policy.execution !== undefined;

@@ -2,6 +2,8 @@
 // the registered checkout one step at a time, with each protected step
 // allowed only by the owner's approval at the revision being shipped
 // (src/actions.ts), and each step recorded on the ledger as `action.ran`.
+// The push is not a protected step: ship is owner-only and runs at one exact
+// revision, so --push is the owner's own act and takes no approval.
 //
 // The order comes from ControlPlane's ship policy when the project has one
 // (docs/control-plane/ship-policy.v1.json, with project-adapter.v1.json for
@@ -259,11 +261,14 @@ export function knownKinds(top) {
 // ── approvals ───────────────────────────────────────────────────────────────
 
 // The approval kinds a ship needs, in order: each install or deploy step's,
-// any a run names, and push's when --push is given.
-export function neededKinds(steps, push) {
+// and any a run names. Push needs none: ship is run by the owner alone, at one
+// exact revision of the main line, and --push is the owner's own act there
+// (PAVI's decision of 2026-10-06).
+export function neededKinds(steps) {
   const kinds = [];
   for (const s of steps) {
-    for (const k of s.step === "push" ? (push ? ["push"] : []) : s.runs.map((r) => r.kind).filter(Boolean)) if (!kinds.includes(k)) kinds.push(k);
+    if (s.step === "push") continue;
+    for (const k of s.runs.map((r) => r.kind).filter(Boolean)) if (!kinds.includes(k)) kinds.push(k);
   }
   return kinds;
 }
@@ -300,7 +305,7 @@ export function formatPlan({ name, plan, branch, head, commit, approvals, push, 
     else if (s.step === "wrap") lines.push(`${n}atelier wrap, committing what the steps changed and recording the session`);
     else if (s.step === "push") {
       const what = target ? pushLabel(target, branch) : "git push to the branch's tracked upstream";
-      lines.push(push ? `${n}${what}  ${approvalText(approvals, "push", commit)}` : `${n}not run without --push (${what})`);
+      lines.push(push ? `${n}${what}  (no approval: the owner's own act at this revision)` : `${n}not run without --push (${what})`);
     } else {
       s.runs.forEach((r, j) => lines.push(`${j ? " ".repeat(n.length) : n}${r.argv ? r.argv.map(quote).join(" ") : r.label}${r.kind ? `  ${approvalText(approvals, r.kind, commit)}` : ""}`));
       if (!s.runs.length) lines.push(`${n}nothing to run`);
@@ -316,9 +321,10 @@ function approvalText(approvals, kind, commit) {
   return a ? `[${kind}: approved as ${a.id} until ${at(a.expiresAt)}]` : `[${kind}: no approval at this revision]`;
 }
 
-// The commands that approve what is missing, one per kind.
-export function missingApprovals({ name, plan, approvals, commit, push }) {
-  return neededKinds(plan.steps, push).filter((k) => !approvalFor(approvals, k, commit))
+// The commands that approve what is missing, one per kind. Push is never
+// among them: --push takes no approval.
+export function missingApprovals({ name, plan, approvals, commit }) {
+  return neededKinds(plan.steps).filter((k) => !approvalFor(approvals, k, commit))
     .map((k) => `atelier approve ${k} --head ${commit} --project ${quote(name)}`);
 }
 
@@ -408,7 +414,7 @@ export async function ship(ctx) {
   const { approvals } = commit ? await request("GET", `${P}/actions`) : { approvals: [] };
   // A dry run lists what would refuse beside the steps; a ship stops on it.
   print(formatPlan({ name, plan, branch, head, commit: commit ?? head, approvals, push: ctx.push, target, refusals: ctx.dryRun ? refusals : [] }));
-  const missing = commit ? missingApprovals({ name, plan, approvals, commit, push: ctx.push }) : [];
+  const missing = commit ? missingApprovals({ name, plan, approvals, commit }) : [];
   if (ctx.dryRun) {
     if (missing.length) print(`Missing approvals; ${name}'s owner gives them at this revision with:\n${missing.map((c) => `  ${c}`).join("\n")}`);
     print("Dry run: nothing was run, approved or recorded.");
@@ -430,9 +436,10 @@ export async function ship(ctx) {
     if (s.step === "push" && !ctx.push) continue;
     ctx.stage(`ship at ${s.step}`);
     // Each kind this step needs takes its approval now, before anything of
-    // the step runs: one approval, one run.
+    // the step runs: one approval, one run. The push needs none: it is the
+    // owner's own act at the exact revision being shipped.
     const used = {};
-    for (const kind of s.step === "push" ? ["push"] : [...new Set(s.runs.map((r) => r.kind).filter(Boolean))]) {
+    for (const kind of [...new Set(s.runs.map((r) => r.kind).filter(Boolean))]) {
       used[kind] = (await request("POST", `${P}/actions/consume`, { kind, commit })).id;
       print(`${s.step}: using approval ${used[kind]} for ${kind} at ${short(commit)}.`);
     }
@@ -455,7 +462,7 @@ export async function ship(ctx) {
       const listed = r.status === 0 ? git(["ls-remote", target.remote, `refs/heads/${target.branch}`], { cwd, allowFail: true, ownerRemote: true }) : null;
       const holds = listed?.status === 0 && listed.stdout.split(/\s/)[0] === now;
       const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.status === 0 && !holds ? `\n[atelier] ${target.remote} does not show ${short(now)} on ${target.branch} after the push` : ""}`;
-      results.push({ command: label, status: r.status, signal: r.signal ?? null, durationMs: Date.now() - started, passed: r.status === 0 && holds, output, kind: "push", approval: used.push, note: `pushed ${short(now)}` });
+      results.push({ command: label, status: r.status, signal: r.signal ?? null, durationMs: Date.now() - started, passed: r.status === 0 && holds, output, kind: null, approval: null, note: `pushed ${short(now)}` });
     } else {
       for (const run of s.runs) {
         print(`${s.step}: ${run.argv ? `running ${run.argv.map(quote).join(" ")}` : run.label}`);
@@ -485,7 +492,7 @@ export async function ship(ctx) {
   print(`Shipped ${name} at ${short(commit)}: ${ran.join(", ")} ran, each recorded on the ledger.`);
   if (pushStep && !ctx.push) {
     print(target
-      ? `Not pushed (no --push). To push this revision, the owner approves the push and ships with --push, or pushes by hand: git -C ${quote(cwd)} ${pushLabel(target, branch)}`
+      ? `Not pushed (no --push). To push this revision, run atelier ship --push, or push by hand: git -C ${quote(cwd)} ${pushLabel(target, branch)}`
       : "Not pushed (no --push), and the branch has no push target ship can use.");
   }
 }

@@ -22,9 +22,14 @@ taken back by a revert:
 |---|---|
 | `deploy` | publishing the project to where its users reach it, such as `npx wrangler deploy` |
 | `install` | installing a build on a device |
-| `push` | pushing the project's branch to its own remotes, such as GitHub |
 | `paid-run` | a model or service run that is paid for |
 | `photos-writeback` | writing to a Photos library |
+
+Pushing the project's branch to its own remotes, such as GitHub, is not a
+protected action. `atelier ship` is run by the owner alone, at one exact
+revision of the main line, and `--push` is the owner's own act there, so it
+needs no approval (PAVI's decision of 2026-10-06); `deploy`, `install`,
+`paid-run` and `photos-writeback` keep their revision-bound approvals.
 
 A project's own files may name further kinds: an approval kind given in
 `docs/atelier/ship.json`, or a capability name or action class in
@@ -33,7 +38,7 @@ other kind, since nothing would use it. The Worker accepts any kind written in
 lower-case letters, digits and dashes, because it does not read the
 project's files.
 
-`atelier ship` uses `install`, `deploy` and `push` approvals, and any kind a
+`atelier ship` uses `install` and `deploy` approvals, and any kind a
 step in `docs/atelier/ship.json` names. Approvals for `paid-run` and
 `photos-writeback` can be given, listed and withdrawn, and are used through
 the same route by whatever runs those actions; no Atelier command runs them
@@ -198,7 +203,7 @@ Before anything runs, `atelier ship` refuses, saying what to do next, unless:
 - the order composes with nothing missing, and the push target, when
   `--push` is given, is a remote the checkout already has;
 - every approval the steps need is present and active at the baseline's
-  head: install and deploy always, and push with `--push`.
+  head: install and deploy always, and any kind a run names.
 
 It then prints the steps and runs them:
 
@@ -212,7 +217,9 @@ It then prints the steps and runs them:
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
   and updates the baseline; a failing check stops the ship there.
-- **push** runs only with `--push`, after taking its approval: `git push
+- **push** runs only with `--push`, taking no approval, since ship is
+  owner-only and this is the owner's own act at the exact revision being
+  shipped: `git push
   --no-force --no-follow-tags REMOTE refs/heads/BRANCH:refs/heads/TARGET`,
   then reads the remote back and fails unless it holds the new HEAD. Without
   `--push` the ship ends after wrap and prints the command that pushes.

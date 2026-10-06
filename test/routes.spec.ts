@@ -453,6 +453,54 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1 });
 });
 
+it("a merged check is recorded with the main head it merged in, and its failure survives a later plain pass", async () => {
+  const name = "merged-run", A = "claude-code/opus-5.5";
+  const H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Edit a.ts", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  const ARTIFACTS = gitStore({
+    [name]: [{ hash: H0, parents: [], treeHash: T0 }],
+    [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],
+  }, {
+    [T0]: { "a.ts": "b".repeat(40) },
+    [T1]: { "a.ts": "c".repeat(40) },
+  });
+  const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
+    worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS } as typeof env);
+  const owner = as(TOKEN, "owner");
+  const token = await (await call("POST", "/tokens", "owner", { actor: A, projects: [name] })).json() as { token: string };
+  const agent = as(token.token, null);
+  const latest = async () => (await (await owner("GET", "/items/t1")).json() as { evidence: Record<string, unknown>[] }).evidence.at(-1);
+
+  // The marker names the main head the check merged in, and a value that is
+  // not a commit hash is refused.
+  const failed = await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: false, head: H1, merged: H0 });
+  expect(failed.status, await failed.clone().text()).toBe(200);
+  expect(await latest()).toMatchObject({ grade: "observed", where: "runner", by: A, passed: false, merged: H0, changedPaths: ["a.ts"] });
+  const bad = await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, merged: "main" });
+  expect(bad.status).toBe(400);
+  expect(await bad.json()).toMatchObject({ error: "bad_merged" });
+
+  // A later plain run that passes clears nothing: the merged failure blocks.
+  expect((await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1 })).status).toBe(200);
+  const detail = await (await owner("GET", "/items/t1")).json() as { gate: { ready: boolean; blockers: string[] } };
+  expect(detail.gate.ready).toBe(false);
+  expect(detail.gate.blockers.join(" ")).toMatch(/`npm test` failed when observed at this head merged with main at 00000000; only a passing merged run or a new head clears it/);
+  // A passing merged run at the same head ends it.
+  expect((await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, merged: H0 })).status).toBe(200);
+  const cleared = await (await owner("GET", "/items/t1")).json() as { gate: { ready: boolean; blockers: string[] } };
+  expect(cleared.gate.ready).toBe(false);
+  expect(cleared.gate.blockers.join(" ")).not.toMatch(/merged with main/);
+});
+
 it("the evidence route measures against main's head, so a crafted merge cannot hide a reverted protected file from the gate", async () => {
   const name = "measured-crafted", A = "claude-code/opus-5.5";
   const OLD = "0".repeat(40), NEW = "1".repeat(40), W = "b".repeat(40), M = "a".repeat(40);

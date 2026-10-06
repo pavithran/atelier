@@ -140,7 +140,8 @@ In detail:
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check that applies to the change observed passing at the
 current head (see [Checks that apply to some paths](#checks-that-apply-to-some-paths));
-the changed paths observed; no rejection at that head; and, if a protected path changed, an
+the changed paths observed; no failing merged run at that head (below); no
+rejection at that head; and, if a protected path changed, an
 approval at that head from a model of another family than every recorded
 contributor's, or the project owner's override of that review. A model's
 family is read from its name ([`src/models/pool.ts`](src/models/pool.ts)), and
@@ -199,6 +200,18 @@ behind main lists main's newer changes too, until `atelier update` brings them
 in. The item page's diff is measured the same way. The merge preview beneath
 it works from the fork's own first-parent history, says how far main has moved
 and whether the item would merge, and is advisory.
+
+A check can also be observed as a merged run: run at the head merged with
+main as it was then, and recorded with the main head it merged in (PAVI's
+decision of 2026-10-06). The head's own checks say nothing about how the
+change behaves beside what main has since taken, so the two kinds of run are
+read apart (`mergedBlockers` in [`src/rules.ts`](src/rules.ts)): a merged run
+never satisfies a required check, and a failing merged run at the current
+head blocks acceptance until a later merged run at that head passes. A plain
+passing run clears nothing, and neither does main moving on; only a passing
+merged run or a new head ends it. No Atelier command runs a merged check yet;
+the holder records one through the evidence route, on the same word as a
+local check.
 
 The project owner's approval is never the independent review: the owner
 decides by accepting, and that decision is not also the second opinion. When
@@ -453,6 +466,14 @@ so each `*` is recorded as `**`. Init's summary prints each check's globs
 and names any capability a rule requires that no registered check runs, and
 `atelier status --project NAME` and the project page show the globs. An
 adapter without change rules leaves every check applying to every change.
+A re-init that names no check takes none of the rules (PAVI's decision of
+2026-10-06): conditioning a check to some paths can drop coverage outright,
+since a change to none of the checks' paths then runs no check (on that day
+Omniscope's rules would have left a change to `family/**` or `package.json`
+running no check). Such an init keeps the paths recorded for the checks and
+names each narrowing the rules would make; the first init, and any init that
+names the checks with `--check` or starts over with `--reset`, takes the
+rules as the adapter holds them.
 
 ## What is enforced and what is trusted
 

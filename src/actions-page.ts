@@ -48,7 +48,7 @@ export function renderActions(project: string, approvals: ApprovalView[], runs: 
     <div class="meta">${r.command ? `<code>${e(r.command)}</code> · ` : ""}at <code>${e(short(r.commit))}</code> · ${(r.durationMs / 1000).toFixed(1)}s · ${e(stamp(r.at))}${r.note ? ` · ${e(r.note)}` : ""}</div></li>`).join("");
   return `<section class="standing" id="actions" aria-label="Protected actions">
   <h2 class="section-title">Protected actions</h2>
-  <p class="meta">A deploy, a device install, a push to the project's own remotes, a paid model run or a Photos writeback runs only with your approval for one exact revision of the main line. Each approval is used by one run.</p>
+  <p class="meta">A deploy, a device install, a paid model run or a Photos writeback runs only with your approval for one exact revision of the main line, and each approval is used by one run. Pushing the branch to the project's own remotes is your own act with <code>atelier ship --push</code>, and takes no approval.</p>
   ${form}
   ${rows ? `<h3>Approvals</h3><ul class="standing-list">${rows}</ul>` : '<p class="empty">No action has been approved yet.</p>'}
   ${ran ? `<h3>Latest steps run</h3><ul class="standing-list">${ran}</ul>` : ""}

@@ -112,8 +112,7 @@ test("a hybrid project composes install before commit and deploy after it, each 
     ["verify-delivery", "curl -fsS https://example.test"],
     ["wrap"], ["push"],
   ]);
-  assert.deepEqual(neededKinds(p.steps, false), ["install", "deploy"]);
-  assert.deepEqual(neededKinds(p.steps, true), ["install", "deploy", "push"]);
+  assert.deepEqual(neededKinds(p.steps), ["install", "deploy"]);
 });
 
 test("a deploy with nothing declared to verify it, a forced push, or no ship file is refused", (t) => {
@@ -145,7 +144,7 @@ test("the Atelier ship file is read strictly", (t) => {
   const good = ship({ class: "installable", install: [{ run: ["./install", "a"] }, { run: ["./install", "b"], approval: "photos-writeback" }], "verify-install": { run: ["./verify"] } });
   assert.deepEqual(good.problems, []);
   assert.deepEqual(outline(good), [["install", "./install a [install]", "./install b [photos-writeback]"], ["verify-delivery", "./verify"], ["commit"], ["wrap"], ["push"]]);
-  assert.deepEqual(neededKinds(good.steps, false), ["install", "photos-writeback"]);
+  assert.deepEqual(neededKinds(good.steps), ["install", "photos-writeback"]);
   const other = ship({ class: "other" });
   assert.deepEqual(other.problems, []);
   assert.deepEqual(outline(other), [["commit"], ["wrap"], ["push"]]);
@@ -163,16 +162,18 @@ test("the Atelier ship file is read strictly", (t) => {
   assert.match(plan(t, { "docs/atelier/ship.json": { kind: "atelier.ship" } }).problems[0], /"schema_version": 1/);
 });
 
-test("the kinds approve accepts: Atelier's five and those the project's files name", (t) => {
+test("the kinds approve accepts: Atelier's four and those the project's files name", (t) => {
   const dir = files({
     "docs/control-plane/ship-policy.v1.json": POLICY,
     "docs/control-plane/project-adapter.v1.json": { capabilities: { "install-canonical-iphone": cap("device", ["x"]), "captioning-run": cap("paid-provider", ["y"]) } },
   });
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const kinds = knownKinds(dir);
-  for (const k of ["deploy", "install", "push", "paid-run", "photos-writeback", "install-canonical-iphone", "captioning-run", "paid-provider", "device"]) assert.ok(kinds.has(k), k);
+  for (const k of ["deploy", "install", "paid-run", "photos-writeback", "install-canonical-iphone", "captioning-run", "paid-provider", "device"]) assert.ok(kinds.has(k), k);
   assert.ok(!kinds.has("deplyo"));
-  assert.deepEqual([...knownKinds(null)], ["deploy", "install", "push", "paid-run", "photos-writeback"]);
+  // Push is no approval kind: --push is the owner's own act at the exact head.
+  assert.ok(!kinds.has("push"));
+  assert.deepEqual([...knownKinds(null)], ["deploy", "install", "paid-run", "photos-writeback"]);
 });
 
 // ── the command, end to end ─────────────────────────────────────────────────
@@ -287,42 +288,42 @@ test("ship --dry-run prints the steps and the approvals missing, and runs nothin
   assert.equal(out[0], `Ship demo at main @ ${f.head.slice(0, 8)}, from docs/atelier/ship.json, class web:`);
   assert.ok(out.includes("  2. deploy           bin/deploy.sh  [deploy: no approval at this revision]"), r.stdout);
   assert.ok(out.includes(`  3. verify-delivery  GET ${f.url}/live, expecting 200`), r.stdout);
-  assert.ok(out.includes("  5. push             git push --no-force github refs/heads/main:refs/heads/main  [push: no approval at this revision]"), r.stdout);
+  assert.ok(out.includes("  5. push             git push --no-force github refs/heads/main:refs/heads/main  (no approval: the owner's own act at this revision)"), r.stdout);
   assert.ok(out.includes(`  atelier approve deploy --head ${f.head} --project demo`), r.stdout);
-  assert.ok(out.includes(`  atelier approve push --head ${f.head} --project demo`), r.stdout);
+  // The push takes no approval, so none is asked for.
+  assert.ok(!out.includes("atelier approve push"), r.stdout);
   assert.match(r.stdout, /Dry run: nothing was run, approved or recorded\.\n$/);
   assert.ok(!existsSync(f.marker), "the deploy did not run");
   assert.deepEqual(f.writes(), []);
-  // Without --push the push is shown as not run, and needs no approval.
+  // Without --push the push is shown as not run.
   const quiet = await f.run(["ship", "--dry-run"]);
   assert.match(quiet.stdout, /5\. push             not run without --push \(git push --no-force github refs\/heads\/main:refs\/heads\/main\)/);
   assert.doesNotMatch(quiet.stdout, /approve push/);
 });
 
 test("ship with an approval missing refuses before running anything, naming the command", async (t) => {
-  const f = await fixture(t, { approve: ["deploy"] });
+  const f = await fixture(t);
   const r = await f.run(["ship", "--push"]);
   assert.equal(r.status, 1, r.stdout);
-  assert.equal(r.stderr, `atelier: ship refused before running anything: an approval is missing at ${f.head.slice(0, 8)}. The project owner approves with:\n  atelier approve push --head ${f.head} --project demo\nthen runs atelier ship again.\n`);
-  assert.match(r.stdout, /bin\/deploy\.sh  \[deploy: approved as a1 until /);
+  assert.equal(r.stderr, `atelier: ship refused before running anything: an approval is missing at ${f.head.slice(0, 8)}. The project owner approves with:\n  atelier approve deploy --head ${f.head} --project demo\nthen runs atelier ship again.\n`);
+  assert.match(r.stdout, /bin\/deploy\.sh  \[deploy: no approval at this revision\]/);
   assert.ok(!existsSync(f.marker));
   assert.deepEqual(f.writes(), [], "nothing used, run or recorded");
-  assert.equal(f.state.approvals[0].consumed, undefined);
 });
 
-test("ship runs each step in order with its approvals, records each one redacted, and pushes without force", async (t) => {
-  const f = await fixture(t, { approve: ["deploy", "push"] });
+test("ship runs each step in order with its approvals, records each one redacted, and pushes without force or a push approval", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"] });
   // The github remote is behind: the push fast-forwards it.
   assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
   const r = await f.run(["ship", "--push"]);
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.equal(readFileSync(f.marker, "utf8"), "deployed\n", "the deploy ran once");
   assert.match(r.stdout, /deploy: using approval a1 for deploy at /);
-  assert.match(r.stdout, /push: using approval a2 for push at /);
+  assert.doesNotMatch(r.stdout, /push: using approval/, "--push is the owner's own act and takes no approval");
   assert.match(r.stdout, new RegExp(`Shipped demo at ${f.head.slice(0, 8)}: commit, deploy, verify-delivery, wrap, push ran, each recorded on the ledger\\.`));
   const runs = f.state.runs;
   assert.deepEqual(runs.map((x) => [x.step, x.kind, x.approval, x.passed]), [
-    ["commit", null, null, true], ["deploy", "deploy", "a1", true], ["verify-delivery", null, null, true], ["wrap", null, null, true], ["push", "push", "a2", true],
+    ["commit", null, null, true], ["deploy", "deploy", "a1", true], ["verify-delivery", null, null, true], ["wrap", null, null, true], ["push", null, null, true],
   ]);
   assert.equal(new Set(runs.map((x) => x.ship)).size, 1, "one ship id on every step");
   assert.ok(runs.every((x) => x.commit === f.head));
@@ -336,13 +337,13 @@ test("ship runs each step in order with its approvals, records each one redacted
   assert.equal(runs[2].note, "verifies the deploy");
   assert.match(runs[3].command, /^atelier wrap 'Ship [0-9a-f]{8}: commit, deploy, verify-delivery'$/);
   assert.match(runs[4].command, /^git push --no-force github refs\/heads\/main:refs\/heads\/main$/);
-  assert.ok(f.state.approvals.every((a) => a.consumed), "both approvals used");
+  assert.ok(f.state.approvals.every((a) => a.consumed), "the deploy approval is used");
   assert.ok(f.state.requests.some((q) => q.method === "POST" && q.path === "/api/projects/demo/sessions"), "wrap recorded the session");
   assert.equal(git(f.github, "rev-parse", "main"), git(f.checkout, "rev-parse", "HEAD"), "github holds the shipped head");
-  // The same approvals cannot ship again.
+  // The spent deploy approval cannot ship again; the push never needed one.
   const again = await f.run(["ship", "--push"]);
   assert.equal(again.status, 1);
-  assert.match(again.stderr, /approvals are missing at .*\n  atelier approve deploy --head .*\n  atelier approve push --head /);
+  assert.match(again.stderr, /an approval is missing at .*\n  atelier approve deploy --head /);
 });
 
 test("ship stops at the first step that fails, says what ran and what did not, and records it", async (t) => {
@@ -371,7 +372,7 @@ test("a live site that does not answer as expected stops the ship after the depl
 });
 
 test("ship never forces a push: a remote that moved on refuses it, and keeps its own commit", async (t) => {
-  const f = await fixture(t, { approve: ["deploy", "push"] });
+  const f = await fixture(t, { approve: ["deploy"] });
   const other = join(f.dir, "other");
   git(f.dir, "clone", "-q", f.github, other);
   writeFileSync(join(other, "theirs.txt"), "theirs\n");
@@ -413,7 +414,7 @@ test("ship refuses a dirty checkout, a HEAD the baseline does not hold, another 
 test("approve sends the kind, the full revision and the expiry; approvals lists and withdraws", async (t) => {
   const f = await fixture(t);
   const bad = await f.run(["approve", "deplyo", "--head", f.head]);
-  assert.match(bad.stderr, /^atelier: demo has no action called deplyo\. Atelier knows deploy, install, push, paid-run, photos-writeback; demo's ship files name no others\n$/);
+  assert.match(bad.stderr, /^atelier: demo has no action called deplyo\. Atelier knows deploy, install, paid-run, photos-writeback; demo's ship files name no others\n$/);
   const short = await f.run(["approve", "deploy", "--head", f.head.slice(0, 8)]);
   assert.match(short.stderr, /--head needs the full revision of the main line/);
   const long = await f.run(["approve", "deploy", "--head", f.head, "--expires", "45d"]);
