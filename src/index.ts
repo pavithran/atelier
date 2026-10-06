@@ -580,24 +580,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     throw new RuleError("not_found", "no such route", 404);
   }
   // The public showcase setting: which projects the owner shows, and whether
-  // each is named or anonymised. Reading it is open to any caller in scope;
-  // changing it is the owner's alone.
+  // each is named or anonymised. Reading and changing it are the owner's alone.
   if (parts[0] === "showcase") {
     const I = index(env);
-    if (parts.length === 1 && m === "GET") return json({ showcase: await I.showcaseEntries() });
+    if (parts.length === 1 && m === "GET") { requireOwner(env, actor); return json({ showcase: await I.showcaseEntries() }); }
     if (parts.length === 2 && (m === "PUT" || m === "DELETE")) {
       requireOwner(env, actor);
       const name = parts[1];
       const ref = await resolveProject(env, name);
       if (!ref.registered) throw new RuleError("no_project", `no project ${name}`, 404);
       if (m === "DELETE") {
-        const removed = (await I.removeShowcase(name)) || (ref.name !== name && await I.removeShowcase(ref.name));
+        // An entry kept under the name the request used and one under the
+        // current name are both removed.
+        const a = await I.removeShowcase(name);
+        const b = ref.name !== name ? await I.removeShowcase(ref.name) : false;
+        const removed = a || b;
         return json({ removed, name: ref.name });
       }
       if (body.mode !== undefined && body.mode !== "named" && body.mode !== "anonymous") {
         throw new RuleError("bad_mode", 'mode must be "named" or "anonymous"; omit it for anonymous', 400);
       }
       const mode: ShowMode = body.mode === "named" ? "named" : "anonymous";
+      // Kept under the current name only, so an entry under the name the
+      // request used cannot override it.
+      if (ref.name !== name) await I.removeShowcase(name);
       await I.setShowcase(ref.name, mode);
       return json({ name: ref.name, mode });
     }

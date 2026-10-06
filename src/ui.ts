@@ -190,7 +190,7 @@ function trustLine(checks: { grade: string; passed: boolean | null; where?: "san
 export function renderLogin(error?: string, showcase = false, backdrop?: { stories: Story[]; owner: string; who: string }): string {
   let left = 12;
   const drawn = (backdrop?.stories ?? []).map((s) => {
-    const threads = s.threads.slice(0, left);
+    const threads = s.threads.slice(0, Math.max(0, left));
     left -= threads.length;
     return { ...s, threads };
   }).filter((s) => s.threads.length);
