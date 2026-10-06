@@ -1,0 +1,20 @@
+atelier atelier/t165 "Failure-modes catalog: carry ControlPlane's docs/FAILURE-MODES.md (A1 to A13) into docs/failure-modes.md, each with how Atelier prevents it now (with the code and test that do), or that it does not and the task that would"
+accepted head 36546e724882d871111a4b52b9d3a9d2ade6953a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T13:03:20.141Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T13:03:22.748Z
+REVIEW approve — antigravity/gemini-3.1-pro: The second commit fixes each finding of the first review exactly (A12 recordPush to claimed and observePush to submitted; A2 names reviewBrief and says atelier diff leaves no base tree; A13, A8, A4, A6, A3, A9 corrected) and introduces no new false claim. Non-blocking: three long lines; A11's narrative half has no suggested change.
+2026-10-06T12:43:35.741Z pavi item.created
+2026-10-06T12:44:04.339Z opencode/glm-5.3 item.claimed
+2026-10-06T12:44:07.753Z opencode/glm-5.3 fork.created
+2026-10-06T12:54:53.059Z opencode/glm-5.3 push.observed
+2026-10-06T12:56:18.353Z opencode/glm-5.3 evidence.observed
+2026-10-06T12:56:20.830Z opencode/glm-5.3 evidence.observed
+2026-10-06T12:56:21.503Z opencode/glm-5.3 item.submitted
+2026-10-06T13:01:12.472Z claude-code/sonnet-5.5 review.rejected
+2026-10-06T13:01:14.085Z opencode/glm-5.3 item.handoff
+2026-10-06T13:01:38.930Z claude-code/opus-5.5 push.observed
+2026-10-06T13:03:20.426Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:03:22.958Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:03:23.659Z claude-code/opus-5.5 item.submitted
+2026-10-06T13:05:34.984Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T13:05:36.271Z pavi item.accepted
