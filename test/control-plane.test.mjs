@@ -60,7 +60,10 @@ test("refresh sends only ControlPlane fields and leaves project settings intact"
   assert.deepEqual(calls.map((c) => c.method), ["GET", "PUT"]);
   assert.equal(calls[1].path, "/projects/example");
   assert.equal(calls[1].actor, "owner");
-  assert.deepEqual(Object.keys(calls[1].body).sort(), ["agents", "eligible", "execution", "protected", "refuseOverlap"]);
+  // The ship order the checkout declares travels with the policy, empty when
+  // the project has no ship file, so a removed one is recorded as removed.
+  assert.deepEqual(Object.keys(calls[1].body).sort(), ["agents", "eligible", "execution", "protected", "refuseOverlap", "shipKinds", "shipRuns"]);
+  assert.deepEqual(calls[1].body.shipRuns, []);
   assert.deepEqual(stored, { ...original, policy: { ...before, ...calls[1].body } });
   assert.deepEqual(result.before, before);
   assert.deepEqual(result.policy, stored.policy);
@@ -103,6 +106,18 @@ test("merge warns and refuses newly protected touched paths unless overridden", 
   assert.equal(allowed.refusal, null);
   assert.equal(mergePolicyDecision(before, after, ["AGENTS.md"]).refusal, null);
   assert.deepEqual(mergePolicyDecision(before, before, ["AGENTS.md"]), { warning: null, refusal: null });
+});
+
+test("a script the ship order runs is newly protected when the order changed since acceptance", () => {
+  // The acceptance recorded no ship order; the checkout now deploys through
+  // bin/deploy.sh, so an accepted item touching that script is refused as
+  // newly protected, exactly as a newly protected ControlPlane path is.
+  const after = { ...before, shipRuns: ["bin/deploy.sh"] };
+  const decision = mergePolicyDecision(before, after, ["bin/deploy.sh"]);
+  assert.match(decision.warning, /ship commands: \[\] -> \["bin\/deploy\.sh"\]/);
+  assert.match(decision.refusal, /newly protected paths: bin\/deploy\.sh/);
+  assert.equal(mergePolicyDecision(before, after, ["src/a.ts"]).refusal, null);
+  assert.equal(mergePolicyDecision(after, after, ["bin/deploy.sh"]).refusal, null, "the order the acceptance was made under refuses nothing new");
 });
 
 test("merge matches newly protected paths whatever their letter case or Unicode form", () => {

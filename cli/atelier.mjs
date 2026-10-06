@@ -14,14 +14,14 @@ import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync,
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay, WRAP_MARKERS, unmergedPaths, wrapRefusal, failingChecksRefusal, failingChecksOverridden } from "../src/sessions.ts";
 
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
-import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision } from "../src/control-plane.ts";
+import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { assertEligible, checkApplies, pathCollisions } from "../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
@@ -39,7 +39,7 @@ export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
-import { formatApprovals, knownKinds, runCommand, ship as runShip, shipSecrets } from "./ship.mjs";
+import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -126,6 +126,16 @@ function git(args, opts = {}) {
   const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
+  // git itself did not run: the folder it was to run in is missing, it is
+  // not on PATH or not executable, or its output overran the buffer. There
+  // is no exit status, so the error is the detail and the command ends; a
+  // caller that takes failures gets the result and judges it, as it would a
+  // probe of a folder that may not be there.
+  if (r.error) {
+    if (opts.allowFail) return r;
+    const why = r.error.code !== "ENOENT" ? r.error.message : opts.cwd && !existsSync(opts.cwd) ? `the folder ${opts.cwd} does not exist` : "git was not found on PATH";
+    die(`git ${shown.join(" ")} could not run: ${why}`);
+  }
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
@@ -196,13 +206,14 @@ function storeWorkspaceToken(dir, remote, token) {
 // the command's row is refused before the command runs. --project and --as
 // belong to every row, since project() and actor() read them, and --help
 // anywhere prints usage. The commands in REST take `--` and the words after it.
-const COMMON = { project: false, as: false };
-const FLAGS = {
+// test/command-help.test.mjs holds this table to the help in src/usage.ts.
+export const COMMON = { project: false, as: false };
+export const FLAGS = {
   unwrap: {},
   wrap: { next: false, found: false, push: true, "no-check": true, "allow-failing": true },
   token: { days: false, label: false },
   ops: {},
-  runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true },
+  runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"' },
   adopt: {},
@@ -227,6 +238,10 @@ const FLAGS = {
   review: { approve: true, reject: true, note: false, head: false, findings: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
+  "read-token": {},
+  "base-token": {},
+  integrated: { part: false, "merge-commit": false },
+  "integration-failed": { part: false, reason: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
@@ -404,19 +419,71 @@ export function initName(projects, top, explicit, renameLocal) {
   return { name, existing };
 }
 
+// The folder the current directory belongs to (the top of its Git repository,
+// else the directory itself) and the project registered for it, or null.
+// Compared as real paths: git reports /private/var/… for a checkout
+// registered as /var/… on macOS, and any symlinked folder the same way.
+function registeredHere() {
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const here = top.status === 0 ? top.stdout.trim() : process.cwd();
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const name = top.status === 0 ? Object.entries(cfg.projects ?? {}).find(([, p]) => real(p.path) === real(here))?.[0] ?? null : null;
+  return { here, name };
+}
+
 function project() {
   if (args.project) return args.project;
   const fromWs = wsConfig("project");
   if (fromWs) return fromWs;
-  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  if (top.status === 0) {
-    const here = top.stdout.trim();
-    // Compared as real paths: git reports /private/var/… for a checkout
-    // registered as /var/… on macOS, and any symlinked folder the same way.
-    const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
-    for (const [name, p] of Object.entries(cfg.projects ?? {})) if (real(p.path) === real(here)) return name;
+  const { here, name } = registeredHere();
+  if (name) return name;
+  die(unregisteredMessage(here, cfg.projects));
+}
+
+// What a command that needs a project says when this folder is neither a
+// registered checkout nor a task workspace: the folder, every project
+// registered on this Mac with its checkout, and the one named like this
+// folder, since a copy or a second clone of a registered checkout is the
+// usual way to be in the wrong one.
+export function unregisteredMessage(here, projects) {
+  const names = Object.keys(projects ?? {}).sort();
+  const first = `which project? ${here} is not a registered checkout or a task workspace. Pass --project NAME, or run the command in a registered checkout or in a task workspace.`;
+  if (!names.length) return `${first}\nNo project is registered on this Mac: run atelier init in a project's checkout to register it.`;
+  const width = Math.max(...names.map((n) => n.length)) + 2;
+  const lines = [first, "Registered on this Mac:", ...names.map((n) => `  ${n.padEnd(width)}${projects[n].path ?? "no folder recorded"}`)];
+  const like = names.find((n) => n.toLowerCase() === basename(here).toLowerCase());
+  if (like) lines.push(`${like}, named like this folder, is registered at ${projects[like].path}; run the command there, or pass --project ${like}.`);
+  return lines.join("\n");
+}
+
+// Edit distance between two names: how many characters to insert, drop or
+// change, so the registered name nearest a mistyped one comes first.
+export function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
   }
-  die("which project? pass --project NAME, or run inside a registered checkout or workspace");
+  return prev[b.length];
+}
+
+// What a command says when the server has no project under the name it was
+// given. The registered names come first, nearest the name first, since a
+// mistyped --project is the usual cause. init is named only away from a
+// registered checkout, where it would register the wrong folder; in one, the
+// folder's own project is the answer. A name this Mac registers but the
+// server lacks is its own case: the project is gone there, or the server is
+// another one.
+export function noProjectMessage(name, host, projects, here) {
+  const names = Object.keys(projects ?? {});
+  const first = `no project named ${name} on ${host}.`;
+  if (projects?.[name]) return `${first}\nThis Mac registers ${name}'s checkout at ${projects[name].path}, but the server has no project under that name: it was removed there, or ${host} is not the server it was registered with. To create it there, run atelier init in that checkout.`;
+  const lines = [first];
+  if (names.length) lines.push(`Registered on this Mac, closest first: ${names.slice().sort((a, b) => editDistance(a, name) - editDistance(b, name) || a.localeCompare(b)).join(", ")}.`);
+  if (here) lines.push(`This folder is ${here}'s checkout: run the command with --project ${here}, or without --project.`);
+  else lines.push(names.length ? "To register a new project, run atelier init in its checkout." : "No project is registered on this Mac. To register one, run atelier init in its checkout.");
+  return lines.join("\n");
 }
 
 // --summary takes text: an empty or blank value is refused, not dropped. A
@@ -517,9 +584,18 @@ async function call(method, path, body, as, extra = {}) {
   } catch (error) { die(`server request failed: ${error.message}`, 4); }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
-    res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
+  if (!res.ok) {
+    // 4 for a server that cannot answer, 3 for a refused claim (the runner
+    // reads it), 1 otherwise, whatever the message says.
+    const code = res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1;
+    // A project the server does not know, asked for by name: the answer
+    // names what this Mac knows instead of the server's "run atelier init",
+    // which an agent would obey in whatever folder it stands in.
+    const named = data.error === "no_project" ? /^\/projects\/([^/]+)/.exec(path)?.[1] : undefined;
+    if (named) die(noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name), code);
+    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`, code);
+  }
   return data;
 }
 
@@ -786,13 +862,18 @@ export async function refreshControlPlane(top, name, request = call, report = co
   if (!cp) return null;
   const current = await request("GET", P(name), undefined, OWNER);
   const before = current.project.policy;
-  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
+  // The ship order is the checkout's own declaration too: its commands and
+  // kinds travel with the policy, so the gate guards what ship runs and the
+  // inbox knows what a merged revision still needs.
+  const ship = shipPolicy(top);
+  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, shipRuns: ship.runs, shipKinds: ship.kinds, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
   // Roles and change classes are compared here too, as whole values with their
   // keys in a fixed order; the merge guard compares the fields an acceptance
-  // records (mergePolicyDecision).
+  // records (mergePolicyDecision), and the ship order with shipChanges.
   const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
   const changes = [...controlPlaneChanges(before, policy),
-    ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`)];
+    ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`),
+    ...shipChanges(before, policy)];
   if (changes.length) {
     await request("PUT", P(name), policy, OWNER);
     for (const change of changes) report(`ControlPlane ${change}`);
@@ -962,24 +1043,20 @@ export function formatBrief(project, id, brief, origin) {
 
 // ── commands ───────────────────────────────────────────────────────────────
 
-// The checkout's state against the baseline, in words. The baseline's head is
-// read with ls-remote, so nothing is fetched into the checkout.
+// The checkout's state against the baseline, in words. The baseline's head
+// comes from the server (GET baseline-head), as the Worker reads it from
+// Artifacts: no token is minted and nothing is fetched into the checkout, so
+// status and unwrap, which print this line, read and write nothing.
 // Every path out of it is one flattened line, whatever a name holds.
 async function checkoutStatus(name, as) {
   return flat(await checkoutStatusLine(name, as));
 }
 
-async function checkoutStatusLine(name, as, readOnly = false) {
+async function checkoutStatusLine(name, as) {
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) return checkoutLine({ name, registered: false });
   const cwd = p.path, fresh = p.fresh === true;
-  let baselineHead;
-  if (readOnly) baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
-  else {
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const listed = git(["ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd, token: base.token });
-    baselineHead = listed.split(/\s/)[0];
-  }
+  const baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
   if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
   // The registered branch is compared, whatever is checked out: the line
   // names that branch, so its head is what it must describe.
@@ -1148,7 +1225,7 @@ const commands = {
     const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
     console.log(formatStanding(standing, OWNER_NAME));
-    console.log(await checkoutStatusLine(name, as, true));
+    console.log(await checkoutStatusLine(name, as));
     if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
     if (cwd) {
       console.log(`Current branch: ${git(["branch", "--show-current"], { cwd }) || "detached HEAD"}`);
@@ -1339,6 +1416,13 @@ const commands = {
     if (args.discover === true) return discoverModels();
     if (args.usage === true) return reportUsage();
     const { runRunner } = await import("./runner.mjs");
+    // The runner's own server calls for plan jobs and parts, as the queue's:
+    // fetches under the runner's token, naming the assignment's actor. They
+    // throw rather than die, so the runner's loop decides what a failure
+    // means; a 422 from posting a plan is a result the runner reports, not an
+    // error thrown here.
+    const auth = (actor) => ({ authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, "content-type": "application/json" });
+    const readJson = async (res) => { try { return await res.json(); } catch { return null; } };
     try {
       await runRunner(args, {
         workspacePath,
@@ -1353,6 +1437,27 @@ const commands = {
           const incomplete = res.headers.get("x-atelier-incomplete");
           if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
           return res.json();
+        },
+        async jobBrief(project, id, actor) {
+          await resolveTokenActor();
+          let res;
+          try {
+            res = await fetch(server() + `/api${I(project, id)}/job-brief`, { headers: auth(actor), signal: AbortSignal.timeout(30_000) });
+          } catch (error) { throw Object.assign(new Error(`the job brief could not be read: ${error.message}`), { infrastructure: true }); }
+          const data = await readJson(res);
+          if (!res.ok) throw Object.assign(new Error(`the job brief could not be read: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
+          return data;
+        },
+        async postPlan(project, id, actor, text) {
+          await resolveTokenActor();
+          let res;
+          try {
+            res = await fetch(server() + `/api${I(project, id)}/plan`, { method: "POST", headers: auth(actor), body: text, signal: AbortSignal.timeout(60_000) });
+          } catch (error) { throw Object.assign(new Error(`the plan could not be posted: ${error.message}`), { infrastructure: true }); }
+          const data = await readJson(res);
+          if (res.status === 422 && data && data.valid === false) return data;
+          if (!res.ok) throw Object.assign(new Error(`the plan could not be posted: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
+          return data;
         },
         // A run that stalled, timed out or was refused goes to the run
         // reports, under the runner's name, as a model's status does.
@@ -1422,6 +1527,14 @@ const commands = {
 
   // The project owner, in the project's checkout.
   async init() {
+    // A task workspace is a clone claimWorkspace made, named by the project
+    // and item in its Git config. Registering it would make the workspace a
+    // project called after its folder, so init stops here and says where to run.
+    const wsItem = wsConfig("item"), wsProject = wsConfig("project");
+    if (wsItem) {
+      const path = cfg.projects?.[wsProject]?.path;
+      die(`this folder is ${wsProject}/${wsItem}'s task workspace, not a project checkout; nothing was registered. Run atelier init in ${wsProject}'s checkout${path ? `: cd ${JSON.stringify(path)} && atelier init` : ", which is not registered on this Mac."}`);
+    }
     const checks = listArg("check", "init"), given = args.multi.protect ? listArg("protect", "init") : null;
     const top = git(["rev-parse", "--show-toplevel"]);
     let name, existing;
@@ -1487,6 +1600,12 @@ const commands = {
     // ControlPlane project's adapter always sets them, as it sets protected paths.
     const fromRules = cp?.adapter ? adapterCheckPaths(cp.adapter, classed) : null;
     if (fromRules) policy.checkPaths = fromRules.paths;
+    // The ship order's commands and kinds are recorded with the policy from
+    // the checkout's own files, so the gate guards what ship runs like a
+    // check's files and the inbox can say a merged revision is not delivered.
+    const ship = shipPolicy(top);
+    policy.shipRuns = ship.runs;
+    policy.shipKinds = ship.kinds;
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
     if (cp) {
       policy.eligible = cp.eligible ?? [];
@@ -1540,6 +1659,7 @@ const commands = {
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
     for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
     if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
+    console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
@@ -1745,11 +1865,15 @@ const commands = {
       if (r.status !== 0) die(`${id}'s fork holds ${n} this workspace lacks:\n${missing}\nRebasing this workspace's commits onto them did not complete:\n${(r.stderr || r.stdout).trim()}\nFinish that (resolve conflicts and git rebase --continue; or commit or set aside uncommitted changes), then run atelier update again.`);
       console.log(`${id}: this workspace's commits now sit on the ${n} the fork held that it lacked:\n${missing}`);
     }
-    const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    const t = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
+    // After the rebase the fork no longer holds the head Atelier recorded,
+    // so the push needs --force, whose lease refuses to overwrite anything
+    // pushed since (see push). Both ends of the rebase name that one command.
+    const next = "Push with: atelier push --force";
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
-    if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, \`git rebase --continue\`, then \`atelier push --force\`.\n${r.stdout}${r.stderr}`);
-    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. Push with: atelier push --force`);
+    if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, then git rebase --continue. ${next}\n${r.stdout}${r.stderr}`);
+    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. ${next}`);
   },
 
   // Observed evidence: run each required check (or the given command) in a
@@ -1766,7 +1890,9 @@ const commands = {
     if (refused.length) die(`${refused.join(".\n")}.${args.rest?.length ? "" : `\nNothing was run. Ask ${OWNER_NAME} to replace the check with atelier init --check.`}`);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     if (!ws.head) die("nothing pushed yet");
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    // The base a part is measured against is its plan's fork, not the baseline
+    // (docs/orchestrator.md, section 5).
+    const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name);
     const policy = d.policy;
     // What a check could print and this command would then upload: the API
@@ -1867,7 +1993,7 @@ const commands = {
   async diff() {
     const name = project(), id = itemArg(), as = await actor(OWNER);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     const { dir } = cleanClone(ws.remote, ws.token, ws.head, null, name);
     try {
       git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
@@ -1906,6 +2032,35 @@ const commands = {
     console.log(`${id}'s review request released.`);
   },
 
+  // Read-only access tokens the runner uses outside a task or review job: the
+  // item's own fork, or the repository it is measured against.
+  async "read-token"() {
+    const name = project(), id = itemArg(), as = await actor();
+    console.log(JSON.stringify(await call("POST", `${I(name, id)}/read-token`, {}, as)));
+  },
+
+  async "base-token"() {
+    const name = project(), id = itemArg(), as = await actor();
+    console.log(JSON.stringify(await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as)));
+  },
+
+  // The integrator's reports (docs/orchestrator.md, section 5). Both run as
+  // atelier/integrator through its token; the server verifies the merge commit.
+  async integrated() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integrated tP --part KEY --merge-commit SHA");
+    if (typeof args["merge-commit"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["merge-commit"])) die("--merge-commit needs the full merge commit hash");
+    const r = await call("POST", `${I(name, id)}/integrated`, { part: args.part, mergeCommit: args["merge-commit"] }, as);
+    console.log(JSON.stringify(r));
+  },
+
+  async "integration-failed"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT");
+    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "" }, as);
+    console.log(JSON.stringify(r));
+  },
+
   async handoff() {
     if (!args.to) die("usage: atelier handoff t3 --to codex/gpt-5.5 --note 'why'");
     const name = project(), id = itemArg(), as = await actor();
@@ -1929,10 +2084,14 @@ const commands = {
     console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
   },
 
+  // The server clears the owner and revokes the holder's write token, as a
+  // handoff or a release does. The holder is read first: the answer carries
+  // the item with its owner already cleared, and an open item has none.
   async abandon() {
     const name = project(), id = itemArg();
+    const { item: before } = await call("GET", I(name, id), undefined, OWNER);
     await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
-    console.log(`${id} abandoned.`);
+    console.log(before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`);
   },
 
   // The project owner traces a defect to an item's accepted revision. The
@@ -2431,7 +2590,7 @@ const commands = {
       const r = await call("POST", `${P(name)}/items`, { kind: "plan", goal, scope, ...(args.planner ? { planner: args.planner } : {}) }, OWNER);
       console.log(`${r.item.id} is a plan for: ${flat(goal)}`);
       console.log(`Planner: ${r.planner}. ${flat(r.reasons[0] ?? "")}`);
-      console.log(`The plan job waits in the queue for ${r.planner}. No runner takes a plan job yet: to plan by hand, claim ${r.item.id} as ${r.planner} with --runner home:NAME, then atelier plan post ${r.item.id} FILE. When a proposal arrives, read it with atelier plan show ${r.item.id} ${flag}.`);
+      console.log(`The plan job waits in the queue for ${r.planner}; a runner that offers plan jobs takes it. To plan by hand, claim ${r.item.id} as ${r.planner} with --runner home:NAME, then atelier plan post ${r.item.id} FILE. When a proposal arrives, read it with atelier plan show ${r.item.id} ${flag}.`);
       return;
     }
     const id = words[1];

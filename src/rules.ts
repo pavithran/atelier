@@ -5,7 +5,9 @@ import type { CheckDeclaration } from "./checks.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned" | "blocked";
+// `integrated` is a part's state only (docs/orchestrator.md, section 5): its
+// head has been merged onto the plan's branch with the plan's checks passing.
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
   id: string;
@@ -158,6 +160,12 @@ export interface ProjectPolicy {
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
+  // The ship order as the policy records it (cli/ship.mjs shipPolicy, sent at
+  // init and sync): the commands its runs execute, whose files changeClass
+  // guards like a check's, and the approval kinds it needs, which the inbox
+  // reads to say a merged revision is not delivered (src/actions.ts).
+  shipRuns?: string[];
+  shipKinds?: string[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
@@ -469,9 +477,14 @@ export function measuredPaths(value: unknown): string[] | null {
 // allow-list, like an item's scope, is matched as written: it grants an
 // exemption from review, so a variant path falls outside it and needs the
 // review, which is the safe side of the comparison.
+// The ship files' folder, guarded in every project: a change to what the
+// owner's ship runs is a change to code the owner executes with the owner's
+// environment, and an item cannot add a ship file either.
+export const SHIP_FILES = ["docs/atelier/**"];
+
 export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass | null {
   if (!paths.length) return null;
-  const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? [])];
+  const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])];
   if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
   const direct = policy.execution?.direct;
   return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
@@ -949,7 +962,7 @@ export interface InboxEntry {
   project: string;
   itemId: string;
   title: string;
-  kind: "accept" | "assess" | "merge" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
+  kind: "accept" | "assess" | "merge" | "ship" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
 }
@@ -1081,7 +1094,7 @@ export function latestReviews(reviews: Review[], head: string | null): Review[] 
 }
 
 export const stateLabel: Record<ItemState, string> = {
-  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed", blocked: "Blocked",
+  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", integrated: "Integrated", merged: "Merged", abandoned: "Closed", blocked: "Blocked",
 };
 
 // A reason as one sentence of a longer text: ended with a full stop unless

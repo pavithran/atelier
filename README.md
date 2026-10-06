@@ -77,7 +77,7 @@ No policy at HEAD means no ceiling.
 
 Before closing, file defects in Atelier or project tooling as tasks in the
 project they belong to with `atelier new "…" --project NAME`. Atelier defects
-belong to `--project cloudflare-git`. File a lesson worth keeping the same way
+belong to `--project atelier`. File a lesson worth keeping the same way
 with a title starting `Lesson: `. Repeatable `--found TEXT` files tasks in the
 current project and records their IDs in the note.
 
@@ -178,6 +178,14 @@ whatever the letter case or Unicode form, because the owner's Mac stores
 one file; item scopes and `direct.allowed_path_patterns` match as written, so a
 variant falls outside them. `atelier merge` refuses, before it changes the
 checkout, a merge whose tree would hold two such paths, on any platform.
+
+The ship files and what they run are protected the same way: `docs/atelier/**`
+in every project, and every file the ship order's commands execute, derived
+from the commands `atelier init` and `atelier sync` record from
+`docs/atelier/ship.json` or the ControlPlane adapter exactly as a check's
+files are derived from its line. An item therefore cannot quietly change what
+the owner's `atelier ship` runs with the owner's environment; see
+[Ship and protected actions](#ship-and-protected-actions).
 
 A merge lands agent code in the owner's checkout, where Git's own
 configuration can run files from the tree: a hooks folder that
@@ -1137,7 +1145,7 @@ from commit trailers in the history before Atelier, where a name that is only
 an address is not taken. Nothing is shown until the owner names a project:
 
 ```text
-printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
+printf 'atelier' | npx wrangler secret put SHOWCASE
 ```
 
 `SHOWCASE` takes project names separated by commas; deleting it hides the
@@ -1359,6 +1367,55 @@ The browser provides this local command after acceptance. It does not run a
 network-accessible local executor. Deployment and pushing the project branch
 to its own remotes remain separate decisions.
 
+## Ship and protected actions
+
+Merging lands accepted work in the owner's checkout and on the baseline. An
+action whose effect reaches beyond the repository, and cannot be taken back
+by a revert, is a protected action: a deploy, a device install, a push of the
+project's branch to its own remotes, a paid model run, a Photos writeback, or
+a further kind the project's own ship files name. It runs only with the
+project owner's approval for one exact revision of the main line, and each
+approval is used by one run. The full design is in
+[docs/ship.md](docs/ship.md).
+
+```sh
+atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12"
+atelier ship --dry-run
+atelier ship
+```
+
+- **The owner alone** approves, withdraws, uses and records, with
+  `atelier approve`, `atelier approvals`, `atelier approvals withdraw ID`, or
+  the forms under "Protected actions" on the project's page. An agent token
+  is refused before the route is reached.
+- **The approval is bound to one full revision** of the main line. It stands
+  for 24 hours unless `--expires` gives from `1m` to `30d`; a second approval
+  for the same kind and revision is refused while the first stands; when the
+  main line moves, the old approval stays behind and the new revision needs
+  its own.
+- **One approval, one run.** `atelier ship`, run by the owner in the
+  registered checkout, composes the project's ship order from its own files
+  (ControlPlane's ship policy and adapter, or `docs/atelier/ship.json`),
+  refuses before running anything when a protected step has no approval at
+  the revision being shipped, takes each approval before its step runs (a
+  failed step has still spent it), stops at the first failure, pushes only
+  with `--push` and never forces a push, and records every step on the
+  ledger as `action.ran` with its redacted output tail.
+- **The ship files and what they run are protected** like check scripts, in
+  every project: `docs/atelier/**`, and every file the order's commands
+  execute, recorded at `atelier init` and `atelier sync`. A change to them
+  needs an independent review, and a merge refuses an accepted change that
+  touches a script a newer order runs.
+- **The inbox reminds the owner to ship.** While a merged revision's declared
+  protected actions have not run, the Decisions page and `atelier status`
+  carry the entry, with `atelier ship --dry-run` as its next command, until a
+  run of each declared kind is recorded; a ship at a later head delivers an
+  older merge and retires its reminder too.
+
+The local harness that runs a task is the owner's own user, which no server
+rule confines; the design for confining it is in
+[docs/harness-confinement.md](docs/harness-confinement.md).
+
 ## Push event setup
 
 The Worker has a Queues consumer for `cf.artifacts.repo.pushed` notices in
@@ -1397,7 +1454,7 @@ adding the consumer handler alone does not activate event delivery. See
 
 Run `node test/preview.mjs` for a local, read-only preview with illustrative
 content. It prints its URL. The preview cannot approve, merge, or create live
-tasks. Use `?state=empty`, `/p/cloudflare-git/t1?state=failed`, `state=ready`,
+tasks. Use `?state=empty`, `/p/atelier/t1?state=failed`, `state=ready`,
 `state=accepted`, `state=merged`, `state=unavailable`, or `state=long` to inspect
 important states. The pages follow the device's light or dark setting;
 change that setting to inspect the other palette.

@@ -246,6 +246,22 @@ test("files named by a check are protected: an item cannot weaken its own grader
   assert.equal(g.ready, false);
 });
 
+test("the ship files and what a ship runs are protected like a check's files", () => {
+  // docs/atelier/** is guarded in every project, whatever its policy, so an
+  // item cannot change or add a ship order the owner would run.
+  const plain: ProjectPolicy = { checks: [], protected: [] };
+  assert.equal(changeClass(["docs/atelier/ship.json"], plain), "protected");
+  assert.equal(changeClass(["docs/atelier/notes.md"], plain), "protected");
+  assert.equal(changeClass(["src/a.ts"], plain), "coordinated");
+  // The commands the ship order runs (policy.shipRuns, recorded from the
+  // checkout's ship files at init) guard their files exactly as a check's do.
+  const ship: ProjectPolicy = { ...plain, shipRuns: ["bin/deploy.sh", "npx wrangler deploy"] };
+  assert.equal(changeClass(["bin/deploy.sh"], ship), "protected");
+  assert.equal(changeClass(["package.json"], ship), "protected", "npx's manifest is guarded as a check's is");
+  assert.equal(changeClass(["src/a.ts"], ship), "coordinated");
+  assert.equal(changeClass(["bin/deploy.sh"], plain), "coordinated", "a project that records no ship order guards only the ship files' folder");
+});
+
 test("eligibility follows ControlPlane's agent families; the project owner always qualifies", () => {
   const p: ProjectPolicy = { checks: [], protected: [], eligible: ["claude", "codex", "glm"] };
   assert.doesNotThrow(() => assertEligible("claude-code/opus-5.5", p));

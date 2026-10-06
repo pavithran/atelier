@@ -1,15 +1,19 @@
 # Orchestrator design
 
-Steps 1 to 6, 8, 9, 10 and 11 of the build sequence (section 8) are built.
-Steps 1 to 4, 8 and 11 are pure functions in `src/plans/` and `src/review/`.
-Step 5 puts plans in the project's Ledger: proposals, approval, the parts and
-the tick that dispatches them. Step 6 gives them routes and the `atelier plan`
-command. Steps 9 and 10 add automatic cross-family review: the Ledger's tick
-asks a review request for each submitted part, and a reviewer's runner answers
-it with findings and the rework transition. The integration code is still
-called by nothing but its tests. Steps 7 and 12 to 14 are not built: no runner
-takes a plan job, so a planner posts its plan by hand, and each part's runner
-gets the brief any task gets.
+Steps 1 to 14 of the build sequence (section 8) are built. Steps 1 to 4,
+8, 11 and 12 are pure functions in `src/plans/` and `src/review/`. Step 5 puts
+plans in the project's Ledger: proposals, approval, the parts and the tick
+that dispatches them. Step 6 gives them routes and the `atelier plan`
+command. Step 7 gives the planner and each part's builder a brief from the
+server (`GET items/tN/job-brief`) and the runner a plan job. Steps 9 and 10
+add automatic cross-family review: the Ledger's tick asks a review request
+for each submitted part, and a reviewer's runner answers it with findings
+and the rework transition. Steps 12 to 14 add the integration branch: parts
+fork from and are measured against their plan's fork, the integrator merges
+each part and reports `integrated` or `integration-failed`, and the plan
+submits and merges once every part is integrated. The merge receipt that
+lists the parts is not built, and nothing dispatches the `refresh` job
+automatically yet (section 5).
 
 Where a section describes something not built, it is the design, not a
 claim that the routes, storage, commands or runner jobs exist. Where the
@@ -47,7 +51,7 @@ A plan is an item with `kind = "plan"`. That gives it everything an item already
 
 ## 2. Plan proposals
 
-1. `atelier plan "goal"` creates the plan item and dispatches it as a `plan` job: its `Dispatch` carries `job: "plan"`, and `assign()` offers it only to a runner whose offer lists `jobs: ["plan"]`, so no runner takes one until step 7. The default planner (`pickPlanner` in `src/plans/state.ts`) is the top result of `route({kind:"research"})` over the pool that is not refused, not paid per token (nothing is approved yet; the owner may still name a paid model with `--planner`) and holds the `planner` role. The plan item's claim, before approval, needs the `planner` role under a governed policy, where any other claim needs `executor`.
+1. `atelier plan "goal"` creates the plan item and dispatches it as a `plan` job: its `Dispatch` carries `job: "plan"`, and `assign()` offers it only to a runner whose offer lists `jobs: ["plan"]`; the runner's offer is `jobs: ["build","plan"]` (step 7b). The default planner (`pickPlanner` in `src/plans/state.ts`) is the top result of `route({kind:"research"})` over the pool that is not refused, not paid per token (nothing is approved yet; the owner may still name a paid model with `--planner`) and holds the `planner` role. The plan item's claim, before approval, needs the `planner` role under a governed policy, where any other claim needs `executor`.
 2. A runner claims the plan item the ordinary way. That claim forks the baseline, and this fork becomes the integration branch.
 3. The harness writes JSON to a new `{plan_file}` placeholder (in `cli/runner-config.mjs`) and must not commit.
 4. The runner posts the JSON to `POST items/tP/plan` and releases the claim.
@@ -122,11 +126,11 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 
 **Finishing, until t16.** Without the integration branch, a part reaches main by its own acceptance and merge, as any item does. The plan is complete when every part is merged or abandoned and at least one merged: the tick marks the plan item merged and logs `plan.completed`, with no merge commit of its own. When every part is abandoned the plan blocks, since it brings nothing. t16 replaces this with `planGate` and the owner's merge of the plan item.
 
-**Briefs come from the server.** A new route, `GET items/tN/job-brief`, is built by a pure function in `src/plans/brief.ts`. It replaces `briefFor` in `cli/runner.mjs`, which hardcodes "npm test" and is wrong for other projects. The brief contains the part's spec, its dependencies' interfaces and landed heads, its scope and checks, and, for rework, the findings or the failing output.
+**Briefs come from the server.** The route `GET items/tN/job-brief`, built over the pure functions in `src/plans/brief.ts`, gives the holder of the plan item's or a part's claim the brief for the work it holds: `plannerBrief`'s planner brief (the goal, the owner's latest revise note, the last `plan.invalid` errors and the schema to write) or `jobBrief`'s part brief (the part's spec, its dependencies' interfaces and landed heads, its scope and the project's required checks, and, for rework, the findings or the failing output). It replaces `briefFor` in `cli/runner.mjs`, which hardcodes "npm test" and is wrong for other projects; `briefFor` still writes the brief of any task that is not a part. Only the item's holder may read the route.
 
 **Failures.** Attempts are counted from the event log by a pure function, in the style of `buildRecord`.
 - **A runner gives up with no commit.** It already releases the part, so the part re-queues. After two releases by the same actor, the dispatch moves to the next alternate.
-- **Checks fail during `finish`.** Today the runner keeps the claim. For parts, it releases instead; the fork keeps the commits. The part goes back to the same actor once, with the failing output, then to an alternate.
+- **Checks fail during `finish`.** For an ordinary task the runner keeps the claim. For a part it releases instead (step 7b); the fork keeps the commits. The part goes back to the same actor once, with the failing output in its next brief, then to an alternate.
   - `handoff` cannot be used here: it leaves the item `claimed`, and `waiting()` never lists a claimed item.
 - **A part reaches 3 attempts, or there are no alternates, or the deadline or budget is hit.** The plan becomes `blocked` with the reason. The owner chooses: reroute, retry, abandon the part, or stop.
 
@@ -203,6 +207,13 @@ A failed integration attempts to restore its previous head.
 
 **Friction with governed projects.** Under a governed policy, `assertEligible` needs `agentOf()` to name the actor, and it maps `atelier/integrator` to nothing, so the claim would be refused. Treat the integrator as a reserved actor, reachable only through a t43 token bound to it.
 
+**What is built, and where it differs from this design.** Steps 12 to 14 are built (section 8), with these deviations:
+
+- The mergeability pre-check runs when the integrator claims the plan item's integrate job, not when the tick writes the dispatch. The tick lives in the Ledger, which has no Artifacts access, so the Worker's claim route reads the part's base, the plan's head and the part's head and refuses a predicted conflict by sending the part back. A failure to read the branch only costs a runner trip, never a blocked integration.
+- The `refresh` job's runner side is built (it merges the baseline into the plan's fork and pushes), but nothing dispatches it automatically yet: `plan show` does not read `previewAgainstMain` to predict a conflict with main. `plan show` shows the integration head and each part's integration; the combined checks and mergeability with main are not shown, since they need Artifacts the Ledger cannot read.
+- `planGate` is read by `Ledger.accept` for the plan item, and `Ledger.merged` marks the parts merged with `{via: tP}` as described.
+
+
 ## 6. The owner's interface
 
 | Command | What it does |
@@ -221,7 +232,7 @@ A failed integration attempts to restore its previous head.
 - `POST items/tP/plan` takes the plan document as its body. A refused document answers 422 `invalid_plan`, with every error and which of the planner's two attempts it was.
 - `POST items/tN/plan/approve`, `revise`, `reroute`, `retry` and `stop` are the owner's. `reroute` and `retry` also take the plan item before approval, for its planner. `stop` revokes the write token of every item it closes before closing them, as `abandon` does for one, and closes them in one transaction.
 - `GET items/tP/brief` gives a plan item's own brief (`planBrief` in `src/plans/show.ts`), which `atelier show tP` and `atelier inbox` print. `plan show` prints from the same view (`planText`).
-- A runner's queue offer may list `jobs`, such as `["plan"]`; until step 7's runner does, no runner is offered a plan job.
+- A runner's queue offer lists the jobs it runs; the runner offers `jobs: ["build","plan"]` (step 7b).
 
 **Inbox.** Two new kinds: `approve-plan` (weight 95) and `plan-blocked` (weight 85). The plan item's `accept` and `merge` entries work as today. `approve-plan` appears once the newest proposal answers the owner's latest revise, reroute or retry; `plan-blocked` gives the reason and the decisions open.
 - Parts never appear as accept, assess, failing, scope or stale entries. An accepted part still appears as a `merge` entry. Until t16 the owner accepts and merges each part, and learns which are ready from the plan's view (`planView`, read by `atelier plan show`), not from the inbox.
@@ -236,7 +247,7 @@ A failed integration attempts to restore its previous head.
 **Tokens (t43).**
 - t43 binds each token to one actor and filters queue offers by it. So a runner holds one agent token per actor it offers, named by Keychain entry in `runner.json`.
 - The planner, reviewers and the integrator each have their own token. The owner token never sits on a runner.
-- Routes to add to t43's allowlist: `plan` post (for the plan item's current holder only), `review-claim`, `job-brief` and `base-token`; `integrated` and `integration-failed` for the integrator only. `plan` post is added (`agentRoute` in `src/tokens.ts`), and the Ledger takes it only from the holder; every other plan route, `GET items/tN/plan` included, stays owner-only. The others are added with the steps that build their routes (7, 9, 12 and 13).
+- Routes to add to t43's allowlist: `plan` post and `job-brief` (each for the item's current holder only), `review-claim` and `base-token`; `integrated` and `integration-failed` for the integrator only. `plan` post and `job-brief` are added (`agentRoute` in `src/tokens.ts`), and the Ledger takes each only from the holder; every other plan route, `GET items/tN/plan` included, stays owner-only. The others are added with the steps that build their routes (9, 12 and 13).
 - **Conflict to settle:** t43 refuses `POST models/ID/status` for agent tokens, but runners use it to report model status. Either allow it with the runner header, or drop status reporting.
 
 **Harness environment.** `runTask` in `cli/runner.mjs` gives the harness what a check gets (`checkEnv`) and the variables its runner config entry names in `env`; never a variable named `ATELIER_*`, and never one that holds the owner's token. A harness with shell access can still reach the Keychain; agent tokens limit what such a leak can do.
@@ -264,7 +275,7 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 4. **The tick, dispatch half.** `src/plans/phase.ts`. Built. Acceptance: scenario tests for dependencies, the parallel limit, retries and blocking.
 5. **Ledger and rules.** `src/ledger.ts` and `src/rules.ts` changes (new columns and table; `newPlan`, `postPlan`, `approvePlan`, `dispatchPart`, the tick hook; inbox kinds; same-plan overlap). Test: `test/plans.spec.ts`. Built, with the pure parts in `src/plans/state.ts` and `test/plans-state.test.ts`, and the owner's decisions (`revisePlan`, `reroutePlan`, `retryPlan`, `stopPlan`) and `planView` that step 6's routes call.
 6. **Routes and CLI.** `src/index.ts`, `cli/atelier.mjs`. Tests: `routes.spec.ts`, `test/plan-cli.test.mjs`. Built, with the routes tested in `test/plan-routes.spec.ts` and the plan's text and brief in `test/plans-show.test.ts`.
-7. **Server briefs and runner jobs.** 7a: `src/plans/brief.ts`, `test/plans-brief.test.ts`. Built. Acceptance: each section appears only with its input; findings and failing output are capped and say when they are cut; the hash of the inputs does not depend on key order; rework carries the findings. 7b: in `cli/runner.mjs`, the plan job, the `{plan_file}` placeholder, releasing on finish failure, and the scrubbed environment.
+  7. **Server briefs and runner jobs.** 7a: `src/plans/brief.ts`, `test/plans-brief.test.ts`. Built. Acceptance: each section appears only with its input; findings and failing output are capped and say when they are cut; the hash of the inputs does not depend on key order; rework carries the findings. 7b: in `cli/runner.mjs`, the plan job, the `{plan_file}` placeholder, releasing on finish failure, and the scrubbed environment. Built, with the `job-brief` route tested in `test/plan-routes.spec.ts`, the planner brief in `src/plans/brief.ts`, and the runner's plan job, part brief and release on a failed finish in `test/runner-plan.test.mjs`.
 
 **t39: Automatic cross-family review**
 
@@ -275,9 +286,9 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 **t16: Integration branch per plan**
 
 11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`. Built.
-12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`.
-13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check, marking parts merged when the plan merges, and the reserved integrator actor.
-14. **Runner `--integrate`.** The integrate and refresh jobs, and a merge receipt that lists the parts.
+12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`. Built.
+13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check at the integrator's claim, marking parts merged when the plan merges, and the reserved integrator actor. Built.
+14. **Runner `--integrate`.** The integrate and refresh jobs; the merge receipt that lists the parts is not built. Built.
 
 ## Deferred work
 

@@ -97,7 +97,7 @@ process.exit(r.status ?? 1);
     if (req.url.endsWith("/claim")) data = { item, workspace: { token: claim.token, remote: `${origin}/fork.git`, defaultBranch: "main", expiresAt: "tomorrow" } };
     if (req.url.endsWith("/push")) data = { ...item, head: forkHead() };
     if (req.url.endsWith("/read-token")) data = { remote: `${origin}/fork.git`, token: READ, head: forkHead(), defaultBranch: "main" };
-    if (req.url.endsWith("/baseline-token")) data = { remote: `${origin}/base.git`, token: BASE, head: forkHead(), defaultBranch: "main" };
+    if (req.url.endsWith("/baseline-token") || req.url.endsWith("/base-token")) data = { remote: `${origin}/base.git`, token: BASE, head: forkHead(), defaultBranch: "main" };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });

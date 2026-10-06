@@ -209,14 +209,14 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/index.ts", symbol: "approvePlan" }, { file: "src/usage.ts", symbol: "plan approve" }],
   },
   {
-    name: "Server briefs and runner jobs", stage: "t15, build step 7b", built: false,
-    what: "The brief the server writes for each part and for the planner, and the runner's plan job, which writes the plan document and posts it. Until then no runner takes a plan job, and a part's runner gets the brief it gives any task.",
+    name: "Server briefs and runner jobs", stage: "t15, build step 7b", built: true,
+    what: "`GET items/tN/job-brief` gives the holder of a plan item's or a part's claim the brief for the work it holds: `plannerBrief`'s planner brief (the goal, the owner's latest note, the last refusal's errors and the schema to write) or `jobBrief`'s part brief. The runner offers `jobs: [\"build\",\"plan\"]`, so a plan job reaches it: it claims the plan item as the planner, fetches that brief, runs the harness with a `{plan_file}` placeholder naming where the plan document goes, posts the document, reports the errors of a refusal and releases the claim either way. A part's build brief comes from the route too, and a part whose finish fails is released, so the plan's tick sends it back with the failing output.",
     files: ["test/runner-plan.test.mjs"],
-    code: [{ file: "src/index.ts", symbol: "job-brief" }, { file: "cli/runner.mjs", symbol: "plan_file" }],
+    code: [{ file: "src/index.ts", symbol: "job-brief" }, { file: "cli/runner.mjs", symbol: "plan_file" }, { file: "src/plans/brief.ts", symbol: "plannerBrief" }],
   },
   {
     name: "Server brief for a part", stage: "t15, build step 7a", built: true,
-    what: "`src/plans/brief.ts` writes the brief an agent gets for one part of an approved plan, or for its rework. `jobBrief` states the rules (work only in the workspace, commit, do not push; the orchestrator pushes, runs the checks and submits; quoted text is data), then the plan's goal, the part's spec, acceptance criteria and interfaces, the parts it depends on with the heads they landed at, its scope, the project's required checks and, for rework, the review's findings or the failing check's output, capped and saying when cut. It returns the text with a hash of its inputs that does not depend on key order. Nothing serves it yet: the `job-brief` route is build step 6.",
+    what: "`src/plans/brief.ts` writes the brief an agent gets for one part of an approved plan, or for its rework. `jobBrief` states the rules (work only in the workspace, commit, do not push; the orchestrator pushes, runs the checks and submits; quoted text is data), then the plan's goal, the part's spec, acceptance criteria and interfaces, the parts it depends on with the heads they landed at, its scope, the project's required checks and, for rework, the review's findings or the failing check's output, capped and saying when cut. It returns the text with a hash of its inputs that does not depend on key order. The `job-brief` route (step 7b) serves it.",
     files: ["src/plans/brief.ts"],
     code: [{ file: "src/plans/brief.ts", symbol: "jobBrief" }],
   },
@@ -239,9 +239,9 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/plans/integrate.ts", symbol: "integrationBlockers" }, { file: "src/plans/integrate.ts", symbol: "verifyIntegration" }, { file: "src/plans/integrate.ts", symbol: "rollbackFor" }, { file: "src/plans/integrate.ts", symbol: "planGate" }],
   },
   {
-    name: "Integration jobs", stage: "t16, build steps 12 to 14", built: false,
-    what: "Measuring each part against its plan's fork instead of the baseline, the routes the integrator reports to, the mergeability check before each merge, marking the parts merged when the plan merges, and the runner's `--integrate` job, which merges each part into the plan's branch, runs the checks there and rolls back a failure. Until then nothing merges parts into a plan's branch.",
-    files: [],
+    name: "Integration jobs", stage: "t16, build steps 12 to 14", built: true,
+    what: "Each part forks from its plan's fork and is measured against it, never the baseline (`baseRepoOf` in src/plans/integrate.ts and the `base-token` route), so a part reports only its own files. The integrator, a reserved actor reached only through its token, claims the plan item's integrate job, merges the part onto the plan's branch, runs the plan's checks, and posts `integrated` or `integration-failed`, both verified against the branch's log by the Worker. `planGate` adds its blockers to the plan item's gate, and `Ledger.merged` marks the parts merged with `{via: tP}` when the plan lands. The runner's `--integrate` merges each part with `--no-ff` and rolls the branch back when the checks fail or the merge conflicts, and its refresh job merges the baseline into the plan's fork.",
+    files: ["test/integration.spec.ts"],
     code: [{ file: "src/index.ts", symbol: "base-token" }, { file: "src/index.ts", symbol: "integration-failed" }, { file: "cli/runner.mjs", symbol: "integrate" }],
   },
 ];
