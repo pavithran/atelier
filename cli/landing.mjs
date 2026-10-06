@@ -63,12 +63,18 @@ export function adoptOldLanding(gitDir, dir) {
   moveFile(old, file);
 }
 
-// A local journal makes remote failures recoverable without repeating the Git merge.
+// A local journal makes remote failures recoverable without repeating the Git
+// merge. It is opened for one project and item, and for one accepted
+// revision when `identity.head` is given; without it, the journal of that
+// item at any revision opens, as merge --cancel needs once the acceptance
+// has moved. A journal of another item is refused, naming the commands
+// that end it.
 export function landingJournal(dir, identity) {
   const file = landingJournalFile(dir);
   let state = existsSync(file) ? JSON.parse(readFileSync(file,'utf8')) : null;
-  if (state && (state.project !== identity.project || state.item !== identity.item || state.head !== identity.head)) {
-    throw new Error(`finish the pending landing for ${state.project}/${state.item} before starting another`);
+  if (state && (state.project !== identity.project || state.item !== identity.item || ('head' in identity && state.head !== identity.head))) {
+    const run = `atelier merge ${state.item} --project ${state.project}`;
+    throw new Error(`finish the pending landing for ${state.project}/${state.item} before starting another: ${run}, or cancel it with ${run} --cancel`);
   }
   return {
     get state() { return state; },
@@ -76,6 +82,31 @@ export function landingJournal(dir, identity) {
     save(value) { state = {...identity,...state,...value}; mkdirSync(dir,{recursive:true}); writeFileSync(`${file}.tmp`,JSON.stringify(state,null,2)+'\n',{mode:0o600}); renameSync(`${file}.tmp`,file); },
     clear() { rmSync(file,{force:true}); state=null; },
   };
+}
+
+// What a landing left in the owner's checkout, read from its journal
+// `begun`. `commit` is the merge commit it made: the journal's, or else the
+// first commit on `branch` after the start when it is this landing's own
+// (two parents, the start first, and `marker`, the landing's line, in its
+// message), made just before a crash kept the journal from naming it.
+// `held` says whether the branch still holds that commit. `merging` says
+// whether the Git merge the landing began is unfinished in the checkout: a
+// merge in progress on the start whose incoming tree is the accepted
+// revision's. In a project whose baseline holds part of its history the
+// incoming commit is the accepted revision rebuilt, with the same tree.
+// `git` is the landing's Git runner.
+export function landingLeft(git, cwd, gitDir, begun, branch, marker) {
+  const ref = `refs/heads/${branch}`;
+  let commit = begun.mergeCommit ?? null;
+  if (!commit) {
+    const chain = git(['rev-list', '--first-parent', '--reverse', '--parents', `${begun.start}..${ref}`], { cwd, allowFail: true });
+    const [first, ...parents] = chain.status === 0 ? chain.stdout.split('\n')[0].split(' ') : [];
+    if (parents.length === 2 && parents[0] === begun.start && git(['log', '-1', '--format=%B', first], { cwd }).split('\n').includes(marker)) commit = first;
+  }
+  const held = !!commit && git(['merge-base', '--is-ancestor', commit, ref], { cwd, allowFail: true }).status === 0;
+  const tree = (rev) => { const r = git(['rev-parse', '--verify', '--quiet', `${rev}^{tree}`], { cwd, allowFail: true }); return r.status === 0 ? r.stdout.trim() : null; };
+  const incoming = !begun.mergeCommit && existsSync(join(gitDir, 'MERGE_HEAD')) && git(['rev-parse', 'HEAD'], { cwd }) === begun.start ? tree('MERGE_HEAD') : null;
+  return { commit, held, merging: !!incoming && incoming === tree(begun.head) };
 }
 
 // One landing at a time per checkout: the lock is a directory, created

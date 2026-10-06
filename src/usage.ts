@@ -33,7 +33,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   { name: "Setup", lines: [[
     { form: "login --server URL", about: "Stores this server's address and the owner's token, asking for the token when none is stored for it. A token the server refuses is not stored." },
     { form: "login --store", about: "Names the token store in use and whether it holds a token. It never prints the token." },
-    { form: "init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
+    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
     { form: "sync", about: "Refreshes the stored policy from the project's ControlPlane files. For a baseline built with `--history-since`, it also carries commits made in the checkout outside Atelier to the baseline." },
     { form: "publish", about: "Pushes the registered branch to the baseline with a write token. It is refused for a baseline that holds only part of the history; `sync` does that job." },
   ], [
@@ -69,6 +69,12 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "accept ID [--override-review REASON]", about: "The project owner accepts the item at its current head. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
     { form: "merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted item is accepted at that exact revision first: `--approve` records the owner's review, which is not the independent review, and `--override-review` accepts with the owner's override, as `accept` does. Run again, it resumes an interrupted merge; `--cancel` ends one." },
     { form: "abandon ID", about: "Closes the item without merging it. The write token is revoked; the history and evidence stay." },
+  ], [
+    { form: "approve ACTION --head SHA [--note T] [--expires 24h]", about: "The project owner approves one protected action, such as `deploy`, `install`, `push`, `paid-run` or `photos-writeback`, at one exact revision of the main line: the full SHA of a commit the baseline holds. `atelier ship` uses the approval once, at that revision only, and a later revision needs its own. It stands for 24 hours unless `--expires` gives from `1m` to `30d`; `--note` records why. Any other kind must be one the project's ship files name." },
+    { form: "approvals [--all]", about: "Lists the approvals that stand, each with its kind, revision and expiry. `--all` adds the used, withdrawn and expired ones." },
+    { form: "approvals withdraw ID [--note T]", about: "The project owner withdraws an approval no ship has used, so none can use it." },
+  ], [
+    { form: "ship [--dry-run] [--push]", about: "Run by the project owner in the registered checkout, clean and at the baseline's head: composes the ship order from the project's ControlPlane ship policy and adapter, or from `docs/atelier/ship.json`, and refuses before running anything when a protected step has no approval at that revision, naming the command that approves it. It then runs the steps in order and stops at the first that fails, recording each step's command, exit status, duration and redacted output tail on the ledger. It pushes only with `--push` and an approval for `push`, and never forces a push. `--dry-run` prints the steps and which approvals are present or missing, and runs nothing." },
   ]] },
   { name: "Models", lines: [[
     { form: "models", about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found." },
@@ -142,6 +148,9 @@ export const COMMAND_USAGE: Record<string, string> = {
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
   projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
   report: 'usage: atelier report [ID] "what you verified and how" [--item ID] [--project P]   (in a workspace, ID is its item unless --item or --project says otherwise)',
+  approve: "usage: atelier approve ACTION --head SHA [--note T] [--expires 24h] [--project P]   (ACTION: deploy, install, push, paid-run, photos-writeback, or a kind the project's ship files name; --expires from 1m to 30d)",
+  approvals: "usage: atelier approvals [--all] [--project P] · approvals withdraw ID [--note T] [--project P]",
+  ship: "usage: atelier ship [--dry-run] [--push] [--project P]   (in the registered checkout, clean and at the baseline's head)",
 };
 
 // The text `atelier guide` prints, and, without its heading, the section
@@ -176,6 +185,14 @@ For each session the project owner runs in the registered checkout:
 1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
 2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout. It runs the registered checks, commits, and always updates Atelier's own copy of the project, the baseline. A failing check stops it before anything is committed: fix the check, or add \`--allow-failing\` to commit anyway and record in the note which checks failed. It never pushes the project's own remotes unless \`--push\` is given; add \`--push\` only with the owner's approval for that session. It never deploys or publishes a release.
 3. ${FILING_RELAY} Use repeatable \`--found TEXT\` on wrap to file tasks in this project.
+
+A protected action (a deploy, a device install, a push to the project's own
+remotes, a paid model run or a Photos writeback) runs only with the project
+owner's approval for one exact revision of the main line, given with
+\`atelier approve KIND --head SHA\` and used once. \`atelier ship\`, run in
+the registered checkout when the owner asks, runs the project's ship order,
+uses those approvals and records every step. Never approve an action for the
+owner, and never run one without the owner's approval at that revision.
 
 Session notes keep metadata only, never prompts, transcripts or file contents.
 Material for the owner to copy is one complete fenced block with a language
