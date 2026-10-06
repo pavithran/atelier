@@ -1,0 +1,19 @@
+atelier atelier/t134 "Audit t105 follow-up (confirmed by gemini-3.1-pro): ** in a protected glob does not cross a newline (globToRegExp uses .* without the s flag, src/rules.ts:159-170), so a path with a newline under a protected directory is unprotected; match with the s flag or refuse such paths"
+accepted head 0aabef6736b3571c85ce755e4eff56b1f4020af9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T14:07:41.076Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T14:07:44.655Z
+REVIEW approve — antigravity/gemini-3.1-pro: ** crosses newlines; runners' files protected however the check wraps them, with Maps so prototype words find nothing; diffs page at a fixed size; the policy guard fails closed and compares every field.
+2026-10-06T02:06:18.375Z pavi item.created
+2026-10-06T12:37:58.064Z claude-code/fable-5.1 item.claimed
+2026-10-06T12:38:01.530Z claude-code/fable-5.1 fork.created
+2026-10-06T13:26:41.469Z claude-code/fable-5.1 push.observed
+2026-10-06T13:32:01.845Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:32:07.878Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:32:10.136Z claude-code/fable-5.1 item.submitted
+2026-10-06T13:35:19.248Z claude-code/opus-5.5 review.rejected
+2026-10-06T14:06:04.215Z claude-code/fable-5.1 push.observed
+2026-10-06T14:07:41.486Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:07:45.343Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:07:46.127Z claude-code/fable-5.1 item.submitted
+2026-10-06T14:11:23.533Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:11:24.295Z pavi item.accepted
