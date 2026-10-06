@@ -622,6 +622,29 @@ async function checkoutStatusLine(name, as, readOnly = false) {
   });
 }
 
+// One line per remote of the local checkout: where the registered branch
+// stands against that remote's tracking ref, as it was last fetched or
+// pushed. Nothing is fetched and no call takes a lock, so unwrap leaves the
+// checkout as it found it. A remote with no tracking ref recorded says so;
+// so does a checkout without the registered branch, which the checkout line
+// already names. Remote names come from the user's checkout and are printed
+// cleaned; git always takes them as one argument, never as shell text.
+function remoteStatusLines(name, cwd) {
+  const branch = cfg.projects?.[name]?.branch;
+  if (!branch || git(["--no-optional-locks", "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd, allowFail: true }).status !== 0) return [];
+  const commit = (n) => `${n} commit${n === 1 ? "" : "s"}`;
+  return git(["--no-optional-locks", "remote"], { cwd }).split("\n").filter(Boolean).slice(0, 100).map((remote) => {
+    const shown = sessionText(remote, 200), where = `${shown}/${flat(branch)}`;
+    const tracking = `refs/remotes/${remote}/${branch}`;
+    if (git(["--no-optional-locks", "rev-parse", "--verify", "--quiet", tracking], { cwd, allowFail: true }).status !== 0)
+      return `Remote ${shown}: no ${where} recorded; fetch to compare.`;
+    const [ahead = 0, behind = 0] = git(["--no-optional-locks", "rev-list", "--left-right", "--count", `refs/heads/${branch}...${tracking}`], { cwd }).trim().split(/\s+/).map(Number);
+    if (!ahead && !behind) return `Remote ${shown}: ${flat(branch)} is in step with ${where} (as last fetched or pushed).`;
+    const drift = ahead && behind ? `${commit(ahead)} ahead and ${behind} behind` : ahead ? `${commit(ahead)} ahead` : `${commit(behind)} behind`;
+    return `Remote ${shown}: ${flat(branch)} is ${drift} of ${where} (as last fetched or pushed)${ahead ? "; not published" : ""}.`;
+  });
+}
+
 function sessionCheckout(name, requireHere = false) {
   const cwd = cfg.projects?.[name]?.path;
   if (!cwd || !existsSync(cwd)) {
@@ -636,7 +659,7 @@ function sessionCheckout(name, requireHere = false) {
 }
 
 function sessionFiles(cwd) {
-  const paths = ["docs/STATE.md", "STATE.md"].filter((p) => existsSync(join(cwd, p)));
+  const paths = ["docs/STATE.md", "STATE.md", "PROJECT.md"].filter((p) => existsSync(join(cwd, p)));
   const state = stateFile(paths);
   const contents = state ? readFileSync(join(cwd, state), "utf8") : "";
   const scan = (dir, recursive) => {
@@ -726,6 +749,7 @@ const commands = {
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
     console.log(formatStanding(standing, OWNER_NAME));
     console.log(await checkoutStatusLine(name, as, true));
+    if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
     if (cwd) {
       console.log(`Current branch: ${git(["branch", "--show-current"], { cwd }) || "detached HEAD"}`);
       console.log(`Uncommitted files:\n${sessionTree(cwd) || "none"}`);
@@ -735,6 +759,7 @@ const commands = {
     if (cwd) {
       const files = sessionFiles(cwd);
       if (files.state) console.log(fileExcerpt(files.state, files.contents));
+      else console.log("State file: none (looked for docs/STATE.md, STATE.md and PROJECT.md).");
       for (const path of handoffNotes(files.contents, files.paths, note?.at, files.modified)) console.log(fileExcerpt(path, readFileSync(join(cwd, path), "utf8")));
     }
     console.log(UNWRAP_RELAY);
@@ -764,12 +789,21 @@ const commands = {
       console.log(`Reported: ${command}: ${result.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
     }
     const [previous] = await call("GET", `${P(name)}/sessions`, undefined, as);
-    const { state } = sessionFiles(cwd);
+    const { state, modified } = sessionFiles(cwd);
     if (state && previous) {
-      const before = git(["show", `${previous.data.head}:${state}`], { cwd, allowFail: true });
-      const warning = staleState(state, previous.data.head, before.status === 0 && before.stdout === readFileSync(join(cwd, state), "utf8"));
+      // A state file Git does not track has no copy at the previous session's
+      // HEAD to compare with: its modification time stands in, counted as
+      // unchanged while it is not later than that note.
+      const tracked = git(["--no-optional-locks", "ls-files", "--error-unmatch", "--", state], { cwd, allowFail: true }).status === 0;
+      let unchanged = false, compared = true;
+      if (tracked) {
+        const before = git(["show", `${previous.data.head}:${state}`], { cwd, allowFail: true });
+        unchanged = before.status === 0 && before.stdout === readFileSync(join(cwd, state), "utf8");
+        compared = before.status === 0;
+      } else unchanged = new Date(modified[state]) <= new Date(previous.at);
+      const warning = staleState(state, previous.data.head, unchanged);
       if (warning) console.log(warning);
-      if (before.status !== 0) console.log(`Could not compare ${state} with the previous session HEAD.`);
+      if (!compared) console.log(`Could not compare ${state} with the previous session HEAD.`);
     }
     const tree = sessionTree(cwd);
     console.log(`Uncommitted files:\n${tree || "none"}`);
