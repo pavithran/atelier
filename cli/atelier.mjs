@@ -121,24 +121,107 @@ function git(args, opts = {}) {
 // Tokens go in a per-command header, never in a remote URL or the iCloud tree.
 const auth = (token) => ["-c", `http.extraHeader=Authorization: Bearer ${token}`];
 
-function parseArgs(argv) {
-  const out = { _: [], multi: {} };
+// Every flag each command takes, and what it takes. `true` marks a switch:
+// it never takes the word after it, so `review --approve t2` reviews t2 and
+// `merge --cancel t1` cancels t1; the only values a switch accepts are the
+// words true and false, as --flag=false or --flag false. Any other entry
+// marks a flag that needs a value: a bare one is refused, so a forgotten
+// value is never sent as the text "true" (a required check named true, a
+// handoff to the actor true, the project true). `false` refuses it with the
+// general message; a string is the message for that flag. A flag outside
+// the command's row is refused before the command runs. --project and --as
+// belong to every row, since project() and actor() read them, and --help
+// anywhere prints usage. The commands in REST take `--` and the words after it.
+const COMMON = { project: false, as: false };
+const FLAGS = {
+  unwrap: {},
+  wrap: { next: false, found: false, push: true, "no-check": true },
+  token: { days: false, label: false },
+  ops: {},
+  runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true },
+  login: { server: false, store: true },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: false, protect: false, approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false },
+  adopt: {},
+  publish: {},
+  new: { scope: false },
+  ls: { all: true },
+  show: { json: true },
+  start: { runner: false },
+  claim: { runner: false },
+  push: { force: true },
+  update: {},
+  check: { sandbox: true },
+  gc: { "dry-run": true, apply: true },
+  report: {},
+  submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
+  diff: {},
+  review: { approve: true, reject: true, note: false, head: false },
+  handoff: { to: false, note: false },
+  release: { note: false },
+  accept: { head: false },
+  abandon: { note: false },
+  // done takes its summary as a word; it refuses --summary itself, with its usage.
+  done: { sandbox: true, summary: false },
+  finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
+  sync: {},
+  merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true },
+  "notes-remote": { off: true },
+  dispatch: { to: false, agent: false, model: false, note: false },
+  undispatch: {},
+  queue: {},
+  // models add refuses --key, --api-key and --token itself, saying where keys go.
+  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
+  projects: { force: true },
+  owners: { json: true },
+  inbox: { json: true },
+  status: {},
+  open: {},
+  guide: {},
+  help: {},
+};
+const REST = new Set(["check"]);
+const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
+
+export function parseArgs(argv, switches = SWITCHES) {
+  const out = { _: [], multi: {}, bare: [], problems: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
-    // Help is intercepted before flag parsing, so a word after --help is not eaten as its value.
+    // Help is read before any flag, so a word after --help is not its value.
     if (a === "-h" || a === "--help") { out.help = true; continue; }
-    if (a.startsWith("--")) {
-      // --key=value carries its value; --key VALUE takes the next word unless it is a flag.
-      const eq = a.indexOf("=");
-      const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
-      const next = argv[i + 1];
-      const val = eq !== -1 ? a.slice(eq + 1) : next === undefined || next.startsWith("--") ? true : (i++, next);
-      (out.multi[key] ??= []).push(val);
-      out[key] = val;
-    } else out._.push(a);
+    if (!a.startsWith("--")) { out._.push(a); continue; }
+    const eq = a.indexOf("=");
+    const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
+    const next = argv[i + 1];
+    let val;
+    if (switches.has(key)) {
+      // A switch is on unless it is given the word false, as --flag=false or
+      // --flag false; any other word after it is a positional.
+      const word = eq !== -1 ? a.slice(eq + 1) : next === "true" || next === "false" ? (i++, next) : "true";
+      if (word !== "true" && word !== "false") out.problems.push(`--${key} takes no value: write --${key}, or --${key}=false to turn it off`);
+      val = word === "true";
+    } else if (eq !== -1) val = a.slice(eq + 1);
+    // --key VALUE takes the next word unless that word is a flag. With no
+    // word there the flag is bare, which checkFlags refuses.
+    else if (next === undefined || next.startsWith("--")) { val = true; out.bare.push(key); }
+    else val = (i++, next);
+    (out.multi[key] ??= []).push(val);
+    out[key] = val;
   }
   return out;
+}
+
+// The flags a command was given, against its row in FLAGS: an unknown flag,
+// a `--` the command does not take, a flag that needs a value and got none,
+// and a switch given a word other than true or false are refused here, before
+// the command runs or contacts the server.
+function checkFlags(cmd) {
+  const row = { ...COMMON, ...FLAGS[cmd] };
+  const see = usage[cmd] ? `atelier ${cmd} --help` : "atelier help";
+  for (const flag of Object.keys(args.multi)) if (!(flag in row)) die(`${cmd} does not take --${flag}; see ${see}`);
+  if (args.rest && !REST.has(cmd)) die(`${cmd} does not take "--" and the words after it; see ${see}`);
+  for (const flag of args.bare) die(typeof row[flag] === "string" ? row[flag] : `--${flag} needs a value: --${flag} VALUE or --${flag}=VALUE`);
+  for (const problem of args.problems) die(problem);
 }
 
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -235,10 +318,11 @@ function project() {
   die("which project? pass --project NAME, or run inside a registered checkout or workspace");
 }
 
-// --summary takes text; a bare flag or an empty or blank value is refused, not dropped.
+// --summary takes text: an empty or blank value is refused, not dropped. A
+// bare flag is refused by the flag table before the command runs.
 function summaryArg(cmd) {
   if (args.summary === undefined) return;
-  if (typeof args.summary !== "string" || !args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
+  if (!args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
 }
 
 // --check, --protect and --scope take text, once per use. A bare flag, which
@@ -818,10 +902,8 @@ const commands = {
     // An unquoted summary reaches here as several words: they are one summary.
     try { data = cleanSession({ summary: args._.slice(1).join(" "), next: args.next, head, dirty: false, checks: [] }); }
     catch (err) { die(err.message); }
-    if (args.next !== undefined && typeof args.next !== "string") die("--next needs text");
     const found = args.multi.found ?? [];
-    if (found.length > 100 || found.some((text) => typeof text !== "string" || !sessionText(text))) die("--found needs text, at most 100 times");
-    if (args.push !== undefined && args.push !== true) die("--push takes no value");
+    if (found.length > 100 || found.some((text) => !sessionText(text))) die("--found needs text, at most 100 times");
     wrapReady(name, cwd, true);
     const { project: record } = await call("GET", P(name), undefined, as);
     data.checksSkipped = args["no-check"] === true;
@@ -937,7 +1019,7 @@ const commands = {
     const action = args._[1];
     if (action === "issue") {
       if (typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
-      if (args.days !== undefined && (args.days === true || !Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
+      if (args.days !== undefined && (!Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
       const result = await call("POST", "/tokens", {
         actor: args.as, ...(args.multi.project ? { projects: args.multi.project } : {}),
         ...(args.days !== undefined ? { days: Number(args.days) } : {}),
@@ -962,8 +1044,8 @@ const commands = {
   // `runner --discover` reports what each home model's harness serves (discover.mjs);
   // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
   async runner() {
-    if (args.discover !== undefined) return discoverModels();
-    if (args.usage !== undefined) return reportUsage();
+    if (args.discover === true) return discoverModels();
+    if (args.usage === true) return reportUsage();
     const { runRunner } = await import("./runner.mjs");
     try {
       await runRunner(args, {
@@ -1042,9 +1124,6 @@ const commands = {
 
   // The project owner, in the project's checkout.
   async init() {
-    // A bare --title has no value, like a bare --approval: refuse rather than
-    // silently clear the stored title.
-    if (args.title === true) die('give the title as --title TEXT, or --title "" to clear it');
     const checks = listArg("check", "init"), given = args.multi.protect ? listArg("protect", "init") : null;
     const top = git(["rev-parse", "--show-toplevel"]);
     let name, existing;
@@ -1059,7 +1138,7 @@ const commands = {
     }
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
     const cp = readControlPlane(top);
-    if (cp && (!args.approval || args.approval === true)) {
+    if (cp && !args.approval) {
       die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
     }
     // Only what this command names is sent; the server keeps everything else
@@ -1075,12 +1154,14 @@ const commands = {
       if (cp.agents) policy.agents = cp.agents;
       if (cp.execution) policy.execution = cp.execution;
     }
-    if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? Boolean(args["refuse-overlap"]);
-    if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = Boolean(args["sandbox-only"]);
+    // --refuse-overlap and --sandbox-only are switches: given, they turn the
+    // setting on; given as --sandbox-only=false or --sandbox-only false, off.
+    if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
+    if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
     const r = await call("PUT", P(name), {
       ...policy,
       ...(reset ? { reset: true } : {}),
-      approval: args.approval === true ? undefined : args.approval,
+      approval: args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title }),
       defaultBranch: branch,
@@ -1090,7 +1171,7 @@ const commands = {
     // changes the policy and pushes nothing; atelier sync carries new commits.
     const fresh = cfg.projects?.[name]?.fresh === true;
     const since = typeof args["history-since"] === "string" ? args["history-since"] : null;
-    if (args["history-since"] === true || args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
+    if (args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
     let pushed = "HEAD";
     if (fresh) {
       if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
@@ -1208,7 +1289,7 @@ const commands = {
     const name = project();
     const id = itemArg();
     const as = await actor();
-    const { workspace, dir, identity } = await claimWorkspace(name, id, as, args.runner && args.runner !== true ? String(args.runner) : null);
+    const { workspace, dir, identity } = await claimWorkspace(name, id, as, args.runner ?? null);
     console.log(`${id} is yours, ${as}. Work here:\n  cd ${JSON.stringify(dir)}`);
     if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, as in the project checkout.`);
     console.log(`Write token expires ${workspace.expiresAt}; run \`atelier claim ${id}\` again to refresh it.`);
@@ -1291,10 +1372,7 @@ const commands = {
   },
 
   async gc() {
-    if (args._.length !== 1 || args.rest || (args["dry-run"] !== undefined && args["dry-run"] !== true) || Object.keys(args.multi).some((k) => !["apply", "dry-run", "project", "as"].includes(k)) ||
-        (args.apply && args["dry-run"]) || (args.apply !== undefined && args.apply !== true)) {
-      die("usage: atelier gc [--project NAME] [--dry-run | --apply]");
-    }
+    if (args._.length !== 1 || (args.apply && args["dry-run"])) die("usage: atelier gc [--project NAME] [--dry-run | --apply]");
     const name = project(), as = await actor(OWNER);
     const { items } = await call("GET", P(name), undefined, as);
     if (!existsSync(CACHE)) { console.log("No local cache to collect."); return; }
@@ -1342,7 +1420,7 @@ const commands = {
     if (!args.approve && !args.reject) die("usage: atelier review t3 --approve|--reject --note '…' --as harness/model");
     const name = project(), id = itemArg(), as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
-    await call("POST", `${I(name, id)}/review`, { approve: Boolean(args.approve), note: args.note === true ? "" : args.note ?? "", head: args.head ?? d.item.head }, as);
+    await call("POST", `${I(name, id)}/review`, { approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
   },
 
@@ -1470,11 +1548,11 @@ const commands = {
     }
     const refreshed = await refreshControlPlane(cwd, name);
     if (args.head !== undefined) {
-      if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]] | atelier merge ID --cancel [--discard-local]");
+      if (!/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]] | atelier merge ID --cancel [--discard-local]");
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
-        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:typeof args.note==="string"?args.note:""},OWNER);
+        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:args.note??""},OWNER);
         await call("POST",`${I(name,id)}/accept`,{head:args.head},OWNER);
       }
     }
@@ -1618,12 +1696,7 @@ const commands = {
   // The project owner queues an open task for a kind of runner.
   async dispatch() {
     const name = project(), id = itemArg();
-    const item = await call("POST", `${I(name, id)}/dispatch`, {
-      to: args.to === true ? undefined : args.to,
-      agent: args.agent === true ? undefined : args.agent,
-      model: args.model === true ? undefined : args.model,
-      note: args.note === true ? undefined : args.note,
-    }, OWNER);
+    const item = await call("POST", `${I(name, id)}/dispatch`, { to: args.to, agent: args.agent, model: args.model, note: args.note }, OWNER);
     const d = item.dispatch;
     console.log(`${id} is waiting for ${d.to === "any" ? "any runner" : `a ${d.to} runner`}${d.agent ? `, ${d.agent}` : ""}${d.model ? ` with ${d.model}` : ""}.`);
   },
@@ -1742,7 +1815,7 @@ const commands = {
   // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
   async status() {
     if (args.project !== undefined) {
-      const name = args.project === true ? die("usage: atelier status [--project NAME]") : args.project;
+      const name = args.project;
       const as = await actor(OWNER);
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + await checkoutStatus(name, as));
@@ -1782,5 +1855,6 @@ if (isMain) {
     else commands.help();
     process.exit(0);
   }
+  checkFlags(cmd);
   await fn();
 }
