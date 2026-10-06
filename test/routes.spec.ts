@@ -452,6 +452,70 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1 });
 });
 
+it("the evidence route measures against main's head, so a crafted merge cannot hide a reverted protected file from the gate", async () => {
+  const name = "measured-crafted", A = "claude-code/opus-5.5";
+  const OLD = "0".repeat(40), NEW = "1".repeat(40), W = "b".repeat(40), M = "a".repeat(40);
+  const T_OLD = "2".repeat(40), T_NEW = "3".repeat(40), T_M = "4".repeat(40);
+  const V1 = "5".repeat(40), V2 = "6".repeat(40), A1 = "7".repeat(40), A2 = "8".repeat(40);
+  await project(name, ["AGENTS.md"]);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Touch a.ts", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, OLD, A);
+  await L.recordPush("t1", A, M, M);
+  // Main moved AGENTS.md from V1 to V2. The head M is a merge whose first
+  // parent is OLD, with AGENTS.md back at V1 and a.ts edited; its other
+  // parent W carries main's newer history. The first-parent fork point is
+  // OLD, from which only a.ts changed. Each repository answers only for its
+  // own objects: the fork holds none of main's newer ones.
+  const repos: Record<string, { log: { hash: string; parents: string[]; treeHash: string }[]; trees: Record<string, Record<string, string>> }> = {
+    [name]: {
+      log: [{ hash: NEW, parents: [OLD], treeHash: T_NEW }, { hash: OLD, parents: [], treeHash: T_OLD }],
+      trees: { [T_OLD]: { "AGENTS.md": V1, "a.ts": A1 }, [T_NEW]: { "AGENTS.md": V2, "a.ts": A1 } },
+    },
+    [`${name}--t1`]: {
+      log: [{ hash: M, parents: [OLD, W], treeHash: T_M }, { hash: OLD, parents: [], treeHash: T_OLD }],
+      trees: { [T_OLD]: { "AGENTS.md": V1, "a.ts": A1 }, [T_M]: { "AGENTS.md": V1, "a.ts": A2 } },
+    },
+  };
+  const ARTIFACTS = {
+    get: async (repo: string) => {
+      const r = repos[repo];
+      return {
+        log: async (opts: { limit?: number } = {}) => r.log.slice(0, opts.limit ?? 50),
+        readCommit: async (h: string) => r.log.find((c) => c.hash === h) ?? null,
+        readTree: async (h: string) => r.trees[h] ? Object.entries(r.trees[h]).map(([n, hash]) => ({ name: n, mode: "100644", hash, type: "blob" })) : null,
+        readBlob: async () => null,
+        [Symbol.dispose]() {},
+      };
+    },
+  } as unknown as Artifacts;
+  expect(await (await ARTIFACTS.get(`${name}--t1`)).readTree(T_NEW)).toBeNull();
+  const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
+    worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS } as typeof env);
+  const owner = as(TOKEN, "owner");
+  const agent = as((await (await call("POST", "/tokens", "owner", { actor: A, projects: [name] })).json() as { token: string }).token, null);
+
+  // The agent names only a.ts, as the fork point would; the row records the revert too.
+  const res = await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: M, changedPaths: ["a.ts"] });
+  expect(res.status, await res.clone().text()).toBe(200);
+  const row = (await (await owner("GET", "/items/t1")).json() as { evidence: Record<string, unknown>[] }).evidence.at(-1);
+  expect(row).toMatchObject({ grade: "observed", head: M, by: A, changedPaths: ["AGENTS.md", "a.ts"] });
+
+  // So the gate treats the change as protected: it needs an independent review, and accept is refused.
+  expect((await agent("POST", "/items/t1/submit", {})).status).toBe(200);
+  const detail = await (await owner("GET", "/items/t1")).json() as { gate: { ready: boolean; needsAssessor: boolean; blockers: string[] } };
+  expect(detail.gate).toMatchObject({ ready: false, needsAssessor: true });
+  expect(detail.gate.blockers.join(" ")).toMatch(/protected path/);
+  const accept = await owner("POST", "/items/t1/accept", { head: M });
+  expect(accept.status).toBe(409);
+  expect(await accept.json()).toMatchObject({ error: "not_ready" });
+});
+
 it("the standing route is readable by any signed-in actor, and by no one else", async () => {
   const name = "standing-route", agent = "codex/gpt-6-astra", head = "a".repeat(40);
   await project(name);

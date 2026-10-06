@@ -151,7 +151,7 @@ This applies to every part, even where `gate()` would ask for no review.
 ## 5. t16: integration branch per plan
 
 **Parts fork from the plan's fork, at its current head.** This changes the claim route's source repository. It also means changed paths must be measured against the plan's fork, not the baseline. Today these all assume the baseline:
-- `forkPoint` in `src/sandbox/runner.ts`;
+- `againstMain` in `src/sandbox/runner.ts`, and `measureWorkspace` in `src/diff.ts`, which the evidence route calls;
 - `cleanClone` in `cli/atelier.mjs`;
 - `itemDiff`;
 - `atelier update`.

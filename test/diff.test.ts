@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { againstMain, changedPaths, diffLines, forkPoint, itemDiff, mergeBase, pairReader, repoReader, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
+import { againstMain, changedPaths, diffLines, itemDiff, measureWorkspace, mergeBase, pairReader, repoReader, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
 
 const replay = (ops: { op: string; text: string }[]) => ({
   a: ops.filter((o) => o.op !== "+").map((o) => o.text),
@@ -214,10 +214,12 @@ test("a merge that makes an older main commit the fork point cannot hide a rever
   assert.deepEqual(m, { main: "new", mainTree: "new", head: "M", headTree: "M" });
   assert.equal(await fork.readTree("new"), null, "the fork never holds main's newer tree");
   assert.deepEqual(await changedPaths(pairReader(fork, main), m!.mainTree, m!.headTree), ["AGENTS.md", "a.ts"]);
+  // What the evidence route records, by the same measure.
+  assert.deepEqual(await measureWorkspace(A, "main", "fork"), { head: "M", changedPaths: ["AGENTS.md", "a.ts"] });
   // The first-parent fork point is the one the agent built, and lists only a.ts.
-  const fp = await forkPoint(fork, main);
-  assert.equal(fp?.base, "old");
-  assert.deepEqual(await changedPaths(repoReader(fork), fp!.baseTree, fp!.headTree), ["a.ts"]);
+  const base = mergeBase((await fork.log({ limit: 500 })).map((c) => c.hash), (await main.log({ limit: 1000 })).map((c) => c.hash));
+  assert.equal(base, "old");
+  assert.deepEqual(await changedPaths(repoReader(fork), "old", "M"), ["a.ts"]);
 });
 
 test("a workspace behind main lists main's newer changes until it takes them; one that has them lists its own work", async () => {

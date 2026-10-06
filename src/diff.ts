@@ -303,19 +303,6 @@ export function mergeBase(workspaceLog: string[], baselineLog: string[]): string
   return workspaceLog.find((h) => shared.has(h)) ?? null;
 }
 
-// The workspace head and its fork point, with the trees of both.
-export interface ForkPoint { base: string; baseTree: string; head: string; headTree: string }
-
-export async function forkPoint(fork: ArtifactsRepo, baseline: ArtifactsRepo): Promise<ForkPoint | null> {
-  const [forkLog, baseLog] = await Promise.all([fork.log({ limit: 500 }), baseline.log({ limit: 1000 })]);
-  const head = forkLog[0];
-  const base = mergeBase(forkLog.map((c) => c.hash), baseLog.map((c) => c.hash));
-  if (!head || !base) return null;
-  const baseCommit = forkLog.find((c) => c.hash === base) ?? (await fork.readCommit(base));
-  if (!baseCommit) return null;
-  return { base, baseTree: baseCommit.treeHash, head: head.hash, headTree: head.treeHash };
-}
-
 export function repoReader(repo: ArtifactsRepo): Reader {
   return {
     tree: (h) => repo.readTree(h),
@@ -335,19 +322,20 @@ export async function changedPaths(r: Reader, baseTree: string, headTree: string
   return pairs.map(([l, rt]) => (rt ?? l)!.path);
 }
 
-// The workspace's head and every path it changes against its fork point, both
-// read from Artifacts, as the sandbox runner reads them. The gate classifies a
-// change on these paths, so they come from here and never from the caller.
-// When forkPoint finds no commit the workspace shares with the baseline,
-// nothing is measured: the paths are null and the gate waits.
+// The workspace's head and every path it differs from main's head on (see
+// againstMain), both read from Artifacts with the measure the sandbox runner
+// uses. The gate classifies a change on these paths, so they come from here
+// and never from the caller, and never from a fork point the workspace's
+// history chooses. When either repository has no commits, nothing is
+// measured: the paths are null and the gate waits.
 export interface Measurement { head: string | null; changedPaths: string[] | null }
 
 export async function measureWorkspace(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<Measurement> {
   using fork = await artifacts.get(workspaceRepo);
   using baseline = await artifacts.get(baselineRepo);
-  const fp = await forkPoint(fork, baseline);
-  if (!fp) return { head: (await fork.log({ limit: 1 }))[0]?.hash ?? null, changedPaths: null };
-  return { head: fp.head, changedPaths: await changedPaths(repoReader(fork), fp.baseTree, fp.headTree) };
+  const m = await againstMain(fork, baseline);
+  if (!m) return { head: (await fork.log({ limit: 1 }))[0]?.hash ?? null, changedPaths: null };
+  return { head: m.head, changedPaths: await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree) };
 }
 
 // The item's diff against main as it is now (see againstMain).
