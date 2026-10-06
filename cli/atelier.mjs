@@ -140,10 +140,10 @@ const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: false, protect: false, approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false },
   adopt: {},
   publish: {},
-  new: { scope: false },
+  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry' },
   ls: { all: true },
   show: { json: true },
   start: { runner: false },
@@ -325,11 +325,12 @@ function summaryArg(cmd) {
   if (!args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
 }
 
-// --check, --protect and --scope take text, once per use. A bare flag, which
-// the parser records as the value true, and an empty or blank value are
-// refused before any request: a forgotten command after --check would
-// otherwise register a required check named "true", which `sh -c true`
-// passes every time. The server refuses the same (asStrings in src/index.ts).
+// --check, --protect and --scope take text, once per use. A bare flag is
+// refused by the flag table, which gives it this message, before the command
+// runs; an empty or blank value is refused here, before any request. A
+// forgotten command after --check would otherwise register a required check
+// named "true", which `sh -c true` passes every time. The server refuses the
+// same (asStrings in src/index.ts).
 function listArg(flag, cmd) {
   const values = args.multi[flag] ?? [];
   if (values.some((v) => typeof v !== "string" || !v.trim())) die(`--${flag} needs text: atelier ${cmd} --${flag} "TEXT", once per entry`);
