@@ -1,0 +1,16 @@
+atelier atelier/t161 "Protected actions and atelier ship (PAVI's decision, 2026-10-05, atelier-ops/docs/controlplane-inventory-2026-10-05.md): a protected action (deploy, device install, paid model run, Photos writeback, or any action a project's policy names) needs the owner's approval bound to an exact revision, like accept, recorded in the Ledger; atelier ship composes the project's ship order (web: commit, deploy, verify, wrap, push; installable: install, verify, commit, wrap, push; from the project's ship policy where it has one) and records what ran and its outcome"
+accepted head 7c0efcae1748155b3a988aca166ff740a700e4f2
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T13:24:38.187Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T13:24:41.912Z
+REVIEW approve — claude-code/fable-5.1: Approvals owner-only on all five routes and consumed once inside the Durable Object; ship runs end to end against stand-ins: dry run writes nothing, refuses before any step when an approval is missing, consumes before running, stops at the first failure, redacts the tail, strips ATELIER_* and never forces a push. Non-blocking: a push approval at X covers pushing X's wrapped descendant, which docs/ship.md should say; device becomes an approvable kind no step consumes; README command table lacks approve, approvals and ship; the inbox entry is not built; withdraw, consume and recordActionRun skip this.project().
+REVIEW OVERRIDDEN — pavi: PAVI, 2026-10-06: "temporarily override the family constraint and do it all with opus, fable and sonnet"; built by opus-5.5, reviewed and approved by fable-5.1.
+2026-10-06T12:43:33.917Z pavi item.created
+2026-10-06T12:43:56.943Z claude-code/opus-5.5 item.claimed
+2026-10-06T12:44:00.127Z claude-code/opus-5.5 fork.created
+2026-10-06T13:21:53.189Z claude-code/opus-5.5 push.observed
+2026-10-06T13:24:38.929Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:24:42.331Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:24:43.800Z claude-code/opus-5.5 item.submitted
+2026-10-06T13:42:45.186Z claude-code/fable-5.1 review.approved
+2026-10-06T13:42:45.978Z pavi review.overridden
+2026-10-06T13:42:45.978Z pavi item.accepted
