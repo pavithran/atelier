@@ -203,8 +203,8 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/ledger.ts", symbol: "postPlan" }],
   },
   {
-    name: "Plan routes and command", stage: "t15, build step 6", built: false,
-    what: "The routes for starting, posting, approving, revising, rerouting, retrying and stopping a plan, and the `atelier plan` command that calls them.",
+    name: "Plan routes and command", stage: "t15, build step 6", built: true,
+    what: "`atelier plan \"goal\"` starts a plan, and `plan show` prints its phase, its newest proposal with the hash to approve, or each part with its state, routing and attempts, and the command for each decision waiting on the owner. `plan approve` takes that hash, once; `plan revise`, `plan reroute`, `plan retry` and `plan stop` are the owner's other decisions, and `plan post` is how a planner submits its plan document, the one plan route an agent token reaches. `atelier show` prints a plan's own brief.",
     files: ["test/plan-cli.test.mjs"],
     code: [{ file: "src/index.ts", symbol: "approvePlan" }, { file: "src/usage.ts", symbol: "plan approve" }],
   },

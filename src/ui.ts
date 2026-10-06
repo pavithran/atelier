@@ -200,8 +200,13 @@ function taskStory(project: string, d: Detail): Story | null {
 
 // A waiting decision as a card: the row that selects it, the brief in one line,
 // the task's thread in miniature with each review as an edge, and a link to the task page.
-function decisionCard(row: string, project: string, d: Detail): string {
-  const b = briefFor(d, d.events);
+// A plan's own entry (approve-plan, plan-blocked) carries its decision in its
+// reason, which the card shows in place of the item's brief: the brief reads
+// the plan item as a task, and knows nothing of its proposal or its parts.
+function decisionCard(row: string, project: string, d: Detail, lead?: InboxEntry): string {
+  const brief = briefFor(d, d.events);
+  const b = lead && (lead.kind === "approve-plan" || lead.kind === "plan-blocked")
+    ? { ...brief, recommendation: { verdict: "decide" as const, reason: lead.reason } } : brief;
   const owner = d.ownerActor ?? DEFAULT_OWNER;
   const story = taskStory(project, d);
   const thread = story
@@ -240,7 +245,7 @@ export function renderInbox(
     const row = `<a class="decision-row${current ? " selected" : ""}" href="${selectedHref(lead.project, lead.itemId)}"${current ? ' aria-current="true"' : ""}>
       ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a>`;
     const detail = details.get(`${lead.project}/${lead.itemId}`);
-    return detail ? decisionCard(row, lead.project, detail) : `<li>${row}</li>`;
+    return detail ? decisionCard(row, lead.project, detail, lead) : `<li>${row}</li>`;
   }).join("");
 
   const needs = new Set(entries.map((x) => `${x.project}/${x.itemId}`));
