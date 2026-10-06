@@ -29,6 +29,7 @@ import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatStatus } from "./status.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
+import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -555,59 +556,7 @@ export function formatBrief(project, id, brief, origin) {
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 
-// The text `atelier guide` prints, and, without its heading, the section
-// `atelier adopt` inserts into a project's AGENTS.md. Kept in one place so the
-// two cannot drift apart.
-export function guideText() {
-  return `## Working through Atelier
-
-Several agents may work on this project at once. Each piece of work is an
-item with exactly one owner. Never edit the project checkout directly.
-
-1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
-   and prints its workspace, title, scope and note. Work only there.
-2. Commit your changes, then run \`atelier done "summary"\` in that workspace.
-   It pushes, runs required checks and submits only after they pass. Relay
-   its final line to the owner. The project owner accepts and merges.
-3. \`atelier inbox\` and \`atelier show ID\` print briefs you can relay to the owner.
-4. \`atelier ls --project NAME\` lists tasks. Ask the owner to create one if needed.
-5. Individual steps remain available: \`atelier claim\`, \`atelier push\`,
-   \`atelier check\` and \`atelier submit --summary "summary"\`.
-   \`atelier report "…"\` records a Reported claim, never an Observed pass.
-6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
-   or \`atelier release ID\`. Your write token is revoked either way.
-7. Reviewing someone else's item: \`atelier diff ID\`, then
-   \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
-   paths need approval from a different model than the owner's.
-8. \`atelier update\` rebases your workspace onto whatever has merged since.
-
-For each session the project owner runs in the registered checkout:
-
-1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
-2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout; it commits and updates the baseline. Add \`--push\` to push each checkout remote. It never deploys or publishes a release.
-3. ${FILING_RELAY} Use repeatable \`--found TEXT\` on wrap to file tasks in this project.
-
-Session notes keep metadata only, never prompts, transcripts or file contents.
-Material for the owner to copy is one complete fenced block with a language
-tag: bash for a command the owner runs, text for prose, a brief or an envelope.
-Never leave prose the owner must select by hand. Save a copy under
-~/Documents/ai-project-data/<project>/, never the portfolio root.
-`;
-}
-
 // ── commands ───────────────────────────────────────────────────────────────
-
-// Per-command usage lines, shown by --help/-h and by a bad subcommand.
-const usage = {
-  unwrap: "usage: atelier unwrap [--project P]",
-  wrap: 'usage: atelier wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]',
-  start: "usage: atelier start ID [--as harness/model]",
-  done: 'usage: atelier done "summary"',
-  adopt: "usage: atelier adopt --project NAME [--as harness/model]",
-  models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
-  runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
-  projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
-};
 
 // The checkout's state against the baseline, in words. The baseline's head is
 // read with ls-remote, so nothing is fetched into the checkout.
@@ -1616,7 +1565,7 @@ const commands = {
       const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
       return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
     }
-    if (sub) die(`${usage.models}\nunknown models command "${sub}"; use add, remove, or nothing to list`);
+    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, or nothing to list`);
     const pool = await call("GET", "/models", undefined, OWNER);
     if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
     for (const m of pool) {
@@ -1629,7 +1578,7 @@ const commands = {
   async projects() {
     const [, sub, name, to] = args._;
     if (sub === "rename") {
-      if (!name || !to || args._.length !== 4) die(usage.projects);
+      if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
       const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
       // The server says which name the project was registered under; the
       // local entry moves from that name. An entry already under the new
@@ -1651,7 +1600,7 @@ const commands = {
       console.log(`${r.from} still works: the API serves it under that name, old page links redirect, tokens limited to it keep their access, and workspaces under ${join(CACHE, "work", r.from)} need no change.`);
       return;
     }
-    if (sub !== "remove" || !name) die(usage.projects);
+    if (sub !== "remove" || !name) die(COMMAND_USAGE.projects);
     await call("DELETE", P(name), { force: args.force === true }, await actor(OWNER));
     // The whole local entry goes; say what it held, since some of it (notesRemote) is set by hand.
     let dropped = "";
@@ -1714,23 +1663,7 @@ const commands = {
   },
 
   help() {
-    console.log(`atelier — one owner per item, observed evidence, the project owner decides.
-
-Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]
-Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish\n           notes-remote [REMOTE | --off]
-Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] (with a project: where it stands, as text) · open
-Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report "…" · submit [--summary T]
-           handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-Owner      accept ID · merge ID [--head SHA [--approve]] [--policy-changed-ok] · abandon ID
-Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
-           dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
-Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local
-           adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
-Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]\n           runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)\n           runner --usage [--name home:NAME] [--dry-run] [--config PATH]   (each tool's windows, served models, costs and balances)
-Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
-Docs       guide   (paste into a project's AGENTS.md)
-
-Tokens     token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID\nCommon flags: --project NAME, --as harness/model (or ATELIER_ACTOR).`);
+    console.log(helpText());
   },
 };
 
@@ -1741,7 +1674,7 @@ if (isMain) {
   // --help/-h anywhere prints the command's usage, or the general help, and
   // exits before any server contact.
   if (args.help) {
-    if (cmd !== "help" && usage[cmd]) console.log(usage[cmd]);
+    if (cmd !== "help" && COMMAND_USAGE[cmd]) console.log(COMMAND_USAGE[cmd]);
     else commands.help();
     process.exit(0);
   }

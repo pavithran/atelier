@@ -1,0 +1,33 @@
+## Working through Atelier
+
+Several agents may work on this project at once. Each piece of work is an
+item with exactly one owner. Never edit the project checkout directly.
+
+1. `atelier start ID --project NAME --as HARNESS/MODEL` claims the task
+   and prints its workspace, title, scope and note. Work only there.
+2. Commit your changes, then run `atelier done "summary"` in that workspace.
+   It pushes, runs required checks and submits only after they pass. Relay
+   its final line to the owner. The project owner accepts and merges.
+3. `atelier inbox` and `atelier show ID` print briefs you can relay to the owner.
+4. `atelier ls --project NAME` lists tasks. Ask the owner to create one if needed.
+5. Individual steps remain available: `atelier claim`, `atelier push`,
+   `atelier check` and `atelier submit --summary "summary"`.
+   `atelier report "…"` records a Reported claim, never an Observed pass.
+6. If you can't finish, `atelier handoff ID --to HARNESS/MODEL --note "…"`
+   or `atelier release ID`. Your write token is revoked either way.
+7. Reviewing someone else's item: `atelier diff ID`, then
+   `atelier review ID --approve|--reject --note "…"`. Changes to protected
+   paths need approval from a different model than the owner's.
+8. `atelier update` rebases your workspace onto whatever has merged since.
+
+For each session the project owner runs in the registered checkout:
+
+1. Start a session with `atelier unwrap --project NAME`; relay its short paragraph.
+2. End with `atelier wrap "summary" --next "what is next"` in the registered checkout; it commits and updates the baseline. Add `--push` to push each checkout remote. It never deploys or publishes a release.
+3. Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project cloudflare-git. File a lesson worth keeping the same way with a title starting "Lesson: ". Use repeatable `--found TEXT` on wrap to file tasks in this project.
+
+Session notes keep metadata only, never prompts, transcripts or file contents.
+Material for the owner to copy is one complete fenced block with a language
+tag: bash for a command the owner runs, text for prose, a brief or an envelope.
+Never leave prose the owner must select by hand. Save a copy under
+~/Documents/ai-project-data/<project>/, never the portfolio root.

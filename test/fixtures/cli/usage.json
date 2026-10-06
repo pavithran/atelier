@@ -1,0 +1,10 @@
+{
+  "unwrap": "usage: atelier unwrap [--project P]\n",
+  "wrap": "usage: atelier wrap \"summary\" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]\n",
+  "start": "usage: atelier start ID [--as harness/model]\n",
+  "done": "usage: atelier done \"summary\"\n",
+  "adopt": "usage: atelier adopt --project NAME [--as harness/model]\n",
+  "models": "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID\n",
+  "runner": "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]\n",
+  "projects": "usage: atelier projects remove NAME [--force] · projects rename OLD NEW\n"
+}
