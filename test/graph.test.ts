@@ -207,6 +207,19 @@ test("a public story keeps what happened and leaves out what anyone wrote", () =
   assert.deepEqual(s.tally, buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER).tally);
 });
 
+// Task t158: the public showcase draws task and project titles, and an
+// address in one is a person's, so the redacted story leaves it out.
+test("a public story draws titles without email addresses; the owner's own story keeps them as recorded", () => {
+  const items = [{ id: "t1", title: "Reply to jane2@private.example about the export", state: "merged" }] as never[];
+  const pub = buildStory("demo", items, night(), OWNER, false, "Demo for <ops@private.example>", { redact: true });
+  assert.equal(pub.threads[0].title, "Reply to about the export");
+  assert.equal(pub.title, "Demo for");
+  assert.ok(!drawStory(pub, OWNER).includes("@"));
+  const own = buildStory("demo", items, night(), OWNER, false, "Demo for <ops@private.example>");
+  assert.equal(own.threads[0].title, "Reply to jane2@private.example about the export");
+  assert.equal(own.title, "Demo for <ops@private.example>");
+});
+
 // A story of one task, as the task page and a Decisions card draw it.
 function oneTask() {
   seq = 0;
@@ -295,6 +308,15 @@ test("a local run's beads carry their actor's colour for the outline", () => {
   const beads = svg.match(/<g class="g-bead pop [^"]*local"[^>]*>/g) ?? [];
   assert.ok(beads.length > 0, "a local bead is drawn");
   for (const b of beads) assert.match(b, /--c:var\(--m-zai\)/);
+});
+
+test("a runner taking a handed-off claim is bookkeeping: no agent's move and a quarter step", () => {
+  const base = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  const adopted = night();
+  adopted.unshift({ seq: 100, itemId: "t2", at: "2026-10-04T11:00:00.000Z", actor: "codex/gpt-6", kind: "item.runner_adopted", data: { runner: "home:studio" } } as never);
+  const story = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], adopted, OWNER);
+  assert.equal(story.tally.agentMoves, base.tally.agentMoves);
+  assert.equal(story.span, base.span + 0.25);
 });
 
 test("a session note is bookkeeping: no agent's move, a quarter step on the axis, and nothing on a thread", () => {

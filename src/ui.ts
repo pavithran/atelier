@@ -556,7 +556,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   ${compareBlock(stories, imported, total, owner, who)}
   ${body}
-  <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded.</p>
+  <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded, with email addresses left out.</p>
 `,
   });
 }
@@ -936,7 +936,8 @@ function taskRows(p: ProjectRecord, items: Item[]): string {
     ${tag(stateLabel[i.state], i.state === "merged" ? "go" : "")}<time class="meta">${when(i.updatedAt)}</time>${icon("arrow")}</a></li>`).join("")}</ul>`;
 }
 
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing): string {
+// `actions` is the protected-actions section, drawn by src/actions-page.ts.
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing, actions = ""): string {
   const closed = (i: Item) => i.state === "merged" || i.state === "abandoned";
   const live = items.filter((i) => !closed(i));
   const done = items.filter(closed);
@@ -964,6 +965,7 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   <h2 class="section-title">Work</h2>
   ${live.length ? taskRows(p, live) : '<p class="empty">No active tasks. Create one above.</p>'}
   ${done.length ? `<details class="disclosure"><summary>Completed and closed · ${done.length}</summary>${taskRows(p, done)}</details>` : ""}
+  ${actions}
   <details class="disclosure"><summary>Project policy</summary>${policy}</details>
   <details class="disclosure"><summary>Activity</summary>${eventTable(events, true)}</details>
 </div>`, "Projects", ownerName);
@@ -1094,6 +1096,17 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
       <pre tabindex="0">${e(`atelier merge ${item.id} --project ${shell(p.name)} --head ${item.acceptedHead}`)}</pre>
       <p class="meta">This merges the approved revision and records the result. It does not deploy.</p></div>`
     : "";
+  // An accepted revision can be accepted again: the acceptance records the
+  // policy it was made under, and a merge refused because that policy changed
+  // since asks for a new one, made under the policy as it is now. The gate
+  // runs again before anything is recorded.
+  const reaccept = evidenceVisible && item.state === "accepted" && item.head === item.acceptedHead
+    ? `<details class="request-changes"><summary>Accept again under the current policy</summary>
+      <form class="stack" method="post" action="${action("accept")}">${revision}
+        <p class="meta">For a merge refused because the project's protected paths, eligible agents, overlap rule or checks changed since this acceptance: checks the gate again under the policy as it is now and records a new acceptance of this revision.</p>
+        <button>Accept this revision again</button>
+      </form></details>`
+    : "";
 
   // An open task can be sent to a runner; a queued one shows who it waits for.
   const dispatchBox = item.state === "open" && !item.owner
@@ -1118,7 +1131,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}</div>
-  ${merge}
+  ${merge}${reaccept}
   <p class="meta revision">Revision <code>${short(item.head)}</code>${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
 

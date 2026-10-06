@@ -478,7 +478,7 @@ test("a paused Studio model says so, with what its log shows, and is still repor
 
 test("the command line is validated, and the runner name defaults to the machine's", () => {
   assert.deepEqual(discoverOptions(args("probe", "dry-run", "name=home:studio"), "x"), { name: "home:studio", probe: true, dryRun: true, configPath: undefined });
-  assert.equal(discoverOptions(args("name=HOME:Studio"), "x").name, "home:Studio");
+  assert.equal(discoverOptions(args("name=HOME:Studio"), "x").name, "home:studio");
   assert.equal(discoverOptions(args(), "Pavis-MacBook Pro.local").name, "home:pavis-macbook-pro.local");
   assert.equal(discoverOptions(args(), "---").name, "home:runner");
   assert.equal(discoverOptions(args("config=/tmp/r.json"), "x").configPath, "/tmp/r.json");
