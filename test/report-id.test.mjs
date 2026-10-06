@@ -116,6 +116,14 @@ test("an id with no claim, a bad --item, and --help are answered with the usage,
   const bad = f.run(f.workspace, ["report", "verified", "--item", "seven"]);
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /--item needs an item id, such as t7/);
+  // --item is in report's row of the flag table: a bare one needs a value,
+  // and a flag report does not take is refused.
+  const bare = f.run(f.workspace, ["report", "verified", "--item"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--item needs a value: --item VALUE or --item=VALUE/);
+  const other = f.run(f.workspace, ["report", "verified", "--note", "why"]);
+  assert.equal(other.status, 1);
+  assert.match(other.stderr, /report does not take --note; see atelier report --help/);
   const help = f.run(f.workspace, ["report", "--help"]);
   assert.equal(help.status, 0);
   assert.match(help.stdout, /usage: atelier report \[ID\] .* \(in a workspace, ID is its item unless --item or --project says otherwise\)/);
