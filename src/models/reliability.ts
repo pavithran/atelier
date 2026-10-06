@@ -135,7 +135,10 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
   const approvedAt = new Map<string, { reviewer: string; head: string }[]>();
   const firstReview = new Set<string>();                       // item and builder model already counted
   const ownerSeen = new Set<string>();                         // item and revision the owner approved
-  const builderOf = (item: string, head: string) => builtAt.get(item)?.get(head) ?? holders.get(item)?.serving ?? lastBuilder.get(item);
+  // Work the owner did is not a model's: a builder that is not an agent is
+  // treated as no builder, so it opens no row and earns no credit or blame.
+  const agentOnly = (a: string | undefined) => (a !== undefined && isAgent(a, owner) ? a : undefined);
+  const builderOf = (item: string, head: string) => agentOnly(builtAt.get(item)?.get(head) ?? holders.get(item)?.serving ?? lastBuilder.get(item));
 
   for (const event of sorted) {
     const { itemId: item, kind, data } = event;
@@ -198,7 +201,7 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
       reviewedHeads.set(item, (reviewedHeads.get(item) ?? new Set()).add(head));
       if (!approve) built.rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
     } else if (kind === "item.merged") {
-      const builder = holder?.serving ?? lastBuilder.get(item);
+      const builder = agentOnly(holder?.serving ?? lastBuilder.get(item));
       holders.delete(item);
       if (!builder) continue;
       lastBuilder.set(item, builder);

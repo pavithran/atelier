@@ -249,3 +249,14 @@ test("the owner taking a task opens no model row", () => {
   const rel = buildReliability([{ project: "a", events }], [], OWNER);
   assert.equal([...rel.keys()].some((k) => k.includes(OWNER)), false);
 });
+
+test("the owner's own submitted, reviewed, merged and defective work opens no model row", () => {
+  const events = history(
+    ["t2", OWNER, "item.claimed"], ["t2", OWNER, "item.submitted", { head: H1 }],
+    ["t2", GEMINI, "review.approved", { head: H1 }], ["t2", OWNER, "review.approved", { head: H1, via: "page" }],
+    ["t2", OWNER, "item.merged", { head: H1 }], ["t2", OWNER, "item.defect", { head: H1, note: "x" }],
+  );
+  const rel = buildReliability([{ project: "a", events }], [], OWNER);
+  assert.equal([...rel.keys()].some((k) => k.includes(OWNER)), false);
+  assert.ok(rel.get(GEMINI) || [...rel.keys()].some((k) => k.includes("gemini")), "the reviewer keeps its row");
+});
