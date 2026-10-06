@@ -56,16 +56,32 @@ function saveConfig(c) {
   writeFileSync(CONFIG, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
 }
 
-// The token `login` has just been given and has not yet stored.
-let loginToken = null;
+// The token and the server `login` is checking, before either is saved.
+let loginToken = null, loginServer = null;
 
-// ATELIER_TOKEN wins, then the store for this system (see credentials.mjs).
+const trimSlash = (url) => String(url).replace(/\/$/, "");
+
+// ATELIER_TOKEN wins, for whichever server is in use: the environment is the
+// user's own setting, for an agent's session or as an override. Otherwise the
+// store for this system (see credentials.mjs) holds the token `login` stored
+// once the server config.json names accepted it. Login writes the two
+// together, so that server is the one the stored token belongs to, and the
+// token goes nowhere else: with ATELIER_SERVER naming another server it is
+// not sent, and the command says what to do instead.
 function apiToken() {
   if (loginToken) return loginToken;
+  const fromEnv = process.env.ATELIER_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
   let token;
   try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
-  if (token) return token;
-  die("no API token: run `atelier login --server URL` to store one, or set ATELIER_TOKEN");
+  if (!token) die("no API token: run `atelier login --server URL` to store one, or set ATELIER_TOKEN");
+  const home = cfg.server ? trimSlash(cfg.server) : null;
+  if (server() !== home) {
+    die(home
+      ? `the stored token was accepted by ${home} and is sent only there; for ${server()} run atelier login --server ${server()}, or set ATELIER_TOKEN`
+      : `the stored token has no server on record (config.json names none); run atelier login --server ${server()}, or set ATELIER_TOKEN`);
+  }
+  return token;
 }
 
 // The environment a git command runs with. Artifacts has no Git LFS: a push
@@ -164,10 +180,12 @@ const cfg = isMain ? loadConfig() : {};
 const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";
 const OWNER_NAME = cfg.ownerName ?? "the project owner";
 
+// The server in use: the one `login` is checking, else ATELIER_SERVER, else
+// the one config.json names.
 function server() {
-  const s = process.env.ATELIER_SERVER ?? cfg.server;
+  const s = loginServer ?? process.env.ATELIER_SERVER ?? cfg.server;
   if (!s) die("no server: run `atelier login --server https://…`");
-  return s.replace(/\/$/, "");
+  return trimSlash(s);
 }
 
 function wsConfig(key, cwd = process.cwd()) {
@@ -968,26 +986,40 @@ const commands = {
       return console.log(`The token store is ${describeStore("API_TOKEN")}. ${held ? "A token is stored." : "No token is stored."}${env}`);
     }
     if (!args.server || args.server === true) die("usage: atelier login --server https://atelier.example.com   or   atelier login --store");
-    // A token already stored, or in ATELIER_TOKEN, is used; otherwise ask for one.
+    const target = trimSlash(args.server);
+    // A token in hand is reused for its own server only: ATELIER_TOKEN for the
+    // server in use (ATELIER_SERVER, else the one config.json names), the
+    // stored token for the server config.json names (see apiToken). For any
+    // other server a token is asked for, so a token is never sent to a server
+    // it was not given for: a typo in --server would otherwise hand the owner
+    // token to whatever host answers there.
+    const fromEnv = process.env.ATELIER_TOKEN?.trim();
     let token = null, fresh = false;
-    try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+    if (fromEnv) { if (target === trimSlash(process.env.ATELIER_SERVER ?? cfg.server ?? "")) token = fromEnv; }
+    else if (cfg.server && target === trimSlash(cfg.server)) { try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); } }
     if (!token) {
+      if (cfg.server && target !== trimSlash(cfg.server)) process.stderr.write(`atelier: ${target} is not ${trimSlash(cfg.server)}, the server the stored token belongs to; a token for ${target} is needed.\n`);
       try { token = await promptSecret("Server token (not shown): "); } catch (error) { die(`no token entered: ${error.message}`); }
       if (!token) die("no token entered");
       fresh = true;
     }
+    // Nothing is saved until the server accepts the token: `call` ends the
+    // command on a refusal or a server that cannot answer, and config.json and
+    // the store stay as they were.
     loginToken = token;
-    cfg.server = String(args.server).replace(/\/$/, "");
-    saveConfig(cfg);
+    loginServer = target;
     const conf = await call("GET", "/config", undefined, "owner");
-    cfg.owner = conf.ownerActor;
-    cfg.ownerName = conf.ownerName ?? undefined;
-    saveConfig(cfg);
-    // A token the server refused is never stored: `call` has already ended the command.
+    // Accepted. The token goes to the store first; then config.json names the
+    // server that accepted it, so a stored token is always paired with its server.
     let where;
     if (fresh) { try { where = writeSecret("API_TOKEN", token); } catch (error) { die(error.message); } }
-    else where = process.env.ATELIER_TOKEN?.trim() ? "the ATELIER_TOKEN environment variable" : describeStore("API_TOKEN");
+    else where = fromEnv ? "the ATELIER_TOKEN environment variable" : describeStore("API_TOKEN");
+    cfg.server = target;
+    cfg.owner = conf.ownerActor;
+    cfg.ownerName = conf.ownerName ?? undefined;
+    try { saveConfig(cfg); } catch (error) { die(`the token is stored, but config.json could not be written (${error.message}); run login again`); }
     console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". The token ${fresh ? "is now stored in" : "is read from"} ${where}.`);
+    if (fresh && fromEnv) console.log("ATELIER_TOKEN is set in the environment and is used instead of the stored token until it is unset.");
   },
 
   // The project owner, in the project's checkout.
