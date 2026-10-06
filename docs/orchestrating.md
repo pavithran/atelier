@@ -30,6 +30,28 @@ A task moves through five hands:
 Several builders can work at once, each on its own task and fork. Landing is
 the part that must not run in parallel.
 
+## Starting cold
+
+A session that takes over has no memory of the last one; everything it needs
+is in Atelier, the repository and this handbook. Before dispatching anything:
+
+1. `atelier status` for what waits for the owner, and `atelier ls --project
+   P` for every live task and who holds it.
+2. For each claimed task, look at its workspace: uncommitted changes, a
+   `COMMIT_MSG.txt` an agent left, a merge in progress, or an agent's log in
+   `.scratch/`. Check whether the agent's process still runs before starting
+   the same work again.
+3. Check that main type-checks and that the deployed server holds main's
+   routes.
+4. Read the owner's standing decisions where the project keeps them, and
+   the review bar in force.
+
+Then pick up where the record says the work stands, not where a summary
+says it does.
+
+The scripts this handbook refers to are in `bin/orchestrate/`, with their
+setup in its README.
+
 ## Briefing an agent
 
 A brief is the whole of what an agent knows. Write it so it cannot be
@@ -58,9 +80,11 @@ misread:
   outside paths are refused, put any material it needs inside the
   workspace, and tell it to edit, not only read. It prints nothing until the
   run ends; watch its log file for progress.
-- **Antigravity in plan mode** (Gemini): it cannot run commands, and an
-  attempt returns an empty answer. Put the diff in the prompt and say no
-  tool may be used.
+- **Antigravity** (Gemini, GPT-OSS): in plan mode it cannot run commands,
+  and an attempt returns an empty answer. Reviews therefore run in a
+  throwaway clone with commands allowed and the terminal sandboxed
+  (`bin/orchestrate/review.sh`), so the reviewer can search the code and
+  run tests before it calls something a defect.
 - **Agents that write a commit message to a file** (`COMMIT_MSG.txt`) also
   stage it; check that no such file, and no `.scratch/` file, is committed.
 - **A run can outlive the shell that started it.** If the session's shells
@@ -130,6 +154,22 @@ owner it read as a defect. The other half were real, and some were serious.
 - When a closing note turns out to be wrong, say so where the record can
   hold it; never leave a false statement standing.
 - Close bundled tasks against the task they landed in, naming its merge.
+
+## Feeding what you learn back into Atelier
+
+A session that learns something and keeps it in its own notes has taught the
+next session nothing. Each kind of lesson has a place in Atelier:
+
+- **A judgement about a model** (a review finding right or wrong, a run that
+  stopped early): record it with `atelier finding` or `atelier run-report`,
+  so the Models page compares models on every project's evidence.
+- **A workaround** (a script, a manual step, a check done by hand): it is a
+  missing feature. File it as a task on the atelier project, naming what
+  the workaround does; `atelier land` began as such a script.
+- **A rule about how to work** (a failure and what prevents it): change this
+  handbook through a task, so the change is reviewed like code.
+- **A decision by the owner**: record it where the project keeps its
+  decisions and cite the owner's words; never infer one.
 
 ## What to record
 
