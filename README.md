@@ -147,6 +147,16 @@ one file; item scopes and `direct.allowed_path_patterns` match as written, so a
 variant falls outside them. `atelier merge` refuses, before it changes the
 checkout, a merge whose tree would hold two such paths, on any platform.
 
+The changed paths are measured against main as it is now: every path whose
+content at the item's head differs from main's head. That is the set a merge
+could change on main whatever base git picks, since git keeps a path both
+sides agree on, and no history an agent pushes can shrink it; a merge commit
+that makes an older main commit the fork point hides nothing. A workspace
+behind main lists main's newer changes too, until `atelier update` brings them
+in. The item page's diff is measured the same way. The merge preview beneath
+it works from the fork's own first-parent history, says how far main has moved
+and whether the item would merge, and is advisory.
+
 ## Projects governed by ControlPlane
 
 Atelier and ControlPlane each own different facts. ControlPlane owns policy:

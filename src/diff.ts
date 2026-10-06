@@ -26,13 +26,13 @@ export interface FileChange {
 }
 
 export interface ItemDiff {
-  base: string;          // the commit the workspace and the baseline share
+  base: string;          // main's head, which the diff is measured against
   head: string;
   files: FileChange[];
   truncated: boolean;    // more changed files than the limit; the rest are not listed
-  baseTree?: string;     // the fork point's tree and the head's, for the merge preview
+  baseTree?: string;     // main's tree and the head's
   headTree?: string;
-  main?: MainPreview | null;  // against main as it is now; absent when not read
+  main?: MainPreview | null;  // how far main has moved since the fork point, and whether it merges; absent when not read
 }
 
 export const LIMITS = {
@@ -256,9 +256,48 @@ export async function treeDiff(r: Reader, baseTree: string, headTree: string, li
 
 // ── Artifacts ──────────────────────────────────────────────────────────────
 
+// What an item changes is measured against main as it is now: every path
+// whose content at the item's head differs from main's head. That is the set
+// of paths a merge of the item could change on main, whatever the merge base
+// turns out to be, because git keeps a path both sides agree on. No commit
+// graph the agent pushes can shrink it: the only way to take a path off the
+// list is to hold main's content for it. A workspace behind main lists main's
+// newer changes too, until `atelier update` brings them in; a workspace that
+// has them lists only its own work.
+//
+// The fork point below is not used for this. It is read from the fork's
+// first-parent log, which the agent shapes: a merge commit whose first parent
+// descends from an older main commit makes that commit the fork point, while
+// the merge's other parent carries main's newer history, so git merges the
+// item with a newer base and a protected file the head quietly reverted lands
+// unmeasured. The fork point serves only the merge preview, which says how far
+// main has moved and whether the item's own commits would merge, and is
+// advisory.
+export interface Measure { main: string; mainTree: string; head: string; headTree: string }
+
+export async function againstMain(fork: ArtifactsRepo, baseline: ArtifactsRepo): Promise<Measure | null> {
+  const [[head], [main]] = await Promise.all([fork.log({ limit: 1 }), baseline.log({ limit: 1 })]);
+  if (!head || !main) return null;
+  return { main: main.hash, mainTree: main.treeHash, head: head.hash, headTree: head.treeHash };
+}
+
+// A reader over both repositories. The head's objects are in the fork; main's
+// newer objects are only in the baseline. Git objects are content addressed,
+// so a hash names the same object wherever it is found, and the fork is tried
+// first because a workspace that has taken main's commits holds both sides.
+export function pairReader(fork: ArtifactsRepo, baseline: ArtifactsRepo): Reader {
+  const a = repoReader(fork), b = repoReader(baseline);
+  return {
+    tree: async (h) => (await a.tree(h)) ?? b.tree(h),
+    blob: async (h) => (await a.blob(h)) ?? b.blob(h),
+  };
+}
+
 // The fork point is the newest commit on the workspace's first-parent history
 // that the baseline also has, so a workspace rebased with `atelier update`
-// diffs against what it was rebased onto, not against where it was forked.
+// is previewed against what it was rebased onto, not against where it was
+// forked. The agent shapes this history (see againstMain), so it is read only
+// for the merge preview, never to measure what the item changes.
 export function mergeBase(workspaceLog: string[], baselineLog: string[]): string | null {
   const shared = new Set(baselineLog);
   return workspaceLog.find((h) => shared.has(h)) ?? null;
@@ -311,12 +350,13 @@ export async function measureWorkspace(artifacts: Artifacts, baselineRepo: strin
   return { head: fp.head, changedPaths: await changedPaths(repoReader(fork), fp.baseTree, fp.headTree) };
 }
 
+// The item's diff against main as it is now (see againstMain).
 export async function itemDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
   using fork = await artifacts.get(workspaceRepo);
   using baseline = await artifacts.get(baselineRepo);
-  const fp = await forkPoint(fork, baseline);
-  if (!fp) return null;
-  if (fp.base === fp.head) return { base: fp.base, head: fp.head, files: [], truncated: false };
-  const { files, truncated } = await treeDiff(repoReader(fork), fp.baseTree, fp.headTree);
-  return { base: fp.base, head: fp.head, files, truncated, baseTree: fp.baseTree, headTree: fp.headTree };
+  const m = await againstMain(fork, baseline);
+  if (!m) return null;
+  if (m.mainTree === m.headTree) return { base: m.main, head: m.head, files: [], truncated: false, baseTree: m.mainTree, headTree: m.headTree };
+  const { files, truncated } = await treeDiff(pairReader(fork, baseline), m.mainTree, m.headTree);
+  return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
 }

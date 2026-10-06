@@ -86,6 +86,43 @@ it("the model pool: anyone signed in reads it, only the owner changes it, a runn
   expect(await (await api("DELETE", "/gemini-3.1-pro", "owner")).json()).toEqual({ removed: true });
 });
 
+it("the diff route measures the workspace against main's head, so a crafted merge cannot hide a revert", async () => {
+  const name = "routes-diff", A = "claude-code/opus-5.5";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Crafted merge", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, "old", A);
+  // Main moved AGENTS.md from v1 to v2. The head M is a merge whose first
+  // parent is old, with AGENTS.md back at v1; the fork holds none of main's
+  // newer objects, so main's tree is read from the baseline.
+  const old = { "AGENTS.md": "rules v1\n", "a.ts": "a\n" };
+  const repos: Record<string, { log: { hash: string; treeHash: string; parents: string[] }[]; trees: Record<string, Record<string, string>> }> = {
+    [name]: { log: [{ hash: "new", treeHash: "new", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, new: { "AGENTS.md": "rules v2\n", "a.ts": "a\n" } } },
+    [`${name}--t1`]: { log: [{ hash: "M", treeHash: "M", parents: ["old", "W"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, M: { "AGENTS.md": "rules v1\n", "a.ts": "a2\n" } } },
+  };
+  const ARTIFACTS = {
+    get: async (repo: string) => {
+      const r = repos[repo];
+      return {
+        log: async (opts?: { limit?: number }) => r.log.slice(0, opts?.limit ?? 50),
+        readCommit: async (h: string) => r.log.find((c) => c.hash === h) ?? null,
+        readTree: async (h: string) => r.trees[h] ? Object.entries(r.trees[h]).map(([n, text]) => ({ name: n, mode: "100644", hash: `blob:${text}`, type: "blob" })) : null,
+        readBlob: async (h: string) => Object.values(r.trees).some((t) => Object.values(t).includes(h.slice(5))) ? new Blob([h.slice(5)]) : null,
+        [Symbol.dispose]() {},
+      };
+    },
+  } as unknown as Artifacts;
+  const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/diff`, {
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" },
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  expect(res.status).toBe(200);
+  const diff = await res.json() as { base: string; head: string; files: { path: string; status: string }[] };
+  expect(diff.base).toBe("new");
+  expect(diff.head).toBe("M");
+  expect(diff.files.map((f) => [f.path, f.status])).toEqual([["AGENTS.md", "modified"], ["a.ts", "modified"]]);
+});
+
 it("the submit route refuses a blank or non-text summary, and accepts a missing one", async () => {
   await project("routes-summary");
   const A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40);

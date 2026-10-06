@@ -94,7 +94,7 @@ function artifactsOf(repos: Record<string, { log: string[]; trees: Record<string
 test("the preview against main counts main's new commits and finds a conflict", async () => {
   const trees = { base: { "a.ts": "1\n2\n3\n" }, m1: { "a.ts": "1\nTWO\n3\n" }, m2: { "a.ts": "1\nTWO\n3\n", "n.ts": "n\n" }, task: { "a.ts": "1\n2b\n3\n" } };
   const A = artifactsOf({ main: { log: ["m2", "m1", "base"], trees }, fork: { log: ["task", "base"], trees } });
-  const p = await previewAgainstMain(A, "main", "fork", "base", "base", "task");
+  const p = await previewAgainstMain(A, "main", "fork");
   assert.equal(p?.ahead, 2);
   assert.equal(p?.aheadCapped, false);
   assert.deepEqual(p?.merge.conflicts, [{ path: "a.ts", reason: "both sides changed the same lines" }]);
@@ -103,9 +103,9 @@ test("the preview against main counts main's new commits and finds a conflict", 
 
 test("the preview says main has not moved when its head is the fork point, and gives none when the fork point is not on main", async () => {
   const trees = { base: { "a.ts": "1\n" }, task: { "a.ts": "2\n" }, m1: { "b.ts": "b\n" } };
-  const still = await previewAgainstMain(artifactsOf({ main: { log: ["base"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
+  const still = await previewAgainstMain(artifactsOf({ main: { log: ["base"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork");
   assert.deepEqual([still?.ahead, still?.merge.clean], [0, true]);
-  const gone = await previewAgainstMain(artifactsOf({ main: { log: ["m1"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork", "base", "base", "task");
+  const gone = await previewAgainstMain(artifactsOf({ main: { log: ["m1"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork");
   assert.equal(gone, null, "a fork point not on a fully read main gives no preview");
 });
 
