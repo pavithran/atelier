@@ -689,18 +689,26 @@ export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head
 
 // A failing merged check blocks acceptance only where the head's own passing
 // run no longer speaks for the merge: main had moved on from the head that
-// run recorded by the time the merged check ran, so the merged run is the
-// later one and names another main head. A merged check is never required,
-// so a pending one blocks nothing, and a failing one run against the same
-// main as the head's own check, or before it, is shown and not counted. The
-// latest merged run per check decides, so a later run that passes clears
-// the blocker, and a new head retires every run.
+// run recorded by the time the merged check ran, so the merged run names
+// another main head. The comparison is with the head's own run the merged
+// run followed, and a head's own run made after it does not clear the
+// failure: that run passes on the head's tree and says nothing about the
+// merge (PAVI's decision of 2026-10-06, t178). Only a later merged run that
+// passes, or a new head, clears it. A merged check is never required, so a
+// pending one blocks nothing, and a failing one run against the same main as
+// the head's own check before it is shown and not counted. The latest merged
+// run per check decides. While the head's own check fails, it is the blocker.
 export function mergedBlockers(policy: ProjectPolicy, evidence: Evidence[], head: string | null): string[] {
   const out: string[] = [];
   for (const m of mergedChecksAt(policy, evidence, head, null).checks) {
     if (m.grade !== "observed" || m.passed || !m.mainHead || !m.at) continue;
-    const own = evidence.filter((e) => e.head === head && e.claim === m.claim && !e.notApplicable && countsAtHead(policy, e)).sort((a, b) => a.at.localeCompare(b.at)).pop();
-    if (!own?.passed || !own.mainHead || own.mainHead === m.mainHead || own.at > m.at) continue;
+    const own = evidence.filter((e) => e.head === head && e.claim === m.claim && !e.notApplicable && countsAtHead(policy, e)).sort((a, b) => a.at.localeCompare(b.at));
+    if (!own.at(-1)?.passed) continue;
+    // The head's own run the merged one followed says which main the head's
+    // check saw. With none before it, the latest run's main head is all the
+    // record holds. A run that names no main head cannot say main moved.
+    const ranAt = m.at, seen = own.filter((e) => e.at <= ranAt).at(-1) ?? own.at(-1)!;
+    if (!seen.mainHead || (seen.at <= ranAt && seen.mainHead === m.mainHead)) continue;
     out.push(`\`${m.claim}\` failed on the merge with main at ${m.mainHead.slice(0, 8)}, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace`);
   }
   return out;
@@ -1082,7 +1090,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
     return { title: "Ready to merge", detail, action: "merge", tone: "go", passed };
   }
   if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
-  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The task owner must bring main into the workspace, fix the result and finish again.", action: "none", tone: "bad", passed };
+  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The task owner must bring main into the workspace, fix the result and finish again; running the revision's own checks again does not clear it, only a passing merged run or a new revision.", action: "none", tone: "bad", passed };
   // The owner's approval is recorded but is not the independent review, so
   // the page asks for a qualifying reviewer, and offers the override only
   // when the missing review is all that blocks, since it waives nothing else.

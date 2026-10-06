@@ -1395,8 +1395,9 @@ export function renderMainPreview(m: MainPreview | null | undefined, merged?: Me
 // this revision, with the main head it merged with, marked stale once main
 // has moved past it. A merged check is shown, never required, except that a
 // failing one blocks acceptance when main moved after the revision's own
-// checks passed (see mergedBlockers in src/rules.ts), which the readiness
-// details then say. `offer` names the command when no run exists yet and
+// checks passed (see mergedBlockers in src/rules.ts), until a merged run
+// passes or the head moves; a later run of the revision's own checks does
+// not clear it. The readiness details then say so. `offer` names the command when no run exists yet and
 // main has moved, where the revision's own checks say nothing about the merge.
 function renderMergedChecks(merged: MergedCheckView | undefined, m: MainPreview, offer: boolean): string {
   if (!merged || !merged.checks.length) return "";

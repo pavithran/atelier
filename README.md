@@ -142,7 +142,8 @@ The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check that applies to the change observed passing at the
 current head (see [Checks that apply to some paths](#checks-that-apply-to-some-paths));
 the changed paths observed; no required check failing on the merge with a main
-that moved after the head's own checks passed (see the merge preview below);
+that moved after the head's own checks passed, until a merged run passes or the
+head moves (see the merge preview below);
 no rejection at that head; and, if a protected path changed, an
 approval at that head from a model of another family than every recorded
 contributor's, or the project owner's override of that review. A model's
@@ -213,7 +214,9 @@ says so. Each result names the main head it merged with; the page marks it
 stale once main moves past that commit, and a new head retires it. A merged
 check is shown, not required, with one exception: when main moved after the
 head's own checks passed and the merged checks fail, the failure blocks
-acceptance until a later merged run passes or the head moves. Every observed
+acceptance until a later merged run passes or the head moves. Running the
+head's own checks again does not clear it, since they pass on the head's tree
+and say nothing about the merge. Every observed
 check also records main's head as Atelier read it when the check was
 recorded, which is how the gate knows main moved.
 
