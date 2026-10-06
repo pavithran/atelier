@@ -34,6 +34,20 @@ test("globs: ** crosses directories, * does not", () => {
   assert.ok(!matchesAny("src/wrangler.jsonc", ["wrangler.*"]));
 });
 
+test("globs: a newline is a path character, so ** crosses it under a protected directory", () => {
+  // Git allows a newline in a path; a file under a protected directory stays
+  // protected with one in its name, for every matcher the guarded set uses.
+  const odd = "docs/control-plane/agent\n-policy.v1.json";
+  assert.ok(matchesAny(odd, ["docs/control-plane/**"]));
+  assert.ok(matchesFolded(odd, ["docs/control-plane/**"]));
+  assert.equal(changeClass([odd], { checks: [], protected: ["docs/control-plane/**"] }), "protected");
+  assert.ok(matchesAny("a\nb/c.md", ["**/*.md"]));
+  assert.ok(matchesAny("src/a\nb.ts", ["src/*.ts"]));
+  assert.ok(matchesAny("src/a\n.ts", ["src/a?.ts"]));
+  // A newline never lets a single star cross a slash.
+  assert.ok(!matchesAny("src/a\n/b.ts", ["src/*.ts"]));
+});
+
 test("model is what makes a reviewer independent", () => {
   assert.equal(modelOf("claude-code/opus-5.5"), "opus-5.5");
   assert.equal(modelOf("owner"), "owner");
@@ -150,10 +164,82 @@ test("repo names are safe and stable", () => {
   assert.throws(() => repoName("---"), /cannot make a repo name/);
 });
 
+test("what a runner executes is protected: make and just recipes, npx's binary, manifests of build tools, paths run directly", () => {
+  const sorted = (files: string[]) => [...files].sort();
+  assert.deepEqual(checkFiles(["make test"]), sorted(["Makefile", "makefile", "GNUmakefile", "**/*.mk"]));
+  assert.deepEqual(checkFiles(["make -C native -f build.mk all", "make --directory=./lib --makefile=rules.mk"]), sorted(["native/build.mk", "lib/rules.mk", "**/*.mk"]));
+  assert.deepEqual(checkFiles(["make -C ../other check", "make -f /etc/Makefile"]), ["**/*.mk"]);
+  assert.deepEqual(checkFiles(["just check"]), sorted(["justfile", "Justfile", ".justfile", "**/*.just"]));
+  assert.deepEqual(checkFiles(["just --justfile ci.just test"]), sorted(["ci.just", "**/*.just"]));
+  assert.deepEqual(checkFiles(["npx vitest run"]), sorted(["package.json", ".npmrc", "node_modules/.bin/vitest"]));
+  assert.deepEqual(checkFiles(["npx --yes -p typescript tsc --noEmit", "npx eslint@9 ."]), sorted(["package.json", ".npmrc", "node_modules/.bin/tsc", "node_modules/.bin/eslint"]));
+  assert.deepEqual(checkFiles(["pnpm dlx @scope/tool --flag", "yarn exec lint", "bun x vitest", "bunx tsc"]), sorted([
+    "package.json", ".npmrc", ".pnpmfile.cjs", "node_modules/.bin/tool", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**", "node_modules/.bin/lint", "bunfig.toml", "node_modules/.bin/vitest", "node_modules/.bin/tsc",
+  ]));
+  assert.deepEqual(checkFiles(["pnpm test", "yarn test", "bun test"]), sorted(["package.json", ".npmrc", ".pnpmfile.cjs", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**", "bunfig.toml"]));
+  assert.deepEqual(checkFiles(["cargo test --workspace"]), sorted(["**/Cargo.toml", "**/build.rs", ".cargo/config", ".cargo/config.toml"]));
+  assert.deepEqual(checkFiles(["swift test"]), sorted(["**/Package.swift", "**/Package@swift-*.swift"]));
+  assert.deepEqual(checkFiles(["xcodebuild -scheme App -destination 'platform=iOS Simulator' test"]), sorted(["**/*.xcodeproj/**", "**/*.xcworkspace/**", "**/Package.swift", "**/Package@swift-*.swift"]));
+  assert.deepEqual(checkFiles(["deno task test", "deno test"]), ["deno.json", "deno.jsonc"]);
+  assert.deepEqual(checkFiles(["bin/check", "CI=1 scripts/verify --strict", "./bin/lint"]), ["bin/check", "bin/lint", "scripts/verify"]);
+  // Paths outside the repository, and arguments that are not run, are not.
+  assert.deepEqual(checkFiles(["/usr/bin/true", "../shared/run", "cat docs/a.md"]), []);
+  // The guarded set carries these: an item that edits its Makefile or an
+  // included rules file under `make test` needs an independent review.
+  const made: ProjectPolicy = { checks: ["make test"], protected: [] };
+  for (const path of ["Makefile", "lib/rules.mk", "gnumakefile"]) assert.equal(changeClass([path], made), "protected", path);
+  assert.equal(changeClass(["src/main.c"], made), "coordinated");
+  assert.equal(changeClass(["node_modules/.bin/vitest"], { checks: ["npx vitest run"], protected: [] }), "protected");
+});
+
+test("a runner's name counts anywhere in a check line: through wrappers, a shell's -c string, shell syntax and a newline", () => {
+  // Each form reaches npm, so each protects package.json; the check cannot
+  // be weakened by wrapping the runner. The forms that protect nothing are
+  // collected, so a failure names every one.
+  const unprotected = (forms: string[], file: (files: string[]) => boolean) => forms.filter((form) => !file(checkFiles([form])));
+  assert.deepEqual(unprotected([
+    "env CI=1 npm test", "sh -c 'npm test'", "bash -c \"npm run check\"", "time npm test", "timeout 600 npm test", "timeout -k 5 600 npm test",
+    "exec npm test", "command npm test", "sudo npm test", "sudo -u app npm test", "nice -n 10 npm test", "cross-env CI=1 npm test", "xvfb-run -a npm test",
+    "/usr/bin/env npm test", "if npm test; then :; fi", "! npm test", "{ npm test; }", "echo start\nnpm test", "nohup npm test", "bash -euo pipefail -c 'npm test'",
+  ], (files) => files.includes("package.json")), []);
+  assert.deepEqual(unprotected(["env make check", "sh -c \"make check\"", "timeout 600 make check", "echo start\nmake check"], (files) => files.includes("Makefile")), []);
+  assert.deepEqual(unprotected(["sh -c 'just check'"], (files) => files.includes("justfile")), []);
+  assert.deepEqual(unprotected(["env cargo test"], (files) => files.includes("**/Cargo.toml")), []);
+  assert.deepEqual(unprotected(["sudo npx vitest run"], (files) => files.includes("node_modules/.bin/vitest")), []);
+  // A path run directly counts in every command position the wrappers and shells lead to.
+  assert.deepEqual(unprotected(
+    ["env CI=1 bin/check", "sh -c 'bin/check'", "timeout 600 bin/check", "if bin/check; then :; fi", "echo start\nbin/check", "bash -c 'env CI=1 scripts/verify'"],
+    (files) => files.some((f) => f === "bin/check" || f === "scripts/verify"),
+  ), []);
+  // A manager told where its project is reads that directory's files too.
+  assert.ok(checkFiles(["npm --prefix packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["npm -C packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["pnpm -C packages/app test"]).includes("packages/app/.pnpmfile.cjs"));
+  assert.ok(checkFiles(["pnpm --dir=packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["yarn --cwd packages/app test"]).includes("packages/app/.yarnrc.yml"));
+  assert.ok(checkFiles(["npm --prefix packages/app test"]).includes("package.json"));
+});
+
+test("a check line holding a word that names an Object.prototype member finds no runner and never throws", () => {
+  // The runner tables are looked up by word; these words are keys of every
+  // plain object, and a lookup that found them would iterate a function.
+  for (const word of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]) {
+    const lines = [`grep -q ${word} src/a.ts`, `node --test --test-name-pattern ${word}`, `${word} test`, `npm ${word} check`, `${word} -c "npm test"`];
+    assert.doesNotThrow(() => checkFiles(lines), word);
+    assert.deepEqual(checkFiles([`grep -q ${word} src/a.ts`]), [], word);
+    assert.deepEqual(checkFiles([`${word} test`]), [], word);
+    assert.ok(checkFiles([`npm ${word} check`]).includes("package.json"), word);
+    // The gate reads the same tables through changeClass.
+    const p: ProjectPolicy = { checks: [`grep -q ${word} src/a.ts`], protected: ["AGENTS.md"] };
+    assert.equal(changeClass(["src/a.ts"], p), "coordinated", word);
+    assert.equal(gate(item({ scope: [] }), p, [pass({ claim: p.checks[0], changedPaths: ["src/a.ts"] })], []).ready, true, word);
+  }
+});
+
 test("files named by a check are protected: an item cannot weaken its own grader", () => {
-  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), ["check.sh", "package.json", "scripts/verify.mjs"]);
+  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), [".npmrc", "check.sh", "package.json", "scripts/verify.mjs"]);
   assert.deepEqual(checkFiles(["grep -q export src/a.ts"]), []);
-  assert.deepEqual(checkFiles(["npm ci --prefer-offline && npm test", "npm run check && npm run build"]), ["package.json"]);
+  assert.deepEqual(checkFiles(["npm ci --prefer-offline && npm test", "npm run check && npm run build"]), [".npmrc", "package.json"]);
   const p: ProjectPolicy = { checks: ["./check.sh"], protected: [] };
   const g = gate(item({ scope: [] }), p, [pass({ claim: "./check.sh", changedPaths: ["check.sh"] })], []);
   assert.equal(g.needsAssessor, true);
@@ -435,14 +521,19 @@ test("holders remain contributors when Git pushes precede observation", () => {
     assert.ok(contributors.includes("codex/gpt-6"));
     assert.ok(contributors.includes("claude-code/opus-5.5"));
     assert.ok(contributors.includes("opencode/glm-5.3"));
+    // Task t94: after a release, the push observed while nobody held the
+    // item was counted under the name the Ledger logs it with,
+    // atelier/events, a contributor of no recognised family, so no
+    // reviewer could be shown to be of another family. Every holder is
+    // already listed, and the push is attributed to none.
+    assert.deepEqual(contributors, ["codex/gpt-6", "claude-code/opus-5.5", "opencode/glm-5.3"]);
     const held = item({ pushActors: contributors });
     const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
     assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
-    // After a release, the push observed while nobody held the item is
-    // recorded as atelier/events: a contributor whose family is not
-    // recognised, so no reviewer can be shown to be of another family.
-    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, kind === "item.handoff");
+    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
   }
+  // A push seen before anyone claimed the item is attributed to nobody.
+  assert.deepEqual(pushActors([{ kind: "push.observed", actor: "atelier/events", data: {} }]), []);
 });
 
 // Audit t105, finding F4: in a project without ControlPlane policy files the

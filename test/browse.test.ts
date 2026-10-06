@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanPath, commitChanges, logPage, pathHistory, resolve, viewFile, walk, type Commit, type Source } from "../src/browse/repo.ts";
+import { cleanPath, commitChanges, lastChanges, logPage, pathHistory, resolve, viewFile, walk, type Commit, type Source } from "../src/browse/repo.ts";
 
 // A tiny repository: three commits on one line.
 //   c1: README.md "one", src/a.ts "a1"
@@ -151,4 +151,32 @@ test("browsing refuses paths beyond its depth, and diffs stop within their read 
   // History out of budget at once examines nothing, and says so.
   const none = await pathHistory(source, h("c3"), ["src", "a.ts"], 100, 1);
   assert.deepEqual([none.examined, none.complete, none.commits.length], [0, false, 0]);
+});
+
+test("the commit that last changed each entry of a directory, within a cap and a read budget", async () => {
+  treeReads = 0;
+  const root = await lastChanges(source, h("c3"), []);
+  const subject = (name: string) => root.by.get(name)?.message.split("\n")[0];
+  assert.equal(subject("README.md"), "Third");
+  assert.equal(subject("src"), "Second");
+  // Entries the newest commit added are decided by it, against the parent that lacks them.
+  assert.deepEqual([subject("run.sh"), subject("docs"), subject("vendor")], ["Third", "Third", "Third"]);
+  assert.equal(root.complete, true, "every entry was decided");
+  assert.equal(treeReads, 3, "one read per distinct root tree");
+  const src = await lastChanges(source, h("c3"), ["src"]);
+  assert.equal(src.by.get("a.ts")?.message, "Second\n\nBody");
+  assert.equal(src.complete, true);
+  // With one commit examined, README.md is decided and src is not; the page says how many it looked at.
+  const capped = await lastChanges(source, h("c3"), [], 1);
+  assert.deepEqual([...capped.by.keys()].sort(), ["README.md", "docs", "run.sh", "vendor"]);
+  assert.deepEqual([capped.examined, capped.complete], [1, false]);
+  // A log cut at its edge decides nothing against a parent it did not read.
+  const cut: Source = { ...source, log: async () => [commits[0]] };
+  const edge = await lastChanges(cut, h("c3"), []);
+  assert.deepEqual([edge.by.size, edge.examined, edge.complete], [0, 0, false]);
+  // The read budget: within one tree read nothing can be compared, and the result says so.
+  const starved = await lastChanges(source, h("c3"), [], 60, 1);
+  assert.deepEqual([starved.by.size, starved.examined, starved.complete], [0, 0, false]);
+  // A path that is not a directory decides nothing.
+  assert.equal((await lastChanges(source, h("c3"), ["README.md"])).by.size, 0);
 });

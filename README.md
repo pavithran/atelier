@@ -124,13 +124,13 @@ In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. |
+| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. Every check must be read-only (see [Check classes](#check-classes)). |
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. `--non-goal`, `--stop-when` and `--next-gate` frame it, and `atelier edit` changes that framing later; the brief, `atelier start` and the item's page show it. |
 | `atelier block t3 "reason"` | the item's owner or the project owner | Blocks the item with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed or submitted, and sits in the inbox with the reason until `atelier unblock t3` returns it to the state it was in. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
 | `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
-| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. |
+| `atelier check` | the item's owner; anyone with `--sandbox` | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. A result run on the caller's machine is recorded only for the item's owner, since the gate counts it on the caller's word; anyone the project's tokens reach may ask for a sandbox run, which records its own results. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -139,8 +139,9 @@ In detail:
 | `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
-every required check observed passing at the current head; the changed paths
-observed; no rejection at that head; and, if a protected path changed, an
+every required check that applies to the change observed passing at the
+current head (see [Checks that apply to some paths](#checks-that-apply-to-some-paths));
+the changed paths observed; no rejection at that head; and, if a protected path changed, an
 approval at that head from a model of another family than every recorded
 contributor's, or the project owner's override of that review. A model's
 family is read from its name ([`src/models/pool.ts`](src/models/pool.ts)), and
@@ -150,8 +151,22 @@ ControlPlane policy files. Models are compared without letter case or a
 `:profile` suffix, and a name the model registry
 ([`src/models/registry.ts`](src/models/registry.ts)) lists for a model, such as
 `claude-opus-5-5` for `opus-5.5`, is that model. What a check executes is protected automatically: a script it runs (`./check.sh`,
-`node scripts/verify.mjs`), and `package.json` when it goes through a package
-manager, whose scripts an item could otherwise rewrite. An item therefore
+`bin/check`, `node scripts/verify.mjs`); the recipe files `make` and `just`
+run (`Makefile`, `makefile`, `GNUmakefile` and every `*.mk`; `justfile`,
+`Justfile`, `.justfile` and every `*.just`; or the file and directory the
+command's `-f` and `-C` options name); the manifest a package manager runs
+scripts from, whose scripts an item could otherwise rewrite, with the
+configuration that changes what it runs (`package.json` with `.npmrc` for
+npm, `.pnpmfile.cjs` for pnpm, `.yarnrc.yml` and `.yarn/releases/**` for
+yarn, `bunfig.toml` for bun); the manifests build tools run code from
+(`Cargo.toml` and `build.rs` for cargo, `Package.swift` for swift, the
+project and workspace for xcodebuild, `deno.json` for `deno task`); and the
+local binary `npx`, `bunx`, `pnpm dlx` or `yarn exec` would run, under
+`node_modules/.bin/`. A runner's name counts wherever it stands in the
+check's line: behind `env`, `time`, `timeout`, `sudo`, `nice`, `cross-env`
+or `xvfb-run`, inside a shell's `-c` string, after `if` or `!`, or on a
+later line; and a manager given `--prefix`, `-C`, `--dir` or `--cwd` reads
+its files under that directory too. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such
 as the code under test, are not protected, and nor is test configuration such
 as `vitest.config.ts` unless the project protects it. Protected paths match
@@ -214,6 +229,11 @@ merged.
   refused when the policy says `overlapping_claims: refuse`. Protected paths
   include execution policy patterns, adapter surfaces, maintenance paths,
   agent instructions, ControlPlane files and the files that run checks.
+  The adapter's capability classes declare checks read-only (see
+  [Check classes](#check-classes)), and its `change_rules` set the paths
+  each check applies to (see
+  [Checks that apply to some paths](#checks-that-apply-to-some-paths)); init
+  sets both, and `sync` and `merge` leave them as init set them.
   Atelier never writes these policy files.
 - `claude-code/*` maps to `claude`, `codex/*` to `codex`, and `zcode/*`
   and `opencode/glm*` to `glm`. `antigravity/*` maps to `antigravity` for a
@@ -245,19 +265,33 @@ merged.
   the stored protected paths, eligible agents and overlap rule. The refresh
   preserves paths recorded locally by `init --protect`. Approval, checks and
   other project settings are kept. For a baseline with full history, `sync`
-  only refreshes this policy. Malformed or empty policy files produce a
-  warning and skip the refresh. Merge then uses the acceptance policy.
-- Acceptance records the project's protected paths on the server. Every
-  merge attempt compares the current ControlPlane paths with that snapshot.
-  If the accepted revision touches a newly protected path, review the task
-  and accept again, or pass `--policy-changed-ok` after reviewing the change.
-  Older acceptances without a snapshot are treated as having no recorded
-  protected paths. Re-acceptance checks the current gate and records a new
-  snapshot. `merge --cancel` does not read or refresh ControlPlane policy.
+  only refreshes this policy. A malformed or empty policy file makes `sync`
+  warn and skip the refresh, and stops `init` and `merge` until it is fixed:
+  a merge never skips the comparison below.
+- Acceptance records the project's protected paths, eligible agents, overlap
+  rule and required checks on the server. Every merge attempt compares the
+  policy as it is now with that snapshot and warns of any difference. It
+  refuses, until the task is accepted again or `--policy-changed-ok` is
+  passed after reviewing the change, when the accepted revision touches a
+  newly protected path, a contributor is no longer eligible, a check required
+  now was not observed passing at the accepted revision, or overlapping
+  claims are now refused and the task's scope overlaps a live one. The paths
+  compared are the accepted revision's own: those since the newest baseline
+  commit it holds, so a workspace brought up to date with `atelier update`
+  is not charged with the baseline's changes. An acceptance made before the
+  snapshot recorded every field is compared on the protected paths it
+  recorded (none, for the oldest) and on the other fields as the server held
+  them before the refresh. The task page offers the re-acceptance, which
+  checks the current gate and records a new snapshot; so does
+  `atelier accept ID`. `merge --cancel` does not read or refresh ControlPlane
+  policy.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
-  every merge receipt.
+  every merge receipt. Once recorded it stands: a later `init` that changes
+  the checks, the title or the policy keeps it, and it is asked for again
+  only when `--reset` starts the policy over or `--history-since` replaces
+  the baseline.
 - `atelier merge` writes a `control-plane.landing-receipt` into
   `docs/control-plane/landing-receipts/` as part of the merge commit, so the
   merge and its record are one change.
@@ -280,16 +314,24 @@ atelier adopt --project NAME --as HARNESS/MODEL
 It refuses unless the project is registered in Atelier and the checkout is
 clean. Every check that can refuse the move runs before the task is created,
 so a refusal leaves nothing behind — no task, no claim: the checkout's files
-are readable, the AGENTS.md edit is computable, and no symbolic link stands
-where the move writes. The move writes into the task's workspace and nothing
+are readable, the AGENTS.md edit is computable, it stays under the ceiling
+the project's `docs/control-plane/context-budget.v1.json` sets (the one
+`atelier wrap` refuses to commit over; the refusal says how many lines over
+and which file), no symbolic link stands where the move writes, and the
+agent is one the project's policy admits (the same rule a claim applies). The
+move writes into the task's workspace and nothing
 outside it: a file it writes that is a symlink is replaced with a regular
 file, never written through, and a symlinked directory above one refuses the
 move (an AGENTS.md that is a symlink is refused too, because the section is
 built from its text). It creates the task "Move NAME from ControlPlane to
 Atelier", claims it as `--as` (without it, as the current actor), and in the
 task's workspace it writes `bin/control-plane`, replaces
-`bin/control-plane-paste`, when the project has one, with two lines pointing
-handoffs at `atelier handoff`, and inserts the text `atelier guide` prints
+`bin/control-plane-paste`, when the project has one, with a script that says
+no command renders a paste any more, that the agent writes the relay
+envelope itself as the relay rule says (one fenced block with a language
+tag, a copy saved under `~/Documents/ai-project-data/<project>/`) and that
+`atelier handoff` transfers ownership and is not a relay, and exits 2; and
+it inserts the text `atelier guide` prints
 into `AGENTS.md`: right after its first heading, at the top when the file has
 no heading, and in place of the section it already carries, so adopting a
 project again cannot stack a second one. It commits those changes in the
@@ -315,13 +357,103 @@ the agent finishing the task must settle: a
 `completed-unreconciled` or `blocked`, with its plan id, state and owner; a
 capability in `docs/control-plane/project-adapter.v1.json` whose command names
 a file the project does not have — the command is read as shell words, so a
-quoted path with spaces stays one word, and a script run through an
+quoted path with spaces stays one word; a script run through an
 interpreter or `env` (`python3 tools/ship.py`, `bash bin/sweep.sh`) is judged
-by the script, not the interpreter; a vendored `tools/control-plane/`
+by the script, not the interpreter; each command in a chain or a pipeline
+(`&&`, `||`, `|`, `;`) is judged on its own program, a shell's `-c` command
+line the same way, and a glob, a redirection or any argument after the
+program is never judged; a vendored `tools/control-plane/`
 directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
 names `pickup-card`, `control-plane-paste`, `session-receipt` or
 `audit record`, with its file and line number. The same list is recorded on
 the task as reported notes, so the reviewer and the owner see it there.
+
+## Check classes
+
+Atelier runs a check in a clean clone of an item's head whenever anyone asks,
+on an agent's machine or in a Cloudflare container, so a check must be
+read-only: it reads the project and writes only in its clone, the caller's
+caches and temporary files. A command that deploys, installs onto a device or
+the machine, publishes, pushes, reaches another machine or spends money is
+never read-only. `atelier init` refuses to register it, whatever is declared,
+and the sandbox route, the container runner, `atelier check`, `wrap` and the
+evidence route refuse to run or count it. The list, in
+[`src/checks.ts`](src/checks.ts), covers `wrangler deploy` and `publish`
+(and other Cloudflare writes), `npm publish` and package scripts named for a
+deploy or release (`npm run deploy`, `db:push`), `git push`, `xcrun altool`
+and `notarytool`, `fastlane`, `devicectl install` and other device installs,
+`ssh`, `scp` and remote `rsync`, `curl` or `wget` with a write method or a
+body, global package installs, `brew install`, `launchctl load`, the GitHub
+CLI's writes, cloud and cluster deploys, paid model CLIs such as `claude`
+and `codex`, and `atelier` itself. A `--dry-run` of a deploy or publish is
+allowed. Atelier reads the command as a shell would: each command joined by
+`&&`, `|` or `;`, inside `$( )`, `sh -c '…'`, `trap '…'` or `eval`, and
+behind `env`, `timeout`, `xargs`, `npx` or `sudo`, is classed.
+
+A check is read-only in one of three ways, recorded with the project:
+
+- its command is a known build or test form, such as `npm ci && npm test`,
+  `npm run typecheck`, `xcodebuild build-for-testing …`, `swift test`,
+  `python3 -m unittest …` or `git diff --exit-code`;
+- the project's ControlPlane adapter lists the same command, word for word,
+  as a capability of class `local-read-only` or `local-write` (a build's
+  writes stay in the clone); a capability of any other class (`deploy`,
+  `device`, `network` and the rest) is refused;
+- the project owner declares it, with the reason, as init records its
+  approval: `atelier init --check "./check.sh" --declare-read-only "PAVI,
+  2026-10-06: check.sh runs the unit tests and builds nothing it ships"`.
+  Without `--check`, `--declare-read-only` declares the registered checks
+  that are still undeclared.
+
+An init that names its checks with `--check` must show each one read-only,
+or it is refused before anything is created. A check registered before
+checks had classes carries none: Atelier treats it as read-only when its
+command is a known form and as undeclared otherwise. An undeclared check
+still runs, so a project's existing checks keep working, and the next init
+that names it must declare it. Each check's class, and how it is known, is
+shown in init's summary, under "Checks" in `atelier status --project NAME`
+and the standing JSON, and in the project page's policy.
+
+The class is of the command as registered. What a script it runs does is
+the item's code: an item could rewrite `package.json`'s `test` script, which
+is why the files a check executes are protected (see How it works) and why
+untrusted code belongs in the sandbox, which has no credentials and reaches
+only the npm registry.
+
+## Checks that apply to some paths
+
+A required check may apply only when an item changes a path its globs match,
+as ControlPlane's `change_rules` said which checks a change needs. The gate
+requires such a check exactly when one of the item's changed paths, measured
+by the Worker against main's head, matches its globs, whatever the letter
+case or Unicode form, so a variant spelling of a path still needs the check.
+Otherwise the check is not applicable: the task page lists it as such, the
+decision brief counts it, and it never blocks. Until the changed paths are
+measured, a check with globs may apply, so it waits like any other.
+
+`atelier check` measures the changed paths in its clean clone against
+main's head and does not run a check whose globs none of them match. It
+records the check as not applicable instead, and the Worker accepts that
+record only when the paths it measures itself from Artifacts show the same;
+otherwise it refuses, saying which changed path the check applies to, and
+the check must be run. The record carries no result and measures the
+changed paths, so a change that no check applies to can still be accepted.
+A check run in a Cloudflare container is handled the same way, and when no
+check applies no container is started. A command given after
+`atelier check --` always runs.
+
+`atelier init` takes the globs from a ControlPlane project's
+`project-adapter.v1.json`. A change rule requires capabilities when a
+changed path matches its patterns. A registered check runs a capability when
+every command the capability runs is one of the check's, word for word, so
+`npm ci && npm run check && npm test` runs the capabilities `npm run check`
+and `npm test`. Such a check applies where any rule requiring a capability
+it runs applies; a check that runs none applies to every change. ControlPlane
+matched patterns as Python's `fnmatch` does, where `*` crosses directories,
+so each `*` is recorded as `**`. Init's summary prints each check's globs
+and names any capability a rule requires that no registered check runs, and
+`atelier status --project NAME` and the project page show the globs. An
+adapter without change rules leaves every check applying to every change.
 
 ## What is enforced and what is trusted
 
@@ -468,7 +600,13 @@ claim, push, record checks and reports, submit, hand off, release, and review
 as themselves. Handoff targets must be harness/model identities other than
 the project owner. Every actor who held an item counts as a contributor for
 review independence, even if a Git push was first observed after handoff or
-release. Recorded push contributors also remain. Agent tokens cannot reopen accepted work by reviewing it.
+release. Recorded push contributors also remain; a push first observed while
+nobody holds the item adds no one, since it was made with an earlier holder's
+token. Agent tokens cannot reopen accepted work by reviewing it.
+What an agent writes has a stated limit, and text over it is refused whole,
+never cut: a review, handoff or release note 2,000 characters, a submit
+summary 600, a report or a check's command 500, a check's output 4,000. The
+head a push reports must be a commit hash.
 Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
 owner token. Agent tokens cannot sign in to the browser. Signing in to the
@@ -547,6 +685,16 @@ objects: `atelier wrap --push` pushes to them with LFS uploads on, even when
 is reported as failed, never as pushed.
 
 ## Projects too large for Artifacts
+
+Artifacts can refuse a long history as one push, for its size or the time it
+takes. `atelier init` then pushes the branch's first-parent history in steps of
+about 700 commits, oldest first, and prints a line for each step. If a step
+fails, init says which commit the baseline holds, and running the same
+`atelier init` again carries on from there: what is left is pushed whole, and
+if that is refused too, the steps begin after the commit the baseline holds.
+Each step runs the checkout's pre-push hook, as the whole push does. The
+baseline's branch holds only part of the history until the last step has
+pushed.
 
 Artifacts holds at most 1 GB per repository and 32 MB per file. A project
 whose history is larger can join with its recent history only:
@@ -754,10 +902,54 @@ model, and refuses a claim with no runner at all until the owner withdraws
 the dispatch. A runner that gives up releases the task, and it waits in the
 queue again. `atelier queue` lists everything waiting. If a project cannot be read, the
 response names it in the `X-Atelier-Incomplete` header and `atelier queue` says so.
+`atelier undispatch` withdraws a dispatch while the task is open; a claimed
+or submitted task keeps its dispatch, which applies again if it is released.
 
 A runner's name is declared independently of its actor token; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
-else, while it waits.
+else, while it waits. Names are matched and stored in lower case, so
+`home:Studio` and `home:studio` are one runner. A claim belongs to the runner
+that made it; after a handoff, the first runner to claim as the new owner
+takes it, and the task's history records which runner that was.
+
+## Plans
+
+A plan turns one goal into several items. The project owner states the goal
+with `atelier plan "goal" [--scope GLOB]... [--planner harness/model]`.
+Atelier creates the plan item and queues it as a plan job for the planner
+named, or else for the first model in the pool for research work that is not
+refused, not paid per token and may plan. A project has one active plan at a
+time. The planner, holding the plan item's claim, posts a plan document
+(`atelier.plan.v1`: the goal and its parts, each with a scope, dependencies,
+a brief and acceptance criteria) with `atelier plan post tP FILE`. An
+invalid one is refused with every error, and the planner gets one more
+attempt before the plan blocks.
+
+`atelier plan show tP` prints the newest proposal with its hash. `atelier
+plan approve tP --hash HASH [--allow-paid]` approves that exact split, once;
+an older hash is refused, and `atelier plan revise tP --note TEXT` sends a
+proposal back instead. Approval fixes the limits (two parts live at once,
+three attempts a part, four dispatches a part, 24 hours) and each part's
+routing: a builder, two alternates and a reviewer of another family, chosen
+from the model pool and the ledger's record. The parts become items, and
+Atelier dispatches each one, as `atelier/orchestrator`, once the parts it
+depends on have merged. A part its builder releases twice goes to an
+alternate. A plan that reaches a limit blocks and appears in the inbox; the
+owner decides with `atelier plan retry tN`, `atelier plan reroute tN --to
+harness/model`, `atelier abandon tN` or `atelier plan stop tP`, which closes
+the plan and its open parts and revokes their write tokens. `atelier show
+tP` prints the plan's brief.
+
+Not built yet: no runner takes a plan job, so a planner claims the plan item
+with `atelier claim tP --as harness/model --runner home:NAME` and posts its
+plan by hand; a part's runner gets the brief any task gets; nothing reviews
+a part automatically; and parts do not merge into a branch of the plan's
+own. Until then each part reaches main as any item does, through the owner's
+acceptance and merge. The inbox lists a part only once it is accepted, so
+`atelier plan show tP` gives the command for each part waiting on the owner,
+and the plan is complete once every part has merged.
+[docs/orchestrator.md](docs/orchestrator.md) holds the design and says which
+of its steps are built.
 
 ## Home runner
 
@@ -766,9 +958,15 @@ and runs its configured harness in the claimed workspace. The brief is kept
 outside that workspace. Each opencode run also gets a data folder of its own
 (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
 it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
-deadlock on it. Such a run finds its provider keys in its environment and
-opencode's config, as the runner passes them; a key saved with
-`opencode auth login` lives in the shared data folder and is not seen. After a successful harness exit with a new commit,
+deadlock on it. Such a run finds its provider keys in the variables its
+config entry names and in opencode's config; a key saved with
+`opencode auth login` lives in the shared data folder and is not seen.
+A harness does not inherit the runner's environment. It gets what a local
+check gets (the toolchain's variables, such as `PATH`, `HOME`, `LANG` and
+`TMPDIR`; nothing named `ATELIER_*` and nothing whose name says it holds a
+token, key or secret) and the variables its config entry names in `env`. A
+named variable that holds the owner's Atelier token is withheld, and the
+runner says so. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
 in place for inspection. Two counters are kept for each project and task id,
@@ -785,8 +983,14 @@ Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner
 validation are skipped and remembered so other tasks
 can run.
-SIGINT stops polling and interrupts the active child process. A second
-interrupt exits immediately.
+The harness, and every command the runner starts, leads a process group of
+its own, and the group ends with it: when the harness exits, whether it
+succeeded or failed, when its deadline passes and when the runner is
+interrupted, every process left in the group gets SIGTERM, then SIGKILL after
+five seconds, before the runner goes on. A process that starts a session of
+its own (`setsid`) leaves the group and is not ended. SIGINT stops polling and
+interrupts the active child process. A second interrupt kills every group at
+once and exits.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
@@ -796,7 +1000,8 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
     {
       "agent": "opencode",
       "models": ["GLM-5.3-Flash-4_8bit"],
-      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."]
+      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."],
+      "env": ["ZAI_API_KEY"]
     }
   ]
 }
@@ -806,11 +1011,15 @@ Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `anti
 and command arguments to match the installed harness. Commands are argv
 arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
 the runner invokes them directly without a shell. The example requires that
-model to be configured in opencode. Atelier login and credentials are shared
+model to be configured in opencode. `env` is optional: the names of the
+runner's variables this harness also gets, such as a provider key it reads or
+`XDG_CONFIG_HOME`; a name starting with `ATELIER_` is refused. A runner started
+from a LaunchAgent has only the variables the LaunchAgent sets, so a key named
+here must be set there too. Atelier login and credentials are shared
 with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
 deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
-deadline from 60 minutes. Expiry terminates the process group, with forced
-termination after five seconds. A finish timeout leaves the claim held.
+deadline from 60 minutes. Expiry ends the process group as above. A finish
+timeout leaves the claim held.
 
 ```sh
 atelier runner --name home:studio
@@ -882,7 +1091,11 @@ only and goes only into the environment of the child process that makes
 the one balance call; the child prints currencies and amounts, and any key
 a tool echoes back is removed from what the command prints. The report
 carries counts, windows, model names, costs and balances, never a prompt,
-a file name, a session id, a key or a header.
+a file name, a session id, a key or a header. Each window, model and
+provider name a tool's record gives is cleaned before it is printed or
+reported, as the server cleans it: that key, control characters and
+anything shaped like a key are removed, and it is cut to the server's
+length.
 
 The CLI's exit codes let the runner tell a task's own failure from the
 server's: 0 success, 1 a refusal or failure of the command, 2 a required
@@ -897,8 +1110,10 @@ without signing in. It shows the projects the owner names, as the Flow page
 draws them: each task's thread,
 who held it, its checks, reviews and decisions, and the tally. It leaves out
 what anyone wrote (review notes, reports, check commands and closing notes),
-the diffs, every form and every link into the signed-in pages. Nothing is
-shown until the owner names a project:
+the diffs, every form and every link into the signed-in pages. Every email
+address goes too: from task and project titles, and from the agent names read
+from commit trailers in the history before Atelier, where a name that is only
+an address is not taken. Nothing is shown until the owner names a project:
 
 ```text
 printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
@@ -980,10 +1195,11 @@ clearing is recorded as an event on the index Ledger.
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
-banded by who has held it, with a mark for every claim, push, check,
-handoff, submission and review. A handoff is a visible change of band, and
-every check mark says whether it ran in a Cloudflare container or on the
-agent's machine. The page refreshes every fifteen seconds. The Decisions page
+banded by who has held it, each band and the thread along it in the
+holder's family colour as the Flow graph draws a thread, with a mark for
+every claim, push, check, handoff, submission and review. A handoff is a
+visible change of band and colour, and every check mark says whether it ran
+in a Cloudflare container or on the agent's machine. The page refreshes every fifteen seconds. The Decisions page
 shows the same agents in brief before anything is opened. `DESIGN.md`
 describes the marks.
 
@@ -1014,9 +1230,43 @@ Drive syncs and where it renames a file it finds in conflict to a copy. If
 publishing the baseline or recording the merge fails, rerun the same command.
 It resumes from the local merge commit. It refuses a different revision, a
 dirty checkout, or concurrent merge. If a process stops during the
-uncommitted Git merge, inspect `git status` and resolve or abort that merge
-before retrying. The journal preserves the original revision and starting
-commit. Never remove it to bypass a mismatch.
+uncommitted Git merge, abort that merge with `git merge --abort` before
+retrying, or cancel the landing. The journal preserves the original revision
+and starting commit. Never remove it to bypass a mismatch: cancel the landing.
+
+`atelier merge t9 --cancel` ends a landing. It takes the landing lock, as
+merge does, so it refuses while a merge of the same checkout is running, which
+may be publishing. It keeps what the landing left in the checkout, an
+unpublished merge commit or an unfinished Git merge, unless `--discard-local`
+is given. Then it aborts the unfinished Git merge, or puts the branch back on
+the commit where the merge began, the latter only while the branch is still on
+the merge commit with nothing uncommitted; otherwise it changes nothing and
+says what to move first. The journal is matched by task, not by revision: a
+push or review can withdraw an acceptance after the merge commit is made and
+before the landing lease is taken, and a new revision can then be accepted.
+Such a landing can no longer be finished, so `atelier merge t9` refuses it and
+names the cancel, which ends it in the checkout and leaves the server alone.
+With a journal, the landing lease is cancelled on the server only while the
+task is still accepted at the journal's revision. With a journal or without,
+the lease is left alone when the baseline already holds the accepted revision
+through a merge made elsewhere, whose lease it is; without a journal the
+cancel then refuses. Wherever the cancel asks what the baseline holds, it
+fetches the baseline and Git reads its whole history. The server also refuses
+to cancel a lease once the baseline holds the accepted revision, reading its
+history page by page.
+
+Once the merge is on the baseline the cancel refuses, with or without
+`--discard-local`, and the checkout keeps the merge: the journal says so once
+the push has returned, and for a push that reached the baseline just before
+the process stopped, the baseline's history says so. Rerun `atelier merge t9`
+to record it. A merge the server has already recorded, or can no longer
+record because the task is not accepted at that revision, leaves only the
+journal, which the cancel removes.
+
+While a merge holds the landing lease, the task cannot be abandoned, since the
+merge may already be on the baseline: finish it with `atelier merge t9`, or
+end it with `atelier merge t9 --cancel` while it is not on the baseline, then
+abandon.
 
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under

@@ -1,6 +1,7 @@
 import { familyOf, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
+import type { CheckDeclaration } from "./checks.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -30,6 +31,12 @@ export interface Item {
   stopWhen?: string[];
   nextGate?: string | null;
   blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
+  // A plan, or a part of one (docs/orchestrator.md). An ordinary task
+  // carries none of these four fields.
+  kind?: "plan" | "part";
+  plan?: string;            // a part's plan item, tP
+  partKey?: string;         // a part's key in the approved plan
+  deps?: string[];          // the keys of the parts a part depends on
 }
 
 // Why a task is blocked, who blocked it, when, and the state it was in,
@@ -50,6 +57,16 @@ export interface ItemFields {
   nonGoals?: string[];
   stopWhen?: string[];
   nextGate?: string | null;
+}
+
+// Whether two items belong to one plan: two parts of it, or a part and the
+// plan item. The plan item stands for all its parts' work, and validation
+// lets parts share paths only when one depends on the other, so overlap
+// between them is ordered by the plan already.
+export function samePlan(a: Pick<Item, "id" | "kind" | "plan">, b: Pick<Item, "id" | "kind" | "plan">): boolean {
+  const planOf = (i: Pick<Item, "id" | "kind" | "plan">) => (i.kind === "plan" ? i.id : i.kind === "part" ? i.plan ?? null : null);
+  const pa = planOf(a);
+  return pa !== null && pa === planOf(b);
 }
 
 // The project owner's override of the independent review a change needs,
@@ -83,6 +100,9 @@ export interface Evidence {
   // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
   // Worker's own code can record "sandbox"; anything posted to the API is "runner".
   where?: "sandbox" | "runner";
+  // An observed record that the check does not apply at this head: its paths
+  // match none of the changed paths Atelier measured. It carries no result.
+  notApplicable?: boolean;
 }
 
 export interface Review {
@@ -107,10 +127,18 @@ export interface ExecutionPolicy {
   protected_path_patterns: string[];
 }
 
+// A check that applies only when an item changes a path its globs match.
+export interface CheckPaths {
+  command: string;
+  paths: string[];
+}
+
 export interface ProjectPolicy {
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
   checks: string[];         // commands that must pass, observed, before acceptance
+  checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
+  checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
@@ -169,7 +197,14 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     }
     if (event.kind === "item.released") holder = null;
     if (holder) actors.add(holder);
-    if (event.kind === "push.observed") actors.add(event.actor === "atelier/events" ? holder ?? event.actor : event.actor);
+    // A push the queue saw is logged under atelier/events, which is no
+    // contributor: it counts as the holder's. Seen while nobody holds the
+    // item, it was made with a write token an earlier holder had before the
+    // release revoked it, and every holder is listed already, so it adds no one.
+    if (event.kind === "push.observed") {
+      const by = event.actor === "atelier/events" ? holder : event.actor;
+      if (by) actors.add(by);
+    }
   }
   return [...actors];
 }
@@ -242,6 +277,8 @@ export function familyRefusal(reviewer: string, contributors: readonly string[])
 
 // Minimal glob: `**` crosses directories, `*` does not, everything else literal.
 // Case-sensitive, as Git's paths are; `matchesFolded` is the matcher that is not.
+// A newline is a path character like any other to Git, so `**` crosses one
+// (the s flag), as `*` and `?` already do.
 export function globToRegExp(glob: string): RegExp {
   let out = "";
   for (let i = 0; i < glob.length; i++) {
@@ -258,7 +295,7 @@ export function globToRegExp(glob: string): RegExp {
       out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
     }
   }
-  return new RegExp(`^${out}$`);
+  return new RegExp(`^${out}$`, "s");
 }
 
 export function matchesAny(path: string, globs: string[]): boolean {
@@ -354,10 +391,11 @@ export function assertClaimable(item: Item, actor: string): void {
   }
 }
 
-// Role policy takes precedence over legacy harness eligibility.
-export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER): void {
+// Role policy takes precedence over legacy harness eligibility. Taking work
+// needs the executor role; planning a plan needs the planner role.
+export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   if (policy.agents) {
-    if (!hasRole(actor, policy, "executor")) throw new RuleError("ineligible", `${actor} needs an available agent with the executor role`, 403);
+    if (!hasRole(actor, policy, role)) throw new RuleError("ineligible", `${actor} needs an available agent with the ${role} role`, 403);
     return;
   }
   if (actor === owner || !policy.eligible?.length) return;
@@ -540,16 +578,17 @@ export function reviewOverrideFor(
   return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
 }
 
-// Live items held by someone else whose scope overlaps this one.
+// Live items held by someone else whose scope overlaps this one. Items of
+// one plan are not counted against each other (samePlan).
 export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
   return items.filter(
-    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && scopesOverlap(item.scope, o.scope),
+    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
 }
 
-export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER): void {
+export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
-  assertEligible(actor, policy, owner);
+  assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
     const clash = overlappingLive(item, items, actor);
     if (clash.length) {
@@ -565,10 +604,26 @@ export function assertOwner(item: Item, actor: string): void {
   }
 }
 
-// The evidence picture at one head: every required check is observed-pass,
-// observed-fail, or pending; reports are listed but never satisfy a check.
+// Whether a required check applies to a change. A check without paths
+// applies to every change. One with paths applies exactly when a changed
+// path matches one of them, whatever the letter case or Unicode form
+// (matchesFolded), so a variant spelling of a path still needs the check.
+// Null while the changed paths are not yet measured.
+export function checkApplies(policy: Pick<ProjectPolicy, "checkPaths">, command: string, changed: string[] | null): boolean | null {
+  const paths = policy.checkPaths?.find((c) => c.command === command)?.paths;
+  if (!paths?.length) return true;
+  if (changed === null) return null;
+  return changed.some((p) => matchesFolded(p, paths));
+}
+
+// The evidence picture at one head: every required check that applies, or
+// may apply while the changed paths are unmeasured, is observed-pass,
+// observed-fail, or pending; a check whose paths the change does not touch is
+// listed as not applicable and never blocks. Reports are listed but never
+// satisfy a check.
 export interface EvidenceView {
   checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner" }[];
+  notApplicable: string[];
   reports: Evidence[];
   changedPaths: string[] | null;  // null until an observed check has measured them
 }
@@ -578,42 +633,174 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
   // Under sandboxOnly, a check run on someone's machine is still shown but does not count.
   const counts = (e: Evidence) => e.grade === "observed" && (!policy.sandboxOnly || e.where === "sandbox");
   const latest = (claim: string) =>
-    atHead.filter((e) => counts(e) && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
-  const checks = policy.checks.map((claim) => {
+    atHead.filter((e) => counts(e) && !e.notApplicable && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
+    Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
+  const changedPaths = measured?.changedPaths ?? null;
+  const applies = (claim: string) => checkApplies(policy, claim, changedPaths) !== false;
+  const checks = policy.checks.filter(applies).map((claim) => {
     const e = latest(claim);
     return e
       ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner" }
       : { claim, grade: "pending" as Grade, passed: null };
   });
-  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
-    Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   return {
     checks,
+    notApplicable: policy.checks.filter((claim) => !applies(claim)),
     reports: atHead.filter((e) => e.grade === "reported"),
-    changedPaths: measured?.changedPaths ?? null,
+    changedPaths,
   };
 }
 
 // A check runs from the item's own head, so an item could weaken the check it
 // is graded by. What a check executes is therefore protected: a script it runs
-// directly or through an interpreter, and package.json when it goes through a
-// package manager, whose scripts an item could otherwise rewrite. Files a check
-// merely reads, such as the code under test, are not.
+// directly or through an interpreter; the recipe files make and just run; the
+// manifest a package manager or build tool runs scripts from, whose scripts an
+// item could otherwise rewrite, with the configuration that changes what it
+// runs; and the local binary npx and its kin would run. Files a check merely
+// reads, such as the code under test, are not, and nor is test configuration.
 const INTERPRETERS = new Set(["node", "sh", "bash", "zsh", "python", "python3", "deno", "bun", "tsx", "ruby", "perl"]);
-const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
+// What each package manager runs scripts from, and the configuration that
+// can change what it runs: npm's script shell, pnpm's install hooks, yarn's
+// committed release and plugins, bun's preloads.
+// The tables are Maps, so a check line holding a word such as constructor
+// or __proto__ finds nothing rather than Object.prototype.
+const PACKAGE_MANAGERS = new Map<string, string[]>(Object.entries({
+  npm: ["package.json", ".npmrc"],
+  pnpm: ["package.json", ".npmrc", ".pnpmfile.cjs"],
+  yarn: ["package.json", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**"],
+  bun: ["package.json", "bunfig.toml"],
+}));
+// Build tools whose manifest names code they run: cargo's build scripts and
+// runner configuration, swift's package manifest, an Xcode project's or
+// workspace's build phases and schemes.
+const BUILD_TOOLS = new Map<string, string[]>(Object.entries({
+  cargo: ["**/Cargo.toml", "**/build.rs", ".cargo/config", ".cargo/config.toml"],
+  swift: ["**/Package.swift", "**/Package@swift-*.swift"],
+  xcodebuild: ["**/*.xcodeproj/**", "**/*.xcworkspace/**", "**/Package.swift", "**/Package@swift-*.swift"],
+}));
+// The recipe files make and just read from the working directory, the files
+// those can include, and the options that name another file or directory.
+const RECIPES = new Map<string, { files: string[]; included: string; file: string[]; dir: string[] }>(Object.entries({
+  make: { files: ["Makefile", "makefile", "GNUmakefile"], included: "**/*.mk", file: ["-f", "--file", "--makefile"], dir: ["-C", "--directory"] },
+  just: { files: ["justfile", "Justfile", ".justfile"], included: "**/*.just", file: ["-f", "--justfile"], dir: ["-d", "--working-directory"] },
+}));
+
+// Words a shell puts before a command, and wrappers that run the command
+// after them: skipped to find the command, with each wrapper's own options
+// (those that take a value are listed) and, for timeout, its duration.
+const SHELL_WORDS = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "time", "exec", "command", "builtin", "nohup"]);
+const WRAPPERS = new Map<string, { valued: string[]; args?: number }>(Object.entries({
+  env: { valued: ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"] },
+  "/usr/bin/env": { valued: ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"] },
+  "cross-env": { valued: [] },
+  sudo: { valued: ["-u", "-g", "-h", "-p", "-r", "-t", "-U", "-C", "-D", "-R", "-T"] },
+  doas: { valued: ["-u", "-C"] },
+  nice: { valued: ["-n", "--adjustment"] },
+  timeout: { valued: ["-s", "-k", "--signal", "--kill-after"], args: 1 },
+  "xvfb-run": { valued: ["-s", "-e", "-f", "-p", "-n", "-w", "--server-args", "--error-file", "--auth-file", "--server-num", "--wait"] },
+}));
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 
 export function checkFiles(checks: string[]): string[] {
   const files = new Set<string>();
-  for (const cmd of checks) {
-    const words = cmd.split(/[\s;&|()<>"'`]+/).filter(Boolean);
-    words.forEach((word, i) => {
-      const prev = words[i - 1];
-      if (word.startsWith("-")) return;
-      if (word.startsWith("./") || /\.sh$/.test(word) || (prev && INTERPRETERS.has(prev) && /[./]/.test(word))) {
-        files.add(word.replace(/^\.\//, ""));
+  // A path inside the repository, as Git names it.
+  const inside = (path: string) => !path.startsWith("/") && !path.startsWith("../") && path !== "..";
+  const add = (path: string) => { if (inside(path)) files.add(path.replace(/^\.\//, "")); };
+  const assignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+  // The value of one of the named options at words[i]: the word after it, or
+  // what follows = in the option itself; null when words[i] is none of them.
+  const option = (words: string[], i: number, names: string[]): string | null => {
+    const [name, inline] = words[i].split(/=(.*)/s);
+    return names.includes(name) ? inline ?? words[i + 1] ?? null : null;
+  };
+  // The index of the command word from `from` on: past environment
+  // assignments, the shell's own words and wrappers with their options.
+  const commandAt = (words: string[], from: number): number => {
+    for (let i = from; i < words.length; i++) {
+      const word = words[i];
+      if (assignment(word) || SHELL_WORDS.has(word)) continue;
+      const wrapper = WRAPPERS.get(word);
+      if (!wrapper) return i;
+      let args = wrapper.args ?? 0;
+      while (i + 1 < words.length) {
+        const next = words[i + 1];
+        if (next.startsWith("-")) { i += wrapper.valued.includes(next) && !next.includes("=") ? 2 : 1; }
+        else if (args > 0) { i++; args--; }
+        else break;
       }
-      if (PACKAGE_MANAGERS.has(word)) files.add("package.json");
-    });
+    }
+    return -1;
+  };
+  // Every command position of a segment: its command, and the command of
+  // the string a shell's -c runs, through the same wrappers.
+  const commands = (words: string[]): number[] => {
+    const out: number[] = [];
+    for (let at = commandAt(words, 0); at !== -1; ) {
+      out.push(at);
+      if (!SHELLS.has(words[at])) break;
+      let inner = -1;
+      for (let j = at + 1; j < words.length; j++) {
+        const w = words[j];
+        if (!w.startsWith("-")) break;
+        if (!w.startsWith("--") && w.includes("c")) { inner = j + 1; break; }
+        if (w === "-o") j++;
+      }
+      at = inner === -1 ? -1 : commandAt(words, inner);
+    }
+    return out;
+  };
+  // The manager's files, and the same under the directory its --prefix, -C,
+  // --dir or --cwd option names, where it then reads them.
+  const managerFiles = (words: string[], at: number, manager: string) => {
+    const own = PACKAGE_MANAGERS.get(manager) ?? [];
+    for (const file of own) files.add(file);
+    for (let i = at + 1; i < words.length; i++) {
+      const dir = option(words, i, ["--prefix", "-C", "--dir", "--cwd"]);
+      if (dir !== null && inside(dir)) for (const file of own) add(`${dir.replace(/\/?$/, "/")}${file}`);
+    }
+  };
+  for (const cmd of checks) {
+    // Each command of a line, as the shell separates them, a newline included.
+    for (const segment of cmd.split(/[;&|()\n\r]+/)) {
+      const words = segment.split(/[\s<>"'`]+/).filter(Boolean);
+      // A path run directly, in any command position: bin/check, scripts/verify.
+      for (const at of commands(words)) if (words[at].includes("/")) add(words[at]);
+      // A runner's name counts wherever it stands in the line, as a wrapper, a
+      // shell's -c string or shell syntax may put it anywhere: a word that is
+      // one errs toward protecting what it runs.
+      words.forEach((word, i) => {
+        const prev = words[i - 1];
+        if (word.startsWith("-")) return;
+        if (word.startsWith("./") || /\.sh$/.test(word) || (prev && INTERPRETERS.has(prev) && /[./]/.test(word))) add(word);
+        if (PACKAGE_MANAGERS.has(word)) managerFiles(words, i, word);
+        for (const file of BUILD_TOOLS.get(word) ?? []) files.add(file);
+        if (word === "deno" && words[i + 1] === "task") ["deno.json", "deno.jsonc"].forEach((file) => files.add(file));
+        // npx, bunx and a package manager's dlx, exec or x run a local binary
+        // by its name, resolved through the manager's own files.
+        const viaManager = PACKAGE_MANAGERS.has(prev) && ["dlx", "exec", "x"].includes(word);
+        if (word === "npx" || word === "bunx" || viaManager) {
+          const manager = word === "npx" ? "npm" : word === "bunx" ? "bun" : prev;
+          for (const file of PACKAGE_MANAGERS.get(manager) ?? []) files.add(file);
+          let j = i + 1;
+          while (j < words.length && words[j].startsWith("-")) j += ["-p", "--package", "-c", "--call"].includes(words[j]) ? 2 : 1;
+          // The binary's name: a scoped package's own name, without a version.
+          const bin = words[j]?.split("/").pop()?.replace(/(?!^)@.*$/, "");
+          if (bin && !words[j].startsWith(".")) files.add(`node_modules/.bin/${bin}`);
+        }
+        const recipe = RECIPES.get(word);
+        if (recipe) {
+          let dir = "", named: string | null = null;
+          for (let j = i + 1; j < words.length; j++) {
+            const d = option(words, j, recipe.dir), f = option(words, j, recipe.file);
+            if (d !== null) dir = d.replace(/\/?$/, "/");
+            if (f !== null) named = f;
+          }
+          if (inside(dir)) for (const file of named !== null ? [named] : recipe.files) add(file.startsWith("/") ? file : dir + file);
+          files.add(recipe.included);
+        }
+      });
+    }
   }
   return [...files].sort();
 }
@@ -682,10 +869,15 @@ export interface InboxEntry {
   project: string;
   itemId: string;
   title: string;
-  kind: "accept" | "assess" | "merge" | "blocked" | "stale" | "overlap" | "scope" | "failing";
+  kind: "accept" | "assess" | "merge" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
 }
+
+// The weights of a plan's own entries, which the Ledger adds beside
+// inboxFor's (src/plans/state.ts): approving a proposed split, and deciding
+// for a blocked plan.
+export const PLAN_INBOX_WEIGHTS = { "approve-plan": 95, "plan-blocked": 85 } as const;
 
 const STALE_HOURS = 12;
 
@@ -708,6 +900,10 @@ export function inboxFor(
     // entry says so and gives its reason. An accepted item is read as
     // accept() reads it, as if still submitted.
     const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the project owner: ${g.overridden.reason}` : "");
+    // A part is reported through its plan (the Ledger's planView), so it
+    // never appears as an accept, assess, failing, scope or stale entry. An
+    // accepted part still asks to be merged.
+    const part = item.kind === "part";
     if (item.state === "accepted") {
       const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner);
       out.push({ ...base, kind: "merge", reason: `accepted${overrode(g)}; run \`atelier merge\` in the project checkout`, weight: 90 });
@@ -720,7 +916,7 @@ export function inboxFor(
       out.push({ ...base, kind: "blocked", reason: `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}; run \`atelier unblock ${item.id}\` when it can go on`, weight: 70 });
       continue;
     }
-    if (item.state === "submitted") {
+    if (item.state === "submitted" && !part) {
       const g = gate(item, policy, ev, rv, owner);
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
@@ -733,7 +929,7 @@ export function inboxFor(
         out.push({ ...base, kind: "scope", reason: `changes outside its scope: ${g.outOfScope.slice(0, 3).join(", ")}`, weight: 60 });
       }
     }
-    if (item.state === "claimed") {
+    if (item.state === "claimed" && !part) {
       const last = new Date(item.lastPushAt ?? item.updatedAt);
       const hours = (now.getTime() - last.getTime()) / 3_600_000;
       if (hours > STALE_HOURS) {
@@ -743,7 +939,7 @@ export function inboxFor(
   }
   for (let i = 0; i < live.length; i++) {
     for (let j = i + 1; j < live.length; j++) {
-      if (scopesOverlap(live[i].scope, live[j].scope)) {
+      if (!samePlan(live[i], live[j]) && scopesOverlap(live[i].scope, live[j].scope)) {
         out.push({
           project, itemId: live[i].id, title: live[i].title, kind: "overlap",
           reason: `scope overlaps ${live[j].id} (${live[j].owner ?? "unowned"})`, weight: 40,

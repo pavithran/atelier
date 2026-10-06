@@ -79,4 +79,7 @@ test("AI Studio profile names, with a colon, can be dispatched and claimed; uncl
 test("runner names are exactly kind:name, normalized, with no further colon", () => {
   assert.throws(() => parseRunner("home:a:b"), /not a runner/);
   assert.deepEqual(parseRunner("HOME:studio"), { runner: "home:studio", kind: "home" });
+  // The whole name, so one runner is never two by the case of its name.
+  assert.deepEqual(parseRunner("HOME:Studio"), { runner: "home:studio", kind: "home" });
+  assert.deepEqual(parseRunner("Cloud:Atelier-1"), { runner: "cloud:atelier-1", kind: "cloud" });
 });
