@@ -9,25 +9,25 @@ source "${0:A:h}/lib.sh"
 t=$1 ctx=$2 note=$3
 M=$(checkout_of "$ATELIER_PROJECT") || exit 1
 W=$(workspace_of "$ATELIER_PROJECT" "$t")
+# One landing at a time on this machine: the script runs again under the
+# kernel's file lock (flock on Linux, lockf on macOS), which waits for the
+# holder and is released when the holder exits or dies, so it is never left
+# stale.
 lock="$ATELIER_CACHE/landing-$ATELIER_PROJECT.lock"
-# A lock whose holder is gone (killed before its trap ran) is taken over.
-until mkdir "$lock" 2>/dev/null; do
-  holder=$(cat "$lock/pid" 2>/dev/null)
-  # Rename it first, so only one waiter takes it over; if what was renamed
-  # is a newer lock with a live holder, put it back.
-  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null && mv "$lock" "$lock.$$" 2>/dev/null; then
-    if [ "$(cat "$lock.$$/pid" 2>/dev/null)" = "$holder" ]; then rm -rf "$lock.$$"; else mv "$lock.$$" "$lock" 2>/dev/null || rm -rf "$lock.$$"; fi
-    continue
-  fi
-  sleep 20
-done
-echo $$ > "$lock/pid"
-trap 'rm -rf "$lock"' EXIT
+if [ -z "${ATELIER_LANDING_LOCKED:-}" ]; then
+  mkdir -p "$ATELIER_CACHE"; touch "$lock"
+  export ATELIER_LANDING_LOCKED=1
+  if command -v flock >/dev/null; then exec flock "$lock" zsh "${0:A}" "$@"; fi
+  exec lockf -k "$lock" zsh "${0:A}" "$@"
+fi
 cd "$W" || exit 1
 # A workspace an agent never built in has no dependencies yet; the type check
 # below needs them, and the project's generated types.
 if [ -f package.json ] && [ ! -d node_modules ]; then
-  npm ci --prefer-offline --no-audit --no-fund >/dev/null && { ! node -e 'process.exit(require("./package.json").scripts?.types ? 0 : 1)' || npm run types >/dev/null; } || { echo "$t: npm ci failed"; exit 5; }
+  npm ci --prefer-offline --no-audit --no-fund >/dev/null || { echo "$t: npm ci failed"; exit 5; }
+  if node -e 'process.exit(require("./package.json").scripts?.types ? 0 : 1)'; then
+    npm run types >/dev/null || { echo "$t: npm run types failed"; exit 5; }
+  fi
 fi
 git fetch -q "$M" main || { echo "$t: could not fetch main from $M"; exit 6; }
 merge=$(git merge --no-ff -m "Merge main into $t" FETCH_HEAD 2>&1); merged=$?

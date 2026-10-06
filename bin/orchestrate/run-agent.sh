@@ -6,7 +6,7 @@
 # The opencode-* wrappers it calls are set up as README.md here describes;
 # each reads its key into its own process only.
 set -eu
-which=$1 ws=$2 out=$3 prompt=$4
+which=$1 ws=${2:A} out=${3:A} prompt=$4
 mkdir -p "$ws/.scratch/xdg-data"
 grep -qx ".scratch/" "$ws/.git/info/exclude" 2>/dev/null || echo ".scratch/" >> "$ws/.git/info/exclude"
 cd "$ws"
