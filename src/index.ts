@@ -354,13 +354,26 @@ async function mint(env: Env, repo: string, scope: "read" | "write", branch: str
   return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
 }
 
+// What Artifacts says of a token it no longer honours: the token, or the
+// repository it was for, is not found, or the token has expired or was
+// already revoked.
+const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
+
+// Revokes a write token before its holder loses the item. It succeeds when
+// Artifacts revokes the token, answers that it holds no such token
+// (revokeToken resolves false), or fails with TOKEN_GONE. Any other failure
+// throws a 503, and the caller, which has changed nothing yet, fails with
+// it: the holder keeps the item, the token stays recorded, and a retry
+// revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
   if (!repo || !tokenId) return;
   try {
     using r = await env.ARTIFACTS.get(repo);
     await r.revokeToken(tokenId);
-  } catch {
-    // An already-expired token is fine; the ledger records the handoff regardless.
+  } catch (err) {
+    if (TOKEN_GONE.test(codeOf(err))) return;
+    console.error("Artifacts could not revoke a write token", codeOf(err).trim());
+    throw new RuleError("revoke_failed", "the workspace's write token could not be revoked, so nothing was changed; try again", 503);
   }
 }
 
@@ -609,6 +622,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         }
       }
       // Re-claiming rotates the token: one live write token per item, ever.
+      // If the old one cannot be revoked, the claim fails before a new one
+      // is minted, and the old one stays recorded. L.claim above is the
+      // claim's check, and it has already refused anyone who may not claim
+      // the item, so a refused claim revokes nothing: only the holder
+      // re-claiming, or the claimer of an item nobody holds, gets here, and
+      // `replaces` is the token this claim takes over.
       // The workspace and the baseline are both given the project's branch:
       // the fork's HEAD names it, and headOf reads HEAD.
       await revoke(env, fork, replaces);
@@ -709,20 +728,28 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
       if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
       return json(await L.submit(id, actor, summary, c.url.origin, !!c.token));
-    // A change of owner passes the Ledger the token id read here: the Ledger
-    // clears it only if it is still the one recorded (see dropToken), and it
-    // is revoked here in the fork the changed item names.
+    // A change of owner reads the holder's write token id, is checked, then
+    // that token is revoked, and only then is the change made. A change that
+    // would be refused revokes nothing, and one whose token cannot be revoked
+    // fails with nothing changed (see revoke). The Ledger is passed the token
+    // id read here and makes the change only if it is still the one recorded
+    // (see dropToken), so a token a claim recorded in between is never left
+    // live and unrecorded.
     case "handoff": {
       const to = String(body.to ?? "");
       const oldToken = await L.tokenId(id);
+      await L.checkHandoff(id, actor, to);
+      const before = await L.item(id);
+      await revoke(env, before.fork, oldToken);
       const item = await L.handoff(id, actor, to, String(body.note ?? ""), !!c.token, oldToken);
-      await revoke(env, item.fork, oldToken);
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
     case "release": {
       const oldToken = await L.tokenId(id);
+      await L.checkRelease(id, actor);
+      const before = await L.item(id);
+      await revoke(env, before.fork, oldToken);
       const item = await L.release(id, actor, String(body.note ?? ""), !!c.token, oldToken);
-      await revoke(env, item.fork, oldToken);
       return json(item);
     }
     case "accept":
@@ -761,8 +788,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "abandon": {
       requireOwner(env, actor);
       const oldToken = await L.tokenId(id);
+      await L.checkAbandon(id, actor);
+      const before = await L.item(id);
+      await revoke(env, before.fork, oldToken);
       const item = await L.abandon(id, actor, String(body.note ?? ""), oldToken);
-      await revoke(env, item.fork, oldToken);
       return json(item);
     }
   }
@@ -942,20 +971,33 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // A change of owner takes the write token with it, as on the API routes:
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
-    let moved: { fork: string | null } | null = null;
+    // As on the API routes: a change of owner is checked, the holder's
+    // write token revoked, and only then the change made. The workspace is
+    // read after the token id, not taken from `before`: a token is recorded
+    // only once its workspace exists, so the workspace read here is the
+    // one the token was made for, even if a claim made both after `before`
+    // was read. With `before.fork` that token would go unrevoked, and the
+    // change would then take it off the record while it still works.
+    const moving = verb === "abandon" || verb === "release" || verb === "handoff";
+    if (moving) {
+      if (verb === "abandon") await L.checkAbandon(id, owner);
+      else if (verb === "release") await L.checkRelease(id, owner);
+      else await L.checkHandoff(id, owner, String(form.get("to") ?? ""));
+      const { fork } = await L.item(id);
+      await revoke(env, fork, oldToken);
+    }
     if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
     else if (verb === "undispatch") await L.undispatch(id, owner);
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
     // independent review, its reason in the note.
     else if (verb === "override") await L.accept(id, owner, expected, note);
-    else if (verb === "abandon") moved = await L.abandon(id, owner, note, oldToken);
-    else if (verb === "release") moved = await L.release(id, owner, note, false, oldToken);
-    else if (verb === "handoff") moved = await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
+    else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
+    else if (verb === "release") await L.release(id, owner, note, false, oldToken);
+    else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
       await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin);
     } else return html(renderError("Unknown action."), 400);
-    if (moved) await revoke(env, moved.fork, oldToken);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
