@@ -25,6 +25,11 @@ else if (!process.argv.includes('push')) process.exit(2);
 globalThis.fetch = async (url, options) => {
   appendFileSync(process.env.TEST_CALLS, JSON.stringify({ url, ...options }) + '\\n');
   if (process.env.TEST_REFUSE) return Response.json({ error: 'live_work', detail: 'live work' }, { status: 409 });
+  const renamed = /\\/projects\\/([^/]+)\\/rename$/.exec(url);
+  if (renamed) {
+    const from = decodeURIComponent(renamed[1]), to = JSON.parse(options.body).to;
+    return Response.json({ from, to, key: from, names: [from, to], project: { name: to, repo: from, policy: { checks: [], protected: [] } } });
+  }
   return Response.json(options.method === 'DELETE' ? { removed: true } : {
     project: { repo: 'weblog', policy: { checks: [], protected: ['manual/**'] } },
     remote: 'https://git.test/weblog', token: 'test-token',
@@ -56,6 +61,51 @@ test("CLI rename refuses a different name unless it changes only local config", 
   const renamed = command(["init", "--name", "ikon", "--rename-local"]);
   assert.equal(renamed.status, 0, renamed.stderr);
   assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  assert.deepEqual(calls(), []);
+}));
+
+test("CLI rename asks the server, then moves the local config entry to the new name", () => fixture(({ command, initial, config, calls }) => {
+  const renamed = command(["projects", "rename", "weblog", "ikon"]);
+  assert.equal(renamed.status, 0, renamed.stderr);
+  assert.equal(calls().length, 1);
+  assert.equal(calls()[0].url, "https://atelier.test/api/projects/weblog/rename");
+  assert.equal(calls()[0].method, "POST");
+  assert.deepEqual(JSON.parse(calls()[0].body), { to: "ikon" });
+  assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  assert.match(renamed.stdout, /weblog is now ikon on https:\/\/atelier\.test\. Its Ledger, baseline weblog and every fork stay where they are\. The local config entry weblog is now ikon\./);
+  assert.match(renamed.stdout, /weblog still works/);
+}));
+
+test("CLI rename leaves local config alone when the server refuses, or when no entry has the old name", () => fixture(({ command, initial, config, calls }) => {
+  const refused = command(["projects", "rename", "weblog", "ikon"], { TEST_REFUSE: "1" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /live_work/);
+  assert.deepEqual(config(), initial);
+  const elsewhere = command(["projects", "rename", "elsewhere", "other"]);
+  assert.equal(elsewhere.status, 0, elsewhere.stderr);
+  assert.deepEqual(config(), initial);
+  assert.match(elsewhere.stdout, /No local config entry was called elsewhere\./);
+  assert.equal(calls().length, 2);
+}));
+
+test("CLI rename keeps an entry already under the new name and says what the dropped one held", () => fixture(({ command, initial, config }) => {
+  const prepared = command(["init", "--name", "ikon", "--rename-local"]);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const both = { ...config(), projects: { ikon: config().projects.ikon, weblog: { path: "/elsewhere", branch: "old", notesRemote: "origin" } } };
+  writeFileSync(join(initial.projects.weblog.path, "config.json"), JSON.stringify(both));
+  const renamed = command(["projects", "rename", "weblog", "ikon"]);
+  assert.equal(renamed.status, 0, renamed.stderr);
+  assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  assert.match(renamed.stdout, /already had an entry ikon, which is kept; the entry weblog was dropped \(it held: path \/elsewhere, branch old, notesRemote origin\)/);
+}));
+
+test("CLI rename needs both names and contacts no server without them", () => fixture(({ command, initial, config, calls }) => {
+  for (const argv of [["projects", "rename"], ["projects", "rename", "weblog"], ["projects", "rename", "weblog", "ikon", "extra"]]) {
+    const r = command(argv);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /usage: atelier projects remove NAME \[--force\] · projects rename OLD NEW/);
+  }
+  assert.deepEqual(config(), initial);
   assert.deepEqual(calls(), []);
 }));
 

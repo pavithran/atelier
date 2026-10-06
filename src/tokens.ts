@@ -46,8 +46,10 @@ export function tokenActive(token: AgentToken, now: number): boolean {
   return !token.revokedAt && Date.parse(token.expiresAt) > now;
 }
 
-export function inScope(token: Pick<AgentToken, "projects"> | undefined, project: string): boolean {
-  return token?.projects === undefined || token.projects.includes(project);
+// A token limited to projects lists them by the names they had when it was
+// issued; a project answers to every name it has had, so any of them counts.
+export function inScope(token: Pick<AgentToken, "projects"> | undefined, names: string[]): boolean {
+  return token?.projects === undefined || names.some((n) => token.projects!.includes(n));
 }
 
 // Only the agent's workflow is allowed. Unknown routes stay owner-only.
