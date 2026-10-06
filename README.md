@@ -120,7 +120,7 @@ In detail:
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. |
 | `atelier push` | the item's owner | Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, measures which paths changed since the baseline, and records the results as Observed. A result for a head that has since moved is refused. |
+| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records the paths the workspace changes since the baseline, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. |
 | `atelier report "…"` | anyone | Records a Reported claim. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -278,9 +278,13 @@ Trusted, and stated here so nobody assumes otherwise:
   for orchestration. Keep it with the owner's tools. A workspace write token
   controls Git pushes and is separate from an API token.
 - **Check execution is explicit.** Local checks run in a clean clone at
-  the verified head, but a caller authorised to record checks can forge local
-  evidence. Cloudflare container checks execute on the server and are
-  available with `--sandbox`; `sandboxOnly` policy requires that evidence.
+  the verified head, but a caller authorised to record checks, the item's own
+  agent included, can forge a local result. It cannot forge what the change
+  touches: the changed paths are measured by the Worker from Artifacts for
+  every check, so a protected change always needs its independent review,
+  whatever a local result says. Cloudflare container checks execute on the
+  server and are available with `--sandbox`; `sandboxOnly` policy requires
+  that evidence.
   The container integration still needs deployment and a live runtime check.
 - **Merging happens locally.** The Artifacts binding and REST API can read
   repositories (commits, trees, blobs, files, a first-parent log) but cannot

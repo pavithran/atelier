@@ -1,11 +1,11 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, type ItemDiff } from "./diff";
+import { itemDiff, measureWorkspace, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { DEFAULT_OWNER, measuredPaths, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
@@ -584,12 +584,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         passed: check ? Boolean(body.passed) : null,
         by: actor,
         at: new Date().toISOString(),
-        ...(check ? { changedPaths: measuredPaths(body.changedPaths), outputTail: String(body.outputTail ?? "").slice(-4000), where: "runner" as const } : {}),
+        ...(check ? { changedPaths: null, outputTail: String(body.outputTail ?? "").slice(-4000), where: "runner" as const } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
-      // An observed check counts only against the head Atelier itself reads from Artifacts.
-      if (check && item.fork && e.head !== (await headOf(env, item.fork))) {
-        throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
+      // An observed check counts only against the head Atelier itself reads
+      // from Artifacts, and records the paths Atelier measures there. The
+      // gate decides whether a change is protected from those paths, and the
+      // caller is often the item's own agent, so body.changedPaths is never
+      // read. The result itself (body.passed) is the caller's word, shown as
+      // run on the caller's machine; sandboxOnly is the policy for projects
+      // that will not count it.
+      if (check && item.fork) {
+        const measured = await measureWorkspace(env.ARTIFACTS, (await L.project()).repo, item.fork);
+        if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
+        e.changedPaths = measured.changedPaths;
       }
       await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
