@@ -1,0 +1,141 @@
+# Running Atelier for a project
+
+This is the handbook for a session that runs Atelier for a project: one that
+files tasks, sends them to coding agents, has their work reviewed, and lands
+it for the owner. It is written from the work of 6 October 2026, when one
+session landed about forty tasks on Atelier itself with agents from four
+model families, and records what went wrong and what prevents it. The rules
+Atelier enforces are in the README and on the `/how` page; this document is
+about working within them well.
+
+## The shape of the work
+
+A task moves through five hands:
+
+1. **The owner, or the session acting for the owner,** files it with
+   `atelier new "title" --scope GLOB`, and reads its id from that command's
+   output. Never assume the next number: another session may have filed one
+   in between, and claiming the wrong id puts your work under someone else's
+   task.
+2. **A builder** (a model in a harness) claims it, works only in the
+   workspace the claim prints, and commits there.
+3. **The session** pushes, runs `atelier check`, and submits. The checks run
+   in a clean clone of the exact head; what the agent says about its own
+   tests is shown and never counted.
+4. **A reviewer from another model family** than everyone who worked on the
+   task reads the diff and approves or rejects with findings.
+5. **The owner** accepts that exact revision and merges it into the
+   registered checkout with `atelier merge`.
+
+Several builders can work at once, each on its own task and fork. Landing is
+the part that must not run in parallel.
+
+## Briefing an agent
+
+A brief is the whole of what an agent knows. Write it so it cannot be
+misread:
+
+- Name the workspace, the task id and what is already true. Say which files
+  to read first.
+- State exactly what each command does when the brief mentions one. A brief
+  that describes `--push` loosely will be copied into every project's
+  guide loosely.
+- Ask for a test that fails without the fix, and for the agent to confirm it
+  does.
+- Say what the agent must not do: push, deploy, run `atelier` against the
+  real server, or touch the owner's checkout.
+- Before sending one brief to many projects, pilot it on the project whose
+  documents carry the most rules, and have the pilot reviewed. A fault in a
+  brief is copied into every project it reaches.
+
+## Running agents in each harness
+
+- **opencode** (GLM, DeepSeek): give each run its own data folder
+  (`XDG_DATA_HOME`) or concurrent runs deadlock on a shared database, and
+  start it with standard input from `/dev/null` or it waits forever. It
+  refuses any read or write outside its working folder, and a refused access
+  can end the run silently with nothing changed: say in the brief that
+  outside paths are refused, put any material it needs inside the
+  workspace, and tell it to edit, not only read. It prints nothing until the
+  run ends; watch its log file for progress.
+- **Antigravity in plan mode** (Gemini): it cannot run commands, and an
+  attempt returns an empty answer. Put the diff in the prompt and say no
+  tool may be used.
+- **Agents that write a commit message to a file** (`COMMIT_MSG.txt`) also
+  stage it; check that no such file, and no `.scratch/` file, is committed.
+- **A run can outlive the shell that started it.** If the session's shells
+  are stopped, the agents may still be working; look for their processes
+  before starting the same work again.
+
+Count every run that ends without the asked-for result. Atelier records them
+as run reports; a model that stops early often is a model to brief
+differently or to use elsewhere.
+
+## Landing, one task at a time
+
+Every task forks from main as it was when the task was claimed. By the time
+it is approved, main has usually moved, and the merge conflicts or, worse,
+merges cleanly into something broken. On 6 October two tasks merged cleanly
+one after the other and together broke main's type check; another pair broke
+a test neither had touched.
+
+So land one task at a time, in this order:
+
+1. Merge main into the task's workspace. Resolve conflicts keeping both
+   sides' behaviour; regenerate generated files (the CLI's help fixtures)
+   from the merged code rather than merging them by hand.
+2. Push and run the checks at that head.
+3. Get the independent review at that head. An approval is bound to the
+   revision it read; any later push, a merge of main included, needs a new
+   one.
+4. Accept and merge at once, before anything else lands.
+5. Run the type check on main after every merge, and the full suite before
+   pushing main to its own remotes.
+
+`atelier land` (task t187) does these steps under a lease, so two sessions
+never land at once, and records how long each took.
+
+**Deploy when the CLI needs it.** On a machine where the CLI runs from the
+project's own checkout, a merge that adds a route the CLI calls breaks every
+check until the server has it too. Deploy after such merges, before landing
+the next task.
+
+**Keep the machine's load down.** Checks run the whole suite. A dozen agents
+and checks at once pushed the load average past 100 and made timing tests
+fail at random; run checks one after another when the machine is busy.
+
+## Judging a review
+
+A reviewer's finding is a claim about the code, and it can be wrong. On
+6 October about half of one reviewer's blocking findings did not hold: code
+it could not see, a language feature it thought missing, a decision by the
+owner it read as a defect. The other half were real, and some were serious.
+
+- Check each blocking finding against the code before acting on it.
+- When it holds, fix it in a new commit with a test that fails without the
+  fix, and send the task back to the same reviewer.
+- When it does not, say why in the review's context, with the file and line
+  that show it, and ask for the review again. Do not override the review
+  quietly, and never let a reviewer overrule the owner's decision.
+- Record the verdict on each finding (`atelier finding`, task t186). Which
+  reviewers are right, and how often, is the most useful thing Atelier can
+  measure about them.
+
+## Keeping the record honest
+
+- The task's holder is who the ledger says did the work. Before another
+  model works on a task, hand it off (`atelier handoff`); an accepted task
+  cannot be handed off, so integrate it under its holder or not at all.
+- Every commit carries an `Agent:` line naming who wrote it.
+- When a closing note turns out to be wrong, say so where the record can
+  hold it; never leave a false statement standing.
+- Close bundled tasks against the task they landed in, naming its merge.
+
+## What to record
+
+Atelier records what passes through it: claims, pushes, observed checks,
+submissions, reviews with their findings, handoffs, acceptances, merges and
+run reports. Work done outside it is invisible. When you judge a finding,
+resolve a conflict, or watch a run fail, record it, so the comparison
+between models grows from every project and not only from the sessions that
+remember to write it down.

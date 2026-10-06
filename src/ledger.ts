@@ -275,6 +275,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
@@ -394,6 +395,29 @@ export class Ledger extends DurableObject<Env> {
 
   endSession(hash: string): boolean {
     return this.sql.exec(`DELETE FROM sessions WHERE hash = ?`, hash).rowsWritten > 0;
+  }
+
+  // ── the public showcase setting ───────────────────────────────────────────
+  // Which projects the owner shows at /showcase and whether each is named or
+  // anonymous. The default is none, so nothing is published by accident. The
+  // row holds whichever of the project's names the owner gave; the public
+  // pages resolve it through the project list, so a renamed project stays
+  // shown under the name it has now.
+
+  setShowcase(name: string, mode: "named" | "anonymous"): void {
+    this.sql.exec(`INSERT OR REPLACE INTO showcase (name, mode) VALUES (?, ?)`, name, mode);
+    this.log(null, this.owner, "showcase.set", { name, mode }, new Date().toISOString());
+  }
+
+  removeShowcase(name: string): boolean {
+    const gone = this.sql.exec(`DELETE FROM showcase WHERE name = ?`, name).rowsWritten > 0;
+    if (gone) this.log(null, this.owner, "showcase.removed", { name }, new Date().toISOString());
+    return gone;
+  }
+
+  showcaseEntries(): { name: string; mode: "named" | "anonymous" }[] {
+    return this.sql.exec(`SELECT name, mode FROM showcase ORDER BY name`).toArray()
+      .map((r) => ({ name: r.name as string, mode: r.mode === "named" ? "named" as const : "anonymous" as const }));
   }
 
   // Two inits finishing out of order must not leave the older copy listed.
@@ -930,7 +954,7 @@ export class Ledger extends DurableObject<Env> {
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     this.afterPlanChange(e.itemId);
   }
@@ -1277,6 +1301,26 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
+  // The owner records a verdict on one finding of a review, at the head the
+  // review was made at and the finding's position (one based) in that
+  // review's findings. Nothing about the review changes: the event is the
+  // record, and the reliability record counts the reviewer's findings
+  // confirmed and refuted (src/models/reliability.ts).
+  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a verdict on a finding", 403);
+    if (!["confirmed", "refuted", "fixed"].includes(verdict)) throw new RuleError("bad_finding", "a finding's verdict is confirmed, refuted or fixed", 400);
+    this.item(id);
+    const at = head;
+    const review = this.reviewsFor(id).filter((r) => r.head === at).at(-1);
+    if (!review) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409);
+    const findings = review.findings ?? [];
+    if (index < 1 || index > findings.length) {
+      throw new RuleError("no_finding", `${id}'s review at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409);
+    }
+    const finding = findings[index - 1];
+    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, new Date().toISOString());
+  }
+
   // The owner records which model served events recorded under another
   // (src/models/served.ts): one event.served for each matching event that
   // no annotation already says this model served. The annotated events
@@ -1591,7 +1635,7 @@ export class Ledger extends DurableObject<Env> {
       }
       const parts = newest.plan.parts.map((p) => ({
         key: p.key,
-        id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn }, { plan: id, key: p.key, dependsOn: p.dependsOn, approval: hash }),
+        id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn }, { plan: id, key: p.key, dependsOn: p.dependsOn, partKind: p.kind, taskKind: p.taskKind, approval: hash }),
       }));
       record.approval = { hash, at, by: actor, allowPaid, limits, deadline, parts, routes, pool };
       record.blocked = null;
