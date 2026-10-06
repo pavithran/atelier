@@ -950,7 +950,7 @@ export class Ledger extends DurableObject<Env> {
   // ran. Each is a project-level event: approved, withdrawn, consumed, ran.
 
   private get actionStore(): ActionStore {
-    return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data) };
+    return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
   }
 
   approveAction(body: Record<string, unknown>, actor: string): ApprovalView {
