@@ -27,8 +27,8 @@ it("each sign-in issues a fresh random session, never the hash of the token", as
   const forged = `atelier=${await sha256(TOKEN)}`;
   expect([first, second]).not.toContain(forged);
   // Both sessions open the signed-in pages; the forged cookie and no cookie are sent to sign in.
-  expect((await get("/projects", first)).status).toBe(200);
-  expect((await get("/projects", second)).status).toBe(200);
+  expect((await get("/decisions", first)).status).toBe(200);
+  expect((await get("/decisions", second)).status).toBe(200);
   for (const cookie of [forged, undefined]) {
     const refused = await get("/projects", cookie);
     expect(refused.status).toBe(303);
@@ -51,18 +51,18 @@ it("a session past its expiry is refused by the server and dropped", async () =>
   // A session still inside its expiry opens the page.
   const live = "f".repeat(64);
   await I().startSession({ hash: await sha256(live), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() });
-  expect((await get("/projects", `atelier=${live}`)).status).toBe(200);
+  expect((await get("/decisions", `atelier=${live}`)).status).toBe(200);
 });
 
 it("sign-out ends the session at once, from the same origin only", async () => {
   const cookie = await signIn(TOKEN, testEnv);
-  const page = await get("/projects", cookie);
+  const page = await get("/decisions", cookie);
   expect(page.status).toBe(200);
   expect(await page.text()).toContain('<form method="post" action="/logout"');
   // Another origin cannot end the session.
   expect((await logout(cookie, "https://evil.test")).status).toBe(403);
   expect((await logout(cookie)).status).toBe(403);
-  expect((await get("/projects", cookie)).status).toBe(200);
+  expect((await get("/decisions", cookie)).status).toBe(200);
   const out = await logout(cookie, "https://atelier.test");
   expect(out.status).toBe(303);
   expect(out.headers.get("location")).toBe("/login");

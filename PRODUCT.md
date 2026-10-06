@@ -8,7 +8,7 @@ web
 
 ## Users
 
-PAVI manages agent work across projects. The main screen supports PAVI's decisions across projects. Agents use the CLI to claim, complete, and hand off work.
+PAVI manages agent work across projects. Home is the portfolio, one card per project, and each project has its own area with its tasks, flow, plans, code, log, ship actions and settings. Decisions is the owner's one inbox across projects. Agents use the CLI to claim, complete, and hand off work.
 
 ## Product Purpose
 

@@ -175,7 +175,10 @@ ${decideRefresh.toString()}
     for (var i = 0; i < graphs.length; i++) scrubber(graphs[i]);
   }
 
-  var note = function () { var n = main.querySelector(".live-note:not(.stale)"); if (n) n.hidden = false; };
+  // The live note sits in the rail's foot, outside <main>, so nothing sits
+  // between the page's header and its H1 (finding 11); it is looked for
+  // anywhere in the document.
+  var note = function () { var n = document.querySelector(".live-note:not(.stale)"); if (n) n.hidden = false; };
 
   // ── refresh ──
   var every = Number(main.getAttribute("data-live-refresh") || 0);
@@ -202,7 +205,7 @@ ${decideRefresh.toString()}
     // link that reloads it, and stops refreshing.
     function stale() {
       if (ticker) { clearInterval(ticker); ticker = null; }
-      var n = main.querySelector(".live-note:not(.stale)");
+      var n = document.querySelector(".live-note:not(.stale)");
       if (n) n.hidden = true;
       var p = document.createElement("p");
       p.className = "meta live-note stale";

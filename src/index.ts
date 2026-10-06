@@ -9,7 +9,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
@@ -1372,13 +1372,13 @@ async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Pro
   const L = ledger(env, ref.key);
   const p = await L.project();
   const repoName = item ? (await L.item(item)).fork : p.repo;
-  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(ref.name)}/${encodeURIComponent(item!)}`), 404);
+  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(ref.name)}/${encodeURIComponent(item!)}`, ownerName(env)), 404);
   const atParam = url.searchParams.get("at");
   const at = atParam && HASH.test(atParam) ? atParam : null;
   const w: Where = { project: p, item, at };
   using repo = await env.ARTIFACTS.get(repoName);
   const s = repoSource(repo);
-  const notFound = (what: string) => html(renderError(`${what} is not in this repository.`, codeHref({ ...w, at: null }, [])), 404);
+  const notFound = (what: string) => html(renderError(`${what} is not in this repository.`, codeHref({ ...w, at: null }, []), ownerName(env)), 404);
   if (view === "commit") {
     const hash = tail[0] ?? "";
     if (!HASH.test(hash) || tail.length !== 1) return notFound("That commit");
@@ -1386,7 +1386,7 @@ async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Pro
     return c ? html(renderCommit(w, c, ownerName(env))) : notFound("That commit");
   }
   const head = await resolve(s, at);
-  if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(ref.name)}`), 404);
+  if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(ref.name)}`, ownerName(env)), 404);
   if (view === "log") {
     const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), LOG_PAGES - 1);
     const { commits, more } = await logPage(s, head.hash, page);
@@ -1487,7 +1487,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const reliability = { models: track.reliability, events: track.events, unread: track.unread.map(titleOf) };
     return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env), reliability));
   }
-  // The Projects page's showcase form: the owner sets which projects the
+  // The Home page's showcase form: the owner sets which projects the
   // public page shows and whether each is named. Only the owner reaches a
   // browser route, and the form is same-origin as every owner form is.
   if (req.method === "POST" && parts[0] === "projects" && parts[1] === "showcase") {
@@ -1495,7 +1495,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const form = Object.fromEntries((await req.formData()).entries());
     const asked = String(form.project ?? "");
     const ref = await resolveProject(env, asked);
-    if (!ref.registered) return html(renderError(`no project ${asked} is registered, so it cannot be shown publicly.`, "/projects"), 404);
+    if (!ref.registered) return html(renderError(`no project ${asked} is registered, so it cannot be shown publicly.`, "/", ownerName(env)), 404);
     const mode = String(form.mode ?? "");
     if (mode === "") {
       // The row may hold any of the project's names; take it under both.
@@ -1504,9 +1504,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     } else if (mode === "anonymous" || mode === "named") {
       await index(env).setShowcase(ref.name, mode);
     } else {
-      return html(renderError("The public showcase mode must be anonymous or named.", "/projects"), 400);
+      return html(renderError("The public showcase mode must be anonymous or named.", "/", ownerName(env)), 400);
     }
-    return Response.redirect(new URL("/projects", c.url).toString(), 303);
+    return Response.redirect(new URL("/", c.url).toString(), 303);
   }
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
@@ -1524,10 +1524,10 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.newItem(String(form.get("title") ?? "").slice(0,300), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner);
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
     }
-    // The project page's protected-action forms: approve at the head it showed, or withdraw.
+    // The Ship tab's protected-action forms: approve at the head it showed, or withdraw.
     if (id === "actions") {
       await actionForm(L, verb, form, owner, async (commit) => onMainLine(env, (await L.project()).repo, commit));
-      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}#actions`, c.url).toString(), 303);
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/ship`, c.url).toString(), 303);
     }
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
@@ -1564,144 +1564,235 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
       await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
-    } else return html(renderError("Unknown action."), 400);
+    } else return html(renderError("Unknown action.", "/", ownerName(env)), 400);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
-  if (parts.length === 0 || ["decisions", "projects", "history", "studio", "flow"].includes(parts[0])) {
-    const projects = await index(env).projects();
-    const views: ProjectView[] = await Promise.all(projects.map(async project => {
-      try { return {project, items: await ledgerOf(env, project).items()}; }
-      catch { return {project, items: [], unavailable: true}; }
-    }));
-    const now = new Date();
-    // Projects and History read each project's recent record: the cards count
-    // the last two weeks of moves from it, and the timeline finds who held
-    // each task when it merged. A project whose record cannot be read is
-    // listed as unavailable.
-    if (parts[0] === "projects" || parts[0] === "history") {
-      const read: ProjectView[] = await Promise.all(views.map(async (v) => {
-        if (v.unavailable) return v;
-        try {
-          const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-          return { ...v, events, cut: events.length >= STORY_EVENTS };
-        } catch { return { ...v, unavailable: true }; }
-      }));
-      if (parts[0] === "projects") {
-        // The showcase setting as the cards read it: a mode per project, under
-        // whichever of its names the setting's row holds.
-        const entries = await index(env).showcaseEntries().catch(() => [] as { name: string; mode: "named" | "anonymous" }[]);
-        const modes: Record<string, "named" | "anonymous"> = {};
-        for (const p of projects) {
-          const hit = entries.find((e) => namesOf(p).includes(e.name));
-          if (hit) modes[p.name] = hit.mode;
-        }
-        return html(renderProjects(read, ownerName(env), now, ownerActor(env), modes));
-      }
-      return html(renderHistory(read, ownerName(env), ownerActor(env)));
-    }
-    // The floor reads each project's recent events; a project that cannot be read is left off it.
-    const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
-      // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
-      try { return { ...v, events: (await ledgerOf(env, v.project).events(undefined, 400)) as unknown as LedgerEvent[] }; }
-      catch { v.unavailable = true; return null; }
-    }))).filter((v): v is FloorView => v !== null);
-    const floor = buildFloor(floorViews, now);
-    // The graph reads a project's longer record: every project's on Flow, and
-    // only the most recently active project's on Decisions. Studio needs none.
-    const owner = ownerActor(env);
-    const cutoffs = new Map<string, number | null>();
-    const story = async (v: FloorView) => {
-      try {
-        const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-        cutoffs.set(v.project.name, firstTaskAt(v.items));
-        return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
-      } catch { return null; }
-    };
-    const recent = (v: FloorView) => v.events[0]?.at ?? "";
-    if (parts[0] === "flow") {
-      // Unknown values are ignored: the page shows all time, every family.
-      const sinceRaw = c.url.searchParams.get("since") ?? "all";
-      const sinceParam = ["1d", "7d", "all"].includes(sinceRaw) ? sinceRaw : "all";
-      const familyParam = c.url.searchParams.get("family");
-      let sinceIso: string | undefined = undefined;
-      if (sinceParam === "1d") sinceIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      if (sinceParam === "7d") sinceIso = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-      const familyAllowed = VENDOR_NAMES.some(([v]) => v === familyParam) && familyParam ? familyParam : undefined;
-      
-      const unfilteredStories = (await Promise.all(floorViews.map(story))).filter((s): s is NonNullable<typeof s> => s !== null);
-      const familiesPresent = [...new Set(unfilteredStories.flatMap(s => Object.keys(s.tally.byVendor) as string[]))];
-      
-      const filteredStory = async (v: FloorView) => {
-        try {
-          const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-          cutoffs.set(v.project.name, firstTaskAt(v.items));
-          return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project), { since: sinceIso, family: familyAllowed });
-        } catch { return null; }
-      };
-
-      const stories = (sinceParam === "all" && !familyAllowed) ? unfilteredStories :
-        (await Promise.all(floorViews.map(filteredStory))).filter((s): s is NonNullable<typeof s> => s !== null)
-          .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
-      const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
-      const imported = await importedAll(env, floorViews.map((v) => v.project), cutoffs);
-      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent, live), 200, nonce);
-    }
-    if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects, owner));
-    const lists = await Promise.all(views.map(async v => {
-      if (v.unavailable) return [];
-      try { return await ledgerOf(env, v.project).inbox(new Date().toISOString()); }
-      catch { v.unavailable = true; return []; }
-    }));
-    const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
-    const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
-    // Signed in, / is Decisions while something waits on the owner, and Flow
-    // when nothing does. /decisions is always Decisions.
-    if (parts.length === 0 && !entries.length && !c.url.search) return Response.redirect(new URL("/flow", c.url).toString(), 303);
-    const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
-    const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
-    const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
-    let selected: ReviewContext | undefined;
-    if (project && task) {
-      const L = ledgerOf(env, project);
-      const detail = await L.detail(task);
-      const selectedItem = await L.item(task);
-      selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
-    }
-    // Each waiting decision is drawn as a card with its brief and its thread, which
-    // need the task's own record; a dozen cards is enough for one screen of work.
-    const details = new Map<string, Detail>();
-    const seen = new Set<string>();
-    await Promise.all(entries.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
-      // An entry names its project as the Ledger's record does; the listed record says where that Ledger is.
-      const p = projectNamed(projects, x.project);
-      if (!p) return;
-      try { details.set(`${x.project}/${x.itemId}`, (await ledgerOf(env, p).detail(x.itemId)) as unknown as Detail); } catch { /* the row stays without its card */ }
-    }));
-    const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
-    const latest = busiest && !selected ? await story(busiest) : null;
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, nonce);
+  // Old URLs moved by organising the site by project (PAVI's direction,
+  // 2026-10-06), permanently, so links already written in the ledger, the
+  // notifications and the README keep working: /projects is Home now, and a
+  // single project's flow is its own tab in the project's area.
+  if (parts[0] === "projects" && parts.length === 1) return movedTo(c.url, []);
+  if (parts[0] === "flow" && c.url.searchParams.has("project")) {
+    const name = c.url.searchParams.get("project") ?? "";
+    return new Response(null, { status: 301, headers: { location: `/p/${encodeURIComponent(name)}/flow` } });
   }
-  if (parts[0] === "p" && parts.length >= 2) {
-    const ref = await resolveProject(env, parts[1]);
-    if (ref.former) return movedTo(c.url, ["p", ref.name, ...parts.slice(2)]);
-    const L = ledger(env, ref.key);
-    if (parts.length === 2) {
-      const standing = await standingOf(env, ref.key);
-      const p = await L.project();
-      // The approval form binds to the baseline's head as read now; the page
-      // still draws when Artifacts cannot be read, without the form.
-      const head = await headOf(env, p.repo).catch(() => null);
-      const actions = renderActions(p.name, await L.actionApprovals(), await L.actionRuns(10), head);
-      return html(renderProject(p, await L.items(), await L.events(undefined, 40), ownerName(env), standing, actions));
+  if (parts.length === 0) return await homePage(c);
+  if (parts[0] === "history") return await historyPage(c);
+  if (parts[0] === "studio") return await studioPage(c);
+  if (parts[0] === "flow") return await flowPage(c, live);
+  if (parts[0] === "decisions") return await decisionsPage(c, live);
+  if (parts[0] === "p" && parts.length >= 2) return await projectArea(c, parts, live, nonce);
+  return html("Not found.", 404);
+}
+
+// ── the cross-project pages ────────────────────────────────────────────────
+
+// What every cross-project page reads first: each project and its items,
+// with a project whose Ledger cannot be read listed as unavailable.
+async function projectViews(env: Env): Promise<{ projects: ProjectRecord[]; views: ProjectView[] }> {
+  const projects = await index(env).projects();
+  const views: ProjectView[] = await Promise.all(projects.map(async project => {
+    try { return { project, items: await ledgerOf(env, project).items() }; }
+    catch { return { project, items: [], unavailable: true }; }
+  }));
+  return { projects, views };
+}
+
+// Home, the portfolio: each project's card reads its recent record (the two
+// weeks of moves), its own inbox (what waits on the owner there) and the
+// showcase setting, which the card carries.
+async function homePage(c: Ctx): Promise<Response> {
+  const { env } = c;
+  const { projects, views } = await projectViews(env);
+  const now = new Date();
+  const home: HomeView[] = await Promise.all(views.map(async (v) => {
+    if (v.unavailable) return v;
+    try {
+      const L = ledgerOf(env, v.project);
+      const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+      return { ...v, events, cut: events.length >= STORY_EVENTS, waiting: await L.inbox(now.toISOString()) };
+    } catch { return { ...v, unavailable: true }; }
+  }));
+  // The showcase setting as the cards read it: a mode per project, under
+  // whichever of its names the setting's row holds.
+  const entries = await index(env).showcaseEntries().catch(() => [] as { name: string; mode: "named" | "anonymous" }[]);
+  const modes: Record<string, "named" | "anonymous"> = {};
+  for (const p of projects) {
+    const hit = entries.find((e) => namesOf(p).includes(e.name));
+    if (hit) modes[p.name] = hit.mode;
+  }
+  return html(renderHome(home, ownerName(env), now, ownerActor(env), modes));
+}
+
+// Home and History read each project's recent record: the cards count the
+// last two weeks of moves from it, and the timeline finds who held each task
+// when it merged.
+async function withEvents(env: Env, views: ProjectView[]): Promise<ProjectView[]> {
+  return Promise.all(views.map(async (v) => {
+    if (v.unavailable) return v;
+    try {
+      const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+      return { ...v, events, cut: events.length >= STORY_EVENTS };
+    } catch { return { ...v, unavailable: true }; }
+  }));
+}
+
+async function historyPage(c: Ctx): Promise<Response> {
+  const { env } = c;
+  const { views } = await projectViews(env);
+  return html(renderHistory(await withEvents(env, views), ownerName(env), ownerActor(env)));
+}
+
+// The floor reads each project's recent events; a project that cannot be read is left off it.
+async function floorViewsOf(env: Env, views: ProjectView[]): Promise<FloorView[]> {
+  return (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
+    // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
+    try { return { ...v, events: (await ledgerOf(env, v.project).events(undefined, 400)) as unknown as LedgerEvent[] }; }
+    catch { v.unavailable = true; return null; }
+  }))).filter((v): v is FloorView => v !== null);
+}
+
+async function studioPage(c: Ctx): Promise<Response> {
+  const { env } = c;
+  const { projects, views } = await projectViews(env);
+  const floor = buildFloor(await floorViewsOf(env, views), new Date());
+  return html(renderStudio(floor, ownerName(env), new Date(), views.some((v) => v.unavailable), projects, ownerActor(env)));
+}
+
+async function flowPage(c: Ctx, live: { nonce: string; refresh: number }): Promise<Response> {
+  const { env } = c;
+  const { views } = await projectViews(env);
+  const floorViews = await floorViewsOf(env, views);
+  // The graph reads a project's longer record.
+  const owner = ownerActor(env);
+  const cutoffs = new Map<string, number | null>();
+  const story = async (v: FloorView, filters?: { since?: string; family?: string }) => {
+    try {
+      const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+      cutoffs.set(v.project.name, firstTaskAt(v.items));
+      return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project), filters);
+    } catch { return null; }
+  };
+  // Unknown values are ignored: the page shows all time, every family.
+  const sinceRaw = c.url.searchParams.get("since") ?? "all";
+  const sinceParam = ["1d", "7d", "all"].includes(sinceRaw) ? sinceRaw : "all";
+  const familyParam = c.url.searchParams.get("family");
+  let sinceIso: string | undefined = undefined;
+  if (sinceParam === "1d") sinceIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  if (sinceParam === "7d") sinceIso = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  const familyAllowed = VENDOR_NAMES.some(([v]) => v === familyParam) && familyParam ? familyParam : undefined;
+
+  const unfilteredStories = (await Promise.all(floorViews.map((v) => story(v)))).filter((s): s is NonNullable<typeof s> => s !== null);
+  const familiesPresent = [...new Set(unfilteredStories.flatMap(s => Object.keys(s.tally.byVendor) as string[]))];
+
+  const stories = (sinceParam === "all" && !familyAllowed) ? unfilteredStories :
+    (await Promise.all(floorViews.map((v) => story(v, { since: sinceIso, family: familyAllowed })))).filter((s): s is NonNullable<typeof s> => s !== null)
+      .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
+  const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
+  const imported = await importedAll(env, floorViews.map((v) => v.project), cutoffs);
+  return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent, live), 200, live.nonce);
+}
+
+async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): Promise<Response> {
+  const { env } = c;
+  const { projects, views } = await projectViews(env);
+  const now = new Date();
+  const floorViews = await floorViewsOf(env, views);
+  const floor = buildFloor(floorViews, now);
+  const owner = ownerActor(env);
+  const cutoffs = new Map<string, number | null>();
+  // Only the most recently active project's graph rests on Decisions.
+  const story = async (v: FloorView) => {
+    try {
+      const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+      cutoffs.set(v.project.name, firstTaskAt(v.items));
+      return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
+    } catch { return null; }
+  };
+  const lists = await Promise.all(views.map(async v => {
+    if (v.unavailable) return [];
+    try { return await ledgerOf(env, v.project).inbox(new Date().toISOString()); }
+    catch { v.unavailable = true; return []; }
+  }));
+  const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
+  const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
+  const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
+  const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
+  const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
+  let selected: ReviewContext | undefined;
+  if (project && task) {
+    const L = ledgerOf(env, project);
+    const detail = await L.detail(task);
+    const selectedItem = await L.item(task);
+    selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
+  }
+  // Each waiting decision is drawn as a card with its brief and its thread, which
+  // need the task's own record; a dozen cards is enough for one screen of work.
+  const details = new Map<string, Detail>();
+  const seen = new Set<string>();
+  await Promise.all(entries.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
+    // An entry names its project as the Ledger's record does; the listed record says where that Ledger is.
+    const p = projectNamed(projects, x.project);
+    if (!p) return;
+    try { details.set(`${x.project}/${x.itemId}`, (await ledgerOf(env, p).detail(x.itemId)) as unknown as Detail); } catch { /* the row stays without its card */ }
+  }));
+  const recent = (v: FloorView) => v.events[0]?.at ?? "";
+  const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
+  const latest = busiest && !selected ? await story(busiest) : null;
+  return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
+}
+
+// ── a project's area ───────────────────────────────────────────────────────
+
+// The tabs a project's area holds beyond the pages that browse it. A task id
+// cannot clash with one (tN), so the order here decides.
+const PROJECT_AREA_TABS = new Set(["tasks", "flow", "plans", "ship", "settings"]);
+
+async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refresh: number }, nonce: string): Promise<Response> {
+  const { env } = c;
+  const ref = await resolveProject(env, parts[1]);
+  if (ref.former) return movedTo(c.url, ["p", ref.name, ...parts.slice(2)]);
+  const L = ledger(env, ref.key);
+  if (parts.length === 2 || (parts[2] && PROJECT_AREA_TABS.has(parts[2]))) {
+    if (parts.length > 3) return html("Not found.", 404);
+    const p = await L.project();
+    switch (parts.length === 2 ? "overview" : parts[2]) {
+      case "overview": {
+        const standing = await standingOf(env, ref.key);
+        return html(renderProject(p, await L.items(), await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing));
+      }
+      case "tasks":
+        return html(renderProjectTasks(p, await L.items(), ownerName(env)));
+      case "flow": {
+        const items = await L.items();
+        const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+        const story = buildStory(p.name, items, events, ownerActor(env), events.length >= STORY_EVENTS, titleOf(p));
+        const imported = await importedFor(env, p, firstTaskAt(items));
+        return html(renderProjectFlow(p, story, ownerActor(env), ownerName(env), imported ? new Map([[p.name, imported]]) : new Map(), live), 200, nonce);
+      }
+      case "plans": {
+        const items = await L.items();
+        const pool = await index(env).models();
+        const plans = await Promise.all(items.filter((i) => i.kind === "plan").map((pl) => L.planView(pl.id, pool)));
+        return html(renderProjectPlans(p, plans, ownerName(env)));
+      }
+      case "ship": {
+        // The approval form binds to the baseline's head as read now; the page
+        // still draws when Artifacts cannot be read, without the form.
+        const head = await headOf(env, p.repo).catch(() => null);
+        return html(renderProjectShip(p, renderActions(p.name, await L.actionApprovals(), await L.actionRuns(10), head), ownerName(env)));
+      }
+      case "settings":
+        return html(renderProjectSettings(p, ownerName(env)));
     }
-    const res = await browse(env, c.url, ref, parts.slice(2));
-    if (res) return res;
-    if (parts.length === 3) {
-      const p = await L.project();
-      const item = await L.item(parts[2]);
-      return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork), live), 200, nonce);
-    }
+  }
+  const res = await browse(env, c.url, ref, parts.slice(2));
+  if (res) return res;
+  if (parts.length === 3) {
+    const p = await L.project();
+    const item = await L.item(parts[2]);
+    return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork), live), 200, nonce);
   }
   return html("Not found.", 404);
 }
@@ -1810,13 +1901,16 @@ export default {
       return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
+      // The error page keeps the owner's name on the pages only the owner
+      // reads; the public pages keep it to themselves (finding 18).
+      const who = ["/how", "/showcase", "/login", "/live.js"].includes(url.pathname) ? null : ownerName(env);
       if (rule) {
         return url.pathname.startsWith("/api/")
           ? json({ error: rule.code, detail: rule.detail }, rule.status)
-          : html(renderError(rule.detail), rule.status);
+          : html(renderError(rule.detail, "/", who), rule.status);
       }
       console.error(err);
-      return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed."),500);
+      return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", "/", who),500);
     }
   },
 } satisfies ExportedHandler<Env>;
