@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runIntegrate, runRefresh, runRunner } from "../cli/runner.mjs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runIntegrate, runRefresh, runRunner, execute } from "../cli/runner.mjs";
 
 // The integrate and refresh jobs (docs/orchestrator.md, section 5, build step
 // 14) driven through a stand-in io, as the review runner tests are: the server
@@ -33,7 +37,8 @@ function fixture(options = {}) {
       if (options.failCommand === cmd) throw new Error(`${cmd} refused`);
       return "{}";
     },
-    async head() { return options.head ?? "before"; },
+    async head() { calls.push({ head: true }); return options.head ?? "before"; },
+    async resetToRemote(cwd) { calls.push({ resetToRemote: cwd }); },
     async fetch(cwd, remote, token, head) { calls.push({ fetch: [remote, token, head] }); },
     async merge(cwd, head) { calls.push({ merge: head }); return { code: options.mergeCode ?? 0, output: options.mergeOutput ?? "" }; },
     async abortMerge(cwd) { calls.push({ abortMerge: true }); },
@@ -108,6 +113,7 @@ test("runRefresh claims, merges the baseline and releases", async () => {
       return "{}";
     },
     async head() { return "before"; },
+    async resetToRemote() {},
     async fetch(cwd, remote, token, head) { calls.push({ fetch: [remote, head] }); },
     async merge(cwd, head) { calls.push({ merge: head }); return { code: 0, output: "" }; },
     async abortMerge() {},
@@ -129,4 +135,88 @@ test("runRunner --integrate offers only the integrate and refresh jobs with no a
     async queue(offer) { offers.push(offer); process.emit("SIGINT"); return []; },
   });
   assert.deepEqual(offers, [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh"] }]);
+});
+
+// t213: any error after the claim gives the plan item back; before, a failed
+// push or fetch kept the claim.
+test("runIntegrate and runRefresh release the plan item when a step after the claim fails", async () => {
+  for (const step of ["fetch", "push", "integration-failed"]) {
+    const { io, calls } = fixture(step === "integration-failed" ? { mergeCode: 1, failCommand: step } : {});
+    if (step !== "integration-failed") io[step] = async () => { throw new Error(`${step} failed`); };
+    const state = await runIntegrate(assignment, config, name, io);
+    assert.equal(state.phase, "failed", step);
+    assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1, step);
+  }
+  const refresh = { ...assignment, item: { id: "t1", dispatch: { job: "refresh" } } };
+  for (const step of ["fetch", "push"]) {
+    const { io, calls } = fixture();
+    io.cli = async (argv) => { calls.push({ argv }); return argv[0] === "base-token" ? JSON.stringify({ remote: "r", token: "t", defaultBranch: "main" }) : "{}"; };
+    io[step] = async () => { throw new Error(`${step} failed`); };
+    const state = await runRefresh(refresh, config, name, io);
+    assert.equal(state.phase, "failed", step);
+    assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1, step);
+  }
+});
+
+test("runIntegrate resets the workspace to the fork's branch after the claim and before it reads the head or merges", async () => {
+  const { io, calls } = fixture();
+  await runIntegrate(assignment, config, name, io);
+  const at = (match) => calls.findIndex(match);
+  assert.ok(at((c) => c.argv?.[0] === "claim") < at((c) => c.resetToRemote));
+  assert.ok(at((c) => c.resetToRemote) < at((c) => c.head));
+  assert.ok(at((c) => c.resetToRemote) < at((c) => c.merge));
+});
+
+// t213, with real git: a push that fails leaves a merge commit in the
+// workspace; the next run starts from the fork's branch, not from that merge,
+// and saves the workspace's uncommitted edit under refs/atelier/rescue/.
+test("a failed integrate push leaves nothing behind for the next run", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-integrate-git-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  const origin = join(dir, "origin.git"), seed = join(dir, "seed"), workspace = join(dir, "t1");
+  git(dir, "init", "--quiet", "--bare", "-b", "main", origin);
+  git(dir, "clone", "--quiet", origin, seed);
+  for (const cwd of [seed]) { git(cwd, "config", "user.name", "Test"); git(cwd, "config", "user.email", "test@example.test"); }
+  writeFileSync(join(seed, "base"), "base");
+  git(seed, "add", "."); git(seed, "commit", "--quiet", "-m", "base"); git(seed, "push", "--quiet", "origin", "HEAD:main");
+  const base = git(seed, "rev-parse", "HEAD");
+  git(seed, "checkout", "--quiet", "-b", "part");
+  writeFileSync(join(seed, "part"), "part");
+  git(seed, "add", "."); git(seed, "commit", "--quiet", "-m", "part"); git(seed, "push", "--quiet", "origin", "HEAD:part");
+  const partHead = git(seed, "rev-parse", "HEAD");
+  git(dir, "clone", "--quiet", origin, workspace);
+  git(workspace, "config", "user.name", "Test"); git(workspace, "config", "user.email", "test@example.test");
+  git(workspace, "config", "--local", "atelier.branch", "main");
+  const task = { ...assignment, item: { ...assignment.item, dispatch: { ...assignment.item.dispatch, head: partHead } } };
+  const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true };
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const released = [], logs = [];
+  const serve = (failPush) => runRunner(args, {
+    workspacePath: () => workspace, wait: async () => {}, queue: async () => [task], taskIO: { log: (s) => logs.push(s) },
+    async executeChild(argv, options) {
+      if (argv[0] === "git") {
+        if (failPush && argv[1] === "push") return { code: 1, stderr: "push refused" };
+        return execute(argv, options);
+      }
+      const command = argv[2];
+      if (command === "release") released.push(command);
+      const output = command === "read-token" ? JSON.stringify({ remote: origin, token: "t" })
+        : command === "integrated" ? JSON.stringify({ allIntegrated: false, parts: [] }) : "{}";
+      return execute([process.execPath, "-e", `console.log(${JSON.stringify(output)})`], options);
+    },
+  });
+  await serve(true);
+  assert.equal(released.length, 1, "the failed push releases the claim");
+  assert.notEqual(git(workspace, "rev-parse", "HEAD"), base, "the failed run left its merge in the workspace");
+  writeFileSync(join(workspace, "base"), "an uncommitted edit");
+  await serve(false);
+  assert.equal(git(origin, "rev-parse", "main^1"), base, "the pushed merge sits on the fork's branch, not on the failed run's merge");
+  assert.equal(git(origin, "rev-parse", "main^2"), partHead);
+  const rescued = git(workspace, "for-each-ref", "--format=%(refname)", "refs/atelier/rescue/");
+  assert.match(rescued, /^refs\/atelier\/rescue\/t1-\d{8}T\d{6}Z$/);
+  assert.equal(git(workspace, "show", `${rescued}:base`), "an uncommitted edit");
+  assert.ok(logs.includes(`uncommitted work saved as ${rescued} before the workspace is reset`));
+  assert.equal(readFileSync(join(workspace, "base"), "utf8"), "base");
 });
