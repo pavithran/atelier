@@ -1098,11 +1098,16 @@ function localWorkspace(dir, id, from) {
   const unreadable = (why) => ({ id, uncommitted: null, unpushed: null, merging: null, conflicts: null, commitMessage: null, error: why });
   const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd: dir, allowFail: true });
   if (gitDir.error || gitDir.status !== 0) return unreadable("not a Git repository");
-  const status = git(["--no-optional-locks", "status", "--porcelain"], { cwd: dir, allowFail: true });
+  // Git leaves .scratch/ out itself, by pathspec, and -z keeps a path with a
+  // space or a quote as it is; a rename is one entry followed by its source.
+  const status = git(["--no-optional-locks", "status", "--porcelain", "-z", "--", ".", ":(exclude).scratch"], { cwd: dir, allowFail: true });
   if (status.error || status.status !== 0) return unreadable("its Git state could not be read");
-  const uncommitted = status.stdout.split("\n").filter(Boolean)
-    .map((line) => line.slice(3)).map((path) => path.includes(" -> ") ? path.slice(path.indexOf(" -> ") + 4) : path)
-    .filter((path) => path !== ".scratch" && !path.startsWith(".scratch/")).length;
+  const entries = status.stdout.split("\0").filter(Boolean);
+  let uncommitted = 0;
+  for (let i = 0; i < entries.length; i++) {
+    uncommitted++;
+    if (/^[RC]/.test(entries[i])) i++;
+  }
   const merging = existsSync(join(gitDir.stdout.trim(), "MERGE_HEAD"));
   const conflicts = merging ? git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir, allowFail: true }).stdout.split("\n").filter(Boolean) : [];
   const start = from.find((sha) => hasCommit(sha, dir));
