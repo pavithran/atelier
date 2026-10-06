@@ -3,7 +3,7 @@ import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions,
 import { itemDiff, measureWorkspace, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
@@ -268,43 +268,56 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
   throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
 }
 
-// Whether the commit `from` holds `target` in its history. The first-parent
-// chain Artifacts lists answers the usual case in one read, since a recorded
-// head sits a few commits back on it; past a merge on that chain, the other
-// parents are read one commit at a time, with a cap. A history too deep to
-// search within the cap counts as not holding the target, which the push
-// route treats as a rewrite the caller must declare (recordPush in ledger.ts).
-const HISTORY_READS = 500;
-async function holdsCommit(env: Env, repo: string, from: string, target: string): Promise<boolean> {
-  if (from === target) return true;
+// Whether the commit `from` holds `target` in its history. Artifacts lists
+// a first-parent chain up to a thousand commits at a time, so every chain is
+// read that way: the head's own, carried past each page from the last
+// commit's first parent, and the chain behind each further parent a merge
+// names, taken in the order met, so the nearest branch is read first. A
+// recorded head sits a few commits back on one of those chains and is found
+// on the first page or two; the whole history is read only to show that a
+// head holds nothing of the recorded one. The search stops at a budget of
+// commits and of reads, and then answers null: it has shown neither that
+// the target is held nor that it is not, and recordPush (ledger.ts) refuses
+// such a push unless it declares a rebase.
+const HISTORY_COMMITS = 10_000, HISTORY_READS = 100, HISTORY_PAGE = 1000;
+async function holdsCommit(env: Env, repo: string, from: string, target: string): Promise<{ holds: boolean | null; searched: number }> {
+  if (from === target) return { holds: true, searched: 0 };
   using r = await env.ARTIFACTS.get(repo);
-  const chain = await r.log({ ref: from, limit: 1000 });
-  if (chain.some((c) => c.hash === target)) return true;
-  const seen = new Set(chain.map((c) => c.hash));
-  const pending = chain.flatMap((c) => (c.parents ?? []).slice(1));
+  const seen = new Set<string>();
+  const starts = [from];
   let reads = 0;
-  while (pending.length && reads < HISTORY_READS) {
-    const hash = pending.shift()!;
-    if (hash === target) return true;
-    if (seen.has(hash)) continue;
-    seen.add(hash);
+  while (starts.length) {
+    const start = starts.shift()!;
+    if (seen.has(start)) continue;
+    if (reads >= HISTORY_READS || seen.size >= HISTORY_COMMITS) return { holds: null, searched: seen.size };
     reads++;
-    const commit = await r.readCommit(hash);
-    for (const parent of commit?.parents ?? []) {
-      if (parent === target) return true;
-      if (!seen.has(parent)) pending.push(parent);
+    const page = await r.log({ ref: start, limit: HISTORY_PAGE });
+    const branches: string[] = [];
+    let next: string | undefined;
+    for (const c of page) {
+      const parents = c.parents ?? [];
+      if (c.hash === target || parents.includes(target)) return { holds: true, searched: seen.size };
+      // A chain that reaches a commit already listed has joined a chain
+      // read already, or one waiting its turn: the rest of this page is covered.
+      if (seen.has(c.hash)) { next = undefined; break; }
+      seen.add(c.hash);
+      branches.push(...parents.slice(1));
+      next = parents[0];
     }
+    starts.push(...branches);
+    if (next) starts.push(next);
   }
-  return false;
+  return { holds: false, searched: seen.size };
 }
 
 // What the Worker found in the fork's history for a push: whether the head
-// it sees holds the head the Ledger recorded, and the head the caller says
-// `atelier update` rebased from, when it says so.
-async function pushLineage(env: Env, fork: string, observed: string, recorded: string | null, declared: unknown) {
-  const holdsRecorded = !recorded || observed === recorded || await holdsCommit(env, fork, observed, recorded);
+// it sees holds the head the Ledger recorded (null when the search stopped
+// at its budget first, with the number of commits it examined), and the
+// head the caller says `atelier update` rebased from, when it says so.
+async function pushLineage(env: Env, fork: string, observed: string, recorded: string | null, declared: unknown): Promise<PushLineage> {
+  const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, fork, observed, recorded);
   const rebasedFrom = typeof declared === "string" && /^[a-f0-9]{40,64}$/.test(declared) ? declared : null;
-  return { holdsRecorded, rebasedFrom };
+  return { holdsRecorded: holds, searched, rebasedFrom };
 }
 
 // The branch Atelier reads in a project's baseline and in every fork of it:
