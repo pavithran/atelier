@@ -21,18 +21,25 @@ import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, session
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
-import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
-import { pathCollisions } from "../src/rules.ts";
+import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision } from "../src/control-plane.ts";
+import { assertEligible, checkApplies, pathCollisions } from "../src/rules.ts";
+import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
-import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
+import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLeft, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
+import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatStatus } from "./status.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
+import { checkEnv } from "./check-env.mjs";
+export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
+import { planText } from "../src/plans/show.ts";
+import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
+import { formatApprovals, knownKinds, runCommand, ship as runShip, shipSecrets } from "./ship.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -197,7 +204,7 @@ const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
@@ -228,9 +235,14 @@ const FLAGS = {
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
   "notes-remote": { off: true },
-  dispatch: { to: false, agent: false, model: false, note: false },
+  approve: { head: false, note: false, expires: false },
+  approvals: { all: true, note: false },
+  ship: { "dry-run": true, push: true },
+  dispatch:{ to: false, agent: false, model: false, note: false },
   undispatch: {},
   queue: {},
+  // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
+  plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
   models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
   projects: { force: true },
@@ -242,6 +254,8 @@ const FLAGS = {
   help: {},
 };
 const REST = new Set(["check"]);
+// The flags each plan subcommand takes; "" is a new plan's.
+const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], stop: ["note"], post: [] };
 const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
 
 export function parseArgs(argv, switches = SWITCHES) {
@@ -508,6 +522,22 @@ const P = (name) => `/projects/${encodeURIComponent(name)}`;
 const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 const short = (s) => (s ? s.slice(0, 8) : "—");
 
+// The owner's approval recorded on the project, or null when the project is
+// not registered yet or records none. Asked with a plain request rather than
+// `call`, because a project not yet registered answers 404, and here that is
+// an answer, not a failure.
+async function recordedApproval(name) {
+  await resolveTokenActor();
+  let res, data;
+  try {
+    res = await fetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+    data = await res.json().catch(() => ({}));
+  } catch (error) { die(`server request failed: ${error.message}`, 4); }
+  if (res.status === 404) return null;
+  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? "the project could not be read"}`, res.status >= 500 ? 4 : 1);
+  return data.project?.policy?.approval ?? null;
+}
+
 function workspacePath(name, id) {
   return join(CACHE, "work", name, id);
 }
@@ -596,37 +626,6 @@ function takeForkHead(dir, id, branch) {
 
 // ── clean-room checks ──────────────────────────────────────────────────────
 
-// A local check runs code from the item's head, which an agent wrote, so it
-// gets only the variables toolchains need to find themselves and their caches:
-//   PATH, HOME, USER, LOGNAME, SHELL  tools and the user's caches: npm's ~/.npm,
-//                                     Xcode's DerivedData, uv, Playwright's browsers
-//   LANG, LC_*, TZ                    locale and time zone, which tests may read
-//   TMPDIR                            the per-user temporary folder on macOS, used
-//                                     by xcodebuild, swift and mktemp
-//   CI                                kept when the caller sets it
-//   DEVELOPER_DIR, TOOLCHAINS         the Xcode and Swift toolchain the caller chose
-//   NODE_EXTRA_CA_CERTS, NODE_USE_SYSTEM_CA, SSL_CERT_FILE, SSL_CERT_DIR
-//                                     certificates trusted by npm ci and uv sync
-//   npm_config_*                      npm settings given as variables
-// Nothing named ATELIER_*, and no variable whose name says it holds a token, a
-// key, a secret, a password or a credential, so npm_config__authToken is
-// dropped. SSH_AUTH_SOCK is not on the list: it lets a process sign in
-// wherever the caller's SSH keys reach. A check that needs anything else sets it
-// in its own command, as ourai's check sets its own HOME. This keeps the
-// caller's credentials out of a check's environment; it does not keep the
-// check from reading the caller's files or Keychain, which is why untrusted
-// code belongs in the sandbox (atelier check --sandbox).
-const CHECK_ENV = new Set(["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR", "CI", "DEVELOPER_DIR", "TOOLCHAINS", "NODE_EXTRA_CA_CERTS", "NODE_USE_SYSTEM_CA", "SSL_CERT_FILE", "SSL_CERT_DIR"]);
-const SECRET_NAME = /token|secret|passw|credential|auth|key|otp/i;
-export function checkEnv(base = process.env) {
-  const env = {};
-  for (const [name, value] of Object.entries(base)) {
-    const listed = CHECK_ENV.has(name) || name.startsWith("LC_") || /^npm_config_/i.test(name);
-    if (listed && value !== undefined && !name.startsWith("ATELIER_") && !SECRET_NAME.test(name)) env[name] = value;
-  }
-  return env;
-}
-
 // Each secret replaced by [redacted] wherever it appears in the text, longest
 // first so a secret that contains another is cut whole.
 export function redact(text, secrets) {
@@ -649,16 +648,20 @@ function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git(["clone", "--quiet", remote, dir], { token });
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
-  let changed;
+  let changed, againstMain;
   if (baseline) {
     git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token });
+    // Every path on which the head differs from main's head, as the Worker
+    // measures it (againstMain in src/diff.ts): which checks apply is read from these.
+    const main = git(["diff", "--no-renames", "--name-only", "-z", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
+    if (main.status === 0) againstMain = main.stdout.split("\0").filter(Boolean);
     const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
     if (mb.status === 0) {
       const diff = git(["diff", "--no-renames", "--name-only", "-z", mb.stdout.trim(), "HEAD"], { cwd: dir, allowFail: true });
       if (diff.status === 0) changed = diff.stdout.split("\0").filter(Boolean);
     }
   }
-  return { dir, changed };
+  return { dir, changed, againstMain };
 }
 
 // Runs one check with checkEnv's variables and returns its output with every
@@ -706,10 +709,10 @@ export function readControlPlane(top) {
   const read = (name) => {
     try {
       const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error(`${name} is empty or is not an object`);
+      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error("empty, or not a JSON object");
       return value;
     }
-    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+    catch (error) { if (error.code === "ENOENT") return null; throw new Error(`${join("docs", "control-plane", name)}: ${error.message}`); }
   };
   const agent = read("agent-policy.v1.json");
   const exec = read("execution-policy.v1.json");
@@ -735,6 +738,7 @@ export function readControlPlane(top) {
   }
   return {
     sources, protected: [...protectedPaths], eligible, refuseOverlap,
+    ...(adapter ? { adapter } : {}),
     ...(agent ? { agents: agent.agents ?? {} } : {}),
     ...(exec ? { execution: {
       allowed_classes: exec.allowed_classes ?? ["direct", "coordinated", "protected"],
@@ -748,14 +752,16 @@ export async function refreshControlPlane(top, name, request = call, report = co
   let cp;
   try { cp = readControlPlane(top); }
   catch (error) {
-    report(`Warning: ControlPlane policy could not be read: ${error.message}. Continuing without a refresh; merge uses the policy recorded at acceptance.`);
-    return { skipped: true, changes: [] };
+    report(`Warning: ControlPlane policy could not be read: ${error.message}. The stored policy was not refreshed.`);
+    return { skipped: true, changes: [], error: error.message };
   }
   if (!cp) return null;
-  const before = (await request("GET", P(name), undefined, OWNER)).project.policy;
+  const current = await request("GET", P(name), undefined, OWNER);
+  const before = current.project.policy;
   const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
   // Roles and change classes are compared here too, as whole values with their
-  // keys in a fixed order; the merge guard compares protected paths only.
+  // keys in a fixed order; the merge guard compares the fields an acceptance
+  // records (mergePolicyDecision).
   const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
   const changes = [...controlPlaneChanges(before, policy),
     ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`)];
@@ -763,7 +769,7 @@ export async function refreshControlPlane(top, name, request = call, report = co
     await request("PUT", P(name), policy, OWNER);
     for (const change of changes) report(`ControlPlane ${change}`);
   }
-  return { before, policy: { ...before, ...policy }, changes };
+  return { before, policy: { ...before, ...policy }, changes, items: current.items ?? [] };
 }
 
 // The receipt goes only into a real folder reached through no symlink, the
@@ -832,13 +838,14 @@ async function checkInSandbox() {
     await new Promise((ok) => setTimeout(ok, 5000));
   }
   for (const r of state.results ?? []) {
+    if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}  (not run: this change touches none of the paths it applies to)`); continue; }
     console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}  (${r.seconds}s, in Cloudflare)`);
     if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
   }
   if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (state.results.some((r) => !r.passed)) {
+  if (state.results.some((r) => r.passed === false)) {
     if (doneStep) die("required checks failed", 2);
     process.exit(2);
   }
@@ -867,6 +874,7 @@ export function formatStanding(s, ownerName = "the project owner") {
   if (s.controlPlane) {
     lines.push("", `ControlPlane policy, approved: ${flat(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(flat).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(flat).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.`);
   }
+  group("Checks", (s.checks ?? []).map((c) => `${flat(c.command)}  ${flat(c.text)}${c.paths?.length ? `; applies only when the change touches ${c.paths.map(flat).join(", ")}` : ""}`));
   return lines.join("\n");
 }
 
@@ -1144,6 +1152,8 @@ const commands = {
     if (allowFailing && data.checksSkipped) die("--allow-failing and --no-check together: skipped checks cannot fail; give one or the other");
     wrapReady(name, cwd, true);
     const { project: record } = await call("GET", P(name), undefined, as);
+    const refused = data.checksSkipped ? [] : record.policy.checks.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+    if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
     const failing = [];
     if (!data.checksSkipped) for (const command of record.policy.checks) {
       const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
@@ -1389,9 +1399,20 @@ const commands = {
       return;
     }
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
-    const cp = readControlPlane(top);
+    let cp;
+    try { cp = readControlPlane(top); }
+    catch (error) { die(`ControlPlane policy could not be read: ${error.message}. Fix the file, then run atelier init again.`); }
+    // A ControlPlane project is copied into Artifacts with the owner's
+    // approval recorded on it. An init that changes the checks, the title or
+    // the policy of a project already registered keeps that approval; it is
+    // asked for again when --reset starts the policy over, which drops it,
+    // and when --history-since replaces the baseline.
     if (cp && !args.approval) {
-      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      const replaced = args.reset === true ? "--reset starts the policy over" : args["history-since"] !== undefined ? "--history-since replaces the baseline" : null;
+      const recorded = replaced ? null : await recordedApproval(name);
+      if (!recorded) {
+        die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      }
     }
     // Only what this command names is sent; the server keeps everything else
     // as it is. --reset starts the policy over from these options and the
@@ -1400,6 +1421,36 @@ const commands = {
     const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
     const policy = {};
     if (args.multi.check || reset) policy.checks = checks;
+    // Each check must be read-only (src/checks.ts). One that is never
+    // read-only is refused here, before any request. The ControlPlane
+    // adapter declares the checks it lists as read-only capabilities, and
+    // --declare-read-only declares, with the owner's reason, the ones Atelier
+    // cannot tell from their words. Without --check, the checks classed are
+    // the ones registered now, and only declarations are sent.
+    const declaring = args["declare-read-only"];
+    if (declaring !== undefined && (typeof declaring !== "string" || !declaring.trim())) die('--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"');
+    let registered = null;
+    if (!policy.checks && (cp?.adapter || declaring !== undefined)) {
+      const list = await call("GET", "/projects", undefined, OWNER);
+      registered = (Array.isArray(list) ? list.find((p) => p.name === name)?.policy : null) ?? { checks: [] };
+    }
+    const classed = policy.checks ?? registered?.checks ?? [];
+    const fromAdapter = cp?.adapter ? adapterClasses(cp.adapter, classed) : { declarations: [], refusals: [] };
+    const byWords = classed.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+    const byAdapter = fromAdapter.refusals.filter((r) => !refusalOf(r.command)).map((r) => r.text);
+    if (policy.checks && (byWords.length || byAdapter.length)) die(`${[...byWords, ...byAdapter].join(".\n")}.\nNothing was sent.`);
+    // A registered check is refused at run time by its words alone; what the adapter says is read here only.
+    for (const refusal of byWords) console.log(`Warning: ${refusal}. It is registered, and Atelier runs it nowhere; replace it with atelier init --check.`);
+    for (const refusal of byAdapter) console.log(`Warning: ${refusal}. It is registered, and Atelier still runs it, since its words do not show this; replace it with atelier init --check.`);
+    const settled = new Set([...fromAdapter.refusals, ...fromAdapter.declarations, ...(registered?.checkClasses ?? [])].map((d) => d.command));
+    const needing = classed.filter((cmd) => !refusalOf(cmd) && !knownReadOnly(cmd) && !settled.has(cmd));
+    const owned = declaring === undefined ? [] : needing.map((command) => ({ command, by: "owner", note: declaring.trim() }));
+    if (declaring !== undefined && !owned.length) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
+    if (fromAdapter.declarations.length || owned.length) policy.checkClasses = [...fromAdapter.declarations, ...owned];
+    // The adapter's change_rules say which checks apply to which paths; a
+    // ControlPlane project's adapter always sets them, as it sets protected paths.
+    const fromRules = cp?.adapter ? adapterCheckPaths(cp.adapter, classed) : null;
+    if (fromRules) policy.checkPaths = fromRules.paths;
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
     if (cp) {
       policy.eligible = cp.eligible ?? [];
@@ -1439,7 +1490,8 @@ const commands = {
       pushed = built.head;
       console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
     } else {
-      git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${branch}:${branch}`], { cwd: top, token: r.baseline.token });
+      try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log }); }
+      catch (err) { die(err.message); }
     }
     cfg.projects ??= {};
     cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
@@ -1450,6 +1502,8 @@ const commands = {
       : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
     if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
+    for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
+    if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
@@ -1471,6 +1525,12 @@ const commands = {
     try { adoption({ project: name, checkout: p.path, workspace: p.path, guide: guideText() }); }
     catch (error) { die(error.message); }
     const as = await actor(OWNER);
+    // The project's policy says who may claim here. It is asked before the
+    // task exists, as the claim would ask it, so an agent it does not admit
+    // leaves no unclaimed task behind.
+    const { project: record } = await call("GET", P(name), undefined, as);
+    try { assertEligible(as, record?.policy ?? {}, OWNER); }
+    catch (error) { die(`${error.message}. The move was not started; run it as an eligible agent: atelier adopt --project ${name} --as HARNESS/MODEL`); }
     const item = await call("POST", `${P(name)}/items`, { title: `Move ${name} from ControlPlane to Atelier`, scope: SCOPE }, as);
     const { dir } = await claimWorkspace(name, item.id, as);
     let plan;
@@ -1665,10 +1725,14 @@ const commands = {
     if (d.policy.sandboxOnly) return checkInSandbox();
     const cmds = args.rest?.length ? [args.rest.join(" ")] : d.policy.checks;
     if (!cmds.length) die("this project has no required checks; pass one: atelier check -- npm test");
+    // A command that is never read-only is not run, here or anywhere.
+    const refused = cmds.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+    if (refused.length) die(`${refused.join(".\n")}.${args.rest?.length ? "" : `\nNothing was run. Ask ${OWNER_NAME} to replace the check with atelier init --check.`}`);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     if (!ws.head) die("nothing pushed yet");
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const { dir, changed } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+    const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+    const policy = d.policy;
     // What a check could print and this command would then upload: the API
     // token, the read tokens for the fork and the baseline, and the write
     // token in the workspace's Git settings.
@@ -1676,6 +1740,16 @@ const commands = {
     let failed = 0, recorded;
     try {
       for (const cmd of cmds) {
+        // A registered check whose paths this change does not touch is not
+        // run. It is recorded as not applicable, which the Worker accepts only
+        // when the paths it measures itself show the same.
+        if (!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false) {
+          const n = await call("POST", `${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
+          const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
+          if (row) recorded = row.changedPaths;
+          console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
+          continue;
+        }
         const r = await runCheck(cmd, dir, secrets);
         // The Worker measures the changed paths from Artifacts and ignores this
         // list, which is sent only so a deployment without that measurement
@@ -1880,29 +1954,96 @@ const commands = {
     if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
     const name = project(), id = itemArg();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
-    // Ends an interrupted merge's landing lease, so the task's owner can push
-    // again; refused once the merge is on the baseline.
+    // Ends a landing. It holds the landing lock throughout, as merge does, so
+    // it never runs beside a merge of this checkout that may be publishing.
+    // The journal is matched by project and item alone, so a landing whose
+    // acceptance was withdrawn or moved after it began, and which can no
+    // longer be finished, can still be cancelled. What the landing left in
+    // the checkout, a merge commit or an unfinished Git merge (landingLeft),
+    // is kept unless the owner asks for it to go with --discard-local; then
+    // the checkout returns to where the merge began. The landing lease is
+    // cancelled on the server while the item is accepted at the revision the
+    // journal names, or when there is no journal: a lease is taken for the
+    // accepted revision alone, and no push or review moves the acceptance
+    // while one is held, so with another acceptance this landing has none,
+    // and a lease on the new revision is not this landing's to end.
     if (args.cancel === true) {
       const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
-      const item = (await call("GET", I(name, id), undefined, OWNER)).item;
-      let journal;
-      try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
-      const local = journal.state?.mergeCommit;
-      // An unpublished merge commit in the checkout is kept unless the owner
-      // asks for it to go; then the checkout returns to where the merge began.
-      if (local && args["discard-local"] !== true) {
-        die(`the checkout holds this merge's unpublished commit ${short(local)} on top of ${short(journal.state.start)}.\nFinish it with: atelier merge ${id}\nor cancel and remove it with: atelier merge ${id} --cancel --discard-local`);
-      }
-      await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
-      if (local) {
-        if (git(["rev-parse", "HEAD"], { cwd }) !== local || git(["status", "--porcelain"], { cwd })) die(`the checkout moved since the merge; reset it yourself, then remove ${journal.file}`);
-        git(["reset", "--quiet", "--hard", journal.state.start], { cwd });
-        console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(journal.state.start)}.`);
-      }
-      journal.clear();
-      return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+      let unlock;
+      try { unlock = landingLock(landing); } catch (error) { die(error.message); }
+      try {
+        let journal;
+        try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id }); } catch (error) { die(error.message); }
+        const item = (await call("GET", I(name, id), undefined, OWNER)).item;
+        const begun = journal.state, head = begun ? begun.head : item.acceptedHead;
+        const ours = !begun || (item.state === "accepted" && item.acceptedHead === begun.head);
+        const now = item.state === "accepted" ? `accepted at ${short(item.acceptedHead)}` : item.state;
+        const left = begun ? landingLeft(git, cwd, gitDir, begun, p.branch, `Atelier: ${name}/${id} accepted at ${begun.head}`) : {};
+        const local = left.commit;
+        // Whether the baseline holds a commit, asked of its whole history,
+        // fetched here and read by Git.
+        let baselineHead = null;
+        if (local || (ours && head)) {
+          const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
+          git(["fetch", "--quiet", base.remote, p.branch], { cwd, token: base.token });
+          baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
+        }
+        const onBaseline = (commit) => !!commit && !!baselineHead && git(["merge-base", "--is-ancestor", commit, baselineHead], { cwd, allowFail: true }).status === 0;
+        // A merge already on the baseline is never cancelled, and the checkout
+        // keeps it. The journal says so once the push has returned; for a
+        // push that reached the baseline just before the process stopped, the
+        // baseline's history says so. In a project whose baseline holds part
+        // of its history, the baseline has the merge's rebuilt twin, paired
+        // with it before the push. A merge the server has recorded, or can no
+        // longer record since the item is not accepted at its revision, leaves
+        // only the journal to remove; one it can record, merge records.
+        if (local) {
+          const pairs = p.fresh === true ? loadPairs(gitDir, name) : null;
+          const sent = pairs ? Object.keys(pairs).find((commit) => pairs[commit] === local) : local;
+          if (begun.phase === "published" || onBaseline(sent)) {
+            const lost = left.held ? "" : `\n${p.branch} no longer holds the merge commit ${short(local)}; put it back on that commit before the next merge.`;
+            if (ours) die(`${id}'s merge ${short(sent ?? local)} is already on the baseline, so the landing cannot be cancelled, and the checkout keeps it.\nRecord the merge with: atelier merge ${id}${lost}`);
+            journal.clear();
+            if (item.state === "merged") return console.log(`${id} is already merged as ${short(sent ?? local)}. The landing journal is removed; the checkout keeps the merge.${lost}`);
+            return console.log(`${id}'s merge ${short(sent ?? local)} is on the baseline, but ${id} is ${now}, so Atelier cannot record it. The landing journal is removed; the checkout keeps the merge, as the baseline does.${lost}`);
+          }
+        }
+        // The accepted revision on the baseline through another merge commit,
+        // made elsewhere: its lease is that merge's, left for it to be
+        // recorded. Without a journal there is nothing else to cancel.
+        const landed = ours && onBaseline(head);
+        if (landed && !begun) die(item.state === "merged" ? `${id} is already merged; there is no landing to cancel` : `${id} at ${short(head)} is already merged on the baseline, so its landing lease cannot be cancelled. Record that merge by running atelier merge ${id} in the checkout that made it`);
+        if (left.held || left.merging) {
+          const what = left.held ? `this merge's unpublished commit ${short(local)} on top of ${short(begun.start)}` : `this merge's unfinished Git merge of ${short(begun.head)} on ${short(begun.start)}`;
+          if (args["discard-local"] !== true) {
+            if (!ours) die(`${id} is ${now}, no longer accepted at ${short(begun.head)}, the revision this landing merged, so the landing cannot be finished. The checkout holds ${what}.\nRemove it with: atelier merge ${id} --cancel --discard-local`);
+            if (landed) die(`${id} at ${short(head)} is already on the baseline through another merge commit, so this landing cannot be finished. The checkout holds ${what}.\nRemove it with: atelier merge ${id} --cancel --discard-local`);
+            die(`the checkout holds ${what}.\n${left.held ? `Finish it with: atelier merge ${id}` : `Abort it with git merge --abort, then finish the landing with: atelier merge ${id}`}\nor cancel and remove it with: atelier merge ${id} --cancel --discard-local`);
+          }
+          if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
+          const at = git(["rev-parse", "HEAD"], { cwd });
+          if (left.held && at !== local) die(`${p.branch} moved since the merge: it is at ${short(at)}, past the merge commit ${short(local)}. Nothing was changed. Move your commits off it and put ${p.branch} back on ${short(local)}, or on ${short(begun.start)} where the merge began, then run: atelier merge ${id} --cancel --discard-local`);
+          if (left.held && git(["status", "--porcelain"], { cwd })) die(`the checkout has uncommitted changes on top of the merge commit ${short(local)}. Nothing was changed. Set them aside (git stash), then run: atelier merge ${id} --cancel --discard-local`);
+        }
+        if (ours && !landed) await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
+        if (left.held) {
+          git(["reset", "--quiet", "--hard", begun.start], { cwd });
+          console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(begun.start)}.`);
+        } else if (left.merging) {
+          git(["merge", "--abort"], { cwd });
+          const rest = git(["status", "--porcelain", "--untracked-files=all"], { cwd });
+          console.log(`Aborted the unfinished Git merge; ${p.branch} is at ${short(begun.start)}, where the merge began.${rest ? `\nGit still lists these files as changed or untracked; remove any the merge left:\n${rest}` : ""}`);
+        }
+        journal.clear();
+        if (landed) return console.log(`${id}: the landing in this checkout is cancelled. ${id} at ${short(head)} is already on the baseline through another merge commit, so its landing lease is left for that merge to be recorded.`);
+        if (ours) return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+        return console.log(`${id}: the landing in this checkout is cancelled. ${id} is ${now}, and nothing changed on the server${item.state === "accepted" ? `; merge its accepted revision with: atelier merge ${id}` : ""}.`);
+      } finally { unlock(); }
     }
     const refreshed = await refreshControlPlane(cwd, name);
+    // The merge compares the policy as it is now with the one the acceptance
+    // was made under, so a policy it cannot read stops it here.
+    if (refreshed?.skipped) die(`ControlPlane policy could not be read: ${refreshed.error}. Fix the file, then run atelier merge ${id} again.`);
     if (args.head !== undefined) {
       if (!/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT] [--override-review REASON]] | atelier merge ID --cancel [--discard-local]");
       const reason=overrideArg("merge ID --head FULL_REVISION");
@@ -1919,13 +2060,21 @@ const commands = {
     try {
       try { adoptOldLanding(gitDir,landing); } catch (error) { die(error.message); }
       const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
+      // A landing begun at an acceptance that has since been withdrawn or
+      // moved cannot be finished: what it merged is no longer what is accepted.
+      let begun;
+      try { begun=landingJournal(landing,{project:name,item:id}).state; } catch (error) { die(error.message); }
+      if (begun && (begun.head!==item.acceptedHead || !['accepted','merged'].includes(item.state))) {
+        const left=landingLeft(git,cwd,gitDir,begun,p.branch,`Atelier: ${name}/${id} accepted at ${begun.head}`);
+        die(`${id} is ${item.state==='accepted'?`accepted at ${short(item.acceptedHead)}`:item.state}, no longer accepted at ${short(begun.head)}, where this checkout began landing it, so that landing cannot be finished. Cancel it with: atelier merge ${id} --cancel${left.held||left.merging?' --discard-local':''}${item.state==='accepted'?', then merge again':''}`);
+      }
       if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
       if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
       const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
       if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
-      const acceptedPolicy = { ...d.policy, protected: d.acceptanceProtected ?? [] };
+      const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
       if (refreshed?.policy) {
-        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, []);
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
         if (decision.warning) console.error(decision.warning);
       }
       if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
@@ -1938,8 +2087,12 @@ const commands = {
       if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
       if (refreshed?.policy) {
         if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
-        const paths = git(['diff', '--name-only', '--no-renames', '-z', item.base, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
-        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true);
+        // The accepted revision's own changes: those since the newest baseline
+        // commit it holds, which atelier update moves past the recorded base.
+        const forkPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
+        const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base;
+        const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true, context);
         if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
       }
       const local=git(['rev-parse','HEAD'],{cwd});
@@ -2008,7 +2161,8 @@ const commands = {
         }
       }
       const mergeCommit=journal.state.mergeCommit;
-      if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the checkout before retrying');
+      const at=git(['rev-parse','HEAD'],{cwd});
+      if(at!==mergeCommit)die(`the checkout moved after the merge: ${p.branch} is at ${short(at)}, not at the merge commit ${short(mergeCommit)}. Put ${p.branch} back on ${short(mergeCommit)}, moving any commits of yours off it, then run atelier merge ${id} again, or cancel the landing with: atelier merge ${id} --cancel`);
       // Take the landing lease: it confirms the acceptance has not moved and
       // stops a push over this revision until the merge is recorded.
       // A refusal ends the command here with the server's reason; the local
@@ -2045,6 +2199,78 @@ const commands = {
       else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
       console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
     } finally { unlock(); }
+  },
+
+  // The project owner approves one protected action at one revision of the
+  // main line (src/actions.ts). atelier ship uses it once, at that revision only.
+  async approve() {
+    const kind = args._[1];
+    if (args._.length !== 2 || !kind) die(COMMAND_USAGE.approve);
+    const name = project();
+    if (!KIND.test(kind)) die(`"${kind}" is not an action name: use lower-case letters, digits and dashes, such as deploy`);
+    const head = typeof args.head === "string" ? args.head.trim().toLowerCase() : "";
+    if (!REVISION.test(head)) die(`--head needs the full revision of the main line, 40 or 64 hex digits: atelier approve ${kind} --head SHA. In the registered checkout, atelier ship --dry-run prints it`);
+    const checkout = cfg.projects?.[name]?.path;
+    const known = knownKinds(checkout && existsSync(checkout) ? checkout : null);
+    if (!known.has(kind)) die(`${name} has no action called ${kind}. Atelier knows ${ACTION_KINDS.join(", ")}; ${name}'s ship files name ${[...known].filter((k) => !ACTION_KINDS.includes(k)).join(", ") || "no others"}`);
+    const expires = args.expires ?? DEFAULT_EXPIRY;
+    try { expirySeconds(expires); } catch (error) { die(`--expires: ${error.message}`); }
+    const a = await call("POST", `${P(name)}/actions`, { kind, commit: head, note: args.note ?? "", expires }, OWNER);
+    console.log(`${a.id}: ${a.kind} approved at ${short(a.commit)} until ${at(a.expiresAt)}. The next atelier ship at that revision uses it, once. To withdraw it: atelier approvals withdraw ${a.id}`);
+  },
+
+  async approvals() {
+    const [, sub, id] = args._;
+    const name = project();
+    if (sub === "withdraw") {
+      if (!id || args._.length !== 3) die(COMMAND_USAGE.approvals);
+      const a = await call("POST", `${P(name)}/actions/${encodeURIComponent(id)}/withdraw`, { note: args.note ?? "" }, OWNER);
+      return console.log(`${a.id}: ${a.kind} at ${short(a.commit)} is withdrawn; no ship will use it.`);
+    }
+    if (sub !== undefined || args.note !== undefined) die(COMMAND_USAGE.approvals);
+    const { approvals } = await call("GET", `${P(name)}/actions`, undefined, OWNER);
+    const shown = args.all ? approvals : approvals.filter((a) => a.status === "active");
+    if (!shown.length) {
+      return console.log(args.all || !approvals.length
+        ? `No action has been approved for ${name}. The owner approves one with: atelier approve KIND --head SHA`
+        : `No approval stands for ${name}; atelier approvals --all lists the used, withdrawn and expired ones.`);
+    }
+    console.log(formatApprovals(shown));
+  },
+
+  // The project owner runs the project's ship order in its registered
+  // checkout (cli/ship.mjs): each protected step only with an approval at the
+  // revision shipped, each step recorded on the ledger.
+  async ship() {
+    if (args._.length !== 1) die(COMMAND_USAGE.ship);
+    const name = project(), as = await actor(OWNER);
+    if (as !== OWNER) die(`only the project owner ships: run ship as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
+    const p = cfg.projects?.[name];
+    if (!p?.path || !existsSync(p.path)) die(`ship runs in ${name}'s registered checkout, and this machine has none; run atelier init in that checkout first`);
+    const top = git(["rev-parse", "--show-toplevel"], { allowFail: true });
+    if (top.status !== 0 || realpathSync(top.stdout.trim()) !== realpathSync(p.path)) die(`run ship in ${name}'s registered checkout: cd ${JSON.stringify(p.path)}`);
+    const cwd = p.path, gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+    const { head: baselineHead } = await call("GET", `${P(name)}/baseline-head`, undefined, OWNER);
+    // The operations wrap refuses to run beside, read the way wrapReady reads them.
+    const inProgress = () => [...new Set(Object.keys(WRAP_MARKERS).filter((marker) => (marker === "landing"
+      ? [landingJournalFile(landingHome(gitDir)), oldLandingJournalFile(gitDir)]
+      : [resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))]).some((file) => existsSync(file))).map((marker) => WRAP_MARKERS[marker]))];
+    await runShip({
+      name, cwd, branch: p.branch, baselineHead, inProgress,
+      paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
+      git: (a, o = {}) => git(a, o),
+      request: (method, path, body) => call(method, path, body, OWNER),
+      stage: (text) => { doneStep = text ?? undefined; },
+      fail: (message) => die(message),
+      print: (line) => console.log(line),
+      // The wrap step is atelier wrap itself, run in the checkout as the owner would.
+      wrap: (summary) => runCommand([process.execPath, fileURLToPath(import.meta.url), "wrap", summary, "--project", name], { cwd, env: process.env }),
+      env: process.env,
+      secrets: shipSecrets(process.env, [apiToken(), ...workspaceTokens(cwd)]),
+      redact,
+      dryRun: args["dry-run"] === true,
+      push: args.push === true,
+    });
   },
 
   // One line per live item, for a wrap to copy into STATE.md's Owner section.
@@ -2095,6 +2321,79 @@ const commands = {
     }
   },
 
+  // The project owner's plans (docs/orchestrator.md, section 6). The word
+  // after plan names a subcommand when it is one; otherwise the words are
+  // the goal of a new plan. `plan post` is for the holder of the plan item's
+  // claim, the planner, and runs as that actor; the rest are the owner's.
+  async plan() {
+    const words = args._.slice(1);
+    const sub = Object.hasOwn(PLAN_FLAGS, words[0]) ? words[0] : null;
+    const form = sub ? `plan ${sub}` : "plan";
+    for (const flag of Object.keys(args.multi)) {
+      if (!["project", "as", ...(PLAN_FLAGS[sub ?? ""] ?? [])].includes(flag)) die(`${form} does not take --${flag}; see atelier plan --help`);
+    }
+    const name = project(), flag = `--project ${name}`;
+    if (!sub) {
+      const goal = words.join(" ").trim();
+      if (!goal) die(COMMAND_USAGE.plan);
+      if (args.planner !== undefined && !/^[^/\s]+\/[^/\s]+$/.test(args.planner)) die("--planner needs harness/model, such as claude-code/opus-5.5");
+      const scope = listArg("scope", "plan");
+      const r = await call("POST", `${P(name)}/items`, { kind: "plan", goal, scope, ...(args.planner ? { planner: args.planner } : {}) }, OWNER);
+      console.log(`${r.item.id} is a plan for: ${flat(goal)}`);
+      console.log(`Planner: ${r.planner}. ${flat(r.reasons[0] ?? "")}`);
+      console.log(`The plan job waits in the queue for ${r.planner}. No runner takes a plan job yet: to plan by hand, claim ${r.item.id} as ${r.planner} with --runner home:NAME, then atelier plan post ${r.item.id} FILE. When a proposal arrives, read it with atelier plan show ${r.item.id} ${flag}.`);
+      return;
+    }
+    const id = words[1];
+    if (!id || words.length > (sub === "post" ? 3 : 2)) die(COMMAND_USAGE.plan);
+    if (sub === "show") {
+      const view = await call("GET", `${I(name, id)}/plan`, undefined, await actor(OWNER));
+      return console.log(args.json ? JSON.stringify(view, null, 2) : planText(view, name));
+    }
+    if (sub === "post") {
+      const file = words[2] ?? die("atelier plan post ID FILE: name the file that holds the plan document");
+      let document;
+      try { document = JSON.parse(readFileSync(file, "utf8")); } catch (error) { die(`${file} is not a JSON plan document: ${error.message}`); }
+      const r = await call("POST", `${I(name, id)}/plan`, document, await actor());
+      console.log(`Proposed ${r.parts} part${r.parts === 1 ? "" : "s"} for ${id} as ${r.hash}.`);
+      console.log(`The owner reads it with atelier plan show ${id} and approves that hash. Release your claim: atelier release ${id} ${flag}`);
+      return;
+    }
+    if (sub === "approve") {
+      if (typeof args.hash !== "string" || !/^[a-f0-9]{64}$/.test(args.hash)) die(`--hash needs the full hash atelier plan show ${id} prints: atelier plan approve ${id} --hash HASH`);
+      const view = await call("POST", `${I(name, id)}/plan/approve`, { hash: args.hash, allowPaid: args["allow-paid"] === true }, OWNER);
+      const queued = view.parts.filter((p) => p.dispatch && p.state === "open");
+      console.log(`${id} is approved at ${args.hash.slice(0, 12)}: ${view.parts.map((p) => `${p.id} ${p.key}`).join(", ")}.`);
+      console.log(queued.length ? `Queued now: ${queued.map((p) => `${p.id} for ${p.dispatch.agent}/${p.dispatch.model}`).join(", ")}.` : "Nothing could start yet.");
+      console.log(`Follow it with atelier plan show ${id} ${flag}`);
+      return;
+    }
+    if (sub === "revise") {
+      if (typeof args.note !== "string" || !args.note.trim()) die(`--note needs text: atelier plan revise ${id} --note "what to change"`);
+      const view = await call("POST", `${I(name, id)}/plan/revise`, { note: args.note }, OWNER);
+      console.log(`${id} is back in the queue for its planner, ${view.planner}, with your note. Its next proposal comes to your inbox.`);
+      return;
+    }
+    if (sub === "reroute") {
+      if (typeof args.to !== "string" || !args.to.trim()) die(`--to needs harness/model: atelier plan reroute ${id} --to claude-code/opus-5.5`);
+      const view = await call("POST", `${I(name, id)}/plan/reroute`, { to: args.to }, OWNER);
+      const part = view.parts.find((p) => p.id === id);
+      console.log(part ? `${id} is built by ${args.to} from now on; ${part.dispatch && part.state === "open" ? "it is queued for it" : `it is ${part.state}, and the plan dispatches it when it may start`}.` : `${id}'s planner is now ${view.planner}, and the plan job is queued for it.`);
+      return;
+    }
+    if (sub === "retry") {
+      const view = await call("POST", `${I(name, id)}/plan/retry`, {}, OWNER);
+      const part = view.parts.find((p) => p.id === id);
+      console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
+      return;
+    }
+    if (sub === "stop") {
+      const view = await call("POST", `${I(name, id)}/plan/stop`, { note: args.note ?? "" }, OWNER);
+      const closed = [view.item, ...view.parts].filter((i) => i.state === "abandoned").map((i) => i.id);
+      console.log(`${id} is stopped: ${closed.join(", ")} ${closed.length === 1 ? "is" : "are"} abandoned, and their write tokens revoked. History and evidence stay. A new plan may start.`);
+    }
+  },
+
   // The model pool. With no subcommand, lists it. `models add ID --harness H
   // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
   // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
@@ -2130,6 +2429,9 @@ const commands = {
     if (sub === "rename") {
       if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
       const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
+      // The server answers the new name for both when the request named it
+      // to finish a rename: no entry moves, and the one under it stays.
+      if (r.from === r.to) return console.log(`${r.to} is the project's name on ${server()}, and the rename that gave it that name is complete. The local config is unchanged.`);
       // The server says which name the project was registered under; the
       // local entry moves from that name. An entry already under the new
       // name is kept, and the old one dropped, saying what it held.
