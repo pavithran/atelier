@@ -1,0 +1,25 @@
+atelier atelier/t169 "Orchestrator step 7a (t15): src/plans/brief.ts, the server-built job brief for a part (spec, dependencies' interfaces and landed heads, scope, checks, and for rework the findings or the failing output), a pure function with node tests, replacing briefFor in cli/runner.mjs once step 7b wires it"
+accepted head eb2e5dbacab138e93f1641e546f3195cfab519ee
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T14:49:46.819Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T14:49:50.930Z
+REVIEW approve — antigravity/gemini-3.1-pro: Orchestrator step 7a: jobBrief, merged with steps 5 and 6.
+2026-10-06T13:28:23.237Z pavi item.created
+2026-10-06T13:28:56.335Z claude-code/fable-5.1 item.claimed
+2026-10-06T13:29:01.300Z claude-code/fable-5.1 fork.created
+2026-10-06T13:55:01.956Z claude-code/sonnet-5.5 review.approved
+2026-10-06T13:55:29.183Z claude-code/fable-5.1 push.observed
+2026-10-06T13:58:53.716Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:58:57.365Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:58:58.211Z claude-code/fable-5.1 item.submitted
+2026-10-06T14:43:13.914Z claude-code/fable-5.1 push.observed
+2026-10-06T14:45:00.500Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:45:03.911Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:45:04.696Z claude-code/fable-5.1 item.submitted
+2026-10-06T14:47:11.859Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:47:12.638Z pavi item.accepted
+2026-10-06T14:48:02.460Z claude-code/fable-5.1 push.observed
+2026-10-06T14:49:47.374Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:49:51.700Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:49:52.580Z claude-code/fable-5.1 item.submitted
+2026-10-06T14:52:20.363Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:52:21.516Z pavi item.accepted
