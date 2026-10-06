@@ -86,8 +86,8 @@ export interface Story {
 
 // Bookkeeping takes a quarter step on the axis so the work gets the width, and
 // is not an agent's move: a session note records where a session ended, not work.
-const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "item.released", "session.wrapped"]);
-const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched", "review.overridden"]);
+export const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "item.released", "session.wrapped"]);
+export const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched", "review.overridden"]);
 
 export function emptyTally(): Tally {
   return { agentMoves: 0, decisions: 0, checks: 0, inCloud: 0, sentBack: 0, localRuns: 0, agents: [], byVendor: {},
