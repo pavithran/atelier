@@ -84,6 +84,12 @@ function apiToken() {
   return token;
 }
 
+// The store's own token, whatever ATELIER_TOKEN holds: readSecret answers
+// with the environment first, and `login` needs to know what is stored.
+function storedToken() {
+  try { return readSecret("API_TOKEN", { env: { ...process.env, ATELIER_TOKEN: "" } }); } catch (error) { die(error.message); }
+}
+
 // The environment a git command runs with. Artifacts has no Git LFS: a push
 // would try to upload a project's LFS objects and fail, so every push to
 // Atelier skips the upload and Artifacts holds pointer files. A clone, always
@@ -980,28 +986,32 @@ const commands = {
 
   async login() {
     if (args.store) {
-      let held = null;
-      try { held = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+      const held = storedToken();
       const env = process.env.ATELIER_TOKEN?.trim() ? " ATELIER_TOKEN is set in the environment and is used instead." : "";
       return console.log(`The token store is ${describeStore("API_TOKEN")}. ${held ? "A token is stored." : "No token is stored."}${env}`);
     }
     if (!args.server || args.server === true) die("usage: atelier login --server https://atelier.example.com   or   atelier login --store");
     const target = trimSlash(args.server);
-    // A token in hand is reused for its own server only: ATELIER_TOKEN for the
-    // server in use (ATELIER_SERVER, else the one config.json names), the
-    // stored token for the server config.json names (see apiToken). For any
-    // other server a token is asked for, so a token is never sent to a server
-    // it was not given for: a typo in --server would otherwise hand the owner
-    // token to whatever host answers there.
+    // The stored token and the server config.json names are a pair: the token
+    // was stored when that server accepted it, and apiToken sends it there
+    // alone. ATELIER_TOKEN is the user's own pair with the server in use,
+    // ATELIER_SERVER or else the one config.json names. Login sends the named
+    // server only a token already paired with it: ATELIER_TOKEN when its
+    // server is the named one, else the stored token when config.json names
+    // it, and otherwise asks for one. So a token never reaches a server it was
+    // not given for: a typo in --server would otherwise hand the owner token
+    // to whatever host answers there.
+    const home = cfg.server ? trimSlash(cfg.server) : null;
     const fromEnv = process.env.ATELIER_TOKEN?.trim();
-    let token = null, fresh = false;
-    if (fromEnv) { if (target === trimSlash(process.env.ATELIER_SERVER ?? cfg.server ?? "")) token = fromEnv; }
-    else if (cfg.server && target === trimSlash(cfg.server)) { try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); } }
+    const envServer = process.env.ATELIER_SERVER ? trimSlash(process.env.ATELIER_SERVER) : home;
+    let token = null, from = null;
+    if (fromEnv && target === envServer) { token = fromEnv; from = "ATELIER_TOKEN"; }
+    else if (target === home) { token = storedToken(); if (token) from = "store"; }
     if (!token) {
-      if (cfg.server && target !== trimSlash(cfg.server)) process.stderr.write(`atelier: ${target} is not ${trimSlash(cfg.server)}, the server the stored token belongs to; a token for ${target} is needed.\n`);
+      if (home && target !== home) process.stderr.write(`atelier: ${target} is not ${home}, the server the stored token belongs to; a token for ${target} is needed.\n`);
       try { token = await promptSecret("Server token (not shown): "); } catch (error) { die(`no token entered: ${error.message}`); }
       if (!token) die("no token entered");
-      fresh = true;
+      from = "typed";
     }
     // Nothing is saved until the server accepts the token: `call` ends the
     // command on a refusal or a server that cannot answer, and config.json and
@@ -1009,17 +1019,25 @@ const commands = {
     loginToken = token;
     loginServer = target;
     const conf = await call("GET", "/config", undefined, "owner");
-    // Accepted. The token goes to the store first; then config.json names the
-    // server that accepted it, so a stored token is always paired with its server.
+    // Accepted. The pair is rewritten whole or not at all: whenever config.json
+    // is about to name a server other than the stored token's, or the token was
+    // typed, the accepted token goes to the store first and config.json names
+    // the server after. A token ATELIER_TOKEN holds is stored on that path too;
+    // leaving the store alone there would pair the old token with the new
+    // server, and the next command without ATELIER_TOKEN would send it there.
+    // A token reused for the server config.json already names leaves the store
+    // as it is.
+    const store = from === "typed" || target !== home;
     let where;
-    if (fresh) { try { where = writeSecret("API_TOKEN", token); } catch (error) { die(error.message); } }
-    else where = fromEnv ? "the ATELIER_TOKEN environment variable" : describeStore("API_TOKEN");
+    if (store) { try { where = writeSecret("API_TOKEN", token); } catch (error) { die(error.message); } }
+    else where = from === "ATELIER_TOKEN" ? "the ATELIER_TOKEN environment variable" : describeStore("API_TOKEN");
     cfg.server = target;
     cfg.owner = conf.ownerActor;
     cfg.ownerName = conf.ownerName ?? undefined;
     try { saveConfig(cfg); } catch (error) { die(`the token is stored, but config.json could not be written (${error.message}); run login again`); }
-    console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". The token ${fresh ? "is now stored in" : "is read from"} ${where}.`);
-    if (fresh && fromEnv) console.log("ATELIER_TOKEN is set in the environment and is used instead of the stored token until it is unset.");
+    const what = from === "ATELIER_TOKEN" && store ? "The token, from ATELIER_TOKEN," : "The token";
+    console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". ${what} ${store ? "is now stored in" : "is read from"} ${where}.`);
+    if (from === "typed" && fromEnv) console.log("ATELIER_TOKEN is set in the environment and is used instead of the stored token until it is unset.");
   },
 
   // The project owner, in the project's checkout.
