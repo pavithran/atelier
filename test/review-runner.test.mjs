@@ -147,3 +147,17 @@ test("runReview clones into a folder of its own, never the builder's workspace, 
   }
   assert.ok(removed.includes("/cache/work/atelier/verdict.txt"), "the verdict file is removed");
 });
+
+// The real CLI helper, not a stand-in: a command whose JSON the runner reads
+// back must have its output captured, or the parse gets an empty string.
+test("every CLI call the runner parses as JSON has its output captured by the real helper", async () => {
+  const { checked, execute, readsOutput } = await import("../cli/runner.mjs");
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../cli/runner.mjs", import.meta.url), "utf8");
+  const parsed = [...source.matchAll(/JSON\.parse\(await io\.cli\(\["([a-z-]+)"/g)].map((m) => m[1]);
+  assert.ok(parsed.length >= 4, "the runner parses the output of several CLI calls");
+  for (const command of parsed) assert.equal(readsOutput([command]), true, `${command}'s output is captured`);
+  assert.equal(readsOutput(["push"]), false, "other commands print to the runner's own output");
+  const printed = await checked([process.execPath, "-e", "console.log(JSON.stringify({ head: 'abc' }))"], { captureError: true, capture: readsOutput(["review-claim"]), step: "review-claim" }, execute);
+  assert.deepEqual(JSON.parse(printed), { head: "abc" });
+});
