@@ -654,7 +654,12 @@ else, while it waits.
 
 `atelier runner` polls the queue every 30 seconds, claims one eligible task,
 and runs its configured harness in the claimed workspace. The brief is kept
-outside that workspace. After a successful harness exit with a new commit,
+outside that workspace. Each opencode run also gets a data folder of its own
+(`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
+it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
+deadlock on it. Such a run finds its provider keys in its environment and
+opencode's config, as the runner passes them; a key saved with
+`opencode auth login` lives in the shared data folder and is not seen. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
 in place for inspection. Two counters are kept for each project and task id,
@@ -719,7 +724,9 @@ registered is reported as refused, with the model it served, and listed under
 Mismatch. For zcode and Codex, whose records name the model the harness
 chose, any other model answering after the registered one last did counts,
 whether or not the pool registers it too; opencode's record names the model
-each call asked for, so it is not judged this way. A model with no recent
+each call asked for, so it is not judged this way. The runner's own opencode
+runs keep their record in their own data folders, which are removed, so the
+opencode record shows only opencode used outside the runner. A model with no recent
 record is shown as "no recent record" and nothing is reported for it, so its
 earlier status stands.
 

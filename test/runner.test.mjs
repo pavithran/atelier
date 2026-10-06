@@ -2,11 +2,11 @@ import { execFileSync, spawn } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey } from "../cli/runner.mjs";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -106,8 +106,10 @@ test("nextStep handles an empty queue and failures at every active phase", () =>
   for (const head of [undefined, "a"]) assert.match(nextStep({ phase: "working" }, { type: "exit", code: 0, before: "a", head }).reason, /no new commit/);
 });
 
+// `homes` records the data folders made and removed for opencode runs,
+// apart from `calls` so the order of the other steps reads as before.
 function fixture(options = {}) {
-  const calls = [], logs = [];
+  const calls = [], logs = [], homes = [];
   let reads = 0;
   const io = {
     log: (s) => logs.push(s), stopped: () => options.stopped ?? false,
@@ -127,10 +129,24 @@ function fixture(options = {}) {
       if (options.failBrief) throw new Error("cannot write brief");
       return { file: "/cache/work/atelier/brief.txt" };
     },
-    async harness(argv, cwd) { calls.push({ harness: argv, cwd }); return { code: options.code ?? 0, timedOut: options.timedOut }; },
+    async harness(argv, cwd, env) {
+      calls.push({ harness: argv, cwd, env });
+      homes.push({ ran: env?.XDG_DATA_HOME });
+      if (options.throwHarness) throw new Error("ENOENT");
+      return { code: options.code ?? 0, timedOut: options.timedOut };
+    },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
+    async dataHome(workspace) {
+      const dir = `${dirname(workspace)}/.atelier-${basename(workspace)}-opencode-data-x`;
+      homes.push({ made: dir });
+      return { dir };
+    },
+    async removeDataHome({ dir }) {
+      homes.push({ removed: dir });
+      if (options.failRemoval) throw new Error("busy");
+    },
   };
-  return { io, calls, logs };
+  return { io, calls, logs, homes };
 }
 
 test("runTask claims with the assignment, runs the harness, finishes and removes the brief", async () => {
@@ -787,4 +803,108 @@ test("interrupt during the initial HEAD read releases the claim without resettin
   assert.deepEqual(commands, ["claim", "release"]);
   assert.equal(reads, 2);
   assert.ok(logs.includes("released: no new commit"));
+});
+
+test("an opencode run gets a data folder beside the workspace, removed as the harness ends, whatever the outcome", async () => {
+  const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
+  for (const options of [{}, { head: "before", code: 1 }, { head: "before", timedOut: true }, { head: "before", throwHarness: true }, { interrupt: true }]) {
+    const { io, calls, homes } = fixture(options);
+    let stop = false;
+    const { cli, harness } = io;
+    io.cli = async (argv, cwd) => { homes.push({ cli: argv[0] }); return cli(argv, cwd); };
+    io.harness = async (...args) => { try { return await harness(...args); } finally { stop = options.interrupt === true; } };
+    io.stopped = () => stop;
+    const state = await runTask(assignment, config, "home:studio", io);
+    assert.equal(state.phase, Object.keys(options).length ? "failed" : "submitted", JSON.stringify(options));
+    // Made after the claim, given to the harness alone, and removed before anything else runs.
+    assert.deepEqual(homes.slice(0, 4), [{ cli: "claim" }, { made: home }, { ran: home }, { removed: home }], JSON.stringify(options));
+    assert.equal(homes.filter((h) => h.made || h.removed).length, 2);
+    assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: home });
+  }
+});
+
+test("other harnesses run with the runner's environment and no data folder", async () => {
+  const claude = { ...entry, agent: "claude-code" };
+  const { io, calls, homes } = fixture();
+  const state = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${entry.models[0]}` }, { agents: [claude] }, "home:studio", io);
+  assert.equal(state.phase, "submitted");
+  assert.deepEqual(homes, [{ ran: undefined }]);
+  assert.equal(calls.find((c) => c.harness).env, undefined);
+});
+
+test("a data folder that cannot be removed is reported, and the task goes on", async () => {
+  const { io, logs } = fixture({ failRemoval: true });
+  assert.equal((await runTask(assignment, config, "home:studio", io)).phase, "submitted");
+  assert.ok(logs.includes("could not remove /cache/work/atelier/.atelier-t13-opencode-data-x: busy"));
+});
+
+test("makeDataHome makes a private sibling of the workspace, and removal or exit takes it away", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-data-home-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const workspace = join(dir, "t13");
+  mkdirSync(workspace);
+  const listeners = process.listenerCount("exit");
+  const home = makeDataHome(workspace);
+  assert.equal(dirname(home.dir), dir);
+  assert.match(basename(home.dir), /^\.atelier-t13-opencode-data-/);
+  assert.equal(statSync(home.dir).mode & 0o777, 0o700);
+  assert.equal(process.listenerCount("exit"), listeners + 1);
+  mkdirSync(join(home.dir, "opencode"));
+  writeFileSync(join(home.dir, "opencode", "opencode.db"), "db");
+  removeDataHome(home);
+  assert.equal(existsSync(home.dir), false);
+  assert.equal(process.listenerCount("exit"), listeners);
+  // A second interrupt leaves through process.exit; the exit listener removes the folder then.
+  const second = makeDataHome(workspace);
+  writeFileSync(join(second.dir, "file"), "x");
+  assert.ok(process.listeners("exit").includes(second.onExit));
+  second.onExit();
+  assert.equal(existsSync(second.dir), false);
+  removeDataHome(second);
+  assert.equal(process.listenerCount("exit"), listeners);
+  assert.deepEqual(readdirSync(dir), ["t13"]);
+});
+
+test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after success, failure, timeout and interrupt", { timeout: 60_000 }, async (t) => {
+  t.mock.method(console, "log", () => {});
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  for (const mode of ["commit", "fail", "timeout", "interrupt"]) {
+    const { dir, workspace, git, path, args } = gitWorkspace(t);
+    const seen = join(dir, "seen.txt"), script = join(dir, "harness.mjs");
+    // The harness writes a database where opencode would, records the folder
+    // it was given, then ends as `mode` says. git on PATH shows the rest of
+    // the runner's environment came with it.
+    writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+      import { execFileSync } from "node:child_process";
+      const home = process.env.XDG_DATA_HOME;
+      mkdirSync(home + "/opencode", { recursive: true });
+      writeFileSync(home + "/opencode/opencode.db", "db");
+      writeFileSync(${JSON.stringify(seen)}, home);
+      const mode = ${JSON.stringify(mode)};
+      if (mode === "commit") { execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "work"]); process.exit(0); }
+      if (mode === "fail") process.exit(1);
+      if (mode === "interrupt") process.kill(process.ppid, "SIGINT");
+      ${UNTIL_TEST_EXITS}`);
+    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }], ...(mode === "timeout" ? { taskTimeoutMs: 300 } : {}) }));
+    const listeners = process.listenerCount("exit"), commands = [];
+    await runRunner({ ...args, once: true }, {
+      workspacePath: () => workspace, queue: async () => [assignment],
+      executeChild: async (argv, options) => {
+        if (!argv[1]?.endsWith("atelier.mjs")) return execute(argv, options);
+        commands.push(argv[2]);
+        // Finish comes after the harness, and its folder is already gone.
+        if (argv[2] === "finish") assert.equal(existsSync(readFileSync(seen, "utf8")), false);
+        return execute([process.execPath, "-e", ""], options);
+      },
+    });
+    const home = readFileSync(seen, "utf8");
+    assert.equal(dirname(home), dir, mode);
+    assert.match(basename(home), /^\.atelier-t13-opencode-data-/);
+    assert.equal(existsSync(home), false, mode);
+    assert.ok(!readdirSync(dir).some((name) => name.includes("opencode-data")), mode);
+    assert.equal(git("status", "--porcelain"), "");
+    assert.deepEqual(commands, mode === "commit" ? ["claim", "finish"] : ["claim", "release"], mode);
+    assert.equal(process.listenerCount("exit"), listeners);
+  }
 });
