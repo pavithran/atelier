@@ -124,7 +124,7 @@ export function failingChecksRefusal(failed: FailedCheck[]): string {
 export function failingChecksOverridden(failed: FailedCheck[]): string {
   return `Failing checks overridden by --allow-failing: ${failedList(failed)}.`;
 }
-export const FILING_RELAY = 'Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project cloudflare-git. File a lesson worth keeping the same way with a title starting "Lesson: ".';
+export const FILING_RELAY = 'Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project atelier. File a lesson worth keeping the same way with a title starting "Lesson: ".';
 export const UNWRAP_RELAY = "Say in a short paragraph what is true, what is open and what you will do. " + FILING_RELAY;
 // The line the agent relays to the owner. A failing check, the override that
 // let it through, and each remote that did not take the push are named, never

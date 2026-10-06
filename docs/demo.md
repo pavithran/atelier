@@ -10,7 +10,7 @@ suggestions; the facts in them are the ones to keep.
 
 ## Before recording
 
-1. **Sandbox-only for the demo project.** In the `cloudflare-git` checkout:
+1. **Sandbox-only for the demo project.** In the `atelier` checkout:
 
    ```text
    atelier init --title "Atelier" --check "npm ci --prefer-offline --no-audit --no-fund && npm test" --check "npm run types && npm run typecheck" --protect src/rules.ts --protect src/ledger.ts --protect src/index.ts --sandbox-only
@@ -32,7 +32,7 @@ suggestions; the facts in them are the ones to keep.
    of another family than every agent that worked on it. Note the ids the
    commands print; the script calls them A, B and C.
 
-3. **Three agent sessions**, each opened in the `cloudflare-git` folder:
+3. **Three agent sessions**, each opened in the `atelier` folder:
    Claude Code, Codex and GLM. Do not start them yet.
 
 4. **Screens.** Browser at `https://atelier.zone/studio`, signed in, in a
@@ -100,13 +100,13 @@ Cut to the Studio: three lanes, each with a square for its claim.
 In the owner terminal, try to claim an item an agent already holds:
 
 ```text
-atelier claim A --project cloudflare-git --as codex/gpt-6
+atelier claim A --project atelier --as codex/gpt-6
 ```
 
 It is refused: the item is owned. Then hand an item over, as the owner:
 
 ```text
-atelier handoff B --project cloudflare-git --to claude-code/opus-5.5 --as pavi --note "Reassigning"
+atelier handoff B --project atelier --to claude-code/opus-5.5 --as pavi --note "Reassigning"
 ```
 
 > A handoff moves ownership and revokes the old owner's token. The work is not
@@ -156,7 +156,7 @@ Accept the item.
 Once accepted, the item page shows the exact command; copy it:
 
 ```text
-atelier merge A --project cloudflare-git --head FULL_REVISION
+atelier merge A --project atelier --head FULL_REVISION
 ```
 
 Then:
