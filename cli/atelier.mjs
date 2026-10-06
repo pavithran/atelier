@@ -1592,9 +1592,13 @@ const commands = {
     }
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
+    // After the rebase the fork no longer holds the head Atelier recorded,
+    // so the push needs --force, whose lease refuses to overwrite anything
+    // pushed since (see push). Both ends of the rebase name that one command.
+    const next = "Push with: atelier push --force";
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
-    if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, \`git rebase --continue\`, then \`atelier push --force\`.\n${r.stdout}${r.stderr}`);
-    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. Push with: atelier push --force`);
+    if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, then git rebase --continue. ${next}\n${r.stdout}${r.stderr}`);
+    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. ${next}`);
   },
 
   // Observed evidence: run each required check (or the given command) in a
