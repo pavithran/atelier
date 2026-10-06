@@ -1242,3 +1242,15 @@ it('a commit page marks the Log tab current and its crumb names the commit',()=>
  expect(commit).toContain('/ Commit 11a7ee68</nav>');
  expect(commit).not.toContain('href="/projects"');
 });
+it('each review on the task page says who recorded it (t215)',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();d.reviews=[
+  {itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'own token',at:time,recordedBy:'claude-code/opus-5.5',proved:true,claimed:false},
+  {itemId:'t1',head,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the owner',at:time,recordedBy:'pavi',proved:false,claimed:false},
+  {itemId:'t1',head,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
+ ];
+ const html=renderItem(project,d,'PAVI',diff);
+ expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded with its own token');
+ expect(html).toContain('recorded by the project owner with the owner token</p>');
+ expect(html).toContain('recorded by the project owner with the owner token, answering a review request it claimed');
+});
