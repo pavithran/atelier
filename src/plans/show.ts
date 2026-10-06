@@ -209,5 +209,5 @@ export function planBrief(v: PlanView): Brief {
     else recommendation = recommend("wait", "The parts are being built; nothing waits on you.");
   }
   const decided = v.approval ? `Plan ${id}, approved at ${v.approval.hash.slice(0, 12)}: ${goal}` : v.proposal ? `Approve plan ${id}'s split of: ${goal}` : `Plan ${id}: ${goal}`;
-  return { decided, summary: null, evidence, recommendation };
+  return { decided, summary: null, nonGoals: v.item.nonGoals ?? [], stopWhen: v.item.stopWhen ?? [], nextGate: v.item.nextGate ?? null, evidence, recommendation };
 }

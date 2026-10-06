@@ -448,7 +448,7 @@ const BEAD_NAMES: Record<BeadKind, string> = {
   approve: "approved", reject: "sent back", handoff: "handed off", accept: "accepted", dispatch: "dispatched",
 };
 const STATE_NAMES: Record<string, string> = {
-  open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed",
+  open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed", blocked: "blocked",
 };
 
 // A mark with somewhere to go (its commit, its task's checks) is a link, so a
