@@ -1,0 +1,16 @@
+atelier atelier/t110 "unwrap's remote lines, follow-ups from sonnet-5.5's review of t101: behind and diverged read 'main is 2 commits behind of github/main' and '2 commits ahead and 1 behind of' (cli/atelier.mjs:643-644; the brief's form is '3 commits behind github/main'); add tests for behind, diverged and in step; rev-list there is not allowFail, so a tracking ref whose object is missing ends unwrap; the PROJECT.md test's doesNotMatch(/Could not compare/) is vacuous"
+accepted head e549c68957975923c13fa298ee22edc8c78333b1
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T00:36:10.580Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T00:36:12.760Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. Every wording case reads correctly with plurals; the uncomparable-ref path returns a line instead of ending unwrap and writes nothing; all four git calls carry --no-optional-locks; the new tests reproduce ahead, in step, behind, diverged and a ref naming a missing object, and would fail on the old code; the PROJECT.md assertion is now meaningful.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T00:30:23.884Z pavi item.created
+2026-10-06T00:34:11.257Z claude-code/opus-5.5 item.claimed
+2026-10-06T00:34:16.246Z claude-code/opus-5.5 fork.created
+2026-10-06T00:35:04.969Z claude-code/opus-5.5 push.observed
+2026-10-06T00:36:10.769Z claude-code/opus-5.5 evidence.observed
+2026-10-06T00:36:12.845Z claude-code/opus-5.5 evidence.observed
+2026-10-06T00:36:13.551Z claude-code/opus-5.5 item.submitted
+2026-10-06T00:37:39.352Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T00:37:40.015Z pavi review.approved
+2026-10-06T00:37:40.688Z pavi item.accepted
