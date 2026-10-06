@@ -119,10 +119,16 @@ function git(args, opts = {}) {
   const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
-  // git itself did not run: it is not on PATH or not executable, or its
-  // output overran the buffer. There is no exit status to read, so this ends
-  // the command whatever allowFail says, and the error is the detail.
-  if (r.error) die(`git ${shown.join(" ")} could not run: ${r.error.code === "ENOENT" ? "git was not found on PATH" : r.error.message}`);
+  // git itself did not run: the folder it was to run in is missing, it is
+  // not on PATH or not executable, or its output overran the buffer. There
+  // is no exit status, so the error is the detail and the command ends; a
+  // caller that takes failures gets the result and judges it, as it would a
+  // probe of a folder that may not be there.
+  if (r.error) {
+    if (opts.allowFail) return r;
+    const why = r.error.code !== "ENOENT" ? r.error.message : opts.cwd && !existsSync(opts.cwd) ? `the folder ${opts.cwd} does not exist` : "git was not found on PATH";
+    die(`git ${shown.join(" ")} could not run: ${why}`);
+  }
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
@@ -529,14 +535,16 @@ async function call(method, path, body, as, extra = {}) {
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
   if (!res.ok) {
+    // 4 for a server that cannot answer, 3 for a refused claim (the runner
+    // reads it), 1 otherwise, whatever the message says.
+    const code = res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1;
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
     const named = data.error === "no_project" ? /^\/projects\/([^/]+)/.exec(path)?.[1] : undefined;
-    if (named) die(noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name));
-    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
-      res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-        method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
+    if (named) die(noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name), code);
+    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`, code);
   }
   return data;
 }

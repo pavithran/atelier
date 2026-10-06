@@ -143,6 +143,10 @@ test("a project the server does not know is answered with the registered names, 
   const away = f.run(elsewhere, ["show", "t1", "--project", "demp"]);
   assert.equal(away.status, 1);
   assert.equal(away.stderr, "atelier: no project named demp on https://fake.invalid.\nRegistered on this Mac, closest first: demo.\nTo register a new project, run atelier init in its checkout.\n");
+  // A refused claim keeps exit code 3, which the runner reads, whatever the message.
+  const claim = f.run(elsewhere, ["claim", "t1", "--project", "demp", "--as", "codex/test"]);
+  assert.equal(claim.status, 3, claim.stderr);
+  assert.match(claim.stderr, /^atelier: no project named demp on https:\/\/fake\.invalid\.$/m);
   // The nearest name comes first; a name this Mac registers but the server lacks is its own case.
   const projects = { atelier: { path: "/a" }, photograph: { path: "/p" }, demo: { path: "/d" } };
   assert.match(noProjectMessage("atelir", "https://x", projects, null), /^Registered on this Mac, closest first: atelier, demo, photograph\.$/m);
@@ -182,6 +186,12 @@ test("when git itself cannot run, the error says why instead of showing an empty
   assert.equal(r.status, 1);
   assert.match(r.stderr, /^atelier: git rev-parse --show-toplevel could not run: git was not found on PATH$/m);
   assert.deepEqual(f.requests(), []);
+  // A registered checkout that is gone is named as the cause, not PATH.
+  const gone = join(f.dir, "gone");
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", projects: { demo: { path: gone, branch: "main" } } }));
+  const missing = f.run(f.dir, ["notes-remote", "origin", "--project", "demo"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /^atelier: git remote could not run: the folder \S*\/gone does not exist$/m);
 });
 
 test("review --approve t2 in t1's workspace reviews t2, never the workspace's item", (t) => {

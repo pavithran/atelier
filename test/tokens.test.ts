@@ -60,6 +60,6 @@ test("route policy grants workflow operations and defaults to refusing", () => {
   assert.equal(agentRoute("DELETE", ["projects", "p"]), false);
   assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "write" }), false);
   assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "read" }), true);
-  for (const path of [["config"], ["projects"], ["inbox"], ["queue"], ["projects", "p"], [...task], [...task, "brief"], [...task, "diff"], [...task, "sandbox", "run"]]) assert.equal(agentRoute("GET", path), true, path.join("/"));
+  for (const path of [["config"], ["projects"], ["inbox"], ["queue"], ["projects", "p"], ["projects", "p", "baseline-head"], [...task], [...task, "brief"], [...task, "diff"], [...task, "sandbox", "run"]]) assert.equal(agentRoute("GET", path), true, path.join("/"));
   assert.equal(agentRoute("POST", [...task, "claim", "extra"]), false);
 });
