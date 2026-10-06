@@ -182,16 +182,28 @@ function trustLine(checks: { grade: string; passed: boolean | null; where?: "san
 
 // ── sign in ────────────────────────────────────────────────────────────────
 
-// `backdrop` draws the public showcase's stories dimmed behind the form:
-// the same redacted stories the showcase page draws, so nothing private is
-// on the sign-in page. They are decoration here, hidden from assistive
-// technology, and no mark in them takes focus.
+// `backdrop` draws the portfolio's activity dimmed behind the form: the same
+// anonymised stories the showcase page draws, so nothing private is on the
+// sign-in page. It is decoration, hidden from assistive technology, no mark
+// in it takes focus, and it is clipped to the viewport and capped at a dozen
+// threads so the page stands one screen tall.
 export function renderLogin(error?: string, showcase = false, backdrop?: { stories: Story[]; owner: string; who: string }): string {
-  const drawn = backdrop?.stories.filter((s) => s.threads.length) ?? [];
+  let left = 12;
+  const drawn = (backdrop?.stories ?? []).map((s) => {
+    const threads = s.threads.slice(0, Math.max(0, left));
+    left -= threads.length;
+    return { ...s, threads };
+  }).filter((s) => s.threads.length);
   const graph = drawn.length
     ? `<div class="login-backdrop" aria-hidden="true">${drawn.map((s) => drawStory(s, backdrop!.owner, { replaySeconds: 12, ownerLabel: backdrop!.who })).join("").replace(/ tabindex="0"/g, "")}</div>`
     : "";
-  return page("Sign in", `<section class="login${graph ? " over-graph" : ""}">${graph}
+  return publicPage({
+    title: "Sign in · Atelier",
+    description: "Sign in to Atelier, a Git platform for many coding agents: one owner per task, evidence observed, another model family reviews, the owner decides.",
+    brand: "/",
+    nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
+    mainClass: "login-page",
+    main: `<section class="login${graph ? " over-graph" : ""}">${graph}
   <h1>Many agents.<br>One decision at a time.</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
@@ -203,7 +215,8 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     <button class="primary">Sign in</button>
   </form>
   <p class="meta">${showcase ? 'Not the owner? <a href="/showcase">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
-</section>`, "", null, 0, false);
+</section>`,
+  });
 }
 
 // ── decisions ──────────────────────────────────────────────────────────────
@@ -406,21 +419,39 @@ export function spanLabel(from: number, to: number): string {
   return a === b ? dayLabel(from * 1000, false) : `${dayLabel(from * 1000, year)} to ${dayLabel(to * 1000, year)}`;
 }
 
-// The project to compare with itself: one with commits from before its first
-// task and tasks since. Of several, the one with the most tasks.
-function sameProject(stories: Story[], imported: Map<string, ImportedHistory>): Story | undefined {
-  return stories.filter((s) => s.threads.length && imported.get(s.project)?.total)
-    .sort((a, b) => b.threads.length - a.threads.length)[0];
+// Below this many imported commits, a project's own "before" is too thin a
+// contrast to hang the comparison on, and the page prefers whichever shown
+// project is known only from its git history, the one with the largest of
+// those histories.
+const SAME_MIN = 50;
+
+// What the comparison draws. `same` is a project with both commits from
+// before its first task and tasks since (of those with a substantial imported
+// history, the one with the most tasks), shown on both sides as itself, but
+// only when its imported history is substantial or no other shown project is
+// known only from git; otherwise `before` is that git-only project with the
+// largest imported history, and the record Atelier kept of the shown
+// projects' tasks stands against it.
+function comparePick(stories: Story[], imported: Map<string, ImportedHistory>): { same?: Story; before?: Story } {
+  const total = (s: Story) => imported.get(s.project)?.total ?? 0;
+  const both = stories.filter((s) => s.threads.length && total(s) > 0);
+  const byTasks = (a: Story, b: Story) => b.threads.length - a.threads.length;
+  const same = both.filter((s) => total(s) >= SAME_MIN).sort(byTasks)[0] ?? both.sort(byTasks)[0];
+  const before = stories.filter((s) => noTasks(s) && total(s) > 0).sort((a, b) => total(b) - total(a))[0];
+  if (same && (total(same) >= SAME_MIN || !before)) return { same };
+  return before ? { before } : {};
 }
 
-// Before and with Atelier, side by side. When one project has both commits
-// from before its first task and tasks since, that project is shown on both
-// sides: its own git history beside its own Atelier record. Otherwise a project
-// known only from its git history stands beside the record Atelier kept of
-// other projects' tasks, when there is one of each. Each side links to its drawing.
-export function compareBlock(stories: Story[], imported: Map<string, ImportedHistory>, t: Tally, owner: string, who: string): string {
-  const same = sameProject(stories, imported);
-  const before = same ?? stories.find((s) => noTasks(s) && imported.get(s.project)?.total);
+// Before and with Atelier, side by side. When one project holds both a
+// substantial history from before its first task and tasks since, that
+// project is shown on both sides: its own git history beside its own
+// Atelier record. Otherwise the git-only project with the largest imported
+// history stands before the record Atelier kept of the shown projects'
+// tasks. `href` names where each card links, the showcase's portfolio cards.
+export function compareBlock(stories: Story[], imported: Map<string, ImportedHistory>, t: Tally, owner: string, who: string, href?: (s: Story) => string): string {
+  const pick = comparePick(stories, imported);
+  const same = pick.same;
+  const before = same ?? pick.before;
   const withs = same ? [same] : stories.filter((s) => s.threads.length);
   if (!before || !withs.length || (!same && !t.claims)) return "";
   if (same) t = same.tally;
@@ -447,8 +478,9 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
     ? `<p class="meta compare-dates">${e(spanLabel(h.first, h.last))}${h.complete ? "" : " · only the most recent part of the history was read"}</p>` : "";
   const withDates = same && began
     ? `<p class="meta compare-dates">since ${e(dayLabel(began, false))}${same.partial ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
+  const link = (s: Story, beforeSide: boolean) => href ? href(s) : `#${beforeSide && same ? "before-" : ""}${s.project}`;
   return `<section class="compare" aria-label="Before and with Atelier">
-  <a class="compare-card before" href="#${same ? "before-" : ""}${e(before.project)}">
+  <a class="compare-card before" href="${link(before, true)}">
     <span class="kicker">Before Atelier · from git</span>
     <h2>${e(before.title)}</h2>
     ${beforeDates}
@@ -457,7 +489,7 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
     <ul>${row(h.total, `commits${h.complete ? "" : " (the most recent part)"}`)}${row(h.attributed, `name ${plural(named.length, "agent")} in their messages`)}${row("—", "checks tied to a revision", true)}${row("—", "reviews by another model", true)}${row("—", `decisions by ${who}`, true)}</ul>
     <p class="meta">Git keeps what each commit message claims. It cannot say whether the checks passed on that revision, which model reviewed it, or who decided it should land.</p>
   </a>
-  <a class="compare-card with" href="#${e(withs[0].project)}">
+  <a class="compare-card with" href="${link(withs[0], false)}">
     <span class="kicker">With Atelier · observed</span>
     <h2>${withTitle}</h2>
     ${withDates}
@@ -538,19 +570,70 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 }
 
 // ── showcase ───────────────────────────────────────────────────────────────
-// The public page: the projects the owner chose to show, read only. Stories
-// arrive redacted (graph.ts): no review notes, reports, check commands or
-// closing notes, no diffs, no forms and no links into the signed-in pages.
+// The public page: the portfolio the owner chose to show, read only. Stories
+// arrive redacted (graph.ts), and for a project shown anonymously they arrive
+// anonymised as well: titled by a neutral label from the project's kind, each
+// task titled by its kind of work, so no project name, task title, path,
+// commit message, review note, person or address reaches the HTML.
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
-export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false, imported: Map<string, ImportedHistory> = new Map()): string {
+// One shown project as the portfolio draws it: the project's record (for its
+// title when named), how it is shown, its story, and its two weeks of moves
+// for the card's bar graph when the events were read.
+export interface ShownProject {
+  project: ProjectRecord;
+  mode: "named" | "anonymous";
+  story: Story;
+  pulse?: Pulse;
+}
+
+// The task stories under the cards: two or three threads from different shown
+// projects, the ones with the most recorded moves, each drawn alone.
+function taskStories(cards: ShownProject[]): { card: ShownProject; thread: Story["threads"][number]; one: Story }[] {
+  const best = new Map<ShownProject, Story["threads"][number]>();
+  for (const { card, thread } of cards.flatMap((card) => card.story.threads.map((thread) => ({ card, thread })))
+    .sort((a, b) => b.thread.beads.length - a.thread.beads.length)) {
+    if ([...best.keys()].some((other) => other.story.project === card.story.project)) continue;
+    if (!best.has(card)) best.set(card, thread);
+    if (best.size >= 3) break;
+  }
+  return [...best].map(([card, thread]) => ({ card, thread, one: { ...card.story, threads: [thread] } }));
+}
+
+// A card's label: the project's title when named, its neutral kind otherwise.
+const shownLabel = (c: ShownProject) => (c.mode === "anonymous" ? cap(c.story.title) : c.story.title);
+
+export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), shown?: ShownProject[]): string {
+  // Without the server's portfolio view (a direct render), the stories stand
+  // as the portfolio themselves, shown named.
+  const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
   const total = drawnTotal(stories);
   const who = ownerName || "the owner";
-  const { stages, columns, shown } = flowParts(stories, total, owner, "/showcase", undefined, who, imported);
-  const body = shown.length
-    ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0), cap(who))}${stages}${columns}`
+  const { columns, shown: drawn } = flowParts(stories, total, owner, "/showcase", undefined, who, imported);
+  const body = drawn.length
+    ? `${legendLine(vendorsIn(drawn), drawn.some(s => s.tally.localRuns > 0), cap(who))}${columns}`
     : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
+  // Each card is where a comparison card lands, so the cards come first in
+  // the page and the comparison links up to them.
+  const anchor = (s: Story) => `#card-${Math.max(1, cards.findIndex((c) => c.story.project === s.project) + 1)}`;
+  const cardList = cards.map((c, i) => {
+    const t = c.story.tally;
+    const inProgress = c.story.threads.filter((th) => th.end === null && ["claimed", "submitted", "accepted"].includes(th.state)).length;
+    const families = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
+      .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`).join("");
+    return `<li class="show-card" id="card-${i + 1}">
+    <h2>${e(shownLabel(c))}</h2>
+    ${c.pulse ? pulseGraph(c.pulse) : ""}
+    <p class="card-tally"><span><b>${t.merges}</b>merged</span><span><b>${t.sentBack}</b>sent back</span><span><b>${inProgress}</b>in progress</span></p>
+    ${families ? `<ul class="legend-line" aria-label="Families that worked on it">${families}</ul>` : '<p class="meta">No agent has worked here yet.</p>'}
+  </li>`;
+  }).join("");
+  const picks = taskStories(cards);
+  const storyList = picks.map((p, n) => `<figure class="show-story" id="story-${n + 1}">
+    <figcaption><strong>${e(cap(p.thread.title))}</strong> <span class="meta">from ${e(shownLabel(p.card))}, drawn as it happened</span></figcaption>
+    <div class="stage-scroll">${drawStory(p.one, owner, { replaySeconds: 9, ...(who === "You" ? {} : { ownerLabel: who }) })}</div>
+  </figure>`).join("");
   return publicPage({
     title: "Atelier · public showcase",
     description: "Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.",
@@ -560,14 +643,23 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
-      <h1>${headline(total, who)}</h1>
-      <p class="lead">Atelier is a Git platform for several coding agents working on one codebase at once, built on Cloudflare Workers, Durable Objects and Artifacts. Every task has exactly one owner and its own fork; checks run on a clean copy of the exact revision; protected changes are reviewed by a model from another family unless ${e(who)} records an override with its reason; and nothing reaches main until ${e(who)} accepts it. Each coloured thread below is one task. Hover over a mark for what happened.</p></div>
+      <h1>A Git platform for many coding agents</h1>
+      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its real two weeks of activity; under them, task stories drawn as threads, from claim to merge.</p>
+      <p class="subhead">${headline(total, who)}</p></div>
     ${tallyBlock(total, who)}
   </header>
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
-  ${compareBlock(stories, imported, total, owner, who)}
+  <section aria-label="The portfolio" id="cards">
+    <h2 class="section-title">The portfolio</h2>
+    <ul class="show-cards">${cardList}</ul>
+  </section>
+  ${picks.length ? `<section aria-label="Task stories" id="stories">
+    <h2 class="section-title">Task stories</h2>
+    ${storyList}
+  </section>` : ""}
+  ${compareBlock(stories, imported, total, owner, who, anchor)}
   ${body}
-  <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded, with email addresses left out.</p>
+  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message or address in them. Review notes, reports and diffs stay private in every case.</p>
 `,
   });
 }
@@ -902,7 +994,10 @@ function pulseGraph(p: Pulse): string {
   </svg>`;
 }
 
-export function renderProjects(views: ProjectView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER): string {
+// `showcase` is the public showcase setting by project name, so each card
+// carries the owner's control over what is published. The card's link stays
+// the whole card's, so the form sits under it, outside the link.
+export function renderProjects(views: ProjectView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER, showcase: Record<string, "named" | "anonymous"> = {}): string {
   const vendors = new Set<Vendor>();
   const cards = views.map(({ project, items, unavailable, events, cut }) => {
     const count = (states: string[]) => items.filter((i) => states.includes(i.state)).length;
@@ -917,7 +1012,17 @@ export function renderProjects(views: ProjectView[], ownerName: string | null = 
     const body = unavailable
       ? '<p class="meta">Temporarily unavailable. Open to retry.</p>'
       : `${tally}${pulseGraph(p)}<p class="meta">${line}</p>`;
-    return `<li class="project-card${unavailable ? " unavailable" : ""}"><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2>${body}</a></li>`;
+    const mode = showcase[project.name];
+    const form = `<form method="post" action="/projects/showcase" class="show-form">
+      <input type="hidden" name="project" value="${e(project.name)}">
+      <label>Public showcase<select name="mode">
+        <option value=""${mode ? "" : " selected"}>Not shown</option>
+        <option value="anonymous"${mode === "anonymous" ? " selected" : ""}>Anonymised</option>
+        <option value="named"${mode === "named" ? " selected" : ""}>Named</option>
+      </select></label>
+      <button class="quiet">Save</button>
+    </form>`;
+    return `<li class="project-card${unavailable ? " unavailable" : ""}"><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2>${body}</a>${form}</li>`;
   }).join("");
   return page("Projects", `<div class="page-width">
   <header><h1>Projects</h1><p class="lead">Work in motion, with a clear owner for every task. Each card counts the last ${PULSE_DAYS} days of moves, a bar per day, in the colour of the family that made them.</p></header>

@@ -66,7 +66,16 @@
 .how-status p { margin: 0; }
 @media (max-width: 720px) { .how-status > li { grid-template-columns: 1fr; gap: 8px; } }
 
-.how-group h3 { font: 700 20px/1.3 var(--font-display); color: var(--text-bright); margin: 34px 0 6px; }
+/* Each command group is a closed details element, so the reference opens on
+   demand instead of filling the page; its summary keeps the group heading's
+   place and weight. */
+.how-group { margin-top: 22px; border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--sheet); }
+.how-group > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 18px; font: 700 20px/1.3 var(--font-display); color: var(--text-bright); }
+.how-group > summary::after { content: "+"; font: 600 18px var(--font-mono); color: var(--text-muted); transition: transform .15s ease; }
+.how-group[open] > summary::after { transform: rotate(45deg); }
+.how-group > summary::-webkit-details-marker { display: none; }
+.how-group[open] > summary { border-bottom: 1px solid var(--line); }
+.how-group .how-cmds { padding: 0 18px 10px; }
 .how-cmds { display: block; margin: 0; }
 .how-cmd { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 4px 28px; padding: 12px 0; border-top: 1px solid var(--line); }
 .how-cmd dt code { background: none; padding: 0; white-space: normal; color: var(--text-bright); }

@@ -398,7 +398,7 @@ it('the showcase draws a named project that has work, and survives a cache that 
   expect(body).toContain('Drawn project');
   expect(body).toContain('>t1<');
   expect(body).toContain('The owner made 0 decisions.');
-  expect(body).toContain('until the owner accepts it');
+  expect(body).toContain('the owner decides');
  }finally{(caches.default as {put:unknown}).put=put;}
 });
 
@@ -569,10 +569,10 @@ it('the showcase sets a project known only from git beside Atelier\'s record, an
  expect(html).toContain('class="compare"');
  expect(html).toContain('Before Atelier · from git');
  expect(html).toContain('&lt;Old&gt; project');
- expect(html).toContain('href="#old"');
- expect(html).toContain('href="#built"');
+ expect(html).toContain('href="#card-2"');
+ expect(html).toContain('href="#card-1"');
  expect(html).toContain('It cannot say whether the checks passed');
- expect(html).toContain('History imported from git · no Atelier tasks yet');
+ expect(html).toContain('No agent has worked here yet.');
  expect(html).not.toContain('0 tasks taken');
  const card=(cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</a>')[0];
  expect(card('before')).toContain('&lt;Old&gt; project');
@@ -582,9 +582,11 @@ it('the showcase sets a project known only from git beside Atelier\'s record, an
  expect(card('with')).not.toContain('class="compare-lead"');
  // A planned task nobody has claimed is still a task: that project is not "before".
  const planned=buildStory('planned',[{id:'t1',title:'Later',state:'open'}] as never,[{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Planned',{redact:true,ownerLabel:'PAVI'});
- const both=renderShowcase([withs,planned,before],withs.tally,'pavi','PAVI',false,new Map([['old',h],['planned',h]]));
- expect(both.split('class="compare-card before"')[1].split('</a>')[0]).toContain('href="#old"');
- expect(both).toContain('1 task planned, none taken yet');
+  const both=renderShowcase([withs,planned,before],withs.tally,'pavi','PAVI',false,new Map([['old',h],['planned',h]]));
+  const beforeCard=both.split('class="compare-card before"')[1].split('</a>')[0];
+  expect(beforeCard).toContain('href="#card-3"');
+  expect(beforeCard).toContain('&lt;Old&gt; project');
+  expect(beforeCard).not.toContain('>Planned<');
  expect(renderShowcase([withs,planned],withs.tally,'pavi','PAVI',false,new Map([['planned',h]]))).not.toContain('class="compare"');
  // With nothing imported there is nothing to compare.
  expect(renderShowcase([withs],withs.tally,'pavi','PAVI',false,new Map())).not.toContain('class="compare"');
@@ -696,8 +698,8 @@ it('a project with history before its first task and tasks since is compared wit
  expect(withs).toContain('<b>1</b> checks run');
  expect(withs).toContain('<b>2</b> reviews, 1 sending work back');
  expect(withs).toContain('<b>1</b> decisions by PAVI');
- expect(before).toContain('href="#before-photograph"');expect(withs).toContain('href="#photograph"');
- expect(html).toContain('id="before-photograph"');expect(html).toContain('id="photograph"');
+ expect(before).toContain('href="#card-1"');expect(withs).toContain('href="#card-1"');
+ expect(html).toContain('id="card-1"');
  expect(before).toContain('It cannot say whether the checks passed');
  expect(withs).toContain('Atelier records each step as it happens');
 });
@@ -718,7 +720,7 @@ it('with no project holding both, the comparison stays across projects, and with
  const built=story('built','Built');
  const idle=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
  const cross=renderShowcase([built,idle],built.tally,'pavi','PAVI',false,new Map([['old',history()]]));
- expect(side(cross,'before')).toContain('href="#old"');expect(side(cross,'with')).toContain('href="#built"');
+ expect(side(cross,'before')).toContain('href="#card-2"');expect(side(cross,'with')).toContain('href="#card-1"');
  expect(cross).not.toContain('compare-dates');expect(cross).not.toContain('the same project');
  expect(side(cross,'before')).toContain('>Old<');
  // Two projects with both: the one with more tasks.
