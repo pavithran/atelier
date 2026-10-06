@@ -28,6 +28,8 @@ globalThis.fetch = async (url, options = {}) => {
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
   else if (method === "POST" && path.endsWith("/items/t9/defect")) data = { id: "t9", state: "merged", acceptedHead: ${JSON.stringify(HEAD)} };
   else if (method === "POST" && path.endsWith("/items/t8/defect")) { status = 409; data = { error: "not_accepted", detail: "t8 is not accepted at any revision" }; }
+  else if (method === "POST" && path.endsWith("/items/t9/finding")) data = { id: "t9", head: ${JSON.stringify(HEAD)}, index: 2, verdict: "refuted" };
+  else if (method === "POST" && path === "/api/runs") data = { actor: body.actor, role: body.role, outcome: body.outcome, project: body.project ?? null, item: body.item ?? null, detail: body.detail ?? "", runner: "owner", at: "2026-10-06T00:00:00.000Z" };
   else if (method === "POST" && path.endsWith("/served")) {
     const matched = [
       { seq: 12, itemId: "t2", kind: "item.claimed", at: "2026-10-04T16:05:00.000Z", actor: "zcode/glm-5.3", served: null },
@@ -108,4 +110,43 @@ test("t95: served lists the matches and records nothing without --apply; with it
   assert.equal(applied.status, 0, applied.stderr);
   assert.match(applied.stdout, /\nAnnotated 1 as served by deepseek-flash; 1 already were\. The records count them under zcode\/deepseek-flash\.\n$/);
   assert.equal(f.requests().find((q) => q.method === "POST").body.apply, true);
+});
+
+// t186: comparative agent data, the owner's commands.
+test("t186: finding refuses a bad verdict, head or index before any request, and records a verdict as the owner", (t) => {
+  const f = fixture(t);
+  for (const [argv, message] of [
+    [["finding", "t9", "--project", "demo", "--head", HEAD, "--index", "1"], /--verdict must be confirmed, refuted or fixed/],
+    [["finding", "t9", "--project", "demo", "--head", "abc", "--index", "1", "--verdict", "confirmed"], /--head needs the full revision/],
+    [["finding", "t9", "--project", "demo", "--head", HEAD, "--index", "0", "--verdict", "confirmed"], /--index needs the finding's position/],
+  ]) {
+    f.clear();
+    const r = f.run(argv);
+    assert.equal(r.status, 1, argv.join(" "));
+    assert.match(r.stderr, message, argv.join(" "));
+    assert.deepEqual(f.requests().filter((q) => q.path !== "/api/config"), [], argv.join(" "));
+  }
+  const ok = f.run(["finding", "t9", "--project", "demo", "--head", HEAD, "--index", "2", "--verdict", "refuted", "--note", "the code already names it"]);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, "Recorded refuted on finding 2 of t9's review at aaaaaaaa. The Models page counts it under the reviewer.\n");
+  assert.deepEqual(f.requests().find((q) => q.method === "POST"), { method: "POST", path: "/api/projects/demo/items/t9/finding", body: { head: HEAD, index: 2, verdict: "refuted", note: "the code already names it" }, actor: "owner" });
+});
+
+test("t186: run-report refuses a bad actor, role or outcome before any request, and records one as the owner", (t) => {
+  const f = fixture(t);
+  for (const [argv, message] of [
+    [["run-report", "--role", "build", "--outcome", "early_stop"], /usage: atelier run-report --actor H\/M/],
+    [["run-report", "--actor", "opencode/glm-5.3", "--role", "plan", "--outcome", "early_stop"], /--role must be build or review/],
+    [["run-report", "--actor", "opencode/glm-5.3", "--outcome", "crashed"], /--outcome must be one of stalled, timed-out, refused, early_stop, permission_stop, duplicate_design, incomplete_merge/],
+  ]) {
+    f.clear();
+    const r = f.run(argv);
+    assert.equal(r.status, 1, argv.join(" "));
+    assert.match(r.stderr, message, argv.join(" "));
+    assert.deepEqual(f.requests().filter((q) => q.path !== "/api/config"), [], argv.join(" "));
+  }
+  const ok = f.run(["run-report", "--actor", "opencode/glm-5.3", "--role", "build", "--outcome", "early_stop", "--project", "atelier", "--item", "t114", "--detail", "stopped after a refused read"]);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, "Recorded a build run (early_stop) by opencode/glm-5.3 on atelier/t114.\n");
+  assert.deepEqual(f.requests().find((q) => q.method === "POST"), { method: "POST", path: "/api/runs", body: { actor: "opencode/glm-5.3", role: "build", outcome: "early_stop", project: "atelier", item: "t114", detail: "stopped after a refused read" }, actor: "owner" });
 });

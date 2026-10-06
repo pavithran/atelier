@@ -1,0 +1,79 @@
+#!/bin/sh
+# t186: print the atelier commands that record the 2026-10-06 adjudications
+# from docs/data/adjudications-2026-10-06.json, and, with --apply, run the
+# run-report half. Each finding command leaves --head and --index to fill in
+# from the review, because the adjudication names a finding's text and verdict
+# but not the revision the review was made at or the finding's position in it.
+set -eu
+
+here="$(cd "$(dirname "$0")/.." && pwd)"
+data="$here/docs/data/adjudications-2026-10-06.json"
+atelier="${ATELIER:-atelier}"
+
+usage() {
+  cat <<'EOF'
+Usage: bin/seed-2026-10-06 [--apply]
+
+Prints the atelier finding and run-report commands that record the 2026-10-06
+adjudications in docs/data/adjudications-2026-10-06.json. Without --apply
+nothing is recorded. Each finding command leaves --head SHA and --index N to
+fill in from the review, since the adjudication records the finding's text and
+verdict but not where it sits.
+
+  --apply    record the run-report half; finding commands are still printed
+  --dry-run  print only (the default)
+  -h, --help print this
+
+ATELIER names the atelier command to run; atelier on PATH by default.
+EOF
+}
+
+[ -f "$data" ] || { printf 'bin/seed-2026-10-06: missing %s; copy .scratch/adjudications-2026-10-06.json there first\n' "$data" >&2; exit 1; }
+
+apply=0
+for arg in "$@"; do
+  case "$arg" in
+    --apply) apply=1 ;;
+    --dry-run) apply=0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'unknown argument: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+# Node reads the JSON and prints the commands, one per line. Lines that start
+# with RUN: are the complete run-report commands, which --apply runs; every
+# other line is a finding command with --head SHA and --index N left to fill in.
+out=$(node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const d = JSON.parse(readFileSync(process.argv[1], "utf8"));
+const parts = (s) => {
+  const i = s.indexOf("/");
+  if (i >= 0) return { project: s.slice(0, i), item: s.slice(i + 1) };
+  if (/^t[0-9]{1,9}$/.test(s)) return { project: "atelier", item: s };
+  return { project: s, item: null };
+};
+const q = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+for (const f of d.findings ?? []) {
+  const { project, item } = parts(f.item);
+  const note = f.why ?? f.finding ?? "";
+  console.log(`atelier finding ${item} --head SHA --index N --verdict ${f.verdict}${note ? ` --note ${q(note)}` : ""} --project ${project}`);
+}
+for (const h of d.harnessFailures ?? []) {
+  const { project, item } = parts(h.item);
+  const cmd = `atelier run-report --actor ${h.actor} --outcome ${h.kind} --project ${project}${item ? ` --item ${item}` : ""}${h.detail ? ` --detail ${q(h.detail)}` : ""}`;
+  console.log(`RUN:${cmd}`);
+}
+' "$data")
+
+if [ "$apply" -eq 0 ]; then
+  printf 'Dry run: printing the commands; nothing is recorded.\n'
+fi
+printf '%s\n' "$out" | sed 's/^RUN://'
+if [ "$apply" -eq 1 ]; then
+  printf '\nRecording the run-report half.\n'
+  printf '%s\n' "$out" | sed -n 's/^RUN://p' | while IFS= read -r cmd; do
+    printf '\n$ %s\n' "$cmd"
+    (cd "$here" && eval "$cmd") || { printf 'bin/seed-2026-10-06: that command failed; nothing after it ran.\n' >&2; exit 1; }
+  done
+  printf '\nDone: the run reports are recorded. Fill in --head and --index on each finding command above, then run it.\n'
+fi

@@ -1212,31 +1212,55 @@ merged item went through, every rejection with the note that gave its
 cause, and every defect the owner traced to its accepted work. Its verdicts
 are its own reviews: an approval of a revision a defect was later traced to
 is contradicted, and so is a review run that never reached a verdict. Its
-runs are those that stalled, timed out or were refused, as the runners
-reported them. The owner's approvals of its work are counted apart and are
-never a model's verdict: those made on the task page, which only the
-signed-in owner reaches, apart from those recorded through the API with the
-owner token, as the orchestrator records them. An approval recorded before
-Atelier kept the two apart is counted as unrecorded.
+runs are those that failed, as the runners and the owner reported them. The
+owner's approvals of its work are counted apart and are never a model's
+verdict: those made on the task page, which only the signed-in owner
+reaches, apart from those recorded through the API with the owner token, as
+the orchestrator records them. An approval recorded before Atelier kept the
+two apart is counted as unrecorded.
+
+The record also holds the measures a comparison of models needs. The owner
+adjudicates each finding of a review and records a verdict on it, which
+counts the reviewer's precision: a finding confirmed or marked fixed is
+kept, a refuted one was wrong, and the record shows how many of each a
+reviewer has. Each task's wall-clock time is read from its events: claim to
+first push, to submission, to the first verdict, to the merge, and the
+rework turnaround from a rejection to the next submission, shown per model
+as medians. Builder honesty counts a reported check an observed check
+contradicted at the same head, and a submission whose changed paths ran
+outside the task's scope. Integration cost counts the pushes that folded a
+moved main into the task's fork. The Models page and the JSON route show
+these measures by model and by the kind of work each item asked for, from
+its plan part when there is one, else unknown.
 
 ```text
 atelier defect t12 --note "pagination drops the last page" --found-in t19
+atelier finding t12 --head SHA --index 1 --verdict confirmed --note "fixed in t19"
+atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --item t12 --project atelier
 ```
 
 `atelier defect` traces a defect to the revision an item was accepted at;
-the item itself does not change. A runner reports a run through
-`POST /api/runs` with the owner token and its name in `X-Atelier-Runner`,
-as it reports usage: the agent it ran, the role (`build` or `review`), the
-outcome (`stalled`, `timed-out` or `refused`), the project and task when
-there is one, and a detail. `atelier runner` sends one when a harness passes
-its time limit, exits cleanly without a new commit, or exits with an error.
+the item itself does not change. `atelier finding` records a verdict on one
+finding of a review, at the head the review was made at and the finding's
+position in its findings, one based. A run ends without a result the ledger
+saw when it stalls, times out or is refused, or when the harness stops
+early, stops at a permission, designs something a task already had, or
+leaves a merge incomplete. The runner reports a run through `POST /api/runs`
+with the owner token and its name in `X-Atelier-Runner`, as it reports
+usage: the agent it ran, the role (`build` or `review`), the outcome, the
+project and task when there is one, and a detail. `atelier run-report` lets
+the owner record a run by hand for a run outside the runner. `bin/seed-2026-10-06`
+prints the `atelier finding` and `atelier run-report` commands that record
+the 2026-10-06 adjudications in `docs/data/adjudications-2026-10-06.json`;
+it records the run reports only with `--apply`, since a finding's head and
+position are read from its review, not from the file.
 
 Routing reads the record only to order candidates of equal score: the share
 of outcomes in a model's favour (work approved at first review, merges)
 against those that are not (rejections, defects, contradicted approvals,
-runs stalled, timed out or refused), with one of each added so a model
-with no record sits at one half. The project's own track record and the
-registry's evidence still decide the score.
+and every run that failed), with one of each added so a model with no
+record sits at one half. The project's own track record and the registry's
+evidence still decide the score.
 
 A harness can serve another model than the one its events name: zcode
 follows its app's provider settings, and served deepseek-flash while its
