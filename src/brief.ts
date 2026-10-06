@@ -3,7 +3,7 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { DEFAULT_OWNER, evidenceAt, countingReviews, modelOf, stateLabel } from "./rules.ts";
+import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, modelOf, stateLabel } from "./rules.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
@@ -100,7 +100,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
   if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Project owner acceptance is required.` });
-  if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: "It touches a protected path and no different model or the project owner has approved this revision." });
+  if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: "It touches a protected path and no model of another family than every contributor has approved this revision." });
+  const overridden = overrideOf(detail);
+  if (overridden) lines.push({ rank: -1, text: `The project owner overrode the independent review at this revision: ${clip(overridden.reason, 200).replace(/[.\s]*$/, "")}.` });
   if (view.reports.length) lines.push({ rank: 3, text: `${plural(view.reports.length, "report")} recorded, not verified.` });
   while (lines.length > 5) {
     let drop = 0;
@@ -140,6 +142,13 @@ interface Picture {
   unmeasured: boolean;
 }
 
+// The owner's override that stands in for the independent review at this
+// revision, read as accept() reads an accepted item: as if still submitted.
+function overrideOf(d: Detail) {
+  if (d.item.state === "accepted") return gateOf({ ...d.item, state: "submitted" }, d.policy, d.evidence, d.reviews, d.ownerActor ?? DEFAULT_OWNER).overridden ?? null;
+  return d.gate.overridden ?? null;
+}
+
 // accept when the gate is ready; merge when accepted; send back when a review
 // at this head rejects or a required check failed; review when only an
 // independent approval of a protected change is missing; wait while checks are
@@ -149,7 +158,9 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   const { item, gate } = d;
   const state = item.state === "claimed" ? "in progress" : stateLabel[item.state].toLowerCase();
   if (item.state === "accepted") {
-    return { verdict: "merge", reason: "Approval is recorded for this revision, and the merge runs in your local checkout." };
+    return overrideOf(d)
+      ? { verdict: "merge", reason: "You accepted this revision with the independent review overridden, and the merge runs in your local checkout." }
+      : { verdict: "merge", reason: "Approval is recorded for this revision, and the merge runs in your local checkout." };
   }
   if (item.state === "merged" || item.state === "abandoned") {
     // A merged task's own event carries the merge commit, when the record has it.
@@ -165,7 +176,8 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     };
   }
   // The order is the page's: a failed check comes first, then a missing
-  // independent approval, which the owner can give or refuse, then a rejection.
+  // independent approval, which a qualifying reviewer gives or the owner
+  // overrides, then a rejection.
   const asked = p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`);
   const failedChecks = p.failed.map((c) => `\`${c.claim}\` failed at this revision`);
   if (failedChecks.length) return { verdict: "send back", reason: `${upper([...asked, ...failedChecks].join(" and "))}.` };
@@ -176,7 +188,9 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     ];
     return {
       verdict: "review",
-      reason: `${gate.requirement ?? "This revision touches a protected path and needs an approval from a different model or the project owner"}${also.length ? `; ${also.join("; ")}` : ""}.`,
+      // The override is offered only when the missing review is all that
+      // blocks, since it waives that and nothing else.
+      reason: `${gate.requirement ?? "This revision touches a protected path and needs an approval from a model of another family than every contributor"}${also.length ? `; ${also.join("; ")}` : ""}.${gate.blockers.length === 1 ? " Your own approval is not that review; if no reviewer qualifies, accept with an override and its reason." : ""}`,
     };
   }
   if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };

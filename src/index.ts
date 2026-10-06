@@ -671,7 +671,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "accept":
       requireOwner(env, actor);
       await verifyRevision(env, ref.key, id, String(body.head ?? ""));
-      return json(await L.accept(id, actor, String(body.head ?? "")));
+      // overrideReview, when sent, is the reason for the owner's override of
+      // a missing independent review. Anything but text arrives as a blank
+      // reason, which the Ledger refuses.
+      return json(await L.accept(id, actor, String(body.head ?? ""),
+        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : ""));
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
@@ -879,11 +883,14 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
-    if (["accept", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
     const oldToken = await L.tokenId(id);
     if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
     else if (verb === "undispatch") await L.undispatch(id, owner);
     else if (verb === "accept") await L.accept(id, owner, expected);
+    // The page's override form: accept with the owner's override of a missing
+    // independent review, its reason in the note.
+    else if (verb === "override") await L.accept(id, owner, expected, note);
     else if (verb === "abandon") await L.abandon(id, owner, note);
     else if (verb === "release") await L.release(id, owner, note);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note);

@@ -339,6 +339,16 @@ function listArg(flag, cmd) {
   return values.map((v) => v.trim());
 }
 
+// --override-review takes the reason the override records. A bare flag or a
+// blank reason is refused here, before any request; the server refuses the
+// same (overrideReason in src/rules.ts).
+function overrideArg(form) {
+  const reason = args["override-review"];
+  if (reason === undefined) return undefined;
+  if (typeof reason !== "string" || !reason.trim()) die(`--override-review needs a reason: atelier ${form} --override-review "why no independent review is possible"`);
+  return reason.trim();
+}
+
 function itemArg(i = 1) {
   const id = args._[i] ?? wsConfig("item");
   if (!id) die("which item? pass its id (t3) or run inside its workspace");
@@ -569,6 +579,8 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
   const template = readJson(join(cwd, "docs", "control-plane", "landing-receipt.v1.json")) ?? {};
   const date = new Date().toISOString().slice(0, 10);
   const file = join(dir, `${date}-atelier-${id}-${short(item.acceptedHead)}.json`);
+  // The owner's override of the independent review, when one stands at the accepted head.
+  const override = item.reviewOverride?.head === item.acceptedHead ? item.reviewOverride : null;
   const receipt = {
     schema_version: 1,
     kind: "control-plane.landing-receipt",
@@ -583,7 +595,8 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
       evidence: [
         `Atelier item ${id}, "${item.title}", worked by ${owners.join(" then ") || "nobody recorded"}, accepted by ${OWNER_NAME} at ${item.acceptedHead} and merged with --no-ff.`,
         policy.approval ? `The Atelier baseline copy in Artifacts was approved as: ${policy.approval.replace(/[.\s]*$/, "")}.` : null,
-        reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : "No review was required at the accepted head.",
+        reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : override ? null : "No review was required at the accepted head.",
+        override ? `${OWNER_NAME} overrode the independent review at the accepted head: ${override.reason.replace(/[.\s]*$/, "")}.` : null,
         `Provenance is on refs/notes/atelier for the merge commit${notesRemote ? `, and that ref alone is pushed to ${notesRemote}` : ""}.`,
       ].filter(Boolean).join(" "),
     },
@@ -1472,11 +1485,14 @@ const commands = {
     console.log(`${id} released; your write token is revoked.`);
   },
 
+  // --override-review "reason" accepts with the owner's override of a
+  // missing independent review; the server records it and refuses it where
+  // nothing is missing.
   async accept() {
-    const name = project(), id = itemArg();
+    const name = project(), id = itemArg(), reason = overrideArg("accept ID");
     const d = await call("GET", I(name,id), undefined, OWNER);
-    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head}, OWNER);
-    console.log(`${id} accepted at ${short(item.acceptedHead)}. Merge it with: atelier merge ${id}`);
+    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {})}, OWNER);
+    console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
   },
 
   async abandon() {
@@ -1557,6 +1573,8 @@ const commands = {
   },
 
   async merge() {
+    // An override is recorded only while accepting, which needs the revision.
+    if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
     const name = project(), id = itemArg();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
     // Ends an interrupted merge's landing lease, so the task's owner can push
@@ -1583,12 +1601,13 @@ const commands = {
     }
     const refreshed = await refreshControlPlane(cwd, name);
     if (args.head !== undefined) {
-      if (!/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT]] | atelier merge ID --cancel [--discard-local]");
+      if (!/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT] [--override-review REASON]] | atelier merge ID --cancel [--discard-local]");
+      const reason=overrideArg("merge ID --head FULL_REVISION");
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
         if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:args.note??""},OWNER);
-        await call("POST",`${I(name,id)}/accept`,{head:args.head},OWNER);
+        await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
       }
     }
     const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd});
@@ -1676,7 +1695,7 @@ const commands = {
       // A refusal ends the command here with the server's reason; the local
       // merge commit is kept for reconciliation.
       await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
-      const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
+      const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...(item.reviewOverride?.head===item.acceptedHead?[`REVIEW OVERRIDDEN — ${item.reviewOverride.by}: ${item.reviewOverride.reason}`]:[]),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git([...auth(base.token),'ls-remote',base.remote,'refs/notes/atelier'],{cwd});
       if(remoteNotes){

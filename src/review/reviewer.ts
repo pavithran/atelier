@@ -8,11 +8,11 @@
 // uses for the same rules, and when no model qualifies the result says why,
 // naming each model passed over.
 //
-// The gate in src/rules.ts asks only for a different model when a project has
-// no execution policy (no ControlPlane policy files). Automatic review still
-// asks for another family, as the orchestrator design does, and the reasons
-// say so: a model of the builder's family is likely to share the builder's
-// blind spots, so a different model alone is a weaker second opinion.
+// The family rule is the one gate() in src/rules.ts applies to a protected
+// change in every project, and automatic review applies it to every part
+// whatever its class: a model of the builder's family is likely to share the
+// builder's blind spots, so a different model alone is a weaker second
+// opinion.
 
 import type { ModelEntry } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
@@ -115,10 +115,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   else {
     const family = familyRefusal(actor, contributors);
     if (family) failed.push(family);
-    else {
-      passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
-      if (!policy.execution) passed.push("Without an execution policy the gate needs only a different model; automatic review asks for another family, as the orchestrator design does");
-    }
+    else passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
   }
 
   const avoided = input.avoid?.find((a) => names.includes(a.actor.toLowerCase()));

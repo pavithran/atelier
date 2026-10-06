@@ -4,8 +4,8 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors,
-  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, sameActor, validActor,
-  type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
+  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
@@ -174,6 +174,7 @@ export class Ledger extends DurableObject<Env> {
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
+    if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
   }
 
   // ── index instance ───────────────────────────────────────────────────────
@@ -646,15 +647,31 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  accept(id: string, actor: string, expected?: string): Item {
+  // The owner accepts the item at its head, through the gate. With a reason
+  // (overrideReason), the owner also overrides the independent review the
+  // gate is missing, for when no reviewer qualifies: the override is checked
+  // and the gate read with it in place before anything is written, then it
+  // is stored on the item for this head and logged as review.overridden, an
+  // event of its own, ahead of item.accepted. It waives that review and
+  // nothing else: a failing or pending check, a rejection or a disallowed
+  // class still refuses the acceptance, and so nothing is recorded.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
     const policy = this.project().policy;
-    const g = gate(item.state === "accepted" ? { ...item, state: "submitted" } : item, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
+    const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
+    const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
+    const override = overrideReason === undefined ? null
+      : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, new Date().toISOString());
+    const g = gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
+    if (override) {
+      this.update(id, { review_override: JSON.stringify(override.override) });
+      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors });
+    }
     this.update(id, { state: "accepted", accepted_head: item.head });
-    this.log(id, actor, "item.accepted", { head: item.head, protected: [...policy.protected] });
+    this.log(id, actor, "item.accepted", { head: item.head, protected: [...policy.protected], ...(override ? { reviewOverridden: true } : {}) });
     return this.item(id);
   }
 
@@ -805,5 +822,7 @@ function toItem(r: Row): Item {
     lastPushAt: (r.last_push_at as string | null) ?? null,
     dispatch: r.dispatch ? (JSON.parse(r.dispatch as string) as Dispatch) : null,
     runner: (r.runner as string | null) ?? null,
+    // Only an item the owner has overridden carries the field.
+    ...(r.review_override ? { reviewOverride: JSON.parse(r.review_override as string) as ReviewOverride } : {}),
   };
 }

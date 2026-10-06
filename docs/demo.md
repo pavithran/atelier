@@ -134,12 +134,14 @@ machine, point at the row that says it does not count here.
 
 ### 5:00–6:30 · Review and decision
 
-Item C changes `src/rules.ts`, a protected file. In a session of a different
-model than C's owner, say "Review C". It runs `atelier diff` and
+Item C changes `src/rules.ts`, a protected file. In a session of a model of
+another family than C's owner, say "Review C". It runs `atelier diff` and
 `atelier review … --approve`.
 
-> Changes to protected files need approval from a different model than the
-> one that wrote them, or from me. An agent cannot approve its own work.
+> Changes to protected files need approval from a model of another family
+> than the one that wrote them. An agent cannot approve its own work, and my
+> approval doesn't count either: I accept. If no such reviewer exists, I can
+> override the review, and the reason goes on the record.
 
 On Decisions, select item A. Show the diff, the evidence, and "Approve
 revision" or "Accept revision".

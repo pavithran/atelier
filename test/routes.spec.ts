@@ -516,6 +516,53 @@ it("the evidence route measures against main's head, so a crafted merge cannot h
   expect(await accept.json()).toMatchObject({ error: "not_ready" });
 });
 
+// PAVI's decision, 2026-10-06, through the Worker: the owner's approval is
+// not the independent review, and only the owner, with the owner token and a
+// reason, can override a missing one while accepting.
+it("decision 2026-10-06: the accept route takes an override only from the owner, with a reason", async () => {
+  const name = "override-route", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name, ["AGENTS.md"]);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Rewrite the agent instructions", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.submit("t1", A);
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
+  const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
+    worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS } as typeof env);
+  const owner = as(TOKEN, "owner");
+  const reason = "No model of another family is available";
+
+  expect((await owner("POST", "/items/t1/review", { head: H1, approve: true, note: "looks right" })).status).toBe(200);
+  const plain = await owner("POST", "/items/t1/accept", { head: H1 });
+  expect(plain.status).toBe(409);
+  expect(await plain.json()).toMatchObject({ error: "not_ready" });
+  // An agent token cannot reach the route; the owner token cannot accept as another actor.
+  const agentToken = (await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6-astra", projects: [name] })).json() as { token: string }).token;
+  const byAgent = await as(agentToken, null)("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect([byAgent.status, (await byAgent.json() as { error: string }).error]).toEqual([403, "owner_token_required"]);
+  const asOther = await as(TOKEN, "codex/gpt-6-astra")("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect([asOther.status, (await asOther.json() as { error: string }).error]).toEqual([403, "not_project_owner"]);
+  // A reason that is blank or not text is refused.
+  for (const overrideReview of ["", "  ", true, 5, null]) {
+    const res = await owner("POST", "/items/t1/accept", { head: H1, overrideReview });
+    expect([overrideReview, res.status, (await res.json() as { error: string }).error]).toEqual([overrideReview, 400, "override_reason"]);
+  }
+  expect((await L.item("t1")).state).toBe("submitted");
+  const accepted = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect(accepted.status, await accepted.clone().text()).toBe(200);
+  expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1, reviewOverride: { head: H1, by: "owner", reason } });
+  const detail = await (await owner("GET", "/items/t1")).json() as { events: { kind: string; data: Record<string, unknown> }[]; reviews: unknown[] };
+  expect(detail.events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, reason });
+  expect(detail.reviews).toHaveLength(1);
+});
+
 it("the standing route is readable by any signed-in actor, and by no one else", async () => {
   const name = "standing-route", agent = "codex/gpt-6-astra", head = "a".repeat(40);
   await project(name);
