@@ -547,6 +547,15 @@ is reported as failed, never as pushed.
 
 ## Projects too large for Artifacts
 
+Artifacts can refuse a long history as one push, for its size or the time it
+takes. `atelier init` then pushes the branch's first-parent history in steps of
+about 700 commits, oldest first, and prints a line for each step. If a step
+fails, init says which commit the baseline holds, and running the same
+`atelier init` again carries on from there: what is left is pushed whole, and
+if that is refused too, the steps begin after the commit the baseline holds.
+The baseline's branch holds only part of the history until the last step has
+pushed.
+
 Artifacts holds at most 1 GB per repository and 32 MB per file. A project
 whose history is larger can join with its recent history only:
 
