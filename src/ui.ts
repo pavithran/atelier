@@ -19,7 +19,7 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
-import { reliabilityLine, roundsPerMerge, type Cause, type ModelReliability, type Reliability } from "./models/reliability.ts";
+import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -647,6 +647,41 @@ function causeList(title: string, causes: Cause[]): string {
   return `<h4>${e(title)} · ${causes.length}</h4><ul class="usage-notes">${rows}${more}</ul>`;
 }
 
+// A duration's median in a compact form, or an em dash when none was timed.
+function fmtSecs(seconds: number | null): string {
+  if (seconds === null) return '<span class="meta">—</span>';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+// A model's median timings, named in the order a task passes them: claim to
+// push, to submission, to the first verdict, to the merge, then rework.
+function timingsCell(t: { claimToPush: number | null; claimToSubmit: number | null; claimToVerdict: number | null; claimToMerge: number | null; rework: number | null }): string {
+  const parts = [
+    t.claimToPush !== null ? `push ${fmtSecs(t.claimToPush)}` : "",
+    t.claimToSubmit !== null ? `submit ${fmtSecs(t.claimToSubmit)}` : "",
+    t.claimToVerdict !== null ? `verdict ${fmtSecs(t.claimToVerdict)}` : "",
+    t.claimToMerge !== null ? `merge ${fmtSecs(t.claimToMerge)}` : "",
+    t.rework !== null ? `rework ${fmtSecs(t.rework)}` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : '<span class="meta">none timed</span>';
+}
+
+// The owner's verdicts on a reviewer's findings: how many were kept (confirmed
+// or fixed) of those adjudicated, how many refuted, and the share kept.
+function findingsCell(confirmed: number, refuted: number): string {
+  const total = confirmed + refuted;
+  if (!total) return '<span class="meta">none adjudicated</span>';
+  return `${confirmed} of ${total} kept<span class="meta">${refuted} refuted · ${Math.round((confirmed / total) * 100)}%</span>`;
+}
+
+// The non-zero run outcomes a model had, named and counted.
+function runBreakdown(runs: ModelReliability["runs"]): string {
+  const parts = RUN_OUTCOMES.filter((o) => runs[o] > 0).map((o) => `${runs[o]} ${o.replace(/_/g, " ")}`);
+  return parts.length ? parts.join(" · ") : '<span class="meta">none</span>';
+}
+
 function reliabilityRow(r: ModelReliability, who: string): string {
   const rounds = roundsPerMerge(r);
   const merges = !r.merged ? '<span class="meta">none merged</span>'
@@ -657,6 +692,8 @@ function reliabilityRow(r: ModelReliability, who: string): string {
     causeList("Rejections of its work", r.rejections),
     causeList("Defects traced to its work", r.defects),
     causeList("Its approvals a defect contradicted", r.contradicted),
+    causeList("Findings adjudicated", r.findingVerdicts),
+    causeList("Main folded into its forks", r.integrations),
     causeList("Runs reported", r.runCauses),
   ].join("");
   return `<tr><th scope="row"><code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")} · ${e(plural(r.projects.length, "project"))}</span></th>
@@ -664,22 +701,45 @@ function reliabilityRow(r: ModelReliability, who: string): string {
   <td class="num">${merges}</td>
   <td class="num">${r.rejections.length}<span class="meta">${e(plural(r.defects.length, "defect"))} traced to its work</span></td>
   <td class="num">${r.contradicted.length} of ${e(plural(r.approvals, "approval"))}<span class="meta">${e(plural(r.unfinishedReviews, "review"))} without a verdict</span></td>
-  <td class="num">${r.runs.stalled} stalled · ${r.runs["timed-out"]} timed out · ${r.runs.refused} refused</td>
+  <td class="num">${findingsCell(r.findingsConfirmed, r.findingsRefuted)}</td>
+  <td class="num">${timingsCell(r.timings)}</td>
+  <td class="num">${runTotal(r)}<span class="meta">${runBreakdown(r.runs)}</span></td>
   <td class="num">${owner.page} by ${e(who)} on the page<span class="meta">${owner.api} through the API · ${owner.unrecorded} unrecorded</span></td>
-</tr>${causes ? `<tr class="causes"><td colspan="7"><details><summary>Causes for ${e(r.model)}</summary>${causes}</details></td></tr>` : ""}`;
+</tr>${causes ? `<tr class="causes"><td colspan="9"><details><summary>Causes for ${e(r.model)}</summary>${causes}</details></td></tr>` : ""}`;
+}
+
+// The comparison by model and kind of work: one row per kind a model acted on,
+// with the same measures the reliability table holds, split by kind.
+function comparisonTable(rows: ModelReliability[]): string {
+  const cells = rows.flatMap((r) => r.kinds.map((k) => ({ r, k })));
+  if (!cells.length) return "";
+  const row = ({ r, k }: { r: ModelReliability; k: KindMeasures }) => `<tr><th scope="row"><code>${e(r.model)}</code><span class="meta">${e(k.kind)} · ${e(plural(k.items, "item"))}</span></th>
+  <td class="num">${findingsCell(k.findingsConfirmed, k.findingsRefuted)}</td>
+  <td class="num">${k.contradicted} of ${e(plural(k.approvals, "approval"))}</td>
+  <td class="num">${timingsCell(k.timings)}</td>
+  <td class="num">${k.checkMismatches}<span class="meta">${e(plural(k.outOfScope, "out of scope"))}</span></td>
+  <td class="num">${Object.values(k.runs).reduce((a, b) => a + b, 0)}<span class="meta">${runBreakdown(k.runs)}</span></td>
+  <td class="num">${k.integrations}</td>
+  </tr>`;
+  return `<h3 class="section-title">By kind of work</h3>
+  <p class="meta">The same measures per model, split by the kind of work each item asked for (from its plan part, or unknown), so a model that is strong at one kind and weak at another shows the difference.</p>
+  <table class="usage-table">
+    <thead><tr><th scope="col">Model and kind</th><th scope="col">Findings</th><th scope="col">Approvals contradicted</th><th scope="col">Median timings</th><th scope="col">Honesty</th><th scope="col">Runs</th><th scope="col">Main folded in</th></tr></thead>
+    <tbody>${cells.map(row).join("")}</tbody>
+  </table>`;
 }
 
 export function reliabilitySection(models: Reliability, ownerName: string | null, window: { events: number; unread: string[] }): string {
   const who = ownerName || "the owner";
   const rows = [...models.values()];
-  const lead = `Each model's record across the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
+  const lead = `Each model's record across the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. A finding the owner adjudicated measures the reviewer's precision: kept means confirmed or marked fixed, refuted means the code already did what it asked. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
   return `<section class="reliability" aria-label="Reliability by model">
   <h2 class="section-title">Reliability by model · ${rows.length}</h2>
   <p class="meta">${lead}</p>
   ${rows.length ? `<table class="usage-table">
-    <thead><tr><th scope="col">Model</th><th scope="col">Approved at first review</th><th scope="col">Review rounds to merge</th><th scope="col">Rejections</th><th scope="col">Approvals contradicted</th><th scope="col">Runs stalled, timed out, refused</th><th scope="col">Owner approvals of its work</th></tr></thead>
+    <thead><tr><th scope="col">Model</th><th scope="col">Approved at first review</th><th scope="col">Review rounds to merge</th><th scope="col">Rejections</th><th scope="col">Approvals contradicted</th><th scope="col">Findings</th><th scope="col">Median timings</th><th scope="col">Runs</th><th scope="col">Owner approvals of its work</th></tr></thead>
     <tbody>${rows.map((r) => reliabilityRow(r, who)).join("")}</tbody>
-  </table>` : '<p class="empty">No model has acted yet.</p>'}
+  </table>${comparisonTable(rows)}` : '<p class="empty">No model has acted yet.</p>'}
 </section>`;
 }
 
