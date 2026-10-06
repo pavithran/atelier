@@ -1,0 +1,33 @@
+atelier atelier/t132 "Security, low (gpt-6-astra, confirmed by opus-5.5): Git credentials are passed as process arguments (git -c http.extraHeader=Authorization: Bearer …, cli/atelier.mjs:98 and 273) and are visible in ps to other local users; pass the header through git's environment configuration (GIT_CONFIG_COUNT/KEY/VALUE) instead"
+accepted head 5b733b557d0d17a730bebc510c885e75a88b2d33
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T03:34:39.400Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T03:34:41.682Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T03:45:00.904Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T03:45:03.023Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE The changes successfully mitigate the token exposure in process arguments by leveraging `GIT_CONFIG_COUNT` environment variables (which are invisible to other unprivileged users via `ps`), safely store the token in a 0600-permissioned `.git/atelier-credentials` file, properly handle header injections with a newline check, and clean up the old `.git/config` headers. The test additions are thorough and correctly assert the old failures and new behaviors. **Follow-up Notes (Non-blocking):** * **`cli/atelier.mjs` (`storeWorkspaceToken`)**: Using `joi
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T01:59:46.352Z pavi item.created
+2026-10-06T02:00:38.475Z claude-code/opus-5.5 item.claimed
+2026-10-06T02:00:40.952Z claude-code/opus-5.5 fork.created
+2026-10-06T02:24:05.964Z claude-code/opus-5.5 push.observed
+2026-10-06T02:25:35.326Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:25:37.618Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:25:42.181Z claude-code/opus-5.5 item.submitted
+2026-10-06T02:52:40.280Z claude-code/opus-5.5 push.observed
+2026-10-06T02:54:01.810Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:54:04.147Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:54:04.816Z claude-code/opus-5.5 item.submitted
+2026-10-06T03:19:28.335Z claude-code/opus-5.5 push.observed
+2026-10-06T03:20:47.868Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:20:50.060Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:20:50.653Z claude-code/opus-5.5 item.submitted
+2026-10-06T03:33:20.081Z claude-code/opus-5.5 push.observed
+2026-10-06T03:34:39.654Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:34:41.825Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:34:42.394Z claude-code/opus-5.5 item.submitted
+2026-10-06T03:45:01.062Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:45:03.149Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:45:03.720Z claude-code/opus-5.5 item.submitted
+2026-10-06T04:05:26.585Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T04:05:27.342Z pavi review.approved
+2026-10-06T04:05:27.836Z pavi item.accepted
