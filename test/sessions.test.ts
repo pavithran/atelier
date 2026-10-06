@@ -104,7 +104,7 @@ test("wrap refuses an unfinished checkout and says which kind", () => {
   assert.equal(wrapRefusal({ ...ready, branch: "" }), "wrap refuses a detached HEAD");
   assert.equal(wrapRefusal({ ...ready, branch: "side" }), "check out main before wrap");
   for (const [marker, kind] of Object.entries(WRAP_MARKERS)) assert.equal(wrapRefusal({ ...ready, inProgress: [marker] }), `wrap refuses with ${kind} in progress; finish or abort it first`);
-  assert.deepEqual(Object.keys(WRAP_MARKERS).sort(), ["CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD", "atelier-landing.json", "rebase-apply", "rebase-merge", "sequencer"]);
+  assert.deepEqual(Object.keys(WRAP_MARKERS).sort(), ["CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD", "landing", "rebase-apply", "rebase-merge", "sequencer"]);
   assert.equal(wrapRefusal({ ...ready, inProgress: ["rebase-merge", "rebase-apply"] }), "wrap refuses with a rebase in progress; finish or abort it first");
   assert.equal(wrapRefusal({ ...ready, inProgress: ["MERGE_HEAD", "REVERT_HEAD"] }), "wrap refuses with a merge and a revert in progress; finish or abort them first");
   assert.match(wrapRefusal({ ...ready, unmerged: ["a.txt"] })!, /^wrap refuses with unmerged files: a\.txt; resolve each and git add it, or abort the operation, so no conflict marker is committed$/);

@@ -2,10 +2,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync,spawn} from 'node:child_process';
 import {createServer} from 'node:http';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync,existsSync,readFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,existsSync,readFileSync,readdirSync,symlinkSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
-import {landingJournal,landingLock} from '../cli/landing.mjs';
+import {landingDir,landingJournal,landingJournalFile,landingLock} from '../cli/landing.mjs';
 const git=(cwd,...args)=>execFileSync('git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 
 function root(t){const p=mkdtempSync(join(tmpdir(),'atelier-land-'));t.after(()=>rmSync(p,{recursive:true,force:true}));return p;}
@@ -14,6 +14,39 @@ test('landing journals survive restarts and refuse another revision or live lock
  const journal=landingJournal(p,identity);journal.save({phase:'prepared',start:'base'});
  assert.equal(landingJournal(p,identity).state.phase,'prepared');assert.throws(()=>landingJournal(p,{...identity,head:'b'}),/pending landing/);
  const release=landingLock(p);assert.throws(()=>landingLock(p),/still running/);release();journal.clear();assert.equal(landingJournal(p,identity).state,null);
+});
+
+// The owner's checkout is in iCloud Drive, which renames a file it finds in
+// conflict to a copy ("pid 2") and brings back one already removed. A lock or
+// journal in its Git directory could then lose its owner record or its state,
+// so neither is kept there: both live under the cache, keyed by the Git
+// directory's real path.
+test('the landing lock and journal live under the cache, keyed by the Git directory, never in it',t=>{
+ const p=root(t),cache=join(p,'cache'),checkout=join(p,'checkout'),gitDir=join(checkout,'.git');mkdirSync(gitDir,{recursive:true});
+ const dir=landingDir(cache,gitDir);
+ assert.ok(dir.startsWith(join(cache,'landing')+'/'),dir);
+ const release=landingLock(dir);
+ assert.equal(readFileSync(join(dir,'lock','pid'),'utf8'),String(process.pid));
+ const journal=landingJournal(dir,{project:'p',item:'t1',head:'a'.repeat(40)});journal.save({phase:'prepared'});
+ assert.equal(journal.file,landingJournalFile(dir));assert.ok(existsSync(journal.file));
+ assert.deepEqual(readdirSync(gitDir),[],'the Git directory holds neither lock nor journal');
+ // The checkout reached through a symlink has the same lock, so a live owner blocks through either path.
+ const alias=join(p,'alias');symlinkSync(checkout,alias);
+ assert.equal(landingDir(cache,join(alias,'.git')),dir);
+ assert.throws(()=>landingLock(landingDir(cache,join(alias,'.git'))),/pid \d+\) is still running/);
+ release();journal.clear();
+ assert.ok(!existsSync(join(dir,'lock')));assert.ok(!existsSync(journal.file));
+});
+
+test('a lock whose owner is gone is reclaimed; one with no owner record names itself and waits for a human',t=>{
+ const p=root(t),dir=join(p,'landing'),lock=join(dir,'lock');
+ // No process on a Mac or on Linux has this pid, so its owner is gone.
+ mkdirSync(lock,{recursive:true});writeFileSync(join(lock,'pid'),'2147483647');
+ const release=landingLock(dir);assert.equal(readFileSync(join(lock,'pid'),'utf8'),String(process.pid));release();
+ mkdirSync(lock);
+ assert.throws(()=>landingLock(dir),{message:`the landing lock ${lock} has no owner record; inspect it before retrying`});
+ writeFileSync(join(lock,'pid'),'not a pid');
+ assert.throws(()=>landingLock(dir),{message:`the landing lock ${lock} is invalid; inspect it before retrying`});
 });
 
 test('merge --head resumes after ledger failure without a second merge; finish stops on failed checks',async t=>{
@@ -43,14 +76,14 @@ test('merge --head resumes after ledger failure without a second merge; finish s
  const url=`http://127.0.0.1:${server.address().port}`;writeFileSync(join(config,'config.json'),JSON.stringify({server:url,owner:'owner',projects:{proj:{path:checkout,branch:'main'}}}));
  async function run(cwd,...args){const child=spawn(process.execPath,[resolve('cli/atelier.mjs'),...args,'--project','proj'],{cwd,env:{...process.env,ATELIER_CONFIG_DIR:config,ATELIER_TOKEN:'fixture',ATELIER_CACHE:join(p,'cache'),ATELIER_SERVER:url}});let output='';child.stdout.on('data',s=>output+=s);child.stderr.on('data',s=>output+=s);const status=await new Promise(ok=>child.on('close',ok));return{status,output};}
  // The ledger's temporary failure is a server error: exit 4, the merge journal kept for the retry.
- const first=await run(checkout,'merge','t1','--head',head,'--approve');assert.equal(first.status,4,first.output);const mergedHead=git(checkout,'rev-parse','HEAD');assert.notEqual(mergedHead,head);assert.ok(existsSync(join(checkout,'.git','atelier-landing.json')));
+ const first=await run(checkout,'merge','t1','--head',head,'--approve');assert.equal(first.status,4,first.output);const mergedHead=git(checkout,'rev-parse','HEAD');assert.notEqual(mergedHead,head);const journalFile=landingJournalFile(landingDir(join(p,'cache'),join(checkout,'.git')));assert.ok(existsSync(journalFile));
  // Simulate another baseline commit before retrying the failed ledger acknowledgment.
  const next=join(p,'next');git(p,'clone',baseline,next);git(next,'config','user.name','Fixture');git(next,'config','user.email','fixture@example.invalid');
  writeFileSync(join(next,'later.txt'),'later work\n');git(next,'add','.');git(next,'commit','-m','Later work');git(next,'push','origin','main');
  const advanced=git(next,'rev-parse','HEAD');
  // Also simulate a partial ref publication: the baseline arrived but its notes did not.
  git(p,'--git-dir',baseline,'update-ref','-d','refs/notes/atelier');
- const second=await run(checkout,'merge','t1','--head',head);assert.equal(second.status,0,second.output);assert.equal(git(checkout,'rev-parse','HEAD'),mergedHead);assert.equal(git(p,'--git-dir',baseline,'rev-parse','HEAD'),advanced);assert.match(git(p,'--git-dir',baseline,'notes','--ref=atelier','show',mergedHead),/accepted head/);assert.equal(state,'merged');assert.ok(!existsSync(join(checkout,'.git','atelier-landing.json')));
+ const second=await run(checkout,'merge','t1','--head',head);assert.equal(second.status,0,second.output);assert.equal(git(checkout,'rev-parse','HEAD'),mergedHead);assert.equal(git(p,'--git-dir',baseline,'rev-parse','HEAD'),advanced);assert.match(git(p,'--git-dir',baseline,'notes','--ref=atelier','show',mergedHead),/accepted head/);assert.equal(state,'merged');assert.ok(!existsSync(journalFile));
  state='claimed';failChecks=true;requests.length=0;const failed=await run(workspace,'finish');assert.equal(failed.status,2,failed.output);assert.ok(!requests.some(r=>r.path.endsWith('/submit')));
  failChecks=false;const finished=await run(workspace,'finish');assert.equal(finished.status,0,finished.output);assert.equal(state,'submitted');
 });
@@ -86,7 +119,7 @@ async function caseFixture(t,{files,advance,paths}){
  const child=spawn(process.execPath,[resolve('cli/atelier.mjs'),'merge','t1','--project','proj'],{cwd:checkout,env:{...process.env,ATELIER_CONFIG_DIR:config,ATELIER_TOKEN:'fixture',ATELIER_CACHE:join(p,'cache'),ATELIER_SERVER:url}});
  let output='';child.stdout.on('data',s=>output+=s);child.stderr.on('data',s=>output+=s);
  const status=await new Promise(ok=>child.on('close',ok));
- return {checkout,baseline,requests,status,output,before};
+ return {checkout,baseline,cache:join(p,'cache'),requests,status,output,before};
 }
 
 // The refusal leaves the checkout, the baseline and the ledger as they were.
@@ -96,7 +129,8 @@ function assertUntouched(r,files){
  assert.equal(git(r.checkout,'rev-parse','HEAD'),r.before);
  assert.equal(git(r.checkout,'status','--porcelain','--untracked-files=all'),'');
  for(const [file,text] of Object.entries(files))assert.equal(readFileSync(join(r.checkout,file),'utf8'),text);
- for(const file of ['atelier-landing.json','MERGE_HEAD'])assert.ok(!existsSync(join(r.checkout,'.git',file)),file);
+ assert.ok(!existsSync(join(r.checkout,'.git','MERGE_HEAD')),'MERGE_HEAD');
+ assert.ok(!existsSync(landingJournalFile(landingDir(r.cache,join(r.checkout,'.git')))),'journal');
  assert.equal(git(r.checkout,'--git-dir',r.baseline,'rev-parse','main'),r.before);
  assert.ok(!r.requests.some(u=>u.endsWith('/landing')||u.endsWith('/merged')),r.requests.join(' '));
 }

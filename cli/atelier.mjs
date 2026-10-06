@@ -26,7 +26,7 @@ import { pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
-import { landingJournal, landingLock } from "./landing.mjs";
+import { landingDir, landingJournal, landingJournalFile, landingLock } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
@@ -429,6 +429,10 @@ const short = (s) => (s ? s.slice(0, 8) : "—");
 function workspacePath(name, id) {
   return join(CACHE, "work", name, id);
 }
+
+// Where a checkout's landing lock and journal live (cli/landing.mjs): under
+// the cache, outside the iCloud checkout.
+const landingHome = (gitDir) => landingDir(CACHE, gitDir);
 
 // Take an item and prepare its workspace clone. The claim mints the write
 // token for this actor alone, and the clone is reused when it already exists.
@@ -836,7 +840,11 @@ function sessionTree(cwd) {
 // `report` prints advisories; a refusal always prints what it counted.
 function wrapReady(name, cwd, report) {
   const branch = git(["branch", "--show-current"], { cwd });
-  const inProgress = Object.keys(WRAP_MARKERS).filter((marker) => existsSync(resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))));
+  // The landing marker is the journal under the cache; the others are files in the Git directory.
+  const markerFile = (marker) => marker === "landing"
+    ? landingJournalFile(landingHome(git(["rev-parse", "--absolute-git-dir"], { cwd })))
+    : resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }));
+  const inProgress = Object.keys(WRAP_MARKERS).filter((marker) => existsSync(markerFile(marker)));
   const unmerged = unmergedPaths(git(["ls-files", "-u", "-z"], { cwd, raw: true }));
   const refusal = wrapRefusal({ branch, registered: cfg.projects[name].branch, inProgress, unmerged });
   if (refusal) die(refusal);
@@ -1572,11 +1580,11 @@ const commands = {
     }
     if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first");
     if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
-    const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+    const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
     let unlock;
-    try { unlock = landingLock(gitDir); } catch (error) { die(error.message); }
+    try { unlock = landingLock(landing); } catch (error) { die(error.message); }
     try {
-      if (existsSync(join(gitDir, "atelier-landing.json"))) die("a merge is in progress; finish it or cancel it first");
+      if (existsSync(landingJournalFile(landing))) die("a merge is in progress; finish it or cancel it first");
       const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
       git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
       const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
@@ -1607,7 +1615,7 @@ const commands = {
       const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
       const item = (await call("GET", I(name, id), undefined, OWNER)).item;
       let journal;
-      try { journal = landingJournal(gitDir, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
+      try { journal = landingJournal(landingHome(gitDir), { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
       const local = journal.state?.mergeCommit;
       // An unpublished merge commit in the checkout is kept unless the owner
       // asks for it to go; then the checkout returns to where the merge began.
@@ -1616,7 +1624,7 @@ const commands = {
       }
       await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
       if (local) {
-        if (git(["rev-parse", "HEAD"], { cwd }) !== local || git(["status", "--porcelain"], { cwd })) die("the checkout moved since the merge; reset it yourself, then remove .git/atelier-landing.json");
+        if (git(["rev-parse", "HEAD"], { cwd }) !== local || git(["status", "--porcelain"], { cwd })) die(`the checkout moved since the merge; reset it yourself, then remove ${journal.file}`);
         git(["reset", "--quiet", "--hard", journal.state.start], { cwd });
         console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(journal.state.start)}.`);
       }
@@ -1634,14 +1642,14 @@ const commands = {
         await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
       }
     }
-    const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd});
+    const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
     let unlock;
-    try { unlock=landingLock(gitDir); } catch (error) { die(error.message); }
+    try { unlock=landingLock(landing); } catch (error) { die(error.message); }
     try {
       const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
       if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
       if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
-      const journal=landingJournal(gitDir,{project:name,item:id,head:item.acceptedHead});
+      const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
       if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
       const acceptedPolicy = { ...d.policy, protected: d.acceptanceProtected ?? [] };
       if (refreshed?.policy) {
