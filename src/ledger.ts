@@ -3,7 +3,7 @@ import { type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertHandoffTarget, assertReviewAllowed, pushActors,
+  assertHandoffTarget, assertReviewAllowed, pushActors, ACTOR_MAX,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -117,9 +117,6 @@ function rerouted(route: PartRoute, actor: string | undefined): PartRoute {
   if (!actor) return route;
   return { ...route, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: route.alternates.filter((a) => a.actor !== actor) };
 }
-
-// The longest actor a task can be handed to, as harness/model:profile.
-const ACTOR_MAX = 200;
 
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
@@ -335,8 +332,17 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`DELETE FROM projects WHERE name = ?`, name).rowsWritten > 0;
   }
 
+  // The names table is read once for the whole list, as resolveProject reads
+  // it once for one name: each record's key and former names come from that
+  // one read, not from two queries of its own per project.
   projects(): ProjectRecord[] {
-    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => this.listed(JSON.parse(r.json as string)));
+    const keys = new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string]));
+    const listed = (record: ProjectRecord): ProjectRecord => {
+      const key = keys.get(record.name) ?? record.name;
+      const formerly = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)].filter((n) => n !== record.name);
+      return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
+    };
+    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => listed(JSON.parse(r.json as string)));
   }
 
   // ── names ────────────────────────────────────────────────────────────────
@@ -348,19 +354,8 @@ export class Ledger extends DurableObject<Env> {
   // whichever is registered, so renaming back needs no special case, and
   // every former name resolves in one step.
 
-  private keyOf(name: string): string {
-    const row = this.sql.exec(`SELECT key FROM names WHERE name = ?`, name).toArray()[0];
-    return row ? (row.key as string) : name;
-  }
-
   private namesOf(key: string): string[] {
     return [key, ...this.sql.exec(`SELECT name FROM names WHERE key = ? ORDER BY name`, key).toArray().map((r) => r.name as string)];
-  }
-
-  private listed(record: ProjectRecord): ProjectRecord {
-    const key = this.keyOf(record.name);
-    const formerly = this.namesOf(key).filter((n) => n !== record.name);
-    return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
   }
 
   // Every request that names a project resolves it here, so the names table
@@ -589,8 +584,10 @@ export class Ledger extends DurableObject<Env> {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
       // an actor name, and the second must not take over the first's fork.
+      // Runner names are lowercased when parsed, and a hold recorded before
+      // that may not be, so the same runner is compared without case.
       const held = item.runner ?? null, asking = runner?.runner ?? null;
-      if (held && held !== asking) {
+      if (held && held.toLowerCase() !== (asking ?? "").toLowerCase()) {
         throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
       }
       // After a handoff the new owner holds no runner yet; the first runner to
