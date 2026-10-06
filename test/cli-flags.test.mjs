@@ -73,8 +73,9 @@ function fixture(t) {
   writeFileSync(preload, `
 import { appendFileSync } from "node:fs";
 const HEAD = ${JSON.stringify(head)}, BASELINE = ${JSON.stringify(baseline)};
+const TIMES = { createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-10-05T09:30:00.000Z", lastPushAt: "2026-10-05T09:00:00.000Z" };
 // t3 is open and held by nobody; every other item is submitted by codex/test.
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null });
+const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null, ...TIMES });
 const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
@@ -83,6 +84,8 @@ globalThis.fetch = async (url, options = {}) => {
   let data = {};
   const m = /^\\/api\\/projects\\/demo(?:\\/(.*))?$/.exec(path);
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
+  else if (path === "/api/projects") data = [{ name: "demo", title: "Demo" }];
+  else if (path === "/api/inbox") data = [];
   else if (m) {
     const rest = m[1] ?? "";
     const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false } };
@@ -111,7 +114,7 @@ globalThis.fetch = async (url, options = {}) => {
   });
   const requests = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : []);
   const clear = () => rmSync(log, { force: true });
-  return { dir, checkout, workspace, run, requests, clear };
+  return { dir, checkout, workspace, run, requests, clear, head };
 }
 
 test("a folder that is no registered checkout is named, with every registered project and its folder", (t) => {
@@ -295,6 +298,32 @@ test("a flag the command does not take, or a stray --, is refused before any req
   const ok = f.run(f.checkout, ["ls", "--project", "demo", "--all"]);
   assert.equal(ok.status, 0, ok.stderr);
   assert.match(ok.stdout, /t1 .*Task t1/);
+});
+
+test("ls --json and status --json print each item with its times, for Observatory", (t) => {
+  const f = fixture(t);
+  const TIMES = { createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-10-05T09:30:00.000Z", lastPushAt: "2026-10-05T09:00:00.000Z" };
+  const ls = f.run(f.checkout, ["ls", "--project", "demo", "--json"]);
+  assert.equal(ls.status, 0, ls.stderr);
+  assert.deepEqual(JSON.parse(ls.stdout), [
+    { id: "t1", title: "Task t1", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
+    { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
+  ]);
+
+  const status = f.run(f.checkout, ["status", "--json"]);
+  assert.equal(status.status, 0, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout), [{
+    name: "demo",
+    title: "Demo",
+    inbox: [],
+    items: [
+      { id: "t1", title: "Task t1", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
+      { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
+    ],
+  }]);
+
+  // The JSON listing honours --all as the text one does (test/status.test.mjs
+  // covers the text).
 });
 
 test("new and edit send the framing as lists and a line, block sends its reason, and an empty value clears only on edit", (t) => {

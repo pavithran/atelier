@@ -15,7 +15,8 @@ import { PUSH_STEP, pushHistory, refusedForSize } from "../cli/push-steps.mjs";
 // every push as timed out. Every decision is logged in the file `log`.
 
 const cli = resolve("cli/atelier.mjs");
-const GIT_ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+// Dates parse as UTC, so --history-since's day boundary is where the test puts it.
+const GIT_ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", TZ: "UTC" };
 
 function git(args, opts = {}) {
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: GIT_ENV });
@@ -69,11 +70,11 @@ done
 
 // A checkout holding `count` commits, and a bare baseline that refuses a push
 // of more than `limit` commits.
-function scenario(t, { count, limit, merges = [] }) {
+function scenario(t, { count, limit, merges = [], stamp = 1_700_000_000 }) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-steps-"));
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const checkout = join(dir, "demo"), baseline = join(dir, "baseline.git");
-  history(checkout, count, merges);
+  history(checkout, count, merges, stamp);
   git(["init", "-q", "--bare", "-b", "main", baseline]);
   mkdirSync(join(baseline, "hooks"), { recursive: true });
   writeFileSync(join(baseline, "hooks", "pre-receive"), HOOK, { mode: 0o755 });
@@ -346,6 +347,30 @@ test("atelier init that stops partway says where, and the next init resumes", (t
   assert.equal(f.tip(), git(["rev-parse", "main"], { cwd: f.checkout }));
   assert.deepEqual(f.decisions().filter((d) => d.outcome === "accepted").map((d) => d.old), [reached, onLine(f.checkout, 2100)]);
   assert.equal(f.registered().branch, "main");
+});
+
+test("init --history-since replaces the original history a partial stepped init left on the baseline", (t) => {
+  // The commits straddle a midnight, so one day splits the history: git's
+  // --before takes the commit at midnight itself, so commit 1602 is the last
+  // before 2026-01-02 and 898 commits follow it.
+  const midnight = Date.parse("2026-01-02T00:00:00Z") / 1000;
+  const f = cliFixture(t, { count: 2500, limit: 1000, stamp: midnight - 1601 });
+  f.set("budget", 1);
+  assert.equal(f.run().status, 1, "the stepped init stops partway, as designed");
+  const original = onLine(f.checkout, 700);
+  assert.equal(f.tip(), original, "the baseline holds the original history up to commit 700");
+  assert.equal(f.registered(), undefined);
+  f.clear("budget");
+
+  const since = f.run(["--history-since", "2026-01-02"]);
+  assert.equal(since.status, 0, since.stderr);
+  assert.match(since.stdout, /Baseline history starts at \w+ \(2026-01-02\): 898 commits on main's first-parent line rebuilt/);
+  assert.equal(f.registered().fresh, true);
+  assert.equal(f.registered().branch, "main");
+  const head = git(["rev-parse", "main"], { cwd: f.checkout });
+  assert.notEqual(f.tip(), head, "the baseline holds the rebuilt history, not the original commits");
+  assert.notEqual(f.tip(), original, "the original remainder it held is replaced");
+  assert.equal(git(["rev-parse", `${f.tip()}^{tree}`], { cwd: f.checkout }), git(["rev-parse", `${head}^{tree}`], { cwd: f.checkout }), "the rebuilt head names the same tree");
 });
 
 test("atelier init pushes a history the baseline takes in one push as before", (t) => {

@@ -169,6 +169,11 @@ test("what a runner executes is protected: make and just recipes, npx's binary, 
   assert.deepEqual(checkFiles(["make test"]), sorted(["Makefile", "makefile", "GNUmakefile", "**/*.mk"]));
   assert.deepEqual(checkFiles(["make -C native -f build.mk all", "make --directory=./lib --makefile=rules.mk"]), sorted(["native/build.mk", "lib/rules.mk", "**/*.mk"]));
   assert.deepEqual(checkFiles(["make -C ../other check", "make -f /etc/Makefile"]), ["**/*.mk"]);
+  // The directory an option names is normalised as Git names a changed path,
+  // so what it guards matches what a change touches.
+  assert.deepEqual(checkFiles(["make -C lib/../native test", "make -C packages/app/ test", "just -d tools -f justfile.ci check"]),
+    sorted(["native/Makefile", "native/makefile", "native/GNUmakefile", "packages/app/Makefile", "packages/app/makefile", "packages/app/GNUmakefile", "tools/justfile.ci", "**/*.mk", "**/*.just"]));
+  assert.deepEqual(checkFiles(["make -C a/../../escape test"]), ["**/*.mk"]);
   assert.deepEqual(checkFiles(["just check"]), sorted(["justfile", "Justfile", ".justfile", "**/*.just"]));
   assert.deepEqual(checkFiles(["just --justfile ci.just test"]), sorted(["ci.just", "**/*.just"]));
   assert.deepEqual(checkFiles(["npx vitest run"]), sorted(["package.json", ".npmrc", "node_modules/.bin/vitest"]));
@@ -854,4 +859,9 @@ test("a new head clears a failing merged check", () => {
   assert.deepEqual(mergedBlockers(policy, [own, failing], H2), []);
   const next = pass({ head: H2, mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
   assert.equal(gate(item({ head: H2 }), policy, [own, failing, next], []).ready, true);
+});
+
+test("a make -C into an absolute directory guards no repository file under that name", () => {
+  const files = checkFiles(["make -C /opt/x check"]);
+  assert.equal(files.some((f) => f.startsWith("opt/")), false);
 });
