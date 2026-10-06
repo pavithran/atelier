@@ -101,6 +101,9 @@ it("a submitted task with a protected change gets a review request, named or pic
   // Asking again while the request is live returns it as it stands, not duplicated.
   const again = await L.requestReview(id, "owner", null, POOL);
   expect(again).toMatchObject({ needed: true, requested: false, reviewer: GPT, head });
+  // Naming another reviewer while that request stands is refused, not ignored.
+  await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", POOL), "review_requested", /already requested from codex\/gpt-6-astra/);
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, reviewer: GPT });
   expect(await L.reviewWaiting()).toEqual([]);
   expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ head, state: "claimed", claimedBy: GPT });
   await L.addReview({ itemId: id, by: GPT, head, approve: true, note: "Independently reviewed", at: new Date().toISOString() });
@@ -115,9 +118,10 @@ it("the landing's steps are recorded as land.* events with their duration, and a
   const L = await setup("land-events");
   const id = (await L.newItem("Landing", [], "owner")).id;
   await L.landEvent(id, "owner", "merge", 1200, { fromMain: ["b".repeat(40)], conflicts: ["src/x.ts"], resolvedBy: "the project owner, by hand" });
+  await L.landEvent(id, "owner", "submit", 300, {});
   await L.landEvent(id, "owner", "review", 9000, { verdict: "approve", reviewer: GPT, resolvedBy: GPT });
   const recorded = (await events(L, id)).filter((e) => e.kind.startsWith("land.")).sort((a, b) => a.seq - b.seq);
-  expect(recorded.map((e) => [e.kind, e.data.ms])).toEqual([["land.merge", 1200], ["land.review", 9000]]);
+  expect(recorded.map((e) => [e.kind, e.data.ms])).toEqual([["land.merge", 1200], ["land.submit", 300], ["land.review", 9000]]);
   expect(recorded[0].data).toMatchObject({ fromMain: ["b".repeat(40)], conflicts: ["src/x.ts"], resolvedBy: "the project owner, by hand" });
   await refusal(L.landEvent(id, "owner", "deploy", 5, {}), "bad_step", /is not a step of a landing/);
   await refusal(L.landEvent(id, "owner", "merge", -5, {}), "bad_ms", /duration in milliseconds/);

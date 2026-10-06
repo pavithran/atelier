@@ -126,7 +126,7 @@ export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 // The steps a landing records (landEvent): taking the lease, merging main,
 // regenerating the project's fixtures, pushing, checking, the review, the
 // acceptance and the merge that lands the task.
-const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "review", "accept", "merged"]);
+const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
 
 // What a land.* event may carry beside its duration, and as what: hashes and
 // actors, the commits that came from main, the files a conflict stopped on,
@@ -2163,6 +2163,10 @@ export class Ledger extends DurableObject<Env> {
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
+        const standing = dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : null;
+        if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
+          throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
+        }
         return { needed: true, requested: false, reason: need.reason, at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
       }
       return { needed: false, reason: need.reason };

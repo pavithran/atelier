@@ -100,9 +100,11 @@ export async function runLand(io) {
     print(noReview
       ? "  7. skip the review (--no-review): leave the task submitted for you to settle by hand"
       : `  7. ${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs and wait for"} the verdict at the pushed head`);
-    print(`  8. accept ${id} at the pushed head`);
-    print(`  9. merge ${id} in ${p.path} and publish the merge to the baseline`);
-    print(" 10. record each step, its duration and the commits from main as land.* events; release the lease");
+    if (!noReview) {
+      print(`  8. accept ${id} at the pushed head`);
+      print(`  9. merge ${id} in ${p.path} and publish the merge to the baseline`);
+    }
+    print(`${noReview ? "  8" : " 10"}. record each step, its duration and the commits from main as land.* events; release the lease`);
     print("Nothing was changed.");
     return;
   }
@@ -207,6 +209,8 @@ export async function runLand(io) {
     if (noReview) {
       print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id} (main is already merged; run atelier land ${id} again if the head moves).`);
       await record("review", Date.now() - t0, { skipped: true });
+      await release();
+      return;
     } else {
       const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer } : {});
       if (!ask.needed) {

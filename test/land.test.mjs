@@ -146,6 +146,23 @@ test("a clean landing takes the lease, merges main, regenerates, checks, waits f
   assert.equal(events.find((e) => e.body.step === "merged").body.mergeCommit, merged);
 });
 
+test("--no-review leaves the task submitted, accepts and merges nothing, and releases the lease", async (t) => {
+  const f = await landFixture(t);
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--no-review");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /left for you to settle the review by hand/);
+  assert.equal(f.box.states.t1, "submitted");
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(f.posts("/review-request").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
+  assert.equal(f.box.lease, null);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review"]);
+  const dry = await f.run(f.checkout, "land", "t2", "--no-review", "--dry-run");
+  assert.doesNotMatch(dry.output, /accept t2 at the pushed head/);
+});
+
 test("the lease refuses a second landing with who holds it and since when", async (t) => {
   const f = await landFixture(t);
   const since = "2026-10-06T09:30:00.000Z";
