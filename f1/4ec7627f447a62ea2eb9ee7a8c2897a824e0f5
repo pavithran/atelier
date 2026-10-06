@@ -1,0 +1,24 @@
+atelier atelier/t141 "Audit t105 follow-up (confirmed by gemini-3.1-pro): flags the code accepts are missing from the help: show/inbox --json, review/accept --head, merge --cancel/--discard-local/--note, push --force, init --refuse-overlap, models add --note, abandon/release --note, start --runner"
+accepted head 343b4013293da6ac68f35b40e04fd194ca6b5798
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T16:24:49.248Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T16:24:52.174Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T16:35:07.506Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T16:35:11.118Z
+REVIEW approve — antigravity/gemini-3.1-pro: CLI help for every command, held to the flag table, and the message fixes (t142 to t149, t99, t113).
+2026-10-06T02:22:20.255Z pavi item.created
+2026-10-06T12:38:11.835Z claude-code/fable-5.1 item.claimed
+2026-10-06T12:38:14.643Z claude-code/fable-5.1 fork.created
+2026-10-06T13:15:57.017Z claude-code/fable-5.1 push.observed
+2026-10-06T13:18:49.483Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:18:53.203Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:21:31.466Z claude-code/fable-5.1 item.submitted
+2026-10-06T13:56:05.338Z claude-code/opus-5.5 review.rejected
+2026-10-06T16:22:29.462Z claude-code/fable-5.1 push.observed
+2026-10-06T16:24:49.995Z claude-code/fable-5.1 evidence.observed
+2026-10-06T16:24:52.555Z claude-code/fable-5.1 evidence.observed
+2026-10-06T16:24:53.345Z claude-code/fable-5.1 item.submitted
+2026-10-06T16:35:08.501Z claude-code/fable-5.1 evidence.observed
+2026-10-06T16:35:11.689Z claude-code/fable-5.1 evidence.observed
+2026-10-06T16:35:12.536Z claude-code/fable-5.1 item.submitted
+2026-10-06T16:37:14.476Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T16:37:15.296Z pavi item.accepted
