@@ -8,7 +8,7 @@ import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalTe
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX } from "./text.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -428,6 +428,14 @@ function branchArg(value: unknown): string {
   return value;
 }
 
+// The approval a policy records, as init sends it: the owner's own text,
+// stored with the policy, so one over its limit is refused, never cut.
+function approvalArg(value: unknown): string | null {
+  const text = String(value ?? "");
+  assertLength(text, OWNER_TEXT_MAX, "the approval");
+  return text || null;
+}
+
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
@@ -615,7 +623,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
-      ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
+      ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
