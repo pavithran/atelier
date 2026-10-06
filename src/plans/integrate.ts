@@ -16,9 +16,8 @@
 // line, and a branch whose head is the integration head holds nothing beyond
 // what was recorded.
 
-import { familyOf } from "../models/pool.ts";
 import {
-  countingReviews, DEFAULT_OWNER, evidenceAt, gate, modelKey, sameActor, validActor,
+  contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval,
   type Evidence, type Gate, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "../rules.ts";
 
@@ -73,28 +72,19 @@ const HASH = /^[a-f0-9]{40,64}$/;
 const short = (hash: string) => hash.slice(0, 8);
 const named = (part: Pick<Part, "key" | "id">) => `part ${part.key} (${part.id})`;
 
-// Whether a reviewer is of another model family than everyone who built the
-// part, both families recognised, as gate() counts a cross-family review of a
-// protected change. A builder never counts as its own reviewer.
-function otherFamily(reviewer: string, contributors: readonly string[]): boolean {
-  if (!validActor(reviewer) || !reviewer.includes("/")) return false;
-  const family = familyOf(modelKey(reviewer));
-  return family !== "other" && contributors.every((actor) => {
-    const theirs = familyOf(modelKey(actor));
-    return !sameActor(actor, reviewer) && theirs !== "other" && theirs !== family;
-  });
-}
-
 // The reviews that let a part's head into the plan. Reviews count as gate()
 // counts them: the latest from each reviewer at that head, from the project
-// owner or an assessor. One approval is needed, by the owner or by another
-// family than the part's builders, whatever paths the part changes, because
-// the orchestrator reviews every part. A counting rejection at that head
-// blocks, as it does in gate().
+// owner or an assessor. One approval is needed, from a model of another
+// family than every one of the part's builders, as gate() asks of a
+// protected change (independentApproval), whatever paths the part changes,
+// because the orchestrator reviews every part. The owner's approval is not
+// that review, and a part takes no override: the owner's override is
+// recorded with an acceptance, which parts do not take. A counting rejection
+// at that head blocks, as it does in gate(), the owner's included.
 function reviewBlockers(part: Part, head: string, reviews: Review[], policy: ProjectPolicy, owner: string): string[] {
   const counting = countingReviews(reviews.filter((r) => r.itemId === part.id), head, policy, owner);
-  const contributors = [...new Set([...(part.pushActors ?? []), ...(part.owner ? [part.owner] : [])])];
-  const approved = counting.some((r) => r.approve && (r.by === owner || otherFamily(r.by, contributors)));
+  const contributors = contributorsOf(part);
+  const approved = counting.some((r) => independentApproval(r, "protected", contributors, owner));
   const blockers = approved ? [] : [`${named(part)} has no approval from another model family at ${short(head)}`];
   for (const r of counting) if (!r.approve) blockers.push(`${named(part)} was rejected at ${short(head)} by ${r.by}: ${r.note || "no note"}`);
   return blockers;
@@ -239,10 +229,13 @@ export interface PlanGateInput {
 //   at least one part is integrated, or the plan brings nothing to main;
 //   the plan's head is its integration head, so the branch holds the recorded
 //     integrations and nothing pushed beside them.
-// The owner's acceptance and the merge itself are unchanged: atelier merge tP
-// --head H --approve reviews the plan, accepts it through this gate and lands
-// it under the landing lease. An accepted plan is checked again as accept()
-// does, with its state passed as submitted.
+// The plan item's own gate counts reviews as for any item, so the owner's
+// approval is not its independent review either; when the plan's change
+// needs one and no reviewer qualifies, the owner's override recorded on the
+// plan item stands in for it, as gate() reads it. The owner accepts the plan
+// through this gate and lands it under the landing lease, as atelier merge
+// tP --head H does for any item. An accepted plan is checked again as
+// accept() does, with its state passed as submitted.
 export function planGate(input: PlanGateInput): Gate {
   const { plan, parts, integrationHead, policy, evidence, reviews, owner = DEFAULT_OWNER } = input;
   const g = gate(plan, policy, evidence, reviews.filter((r) => r.itemId === plan.id), owner);

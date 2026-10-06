@@ -106,9 +106,26 @@ test("wait: a required check is pending, and it is named", () => {
 test("review: a protected path needs an assessor and none has approved this revision", () => {
   const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), []);
   assert.equal(b.recommendation.verdict, "review");
-  assert.match(b.recommendation.reason, /approval from a different model or the project owner/);
+  assert.equal(b.recommendation.reason, "This revision touches a protected path and needs an approval from a model of another family than every contributor. Your own approval is not that review; if no reviewer qualifies, accept with an override and its reason.");
   assert.match(b.decided, /^Review t21 at aaaaaaaa/);
-  assert.ok(b.evidence.includes("It touches a protected path and no different model or the project owner has approved this revision."));
+  assert.ok(b.evidence.includes("It touches a protected path and no model of another family than every contributor has approved this revision."));
+  // The owner's approval leaves it a review: it is not the independent one.
+  assert.equal(briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })], reviews: [rev({ by: OWNER })] }), []).recommendation.verdict, "review");
+});
+
+test("the owner's override is named with its reason, while the item waits for acceptance and once it is accepted", () => {
+  const reviewOverride = { head: H1, by: OWNER, reason: "No model of another family is available", at: T };
+  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const ready = briefFor(detail({ item: { reviewOverride }, evidence }), []);
+  assert.equal(ready.recommendation.verdict, "accept");
+  assert.ok(ready.evidence.includes("The project owner overrode the independent review at this revision: No model of another family is available."));
+  const accepted = briefFor(detail({ item: { reviewOverride, state: "accepted", acceptedHead: H1 }, evidence }), []);
+  assert.equal(accepted.recommendation.reason, "You accepted this revision with the independent review overridden, and the merge runs in your local checkout.");
+  assert.ok(accepted.evidence.includes("The project owner overrode the independent review at this revision: No model of another family is available."));
+  // An override at an earlier head is not mentioned.
+  const moved = briefFor(detail({ item: { reviewOverride: { ...reviewOverride, head: H2 } }, evidence }), []);
+  assert.equal(moved.recommendation.verdict, "review");
+  assert.ok(!moved.evidence.some((line) => line.includes("overrode")));
 });
 
 test("a protected path with a check still pending is a review, naming the pending check", () => {
@@ -119,7 +136,7 @@ test("a protected path with a check still pending is a review, naming the pendin
   const b = briefFor(d, []);
   assert.equal(b.recommendation.verdict, "review");
   assert.match(b.decided, /^Review t21 at aaaaaaaa/);
-  assert.match(b.recommendation.reason, /needs an approval from a different model or the project owner; `npm run lint` is also not yet observed at this revision\.$/);
+  assert.match(b.recommendation.reason, /needs an approval from a model of another family than every contributor; `npm run lint` is also not yet observed at this revision\.$/);
 });
 
 test("a protected path with a rejection is still a review, as the page's banner says", () => {
