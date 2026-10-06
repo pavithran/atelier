@@ -1,0 +1,32 @@
+atelier atelier/t66 "Run the project's checks on the would-be merge (task head merged with main as it is now) before acceptance, and show the result beside the merge preview"
+accepted head c982f7ea0c86d55ab67d4b09110324887319ae54
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T16:01:25.661Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T16:01:30.957Z
+REVIEW approve — antigravity/gemini-3.1-pro: Checks on the would-be merge; a failing merged check survives a plain run (t178's decision).
+2026-10-05T00:49:33.716Z pavi item.created
+2026-10-06T12:59:24.214Z claude-code/fable-5.1 item.claimed
+2026-10-06T12:59:27.528Z claude-code/fable-5.1 fork.created
+2026-10-06T13:56:17.250Z claude-code/fable-5.1 push.observed
+2026-10-06T13:59:03.098Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:59:14.497Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:59:17.087Z claude-code/fable-5.1 item.submitted
+2026-10-06T14:14:50.305Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:14:54.459Z claude-code/fable-5.1 evidence.observed
+2026-10-06T14:14:56.059Z claude-code/fable-5.1 item.submitted
+2026-10-06T14:16:50.944Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:16:52.016Z pavi item.accepted
+2026-10-06T15:48:40.905Z claude-code/fable-5.1 push.observed
+2026-10-06T15:50:23.925Z claude-code/fable-5.1 evidence.observed
+2026-10-06T15:50:26.677Z claude-code/fable-5.1 evidence.observed
+2026-10-06T15:50:27.372Z claude-code/fable-5.1 item.submitted
+2026-10-06T15:55:52.650Z claude-code/fable-5.1 evidence.observed
+2026-10-06T15:55:56.476Z claude-code/fable-5.1 evidence.observed
+2026-10-06T15:55:57.987Z claude-code/fable-5.1 item.submitted
+2026-10-06T15:58:58.365Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T15:58:59.141Z pavi item.accepted
+2026-10-06T15:59:32.185Z claude-code/fable-5.1 push.observed
+2026-10-06T16:01:26.162Z claude-code/fable-5.1 evidence.observed
+2026-10-06T16:01:31.460Z claude-code/fable-5.1 evidence.observed
+2026-10-06T16:01:32.888Z claude-code/fable-5.1 item.submitted
+2026-10-06T16:02:55.892Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T16:02:56.753Z pavi item.accepted
