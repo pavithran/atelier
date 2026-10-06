@@ -207,23 +207,32 @@ const FLAGS = {
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"' },
   adopt: {},
   publish: {},
-  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry' },
+  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
+  // edit takes the same three; one empty value clears the field, so the
+  // owner can take a framing back.
+  edit: { "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
+  block: {},
+  unblock: {},
   ls: { all: true },
   show: { json: true },
   start: { runner: false },
   claim: { runner: false },
   push: { force: true },
   update: {},
-  check: { sandbox: true },
+  check: { sandbox: true, merged: true },
   gc: { "dry-run": true, apply: true },
   report: { item: false },
   submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
   diff: {},
-  review: { approve: true, reject: true, note: false, head: false },
+  review: { approve: true, reject: true, note: false, head: false, findings: false },
+  "review-claim": { runner: false },
+  "review-release": { note: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false },
+  defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
+  served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
   done: { sandbox: true, summary: false },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
@@ -426,6 +435,28 @@ function listArg(flag, cmd) {
   const values = args.multi[flag] ?? [];
   if (values.some((v) => typeof v !== "string" || !v.trim())) die(`--${flag} needs text: atelier ${cmd} --${flag} "TEXT", once per entry`);
   return values.map((v) => v.trim());
+}
+
+// --non-goal, --stop-when and --next-gate, as new and edit send them: a list
+// per use for the first two, one line for the gate, each trimmed. A flag not
+// given is not sent, so the server keeps the item's value. For edit, one
+// empty value clears the field; for new, an empty value is refused as a
+// bare flag is, with the flag table's wording.
+function fieldsArg(cmd) {
+  const out = {};
+  for (const [flag, key] of [["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
+    const values = args.multi[flag];
+    if (values === undefined) continue;
+    if (cmd === "edit" && values.length === 1 && values[0] === "") { out[key] = []; continue; }
+    if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS[cmd][flag]);
+    out[key] = values.map((v) => v.trim());
+  }
+  const gate = args["next-gate"];
+  if (gate !== undefined) {
+    if (typeof gate !== "string" || (!gate.trim() && cmd !== "edit")) die(FLAGS[cmd]["next-gate"]);
+    out.nextGate = gate.trim() || null;
+  }
+  return out;
 }
 
 // --override-review takes the reason the override records. A bare flag is
@@ -637,6 +668,29 @@ function cleanClone(remote, token, head, baseline, name) {
   return { dir, changed, againstMain };
 }
 
+// The would-be merge, for atelier check --merged: a temporary merge commit of
+// the clone's head with main's head, which cleanClone fetched to FETCH_HEAD.
+// It is made in the clean clone with hooks and signing off, under an identity
+// of its own, and goes away with the clone; nothing pushes it. Returns main's
+// head, which the evidence is bound to. A merge that stops on conflicts ends
+// the command: the preview on the item page lists the same paths, and the
+// workspace's owner resolves them with atelier update.
+function mergeWithMain(dir, id) {
+  const main = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
+  if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
+    process.stderr.write(`atelier: main at ${short(main)} is already in this revision; the merge is the revision itself\n`);
+    return main;
+  }
+  const r = git(["-c", "user.name=atelier", "-c", "user.email=atelier@localhost", "-c", "commit.gpgsign=false", "merge", "--no-ff", "--no-verify", "--no-edit", "-m", `atelier check --merged: main at ${main}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+  if (r.status !== 0) {
+    const conflicts = git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir, allowFail: true }).stdout.trim();
+    git(["merge", "--abort"], { cwd: dir, allowFail: true });
+    die(`the merge of ${id} with main at ${short(main)} stops${conflicts ? ` on conflicts in:\n${conflicts}` : `:\n${(r.stderr || r.stdout).trim()}`}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
+  }
+  process.stderr.write(`atelier: merged with main at ${short(main)} in the clean clone\n`);
+  return main;
+}
+
 // Runs one check with checkEnv's variables and returns its output with every
 // secret in `secrets` redacted. The output is redacted whole, before anything
 // cuts its tail, so no part of a secret survives at the cut, and the hash is
@@ -780,7 +834,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
     },
     tests: view.map((e) =>
       e.grade === "observed"
-        ? `Observed by Atelier in a clean clone at ${short(e.head)}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
+        ? `Observed by Atelier in a clean clone at ${short(e.head)}${e.merged ? ` merged with main at ${short(e.mainHead)}` : ""}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
         : `Reported, not verified: ${e.claim} (${e.by}, ${e.at})`),
     next_gate: `${OWNER_NAME} chooses the next work. The merge is not deployed and not pushed to the project's own remotes.`,
     protected_actions_not_taken: [
@@ -801,8 +855,11 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
 // here. The Worker records the results itself; this only starts and waits.
 async function checkInSandbox() {
   const name = project(), id = itemArg(), as = await actor();
-  const { runId } = await call("POST", `${I(name, id)}/sandbox`, {}, as);
-  process.stderr.write(`atelier: running the checks for ${id} in a Cloudflare container (run ${runId})…\n`);
+  // --merged asks for the checks on the merge of the head with main's head;
+  // the Worker builds that tree itself and records the results bound to both.
+  const merged = args.merged === true;
+  const { runId } = await call("POST", `${I(name, id)}/sandbox`, merged ? { merged: true } : {}, as);
+  process.stderr.write(`atelier: running the checks for ${id}${merged ? " on its merge with main" : ""} in a Cloudflare container (run ${runId})…\n`);
   let state;
   for (let waited = 0; ; waited += 5) {
     state = await call("GET", `${I(name, id)}/sandbox/${encodeURIComponent(runId)}`, undefined, as);
@@ -810,12 +867,14 @@ async function checkInSandbox() {
     if (waited > 20 * 60) die(`still ${state.status} after 20 minutes; check later with atelier show ${id}`);
     await new Promise((ok) => setTimeout(ok, 5000));
   }
+  const on = state.request?.merged && state.mainHead ? ` merged with main ${short(state.mainHead)}` : "";
   for (const r of state.results ?? []) {
-    if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}  (not run: this change touches none of the paths it applies to)`); continue; }
-    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}  (${r.seconds}s, in Cloudflare)`);
+    if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}${on}  (not run: this change touches none of the paths it applies to)`); continue; }
+    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}${on}  (${r.seconds}s, in Cloudflare)`);
     if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
   }
-  if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
+  if (on) console.log(`Recorded on the merge with main at ${short(state.mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
+  else if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
   if (state.results.some((r) => r.passed === false)) {
@@ -878,14 +937,24 @@ export function formatDone(gate) {
   return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
 }
 
+// The owner's framing of a task, one line per field that is set, for the
+// task an agent starts and the brief it reads.
+export function formatFields(fields) {
+  return [
+    fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
+    fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
+    fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+  ].filter(Boolean);
+}
+
 export function formatTask(item) {
-  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`,
+  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
     item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {
   return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
-    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...brief.evidence.map(flat),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief), ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
@@ -1312,6 +1381,9 @@ const commands = {
           if (!res.ok) throw Object.assign(new Error(`the plan could not be posted: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
           return data;
         },
+        // A run that stalled, timed out or was refused goes to the run
+        // reports, under the runner's name, as a model's status does.
+        reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
       });
     } catch (error) { die(error.message); }
   },
@@ -1560,10 +1632,40 @@ const commands = {
 
   async new() {
     const title = args._.slice(1).join(" ");
-    if (!title) die('usage: atelier new "title" [--scope GLOB]...');
+    if (!title) die(COMMAND_USAGE.new);
     const scope = listArg("scope", "new");
-    const item = await call("POST", `${P(project())}/items`, { title, scope }, await actor(OWNER));
-    console.log(`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`);
+    const item = await call("POST", `${P(project())}/items`, { title, scope, ...fieldsArg("new") }, await actor(OWNER));
+    console.log([`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`, ...formatFields(item)].join("\n"));
+  },
+
+  // The project owner changes a task's framing; the server keeps every field
+  // not named and refuses a closed task.
+  async edit() {
+    const name = project(), id = itemArg();
+    const fields = fieldsArg("edit");
+    if (!Object.keys(fields).length) die(COMMAND_USAGE.edit);
+    const item = await call("POST", `${I(name, id)}/edit`, fields, OWNER);
+    const lines = formatFields(item);
+    console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
+  },
+
+  // The holder or the owner blocks a task with what it is waiting on. The
+  // id comes first when given; in a workspace it is the workspace's item.
+  async block() {
+    const words = args._.slice(1);
+    const named = /^t\d+$/.test(words[0] ?? "") ? words.shift() : null;
+    const reason = words.join(" ");
+    if (!reason.trim()) die(COMMAND_USAGE.block);
+    const name = project(), id = named ?? wsConfig("item");
+    if (!id) die(`which item? pass its id (t3) or run inside its workspace: ${COMMAND_USAGE.block}`);
+    const item = await call("POST", `${I(name, id)}/block`, { reason }, await actor(OWNER));
+    console.log(`${id} is blocked: ${flat(item.blocked?.reason ?? reason)}. It keeps its owner and workspace; run atelier unblock ${id} when it can go on.`);
+  },
+
+  async unblock() {
+    const name = project(), id = itemArg();
+    const item = await call("POST", `${I(name, id)}/unblock`, {}, await actor(OWNER));
+    console.log(`${id} is unblocked and ${flat(item.state)} again.`);
   },
 
   async ls() {
@@ -1698,8 +1800,13 @@ const commands = {
     // token, the read tokens for the fork and the baseline, and the write
     // token in the workspace's Git settings.
     const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
-    let failed = 0, recorded;
+    let failed = 0, recorded, mainHead;
     try {
+      // --merged checks the would-be merge: the head merged with main's head,
+      // in this clone. The evidence is bound to both revisions, and the
+      // Worker refuses a main head that is not on main's line.
+      if (args.merged) mainHead = mergeWithMain(dir, id);
+      const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
       for (const cmd of cmds) {
         // A registered check whose paths this change does not touch is not
         // run. It is recorded as not applicable, which the Worker accepts only
@@ -1716,14 +1823,15 @@ const commands = {
         // list, which is sent only so a deployment without that measurement
         // still records one. The list printed below is the one the Worker
         // recorded, which is the one the gate reads; this clone's is shown only
-        // when the reply carries none.
+        // when the reply carries none. A merged check measures no paths.
         const d = await call("POST", `${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+          ...(mainHead ? { merged: true, mainHead } : {}),
         }, as);
-        const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
+        const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
         if (row) recorded = row.changedPaths;
-        console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}`);
+        console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}`);
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
     } finally {
@@ -1731,7 +1839,8 @@ const commands = {
       rmSync(markerPath(dir), { force: true });
     }
     const paths = recorded === undefined ? changed : recorded;
-    console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
+    if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
+    else console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
     if (failed) {
       if (doneStep) die("required checks failed", 2);
       process.exit(2);
@@ -1803,8 +1912,25 @@ const commands = {
     if (!args.approve && !args.reject) die("usage: atelier review t3 --approve|--reject --note '…' --as harness/model");
     const name = project(), id = itemArg(), as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
-    await call("POST", `${I(name, id)}/review`, { approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head }, as);
+    let findings;
+    if (args.findings !== undefined) {
+      if (typeof args.findings !== "string" || !args.findings.trim()) die("--findings needs a JSON list of findings");
+      try { findings = JSON.parse(args.findings); } catch { die("--findings is not valid JSON"); }
+    }
+    await call("POST", `${I(name, id)}/review`, { approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head, ...(findings !== undefined ? { findings } : {}) }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
+  },
+
+  async "review-claim"() {
+    const name = project(), id = itemArg(), as = await actor();
+    const r = await call("POST", `${I(name, id)}/review-claim`, {}, as, args.runner ? { "x-atelier-runner": args.runner } : {});
+    console.log(JSON.stringify(r));
+  },
+
+  async "review-release"() {
+    const name = project(), id = itemArg(), as = await actor();
+    await call("POST", `${I(name, id)}/review-release`, { note: args.note ?? "" }, as);
+    console.log(`${id}'s review request released.`);
   },
 
   async handoff() {
@@ -1834,6 +1960,36 @@ const commands = {
     const name = project(), id = itemArg();
     await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
     console.log(`${id} abandoned.`);
+  },
+
+  // The project owner traces a defect to an item's accepted revision. The
+  // server refuses an item never accepted, and a blank note.
+  async defect() {
+    const name = project(), id = itemArg();
+    if (typeof args.note !== "string" || !args.note.trim()) die('a defect needs a note: atelier defect ID --note "what is wrong" [--found-in ID]');
+    const item = await call("POST", `${I(name, id)}/defect`, { note: args.note.trim(), ...(args["found-in"] !== undefined ? { foundIn: args["found-in"] } : {}) }, OWNER);
+    console.log(`Defect traced to ${id} at ${short(item.acceptedHead)}. It counts against the model that built that revision and each model that approved it; the Models page shows the record.`);
+  },
+
+  // The project owner records which model served events recorded under
+  // another: each matching event gets an annotation, and the event itself
+  // never changes. Without --apply it lists the matches and records nothing.
+  async served() {
+    const name = project(), model = args._[1];
+    if (args._.length !== 2 || ["recorded", "from", "to"].some((k) => typeof args[k] !== "string")) {
+      die("usage: atelier served MODEL --recorded HARNESS/MODEL --from TIME --to TIME [--item ID]... [--note TEXT] [--apply] [--project P]");
+    }
+    const r = await call("POST", `${P(name)}/served`, {
+      served: model, recorded: args.recorded, from: args.from, to: args.to,
+      ...(args.multi.item ? { items: args.multi.item } : {}), ...(args.note !== undefined ? { note: args.note } : {}), apply: args.apply === true,
+    }, OWNER);
+    const n = r.matched.length;
+    console.log(`${n} ${n === 1 ? "event" : "events"} on ${r.project} recorded as ${r.recorded} from ${r.from} to ${r.to}, in ${r.items ? r.items.join(" ") : "every task"}:`);
+    for (const m of r.matched) console.log(`  ${m.itemId ?? "(no task)"}  #${m.seq}  ${m.kind}  ${m.at}${m.served ? `  annotated as served by ${m.served}` : ""}`);
+    const as = `${r.recorded.slice(0, r.recorded.indexOf("/"))}/${r.served}`;
+    if (r.applied) console.log(`Annotated ${r.annotated} as served by ${r.served}; ${n - r.annotated} already were. The records count them under ${as}.`);
+    else if (r.pending) console.log(`Nothing was recorded. To annotate ${r.pending} as served by ${r.served}, run this again with --apply.`);
+    else console.log(`Nothing to record: ${n ? `each is already annotated as served by ${r.served}` : "no event matches"}.`);
   },
 
   async done() {

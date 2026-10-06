@@ -82,6 +82,7 @@ test("once approved, plan show gives each part's state, routing, attempts and th
 test("a plan's brief says what is decided and what it waits on, in the shape any item's brief has", () => {
   assert.deepEqual(planBrief(proposed), {
     decided: "Approve plan t1's split of: Ship the feature", summary: null,
+    nonGoals: [], stopWhen: [], nextGate: null,
     evidence: ["Phase: proposed.", `Proposal 2: 2 parts, ${HASH.slice(0, 12)}, by claude-code/opus-5.5.`],
     recommendation: { verdict: "decide", reason: "Read the split with atelier plan show t1, then approve it by its hash or send it back with a note." },
   });

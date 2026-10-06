@@ -3,9 +3,11 @@ import { type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertHandoffTarget, assertReviewAllowed, pushActors,
-  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
-  type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
+  assertHandoffTarget, assertReviewAllowed, pushActors, ACTOR_MAX,
+  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertBlockable, assertNotBlocked, blockReason,
+  type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
+  type Block, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
@@ -13,7 +15,9 @@ import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
-import { parsePlan, planHash, type Plan } from "./plans/schema.ts";
+import type { RunReport } from "./models/reliability.ts";
+import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
+import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
 import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
@@ -24,6 +28,9 @@ import {
 } from "./plans/state.ts";
 import type { PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
+import { reviewBrief } from "./review/brief.ts";
+import { reviewNeeded, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { pickReviewer } from "./review/reviewer.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -38,6 +45,18 @@ export interface LedgerEvent {
   actor: string;
   kind: string;
   data: Record<string, unknown>;
+}
+
+// What a review claim returns: the part, the head under review, the review
+// need (null when it no longer holds), the plan account for the brief, and
+// the part's events for the builder's summary (docs/orchestrator.md, section 4).
+export interface ReviewClaim {
+  item: Item;
+  head: string;
+  need: ReviewRequired | null;
+  plan: { goal: string; part: PlanPart } | null;
+  events: LedgerEvent[];
+  owner: string;
 }
 
 export interface ProjectRecord {
@@ -95,6 +114,9 @@ export interface ProjectInit {
 
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 
+// How many run reports the index returns: the most recent, for the reliability record.
+export const RUN_REPORTS = 1000;
+
 // How many of the project's most recent events make the track record a plan
 // is routed on, as the Models page reads a project's record.
 const RECORD_EVENTS = 1000;
@@ -111,9 +133,6 @@ function rerouted(route: PartRoute, actor: string | undefined): PartRoute {
   if (!actor) return route;
   return { ...route, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: route.alternates.filter((a) => a.actor !== actor) };
 }
-
-// The longest actor a task can be handed to, as harness/model:profile.
-const ACTOR_MAX = 200;
 
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
@@ -176,8 +195,8 @@ export function assertNameFree(source: ProjectRef, to: string, target: ProjectRe
 }
 
 export function assertProjectRemovable(items: Pick<Item, "state">[], force: boolean): void {
-  if (!force && items.some((i) => ["claimed", "submitted", "accepted"].includes(i.state))) {
-    throw new RuleError("live_work", "project has claimed, submitted or accepted work; use --force to remove it", 409);
+  if (!force && items.some((i) => ["claimed", "submitted", "accepted", "blocked"].includes(i.state))) {
+    throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409);
   }
 }
 
@@ -185,7 +204,6 @@ export function assertProjectRemovable(items: Pick<Item, "state">[], force: bool
 // arrives with the review job (docs/orchestrator.md, section 4, t39); until
 // a review carries one there is nothing to quote, and a part sent back for
 // rework is shown the failing check alone.
-type Finding = ReviewFindings["findings"][number];
 function reviewFindings(r: Review): ReviewFindings | null {
   const raw = (r as Review & { findings?: unknown }).findings;
   if (!Array.isArray(raw)) return null;
@@ -217,6 +235,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -248,6 +267,12 @@ export class Ledger extends DurableObject<Env> {
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
+    // The owner's framing of a task (JSON lists and one line of text), and
+    // the block record while a task is blocked (see Block in rules.ts).
+    if (!columns.includes("non_goals")) this.sql.exec(`ALTER TABLE items ADD COLUMN non_goals TEXT`);
+    if (!columns.includes("stop_when")) this.sql.exec(`ALTER TABLE items ADD COLUMN stop_when TEXT`);
+    if (!columns.includes("next_gate")) this.sql.exec(`ALTER TABLE items ADD COLUMN next_gate TEXT`);
+    if (!columns.includes("blocked")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked TEXT`);
     // Plans (docs/orchestrator.md, section 1): an item's kind (null for an
     // ordinary task, plan or part), a part's plan item, its key in the
     // approved plan, and the keys of the parts it depends on, as JSON.
@@ -259,6 +284,13 @@ export class Ledger extends DurableObject<Env> {
     // is ever changed. `actor` is who posted it.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS plans (
       seq INTEGER PRIMARY KEY AUTOINCREMENT, plan_id TEXT NOT NULL, hash TEXT NOT NULL, json TEXT NOT NULL, actor TEXT NOT NULL, at TEXT NOT NULL
+    )`);
+    // Automatic cross-family review requests (docs/orchestrator.md, section 4).
+    // One row per request, named by the part item it reviews; a new head makes
+    // a new request. `claimedAt` feeds the claim timeout reviewNeeded reads.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS review_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, head TEXT NOT NULL, dispatch TEXT NOT NULL,
+      claimedBy TEXT, runner TEXT, briefHash TEXT, state TEXT NOT NULL, claimedAt TEXT
     )`);
   }
 
@@ -339,8 +371,17 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`DELETE FROM projects WHERE name = ?`, name).rowsWritten > 0;
   }
 
+  // The names table is read once for the whole list, as resolveProject reads
+  // it once for one name: each record's key and former names come from that
+  // one read, not from two queries of its own per project.
   projects(): ProjectRecord[] {
-    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => this.listed(JSON.parse(r.json as string)));
+    const keys = new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string]));
+    const listed = (record: ProjectRecord): ProjectRecord => {
+      const key = keys.get(record.name) ?? record.name;
+      const formerly = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)].filter((n) => n !== record.name);
+      return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
+    };
+    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => listed(JSON.parse(r.json as string)));
   }
 
   // ── names ────────────────────────────────────────────────────────────────
@@ -352,19 +393,8 @@ export class Ledger extends DurableObject<Env> {
   // whichever is registered, so renaming back needs no special case, and
   // every former name resolves in one step.
 
-  private keyOf(name: string): string {
-    const row = this.sql.exec(`SELECT key FROM names WHERE name = ?`, name).toArray()[0];
-    return row ? (row.key as string) : name;
-  }
-
   private namesOf(key: string): string[] {
     return [key, ...this.sql.exec(`SELECT name FROM names WHERE key = ? ORDER BY name`, key).toArray().map((r) => r.name as string)];
-  }
-
-  private listed(record: ProjectRecord): ProjectRecord {
-    const key = this.keyOf(record.name);
-    const formerly = this.namesOf(key).filter((n) => n !== record.name);
-    return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
   }
 
   // Every request that names a project resolves it here, so the names table
@@ -473,6 +503,21 @@ export class Ledger extends DurableObject<Env> {
     return { report, alerts };
   }
 
+  // ── runs ─────────────────────────────────────────────────────────────────
+  // Runs that ended without a result the ledger could record, as the runners
+  // reported them (src/models/reliability.ts), on the index instance beside
+  // the usage reports. Each report is kept as it arrived; none replaces another.
+
+  putRun(report: RunReport): RunReport {
+    this.sql.exec(`INSERT INTO runs (json) VALUES (?)`, JSON.stringify(report));
+    return report;
+  }
+
+  // The most recent reports, newest first.
+  runs(limit = RUN_REPORTS): RunReport[] {
+    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
   // ── project instance ─────────────────────────────────────────────────────
 
   // An init, merged into the current record in one step: the Durable Object
@@ -508,7 +553,7 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
-  newItem(title: string, scope: string[], actor: string): Item {
+  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item {
     if (!title.trim()) throw new RuleError("bad_title", "an item needs a title", 400);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -517,7 +562,24 @@ export class Ledger extends DurableObject<Env> {
       `INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)`,
       id, title.trim(), JSON.stringify(scope), now, now,
     );
-    this.log(id, actor, "item.created", { title, scope }, now);
+    const set = fieldColumns(fields);
+    if (Object.keys(set).length) this.update(id, set, now);
+    this.log(id, actor, "item.created", { title, scope, ...fields }, now);
+    return this.item(id);
+  }
+
+  // The project owner changes a task's framing after it was created. A
+  // field sent replaces the stored one, a field left out is kept, and the
+  // event records only what was sent. A closed task is left as it was.
+  editItem(id: string, actor: string, fields: ItemFields): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    const set = fieldColumns(fields);
+    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --non-goal, --stop-when or --next-gate", 400);
+    const at = new Date().toISOString();
+    this.update(id, set, at);
+    this.log(id, actor, "item.edited", { ...fields }, at);
     return this.item(id);
   }
 
@@ -561,8 +623,10 @@ export class Ledger extends DurableObject<Env> {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
       // an actor name, and the second must not take over the first's fork.
+      // Runner names are lowercased when parsed, and a hold recorded before
+      // that may not be, so the same runner is compared without case.
       const held = item.runner ?? null, asking = runner?.runner ?? null;
-      if (held && held !== asking) {
+      if (held && held.toLowerCase() !== (asking ?? "").toLowerCase()) {
         throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
       }
       // After a handoff the new owner holds no runner yet; the first runner to
@@ -811,14 +875,21 @@ export class Ledger extends DurableObject<Env> {
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, new Date().toISOString(), proved);
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     this.afterPlanChange(e.itemId);
   }
 
-  addReview(r: Review, origin?: string, proved = false): void {
+  // `via` says where a review by the project owner was recorded: "page" is a
+  // form on the task page, which only the signed-in owner reaches; "api" is
+  // the owner token, as the orchestrator and the CLI use it. The reliability
+  // record (src/models/reliability.ts) counts the two apart.
+  addReview(r: Review, origin?: string, proved = false, via?: "page" | "api"): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertLength(r.note, NOTE_MAX, "the review note");
+    if (r.findings !== undefined && !validFindings(r.findings)) {
+      throw new RuleError("bad_findings", "findings must be a list of {file, line, severity, text}, severity blocking or follow-up", 400);
+    }
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
@@ -834,9 +905,26 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.answerReviewRequest(r.itemId, r.head, at);
+    // A rejection with blocking findings sends a part back to its builder for
+    // rework (docs/orchestrator.md, section 4). The re-review goes to the same
+    // reviewer first, and after two rounds to an alternate builder, which
+    // phase.ts reads from the review.rework event as a failed finish.
+    if (item.kind === "part" && !r.approve && (r.findings ?? []).some((f) => f.severity === "blocking")) {
+      this.reworkPart(item, r, at, proved);
+    }
     this.notify(r.itemId, origin);
     this.afterPlanChange(r.itemId);
+  }
+
+  // Releases a submitted part back to its builder with the reviewer's
+  // findings. The event is what the tick reads to retry the builder, then
+  // move to an alternate, then block the plan.
+  private reworkPart(item: Item, review: Review, at: string, proved: boolean): void {
+    const builder = item.owner;
+    this.update(item.id, { owner: null, state: "open" }, at);
+    this.log(item.id, ORCHESTRATOR, "review.rework", { head: review.head, by: review.by, builder, findings: review.findings ?? [] }, at, proved);
   }
 
   // The summary is recorded in the event and nowhere else; a later submit
@@ -874,8 +962,35 @@ export class Ledger extends DurableObject<Env> {
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
+    assertNotBlocked(item);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
+  }
+
+  // The holder or the project owner blocks a task with the reason it cannot
+  // go on, and either unblocks it. The task keeps its owner, workspace and
+  // dispatch record meanwhile; unblocking returns it to the state it was in.
+  // An open task has no holder, so only the owner blocks or unblocks it.
+  block(id: string, actor: string, reason: unknown, proved = false): Item {
+    const text = blockReason(reason);
+    const item = this.item(id);
+    if (actor !== this.owner) assertOwner(item, actor);
+    assertBlockable(item);
+    const at = new Date().toISOString();
+    const record: Block = { reason: text, by: actor, at, from: item.state };
+    this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
+    this.log(id, actor, "item.blocked", { reason: text, from: item.state }, at, proved);
+    return this.item(id);
+  }
+
+  unblock(id: string, actor: string, proved = false): Item {
+    const item = this.item(id);
+    if (item.state !== "blocked" || !item.blocked) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`);
+    if (actor !== this.owner) assertOwner(item, actor);
+    const at = new Date().toISOString();
+    this.update(id, { state: item.blocked.from, blocked: null }, at);
+    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, at, proved);
+    return this.item(id);
   }
 
   private releaseAllowed(id: string, actor: string, note: string): Item {
@@ -1010,11 +1125,49 @@ export class Ledger extends DurableObject<Env> {
   abandon(id: string, actor: string, note: string, token?: string | null): Item {
     this.abandonAllowed(id, actor, note);
     this.dropToken(id, token);
+    // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
-    this.update(id, { state: "abandoned", owner: null }, at);
+    this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
     this.log(id, actor, "item.abandoned", { note }, at);
     this.afterPlanChange(id);
     return this.item(id);
+  }
+
+  // The owner traces a defect to the revision this item was accepted at,
+  // merged or not. Nothing about the item changes: the event is the record,
+  // and the reliability record counts it against the model that built that
+  // revision and every model that approved it. An item never accepted
+  // carries no approved change, so it is refused.
+  traceDefect(id: string, actor: string, note: string, foundIn: string | null): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner traces a defect to a change", 403);
+    const item = this.item(id);
+    if (!item.acceptedHead) {
+      throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
+    }
+    const at = new Date().toISOString();
+    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) }, at);
+    return item;
+  }
+
+  // The owner records which model served events recorded under another
+  // (src/models/served.ts): one event.served for each matching event that
+  // no annotation already says this model served. The annotated events
+  // never change. Without `apply` nothing is written, and the answer says
+  // what matches and what would be annotated.
+  annotateServed(sel: ServedSelection, actor: string, apply: boolean): { matched: ServedMatch[]; pending: number; annotated: number; applied: boolean } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records which model served an event", 403);
+    this.project();
+    const events = this.sql.exec(`SELECT * FROM events WHERE (at >= ? AND at < ?) OR kind = ? ORDER BY seq`, sel.from, sel.to, SERVED).toArray()
+      .map((r) => ({ seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string, actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }));
+    const { matched, pending } = matchServed(events, sel);
+    if (matched.length > SERVED_LIMIT) {
+      throw new RuleError("too_many_events", `${matched.length} events match, more than the ${SERVED_LIMIT} one request may annotate; name the tasks or narrow the window`, 400);
+    }
+    if (apply) {
+      const at = new Date().toISOString();
+      for (const m of pending) this.log(m.itemId, actor, SERVED, { seq: m.seq, recorded: m.actor, served: sel.served, ...(sel.note ? { note: sel.note } : {}) }, at);
+    }
+    return { matched, pending: pending.length, annotated: apply ? pending.length : 0, applied: apply };
   }
 
   evidenceFor(id: string): Evidence[] {
@@ -1090,7 +1243,7 @@ export class Ledger extends DurableObject<Env> {
   // metadata consumer such as ControlPlane's Observatory publication.
   owners() {
     return this.items()
-      .filter((i) => i.state === "claimed" || i.state === "submitted" || i.state === "accepted")
+      .filter((i) => i.state === "claimed" || i.state === "submitted" || i.state === "accepted" || (i.state === "blocked" && i.owner))
       .map((i) => ({ item: i.id, state: i.state, owner: i.owner, head: i.head, since: i.updatedAt }));
   }
 
@@ -1289,7 +1442,7 @@ export class Ledger extends DurableObject<Env> {
         key: p.key,
         id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn }, { plan: id, key: p.key, dependsOn: p.dependsOn, approval: hash }),
       }));
-      record.approval = { hash, at, by: actor, allowPaid, limits, deadline, parts, routes };
+      record.approval = { hash, at, by: actor, allowPaid, limits, deadline, parts, routes, pool };
       record.blocked = null;
       this.savePlanRecord(id, record);
       this.log(id, actor, "plan.approved", { hash, allowPaid, limits, deadline, parts: Object.fromEntries(parts.map((p) => [p.key, p.id])) }, at);
@@ -1636,13 +1789,16 @@ export class Ledger extends DurableObject<Env> {
     if (done === "empty") return this.setBlocked(id, record, EMPTY_PLAN);
     const all = this.partEvents(id);
     const events = tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!])));
+    // Automatic review (docs/orchestrator.md, section 4): a submitted part
+    // with its checks passing and paths measured asks for a review request.
+    const reviewBlock = this.reviewTick(id, record, parts, at);
     const result = planActions({
       plan: this.approvedPlan(id, approval.hash),
       parts: parts.map((p) => ({ key: p.partKey!, state: p.state })),
       routes: approval.routes.map((r) => rerouted(r, record.reroutes[r.key])),
       events, maxParallel: approval.limits.maxParallel, deadline: approval.deadline, budget: null, now: at,
     });
-    let blocked = result.blocked, chosen = result.dispatch;
+    let blocked = result.blocked ?? reviewBlock, chosen = result.dispatch;
     if (!blocked && chosen.length) {
       const room = approval.limits.maxJobs - jobsUsed(all);
       if (room <= 0) blocked = `the plan has used its ${approval.limits.maxJobs} part dispatches (${RUN_LIMITS.jobsPerPart} per part)`;
@@ -1661,6 +1817,139 @@ export class Ledger extends DurableObject<Env> {
         this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: `the plan is blocked: ${blocked}` }, at);
       }
     }
+  }
+
+  // Automatic review (docs/orchestrator.md, section 4): asks for a review
+  // request for each submitted part whose checks pass and paths are measured,
+  // routed by pickReviewer from the pool frozen at approval. Returns why a
+  // part has no reviewer, which blocks the plan, or null when none does.
+  private reviewTick(id: string, record: PlanRecord, parts: Item[], at: string): string | null {
+    const approval = record.approval!;
+    const plan = this.approvedPlan(id, approval.hash);
+    const policy = this.project().policy;
+    const now = new Date(at);
+    for (const p of parts) {
+      if (p.state !== "submitted" || !p.partKey) continue;
+      // A request at a head the part has moved past is withdrawn, so the queue
+      // offers only the current head's review.
+      if (p.head) {
+        const stale = this.sql.exec(`SELECT id, head FROM review_requests WHERE item = ? AND state = 'open' AND head != ?`, p.id, p.head).toArray();
+        for (const r of stale) {
+          this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+          this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reason: "the part's head moved" }, at);
+        }
+      }
+      const part = plan.parts.find((x) => x.key === p.partKey);
+      if (!part) continue;
+      const route = approval.routes.find((r) => r.key === p.partKey);
+      const need = reviewNeeded({
+        item: p, part: true, policy,
+        evidence: this.evidenceFor(p.id),
+        reviews: this.reviewsFor(p.id),
+        requests: this.reviewRequests(p.id),
+        now, owner: this.owner,
+      });
+      if (!need.needed) continue;
+      const pick = pickReviewer({
+        item: p, pool: approval.pool, policy, allowPaid: approval.allowPaid,
+        part, route: route ? rerouted(route, record.reroutes[p.partKey]) : null,
+        previous: need.previousReviewer,
+        avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
+        owner: this.owner,
+      });
+      if (!pick.reviewer) return `part ${p.partKey} has no reviewer for automatic review: ${pick.unpicked}`;
+      const reviewer = pick.reviewer.actor;
+      const slash = reviewer.indexOf("/");
+      const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+      const brief = reviewBrief({
+        need, item: p, events: this.events(p.id),
+        plan: { goal: plan.goal, part }, diff: null, owner: this.owner,
+      });
+      const briefHash = briefFingerprint(brief);
+      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state) VALUES (?, ?, ?, ?, 'open')`,
+        p.id, need.head, JSON.stringify(dispatch), briefHash);
+      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round }, at);
+    }
+    return null;
+  }
+
+  // The review requests for one part, oldest first, as reviewNeeded reads them.
+  reviewRequests(item: string): ReviewRequestView[] {
+    return this.sql.exec(`SELECT head, state, claimedBy, claimedAt FROM review_requests WHERE item = ? ORDER BY id`, item).toArray()
+      .map((r) => ({
+        head: r.head as string,
+        state: r.state as ReviewRequestView["state"],
+        ...(r.claimedBy ? { claimedBy: r.claimedBy as string } : {}),
+        ...(r.claimedAt ? { claimedAt: r.claimedAt as string } : {}),
+      }));
+  }
+
+  // Open review requests, as the queue offers them: the part item with its
+  // dispatch overlaid by the review dispatch, whose job names "review".
+  reviewWaiting(): Item[] {
+    return this.sql.exec(`SELECT item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray()
+      .map((r) => {
+        const item = this.item(r.item as string);
+        return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+      });
+  }
+
+  // Binds an open review request to one reviewer, atomically, as the claim
+  // route binds an item. Refused for a stale head, a reviewer that wrote the
+  // item, or a runner or actor the dispatch did not ask for. Returns what the
+  // review job needs to build the brief and clone the part.
+  claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): ReviewClaim {
+    const item = this.item(itemId);
+    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
+    if (contributorsOf(item).some((c) => sameActor(c, actor))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
+    const row = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id LIMIT 1`, itemId).toArray()[0];
+    if (!row) throw new RuleError("no_review", `${itemId} has no open review request`, 404);
+    const head = row.head as string;
+    const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
+    if (head !== item.head) {
+      throw new RuleError("stale_head", `the review request is for ${head.slice(0, 8)} but ${itemId} is at ${item.head?.slice(0, 8) ?? "nothing"}; the builder must push first`, 409);
+    }
+    if (!runner) throw new RuleError("dispatched", `${itemId}'s review waits for a runner to claim it`, 409);
+    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
+    const [harness, model] = actor.split("/");
+    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403);
+    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
+    const at = new Date().toISOString();
+    this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner?.runner ?? null, at, row.id);
+    this.log(itemId, actor, "review.claimed", { head, runner: runner.runner }, at, proved);
+    const record = this.planRecord(item.plan!);
+    const approval = record.approval!;
+    const plan = this.approvedPlan(item.plan!, approval.hash);
+    const part = plan.parts.find((x) => x.key === item.partKey) ?? null;
+    const need = reviewNeeded({
+      item, part: true, policy: this.project().policy,
+      evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
+      requests: [], now: new Date(at), owner: this.owner,
+    });
+    // The request was made only where a review is needed, so this holds; the
+    // runner treats an absent need as a request to release.
+    return {
+      item, head,
+      need: need.needed ? need : null,
+      plan: part ? { goal: plan.goal, part } : null,
+      events: this.events(itemId), owner: this.owner,
+    };
+  }
+
+  // Marks the request for a head answered when a review is recorded at it.
+  private answerReviewRequest(itemId: string, head: string, at: string): void {
+    this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed')`, itemId, head);
+  }
+
+  // A reviewer whose harness wrote no valid verdict lets the request go, so
+  // another reviewer may take it. The request returns to the queue, open.
+  releaseReview(itemId: string, actor: string, note: string, proved = false): void {
+    this.item(itemId);
+    const at = new Date().toISOString();
+    const row = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'claimed' AND claimedBy = ? ORDER BY id LIMIT 1`, itemId, actor).toArray()[0];
+    if (!row) throw new RuleError("no_review", `${itemId} has no review request claimed by ${actor}`, 404);
+    this.sql.exec(`UPDATE review_requests SET state = 'open', claimedBy = NULL, runner = NULL, claimedAt = NULL WHERE id = ?`, row.id);
+    this.log(itemId, actor, "review.released", { note }, at, proved);
   }
 
   // Before approval: once the planner has let the plan go twice without a
@@ -1731,6 +2020,26 @@ function toEvent(r: Row): LedgerEvent {
   };
 }
 
+// Whether a findings list is the shape parseVerdict produces, so a review the
+// Ledger stores carries only findings the brief and the rework can read.
+function validFindings(findings: Finding[]): boolean {
+  return Array.isArray(findings) && findings.every((f) => f !== null && typeof f === "object"
+    && typeof f.file === "string" && (f.line === null || Number.isInteger(f.line))
+    && (f.severity === "blocking" || f.severity === "follow-up") && typeof f.text === "string");
+}
+
+// A deterministic fingerprint of a review brief, so two requests that ask the
+// same question share one. FNV-1a is a hash, not a proof: nothing trusts it
+// for security, only to tell whether the question changed.
+function briefFingerprint(text: string): string {
+  let h = 0xcbf29ce484222325n;
+  for (let i = 0; i < text.length; i++) {
+    h ^= BigInt(text.charCodeAt(i));
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, "0");
+}
+
 function toItem(r: Row): Item {
   return {
     id: r.id as string,
@@ -1749,10 +2058,25 @@ function toItem(r: Row): Item {
     runner: (r.runner as string | null) ?? null,
     // Only an item the owner has overridden carries the field.
     ...(r.review_override ? { reviewOverride: JSON.parse(r.review_override as string) as ReviewOverride } : {}),
+    nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
+    stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
+    nextGate: (r.next_gate as string | null) ?? null,
+    // Only a blocked item carries the record; unblocking and abandoning clear it.
+    ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
     // Only a plan and its parts carry these.
     ...(r.kind === "plan" || r.kind === "part" ? { kind: r.kind } : {}),
     ...(r.plan ? { plan: r.plan as string } : {}),
     ...(r.part_key ? { partKey: r.part_key as string } : {}),
     ...(r.deps ? { deps: JSON.parse(r.deps as string) as string[] } : {}),
   };
+}
+
+// The columns an ItemFields sets: a field given becomes its column, an
+// empty list or null gate becomes NULL, and a field left out sets nothing.
+function fieldColumns(fields: ItemFields): Record<string, string | null> {
+  const set: Record<string, string | null> = {};
+  if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
+  if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
+  if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
+  return set;
 }

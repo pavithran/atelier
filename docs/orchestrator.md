@@ -1,15 +1,16 @@
 # Orchestrator design
 
-Steps 1 to 8 and 11 of the build sequence (section 8) are built. Steps 1
-to 4, 7a, 8 and 11 are pure functions in `src/plans/` and `src/review/`.
-Step 5 puts plans in the project's Ledger: proposals, approval, the parts
-and the tick that dispatches them. Step 6 gives them routes and the
-`atelier plan` command. Step 7 gives the planner and each part's builder a
-brief from the server (`GET items/tN/job-brief`) and the runner a plan job.
-The review and integration code is still called by nothing but its tests.
-Steps 9, 10 and 12 to 14 are not built: a review is recorded only when
-someone runs `atelier review`, and nothing merges parts into a plan's
-branch.
+Steps 1 to 11 of the build sequence (section 8) are built. Steps 1 to 4,
+8 and 11 are pure functions in `src/plans/` and `src/review/`. Step 5 puts
+plans in the project's Ledger: proposals, approval, the parts and the tick
+that dispatches them. Step 6 gives them routes and the `atelier plan`
+command. Step 7 gives the planner and each part's builder a brief from the
+server (`GET items/tN/job-brief`) and the runner a plan job. Steps 9 and 10
+add automatic cross-family review: the Ledger's tick asks a review request
+for each submitted part, and a reviewer's runner answers it with findings
+and the rework transition. The integration code is still called by nothing
+but its tests. Steps 12 to 14 are not built: nothing merges parts into a
+plan's branch.
 
 Where a section describes something not built, it is the design, not a
 claim that the routes, storage, commands or runner jobs exist. Where the
@@ -97,7 +98,7 @@ non-empty list of non-empty strings; the reviewer judges their content.
 - applies the claim's rule, `assertEligible`: under a governed policy only actors with the `executor` role build, otherwise the project's eligible harnesses;
 - gives a size M part only to a model whose context window is at least 64K tokens or unknown; the reviewer reads the same scope, so the rule applies to it too;
 - honours a part's `prefer {actor, reason}` only when that actor passes every rule, and the builder's reasons say what became of the preference;
-- freezes, per part, the top builder, two alternates and the reasons, in `route()`'s order: score, then model id, then actor name;
+- freezes, per part, the top builder, two alternates and the reasons, in `route()`'s order: score, then, when the input carries each model's reliability across every project (`src/models/reliability.ts`), the share of its outcomes in its favour as a tie-breaker that never changes a score, then model id, then actor name;
 - picks the first reviewer in that order whose `familyOf` differs from the builder's, both families recognised, as `gate()` counts a cross-family review, and, under a governed policy, who holds the `assessor` role.
 
 A part with no eligible builder, or no reviewer of another family, is returned unrouted with a reason that names each model passed over. Every choice carries human-readable reasons, for the task page's "why this model?".
@@ -269,8 +270,8 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 **t39: Automatic cross-family review**
 
 8. **Review rules.** `src/review/` with `reviewNeeded`, `pickReviewer`, `parseVerdict` and `reviewBrief`. Built.
-9. **Ledger side.** Review requests, review claims, findings, the rework transition, and review jobs in the queue.
-10. **Runner review job.**
+9. **Ledger side.** Review requests, review claims, findings, the rework transition, and review jobs in the queue. Built: the `review_requests` table, `reviewTick`, `claimReview` and `releaseReview` in `src/ledger.ts`, the `review-claim` and `review-release` routes, `findings` on `Review`, and the `review.rework` event `phase.ts` reads as a failed finish. Test: `test/review-requests.spec.ts`.
+10. **Runner review job.** Built: `runReview` in `cli/runner.mjs`, the `{diff_file}` and `{verdict_file}` placeholders, and the `review` job in the runner's queue offer. Test: `test/review-runner.test.mjs`.
 
 **t16: Integration branch per plan**
 

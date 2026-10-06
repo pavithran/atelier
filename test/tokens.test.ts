@@ -46,10 +46,10 @@ test("expiry is exclusive and revocation takes effect immediately", () => {
 
 test("route policy grants workflow operations and defaults to refusing", () => {
   const task = ["projects", "p", "items", "t1"];
-  for (const verb of ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release"]) {
+  for (const verb of ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release", "block", "unblock"]) {
     assert.equal(agentRoute("POST", [...task, verb]), true, verb);
   }
-  for (const verb of ["accept", "merged", "landing", "abandon", "dispatch", "undispatch", "future"]) {
+  for (const verb of ["accept", "merged", "landing", "abandon", "dispatch", "undispatch", "edit", "future"]) {
     assert.equal(agentRoute("POST", [...task, verb]), false, verb);
   }
   for (const method of ["GET", "POST", "PUT", "DELETE"]) {

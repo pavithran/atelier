@@ -12,7 +12,7 @@ const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 // {plan_file} is the plan job's alone (docs/orchestrator.md, section 2): the
 // file the harness writes the plan document to. A command without it still
 // builds; the runner refuses to give it a plan job.
-const PLACEHOLDERS = ["model", "brief_file", "workspace", "plan_file"];
+const PLACEHOLDERS = ["model", "brief_file", "workspace", "plan_file", "diff_file", "verdict_file"];
 // The name of a Keychain entry, as the model pool records one.
 const KEYCHAIN_ENTRY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // A provider whose balance the usage report asks for (cli/usage.mjs).
@@ -62,6 +62,13 @@ export function parseConfig(json) {
     }
   }
   const seen = new Set();
+  // Optional: the jobs besides building the runner offers, such as "review".
+  // A review dispatch is offered only to a runner whose offer lists it.
+  let jobs;
+  if (value.jobs !== undefined) {
+    if (!Array.isArray(value.jobs) || value.jobs.some((j) => typeof j !== "string" || !j.trim())) errors.push("jobs must be a list of job names");
+    else jobs = [...new Set(value.jobs.map((j) => j.trim()))];
+  }
   for (const [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
     const start = errors.length;
@@ -78,7 +85,7 @@ export function parseConfig(json) {
     } else {
       const template = entry.command.join("\n");
       const placeholders = [...template.matchAll(/\{([^{}]*)\}/g)].map((m) => m[1]);
-      if (placeholders.some((p) => !PLACEHOLDERS.includes(p)) || /[{}]/.test(template.replace(/\{(model|brief_file|workspace|plan_file)\}/g, ""))) bad("unknown command placeholder");
+      if (placeholders.some((p) => !PLACEHOLDERS.includes(p)) || /[{}]/.test(template.replace(/\{(model|brief_file|workspace|plan_file|diff_file|verdict_file)\}/g, ""))) bad("unknown command placeholder");
       if (!placeholders.includes("model") || !placeholders.includes("brief_file")) bad("command must include {model} and {brief_file}");
       if (/[{}]/.test(entry.command[0])) bad("the executable must not contain placeholders");
     }
@@ -91,7 +98,7 @@ export function parseConfig(json) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
-  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}) };
+  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(jobs !== undefined ? { jobs } : {}) };
 }
 
 export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {

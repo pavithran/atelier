@@ -42,8 +42,12 @@ export function limitsFor(parts: number, allowPaid: boolean): PlanLimits {
 }
 
 // The owner's approval of one proposal, with what it fixed: the limits, the
-// deadline, the part items it created in plan order, and the routing of
-// each part as routeParts computed it then.
+// deadline, the part items it created in plan order, the routing of each
+// part as routeParts computed it then, and the pool routeParts chose from.
+// The pool is snapshotted because automatic review (t39) picks a reviewer
+// from it when a part is submitted, which is later, and the routing is
+// frozen at approval; the Ledger's tick cannot read the index's pool, which
+// lives on another Durable Object.
 export interface PlanApproval {
   hash: string;
   at: string;
@@ -53,6 +57,7 @@ export interface PlanApproval {
   deadline: string;
   parts: { key: string; id: string }[];
   routes: PartRoute[];
+  pool: ModelEntry[];
 }
 
 // A plan's record, kept under the meta key plan:tP. Proposals are kept apart,

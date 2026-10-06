@@ -246,17 +246,17 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   expect(build.job).toBe("build");
   for (const text of ["What this part builds on", "Part `a`", H1, `landed at ${H1.slice(0, 8)}`]) expect(build.text).toContain(text);
 
-  // A failing finish and a rejection with findings send b back: the next
-  // brief is rework, quoting both.
+  // A failing check and a blocking rejection with findings send b back to
+  // its builder (the rework transition); the next brief is rework, quoting
+  // both the findings and the failing check's output.
   const H2 = "2".repeat(40);
   await L.setFork(b.id, `${name}--${b.id}`, H1, actorB);
   await L.recordPush(b.id, actorB, H2, H2);
   await L.addEvidence({ itemId: b.id, claim: "npm test", grade: "observed", head: H2, passed: false, by: actorB, at: new Date().toISOString(), changedPaths: ["src/b/one.ts"], outputTail: "3 tests failed in src/b/one.ts" });
   await L.addReview({ itemId: b.id, by: "codex/gpt-6-astra", head: H2, approve: false, note: "The loop never ends", at: new Date().toISOString(),
     findings: [{ file: "src/b/one.ts", line: 12, severity: "blocking", text: "The loop never ends" }] } as never);
-  await L.release(b.id, actorB, "finish failed");
   const again = (await L.item(b.id)).dispatch!;
-  expect(`${again.agent}/${again.model}`).toBe(actorB); // a failed finish retries the same actor
+  expect(`${again.agent}/${again.model}`).toBe(actorB); // a rejection sends it back to the same builder
   await L.claim(b.id, actorB, RUNNER);
   const rework = await (await call("GET", `/projects/${name}/items/${b.id}/job-brief`, null, undefined, tokenB)).json() as { job: string; text: string };
   expect(rework.job).toBe("rework");
