@@ -43,10 +43,11 @@ observed passing at the head (`evidenceAt` and `gate` in src/rules.ts);
 nothing reads what a test asserts, and a test that pins a defect passes like
 any other. The independent review is the only second reader, and the review
 brief does not ask a reviewer to run the tests without the change. Suggested
-change: `briefFor` in src/brief.ts could tell a reviewer of a change to tests
-that the property is checkable with `atelier diff` (cli/atelier.mjs), which
-clones the base and the head, by confirming that the new tests fail on the
-base tree.
+change: `reviewBrief` in src/review/brief.ts, the brief a reviewer receives,
+could ask a reviewer of a change to tests to confirm that the new tests fail
+on the base tree; `atelier diff` (cli/atelier.mjs) prints the change but
+leaves no base tree to run them on, so that confirmation needs a checkout of
+the baseline as well.
 
 ## A3. Recording a claim without checking the route
 
@@ -69,7 +70,9 @@ stale revisions before reading Artifacts"; test/notify.spec.ts, "cloud results
 notify after a waiting submission using the saved origin"; test/notify.test.ts,
 "notification uses the existing decision brief, encoded title and absolute task
 URL"; test/rename.spec.ts, "pages under a former name redirect to the current
-one with their path and query, and a form posted under it acts".
+one with their path and query, and a form posted under it acts". Not covered by a test: the comparison against Artifacts in
+`verifyRevision` and the review route's re-read of the fork's head; the tests
+above stop at `assertRevision`, before Artifacts is read.
 
 ## A4. Committing and pushing a finding that was wrong
 
@@ -82,8 +85,9 @@ Atelier does not prevent a false claim being recorded; nothing verifies
 narrative prose. What the record does is stop the wrong statement from doing
 gate work and keep the correction visible: evidence filed as a report is
 displayed and never counted (`evidenceAt` in src/rules.ts), every event is
-appended with its actor and head to a log nothing rewrites (`Ledger.log` in
-src/ledger.ts), and a later review by the same reviewer at the same head
+appended with its actor and time to a log nothing rewrites, and the events
+that concern a revision (push, evidence, review, submit, accept) carry the
+head in their data (`Ledger.log` in src/ledger.ts), and a later review by the same reviewer at the same head
 supersedes the earlier one (`latestReviews` in src/rules.ts). Tests:
 test/rules.test.ts, "a report never satisfies a check" and "decisions reject
 stale revisions and retain the latest review from each reviewer". The
@@ -123,8 +127,10 @@ spent learning it.
 
 Atelier's evidence cannot be diluted that way. The gate counts only observed
 checks whose claim is exactly one of the project's required checks, and only
-at the item's current head (`evidenceAt` and `gate` in src/rules.ts); anything
-else an agent files is a report, which is shown and never counted. Evidence
+at the item's current head (`evidenceAt` and `gate` in src/rules.ts). Anything
+else an agent files is either a report, which is shown and never counted, or
+an observed check that is not one of the required checks, which is stored and
+satisfies nothing. Evidence
 bound to another head is refused outright (`addEvidence` in src/ledger.ts,
 stale_head). Tests: test/rules.test.ts, "a report never satisfies a check" and
 "a required check is pending until observed at the current head";
@@ -159,17 +165,18 @@ second is A11's question.
 
 ControlPlane recorded a go token computed by hand instead of through
 release-token, the command whose purpose is to derive the authority declaration
-from the diff and refuse a disagreement before anyone signs, and a signer
-nearly signing a false statement. A repair paste then told another project to
+from the diff and refuse a disagreement before anyone signs; PAVI signed a
+statement that was wrong at the time, and only the seal caught it, nearly the
+third release caught that way. A repair paste then told another project to
 run a subcommand that does not exist, found only because the verification was
 later run from the same side.
 
-Partly prevented. The commands Atelier itself hands over are generated beside
-the code that parses them: the handoff routes return the exact next command
+Partly prevented. The CLI's usage text is data in src/usage.ts that the CLI
+imports, so help and parser share one source. The handoff routes return the exact next command
 for the new owner ("${to} runs: atelier claim ${id} --project ${project}", the
-handoff cases in src/index.ts), and the CLI's usage text is data in
-src/usage.ts that the real binary is tested to print, so a command named in
-help is a command that exists and prints its usage without contacting a
+handoff cases in src/index.ts), built in the Worker apart from the CLI that
+parses it, and the real binary is tested to print its usage, so a command
+named in help is a command that exists and prints its usage without contacting a
 server. Tests: test/cli-text.test.mjs, "every command the CLI defines is in
 the help, and every help entry is a command" and "each command's usage line
 prints exactly as pinned"; test/cli-help.test.mjs, "models --help prints the
@@ -186,7 +193,10 @@ and was read as success though it had landed nothing, because zsh does not
 word-split unquoted parameters and a grep filter hid the error. It was caught
 only by checking state afterwards. Verify state, not output.
 
-Atelier's recording path verifies state. The push route reads the head from
+Atelier's recording path verifies state, with one stated exception: outside a
+project registered as sandbox only, a check's pass or fail is the caller's
+word, recorded as observed (the evidence route in src/index.ts says so). The
+push route reads the head from
 Artifacts itself (`headOf` in src/index.ts), and `recordPush` in src/ledger.ts
 records what the Worker saw, logging a mismatch flag when the caller's claim
 differs; the CLI dies rather than accept a silent disagreement, with a message
@@ -256,9 +266,10 @@ catch the edit at the edit.
 Atelier prevents this by construction, because every fact the gate reads is
 bound to a commit. Evidence is refused at any head other than the item's
 (`addEvidence` in src/ledger.ts), the gate counts only evidence at the current
-head (`evidenceAt` in src/rules.ts), and a later push moves the head, returns
-an accepted item to claimed and withdraws the acceptance (`recordPush` in
-src/ledger.ts; `observePush` for pushes that arrive outside the CLI). An edit
+head (`evidenceAt` in src/rules.ts), and a later push moves the head and
+withdraws the acceptance: `recordPush` in src/ledger.ts returns an accepted
+item to claimed, and `observePush`, for pushes that arrive outside the CLI,
+returns it to submitted. An edit
 after measurement therefore leaves the gate saying "not yet observed at this
 head" instead of letting old evidence cover new bytes, and re-measuring costs
 one `atelier check` in a fresh clean clone rather than a release ceremony.
@@ -271,7 +282,7 @@ its owner can push".
 
 ControlPlane recorded a canonical test reading docs/control-plane/, which sits
 at a project root in an adopter rather than under the vendored module, breaking
-24 materialized targets; it was recorded three times, and a fifth instance
+24 modules inside a materialized target snapshot; it was recorded three times, and a fifth instance
 landed in the commit that claimed to avoid the fourth. The suite ships and
 runs in seventeen other repositories where the layout differs. What finally
 prevented it was a boundary test naming the module, the import and the remedy,
