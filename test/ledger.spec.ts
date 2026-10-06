@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import { briefFor } from "../src/brief.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import { Ledger, type LedgerEvent } from "../src/ledger.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy, type Review } from "../src/rules.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
@@ -579,6 +580,98 @@ it("abandon is refused while a merge holds the landing lease, so a published mer
   await refusal(L.abandon("t2", "owner", "not now"), "landing", /landing lease/);
   await L.cancelLanding("t2", "owner");
   expect(await L.abandon("t2", "owner", "not now")).toMatchObject({ state: "abandoned", owner: null });
+});
+
+// Task t151: update() and log() each read the clock, so an event could be
+// stamped a millisecond after the updatedAt of the change that made it, and
+// the standing route's test failed now and then on that. Here every read of
+// the clock moves it on a millisecond, so two reads within one change
+// always differ, and the test fails whenever a change reads it twice.
+it("one Ledger change takes one timestamp: the item's times and the change's events agree", async () => {
+  const stub = env.LEDGER.get(env.LEDGER.idFromName("project:one-clock"));
+  await runInDurableObject(stub, async (_instance, state) => {
+    const RealDate = Date;
+    let tick = RealDate.parse("2026-10-06T09:00:00.000Z");
+    class TickingDate extends RealDate {
+      constructor(...args: [] | [string | number | Date]) {
+        if (args.length === 0) super(tick++);
+        else super(args[0]);
+      }
+      static now() { return tick++; }
+    }
+    globalThis.Date = TickingDate as DateConstructor;
+    try {
+      const L = new Ledger(state, env);
+      const C = "gemini-cli/gemini-3.1-pro";
+      // The newest `n` events of an item are stamped with the item's updatedAt.
+      const stamped = (id: string, n = 1) => {
+        const item = L.item(id);
+        const recent = L.events(id, n);
+        expect(recent.map((e) => [e.kind, e.at])).toEqual(recent.map((e) => [e.kind, item.updatedAt]));
+        return item;
+      };
+      const record = L.initProject({ name: "one-clock", repo: "one-clock", reset: false, checks: ["npm test"], protected: ["AGENTS.md"] }, "owner");
+      expect(L.events(undefined, 1)[0]).toMatchObject({ kind: "project.set", at: record.createdAt });
+
+      expect(L.newItem("One clock", [], "owner")).toMatchObject({ createdAt: stamped("t1").updatedAt });
+      L.claim("t1", A); stamped("t1");
+      L.setFork("t1", "one-clock--t1", H0, A); stamped("t1");
+      L.recordPush("t1", A, H1, H1);
+      expect(stamped("t1").lastPushAt).toBe(L.item("t1").updatedAt);
+      L.submit("t1", A, "First go"); stamped("t1");
+      L.handoff("t1", "owner", B, "Over to you"); stamped("t1");
+      L.recordPush("t1", B, H2, H2);
+      expect(stamped("t1").lastPushAt).toBe(L.item("t1").updatedAt);
+      L.addEvidence(observed("t1", H2, ["README.md"]));
+      L.submit("t1", B); stamped("t1");
+      L.accept("t1", "owner", H2); stamped("t1");
+      // A review of accepted work sends it back to submitted, in one change.
+      L.addReview(review("t1", C, H2, true, "Looked again"));
+      expect(stamped("t1").state).toBe("submitted");
+      L.accept("t1", "owner", H2);
+      L.beginLanding("t1", "owner", H2);
+      L.merged("t1", "owner", "c".repeat(40), true, H2); stamped("t1");
+
+      L.newItem("Back and forth", [], "owner");
+      L.claim("t2", A);
+      L.release("t2", A, "Not for me"); stamped("t2");
+      L.dispatch("t2", "owner", { to: "home" });
+      expect(stamped("t2").dispatch?.at).toBe(L.item("t2").updatedAt);
+      L.undispatch("t2", "owner"); stamped("t2");
+      L.abandon("t2", "owner", "No longer wanted"); stamped("t2");
+
+      L.newItem("Seen by the queue", [], "owner");
+      L.claim("t3", A);
+      L.setFork("t3", "one-clock--t3", H0, A);
+      L.observePush("t3", H1, H0);
+      expect(stamped("t3").lastPushAt).toBe(L.item("t3").updatedAt);
+      L.unclaim("t3", A, "the fork failed"); stamped("t3");
+
+      // An override and the acceptance it allows are one change: both events, and the override, carry its time.
+      L.newItem("Protected", [], "owner");
+      L.claim("t4", A);
+      L.setFork("t4", "one-clock--t4", H0, A);
+      L.recordPush("t4", A, H1, H1);
+      L.addEvidence(observed("t4", H1, ["AGENTS.md"]));
+      L.submit("t4", A);
+      L.accept("t4", "owner", H1, "No reviewer of another family is available");
+      expect(stamped("t4", 2).reviewOverride?.at).toBe(L.item("t4").updatedAt);
+
+      // On the index: a revoked token and its event, and every alert one usage report raises.
+      L.putAgentToken({ id: "tok1", hash: "h".repeat(64), actor: A, createdAt: new Date().toISOString(), expiresAt: new Date(tick + 86_400_000).toISOString() });
+      L.revokeAgentToken("tok1");
+      const revoked = L.agentTokens().find((t) => t.id === "tok1");
+      expect(L.events(undefined, 1)[0]).toMatchObject({ kind: "token.revoked", at: revoked?.revokedAt });
+      L.putUsage({ tool: "codex", runner: "home:studio", at: new Date().toISOString(), windows: [
+        { name: "weekly", usedPercent: 95, resetsAt: null, at: null }, { name: "5-hour", usedPercent: 99, resetsAt: null, at: null },
+      ], models: [], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: null, balanceFloor: null }, "https://atelier.test");
+      const alerts = L.events(undefined, 2);
+      expect(alerts.map((e) => e.kind)).toEqual(["usage.alert", "usage.alert"]);
+      expect(alerts[0].at).toBe(alerts[1].at);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
 });
 
 it("registration atomically refuses another project with the same baseline", async () => {
