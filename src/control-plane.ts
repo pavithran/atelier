@@ -51,6 +51,15 @@ const eligible = (actor: string, list: string[] | undefined) => {
 
 export function mergePolicyDecision(before: Policy, after: Policy, paths: string[], allowChanged = false, context: MergeContext = {}) {
   const changes = controlPlaneChanges(before, after);
+  // Checks are not ControlPlane's to set (controlPlaneChanges): a change among
+  // them alone came from the project owner's own init, so the warning names
+  // them as the required checks, not as ControlPlane.
+  const checkChanges = changes.filter((c) => c.startsWith("checks:"));
+  const controlPlane = changes.filter((c) => !c.startsWith("checks:"));
+  const warned = [
+    ...(controlPlane.length ? [`ControlPlane policy changed since acceptance: ${controlPlane.join("; ")}`] : []),
+    ...(checkChanges.length ? [`the required checks changed since acceptance: ${checkChanges.join("; ")}`] : []),
+  ];
   // Matched as changeClass matches the guarded set: whatever the letter case or Unicode form.
   const guarded = (policy: Policy) => [...(policy.protected ?? []), ...checkFiles(policy.checks ?? [])];
   const newlyProtected = paths.filter((path) => matchesFolded(path, guarded(after)) && !matchesFolded(path, guarded(before)));
@@ -64,7 +73,7 @@ export function mergePolicyDecision(before: Policy, after: Policy, paths: string
   if (unchecked.length) reasons.push(`checks required now were not observed passing at the accepted revision: ${unchecked.map((c) => `\`${c}\``).join(", ")}`);
   if (after.refuseOverlap && !before.refuseOverlap && context.overlapping?.length) reasons.push(`overlapping claims are now refused, and its scope overlaps live ${context.overlapping.join(", ")}`);
   return {
-    warning: changes.length ? `Warning: ControlPlane policy changed since acceptance: ${changes.join("; ")}` : null,
+    warning: warned.length ? `Warning: ${warned.join("; ")}` : null,
     refusal: changes.length && reasons.length && !allowChanged
       ? `${reasons.join("; ")}. Review the task again on its page and accept again, or use --policy-changed-ok after reviewing this policy change.` : null,
   };

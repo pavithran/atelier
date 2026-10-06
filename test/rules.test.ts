@@ -169,6 +169,11 @@ test("what a runner executes is protected: make and just recipes, npx's binary, 
   assert.deepEqual(checkFiles(["make test"]), sorted(["Makefile", "makefile", "GNUmakefile", "**/*.mk"]));
   assert.deepEqual(checkFiles(["make -C native -f build.mk all", "make --directory=./lib --makefile=rules.mk"]), sorted(["native/build.mk", "lib/rules.mk", "**/*.mk"]));
   assert.deepEqual(checkFiles(["make -C ../other check", "make -f /etc/Makefile"]), ["**/*.mk"]);
+  // The directory an option names is normalised as Git names a changed path,
+  // so what it guards matches what a change touches.
+  assert.deepEqual(checkFiles(["make -C lib/../native test", "make -C packages/app/ test", "just -d tools -f justfile.ci check"]),
+    sorted(["native/Makefile", "native/makefile", "native/GNUmakefile", "packages/app/Makefile", "packages/app/makefile", "packages/app/GNUmakefile", "tools/justfile.ci", "**/*.mk", "**/*.just"]));
+  assert.deepEqual(checkFiles(["make -C a/../../escape test"]), ["**/*.mk"]);
   assert.deepEqual(checkFiles(["just check"]), sorted(["justfile", "Justfile", ".justfile", "**/*.just"]));
   assert.deepEqual(checkFiles(["just --justfile ci.just test"]), sorted(["ci.just", "**/*.just"]));
   assert.deepEqual(checkFiles(["npx vitest run"]), sorted(["package.json", ".npmrc", "node_modules/.bin/vitest"]));

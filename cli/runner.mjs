@@ -134,6 +134,13 @@ export function writeBrief(workspace, text) {
 
 export const removeBrief = ({ file }) => rmSync(file, { force: true });
 
+// A release note the server takes is at most NOTE_MAX characters (src/text.ts),
+// and a failure's reason can hold a whole harness stderr. The note keeps the
+// reason's end, where the error says what failed, so the release is taken
+// instead of refused and the claim is not left held on an over-long note.
+const NOTE_MAX = 2000;
+const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
+
 // A harness runs a model and the code the model writes, so it gets what a
 // check gets (checkEnv in check-env.mjs: the variables toolchains need, nothing
 // named ATELIER_* and nothing whose name says it holds a secret) and the
@@ -264,12 +271,12 @@ export async function runTask(assignment, config, name, io) {
       let head;
       try { head = await io.head(workspace, { cleanup: true }); } catch { /* Unknown commit status preserves the claim. */ }
       if (head === before) {
-        try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace); io.log("released: no new commit"); }
+        try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)], workspace); io.log("released: no new commit"); }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else io.log("claim preserved: a commit exists or commit status is unknown");
     } else if (claimAttempted && !claimed) {
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason]);
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
         io.log("released after claim step failed");
       } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
     } else io.log("claim not released: claim or commit status is unknown");

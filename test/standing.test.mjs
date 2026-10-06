@@ -100,7 +100,7 @@ test("the checkout line for each way a checkout can be in or out of step", () =>
 // repository as the baseline, so the checkout comparison is real git.
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@x.test", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@x.test" } }).trim();
 
-async function run(t, setup) {
+async function run(t, setup, argv) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-standing-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bare = join(dir, "baseline.git"), checkout = join(dir, "checkout");
@@ -119,13 +119,24 @@ async function run(t, setup) {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: { demo: { path: checkout, branch: "main", ...state.project } } }));
-  const child = spawn(process.execPath, [cli, "status", "--project", "demo"], {
+  const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
     cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
   });
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const status = await new Promise((done) => child.on("close", done));
   return { status, output, seen };
 }
+
+test("status --project --json prints the standing record and the checkout line for a machine reader", async (t) => {
+  const r = await run(t, () => null, ["status", "--project", "demo", "--json"]);
+  assert.equal(r.status, 0, r.output);
+  const read = JSON.parse(r.output);
+  assert.equal(read.project.project.name, "demo");
+  assert.equal(read.project.generatedAt, "2026-10-05T10:46:12.000Z");
+  assert.deepEqual(read.project.live.map((i) => [i.id, i.since]), [["t1", "2026-10-05T09:00:00.000Z"]]);
+  assert.match(read.checkout, /^Checkout: /);
+  assert.equal(read.checkout.split("\n").length, 1);
+});
 
 test("status --project prints where it stands and says the checkout is in step", async (t) => {
   const r = await run(t, () => null);

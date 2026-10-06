@@ -41,11 +41,11 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Items", lines: [[
     { form: 'new "title" [--scope GLOB]...', about: "The project owner creates an item with a title and, optionally, the globs it intends to touch." },
-    { form: "ls [--all]", about: "Lists the project's items with state, owner and head. Merged and abandoned items need `--all`." },
+    { form: "ls [--all] [--json]", about: "Lists the project's items with state, owner and head. Merged and abandoned items need `--all`. `--json` prints them for scripts, each item with its created, updated and last-push times, as Observatory reads them." },
     { form: "show ID", about: "Prints an item's decision brief: what is decided, the recorded evidence, a recommendation and the item's address. `--json` prints it for scripts." },
     { form: "owners [--json]", about: "Prints one line per live item: its state, its owner and since when." },
     { form: "inbox", about: "Prints the decision brief of each item that needs the project owner, most urgent first." },
-    { form: "status [--project P]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline." },
+    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline. `--json` prints machine-readable records, each item with its created, updated and last-push times, as Observatory reads them." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
@@ -135,14 +135,26 @@ export const HELP_FORMS: string[] = HELP_GROUPS.flatMap((g) => g.lines.flat().ma
 // What the usage of every command that runs checks locally says about them.
 const LOCAL_CHECK = "A local check runs on this machine with your file access: it can read your files and your Keychain and reach the network. It is given only PATH, HOME and the few other environment variables toolchains need, and Atelier's tokens are redacted from its output before it is uploaded. Run untrusted code in the sandbox: atelier check --sandbox, atelier finish --sandbox, or a project set up with atelier init --sandbox-only.";
 
-// Per-command usage lines, shown by --help/-h and by a bad subcommand.
+// Per-command usage lines, shown by --help/-h and by a bad subcommand. The
+// forms the synopsis shows are the ones the help table prints, so the two
+// cannot drift; a line may add what a failure needs to name (a subcommand,
+// the flags the help's form leaves to its description).
 export const COMMAND_USAGE: Record<string, string> = {
   unwrap: "usage: atelier unwrap [--project P]",
   wrap: 'usage: atelier wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]',
+  login: "usage: atelier login --server URL · atelier login --store",
+  new: 'usage: atelier new "title" [--scope GLOB]...',
+  ls: "usage: atelier ls [--all] [--json] [--project P]",
+  status: "usage: atelier status [--project P] [--json]",
   start: "usage: atelier start ID [--as harness/model]",
   done: `usage: atelier done "summary"\n${LOCAL_CHECK}`,
   finish: `usage: atelier finish [--sandbox] [--summary T]\n${LOCAL_CHECK}`,
   check: `usage: atelier check [--sandbox | -- CMD]\n${LOCAL_CHECK}`,
+  gc: "usage: atelier gc [--project NAME] [--dry-run | --apply]",
+  review: "usage: atelier review ID --approve|--reject [--note TEXT] [--as harness/model]",
+  handoff: "usage: atelier handoff ID --to H/M [--note TEXT]",
+  merge: "usage: atelier merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok] · merge ID --cancel [--discard-local]",
+  token: "usage: atelier token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID",
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",

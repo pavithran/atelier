@@ -197,6 +197,24 @@ test("runTask reports release failure and skips empty or interrupted work", asyn
   assert.deepEqual(stopped.calls, []);
 });
 
+test("a release note over the server's cap is cut to its end, whatever failed", async () => {
+  const reason = `prefix ${"x".repeat(3000)} tail`;
+  const released = fixture({ head: "before" });
+  released.io.brief = async () => { throw new Error(reason); };
+  await runTask(assignment, config, "home:studio", released.io);
+  const note = released.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
+  assert.equal(note.length, 2000, "the server takes at most 2000 characters (NOTE_MAX)");
+  assert.ok(note.endsWith(" tail"));
+
+  const unclaimed = fixture();
+  const { cli } = unclaimed.io;
+  unclaimed.io.cli = async (argv, cwd) => { unclaimed.calls.push({ argv, cwd }); if (argv[0] === "claim") throw new Error(reason); };
+  await runTask(assignment, config, "home:studio", unclaimed.io);
+  const afterClaimFailure = unclaimed.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
+  assert.equal(afterClaimFailure.length, 2000);
+  assert.ok(afterClaimFailure.endsWith(" tail"));
+});
+
 test("runTask refuses assignments outside its offer or with unsafe paths", async () => {
   for (const changed of [{ model: "other" }, { actor: "codex/other" }, { project: "../escape" }, { item: { ...assignment.item, id: "../escape" } }]) {
     const { io, calls } = fixture();

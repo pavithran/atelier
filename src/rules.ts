@@ -650,6 +650,18 @@ export function checkFiles(checks: string[]): string[] {
       if (dir !== null && inside(dir)) for (const file of own) add(`${dir.replace(/\/?$/, "/")}${file}`);
     }
   };
+  // A directory an option names, normalised as Git names a changed path: "."
+  // and empty segments dropped, ".." resolved against what precedes it. Null
+  // when it climbs out of the repository, where nothing it names is guarded.
+  const normalDir = (dir: string): string | null => {
+    const parts: string[] = [];
+    for (const part of dir.split("/")) {
+      if (!part || part === ".") continue;
+      if (part === "..") { if (!parts.pop()) return null; continue; }
+      parts.push(part);
+    }
+    return parts.join("/");
+  };
   for (const cmd of checks) {
     // Each command of a line, as the shell separates them, a newline included.
     for (const segment of cmd.split(/[;&|()\n\r]+/)) {
@@ -680,13 +692,13 @@ export function checkFiles(checks: string[]): string[] {
         }
         const recipe = RECIPES.get(word);
         if (recipe) {
-          let dir = "", named: string | null = null;
+          let dir: string | null = "", named: string | null = null;
           for (let j = i + 1; j < words.length; j++) {
             const d = option(words, j, recipe.dir), f = option(words, j, recipe.file);
-            if (d !== null) dir = d.replace(/\/?$/, "/");
+            if (d !== null) dir = normalDir(d);
             if (f !== null) named = f;
           }
-          if (inside(dir)) for (const file of named !== null ? [named] : recipe.files) add(file.startsWith("/") ? file : dir + file);
+          if (dir !== null) for (const file of named !== null ? [named] : recipe.files) add(file.startsWith("/") ? file : dir ? `${dir}/${file}` : file);
           files.add(recipe.included);
         }
       });
