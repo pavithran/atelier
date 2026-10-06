@@ -1,0 +1,16 @@
+atelier cloudflare-git/t102 "wrap's marker scan still rewrites the index under iCloud: git diff refreshes a stat-dirty index on its own (diff.autoRefreshIndex), and --no-optional-locks does not stop it; iCloud's daemon leaves files stat-dirty, so a refused wrap changes .git/index and two refusal tests fail in the main checkout. Run the scan's two diffs with -c diff.autoRefreshIndex=false"
+accepted head 03c560eee4dad23577c0739a5c51ec0fd299fcad
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-05T23:22:41.019Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-05T23:22:43.228Z
+REVIEW approve — opencode/glm-5.3: APPROVE. Verified on git 2.54: --no-optional-locks diff still writes a stat-dirty index (builtin/diff.c refresh_index_quietly does not consult it); with diff.autoRefreshIndex=false neither call writes, and every tracked change (unstaged, staged, both, deleted) is still listed with its added markers. With the old scan and the new test, exactly the four refusal tests fail, each on .git/index alone. Follow-up: on an all-stat-dirty tree the scan runs one diff per tracked file.
+REVIEW approve — pavi: Owner approval after GLM-5.3's review.
+2026-10-05T23:19:22.975Z pavi item.created
+2026-10-05T23:19:25.535Z claude-code/opus-5.5 item.claimed
+2026-10-05T23:19:31.070Z claude-code/opus-5.5 fork.created
+2026-10-05T23:21:34.942Z claude-code/opus-5.5 push.observed
+2026-10-05T23:22:41.225Z claude-code/opus-5.5 evidence.observed
+2026-10-05T23:22:43.322Z claude-code/opus-5.5 evidence.observed
+2026-10-05T23:22:47.264Z claude-code/opus-5.5 item.submitted
+2026-10-06T00:10:55.542Z opencode/glm-5.3 review.approved
+2026-10-06T00:10:56.200Z pavi review.approved
+2026-10-06T00:10:56.791Z pavi item.accepted
