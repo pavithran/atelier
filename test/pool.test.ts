@@ -10,6 +10,11 @@ test("families are recognised by name, so new releases need no update", () => {
     ["glm-5.3", "zai"], ["GLM-5.4-Flash-4_8bit", "zai"], ["gemini-3.1-pro", "google"], ["gemma-4", "google"],
     ["DeepSeek-V4-Flash-0731-MXFP4-MLX", "deepseek"], ["deepseek-chat", "deepseek"], ["Qwen3-Coder-Next-4bit:studio-code", "qwen"],
     ["MiniMax-M3-Alis-MLX-Dynamic", "minimax"], ["devstral-2", "mistral"], ["llama-5", "meta"], ["mystery-1", "other"],
+    ["kimi-k2-0711", "moonshot"], ["moonshot-v1-8k", "moonshot"], ["moonshotai/kimi-k2", "moonshot"],
+    ["grok-4", "xai"], ["x-ai/grok-4-fast", "xai"],
+    ["mimo-7b-rl", "xiaomi"], ["xiaomi/mimo-7b", "xiaomi"],
+    ["seed-1.6-flash", "bytedance"], ["bytedance/seed-oss-36b", "bytedance"], ["doubao-1.5-pro", "bytedance"],
+    ["command-a", "cohere"], ["cohere/command-r-plus", "cohere"], ["north", "cohere"],
   ] as const) assert.equal(familyOf(name), family, name);
   assert.ok(LOCAL_BUILD.test("GLM-5.3-Flash-4_8bit") && LOCAL_BUILD.test("Qwen3.8-27B-6bit:studio-balanced") && !LOCAL_BUILD.test("gemini-3.1-pro"));
 });

@@ -14,6 +14,11 @@
   --m-minimax: #ff9f7a;
   --m-mistral: #f0b35a;
   --m-meta: #8fb4ff;
+  --m-moonshot: #b48cff;
+  --m-xai: #ff6b6b;
+  --m-xiaomi: #ff9e40;
+  --m-bytedance: #5fd1a4;
+  --m-cohere: #f26fa8;
   --m-other: var(--text-muted);
   --m-owner: var(--signal);
   --main-line: #f4f1e8;
@@ -31,6 +36,11 @@
     --m-minimax: #b04a1f;
     --m-mistral: #8a5a00;
     --m-meta: #3456a8;
+    --m-moonshot: #5f3fa8;
+    --m-xai: #a32727;
+    --m-xiaomi: #a35a00;
+    --m-bytedance: #1d7a52;
+    --m-cohere: #a02a6a;
     --main-line: var(--text);
     --glow: 0;
   }
