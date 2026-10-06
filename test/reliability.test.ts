@@ -172,12 +172,14 @@ test("a run report is validated: an agent, a known role and outcome, a task id, 
   assert.deepEqual(cleanRun({ actor: OPUS, outcome: "refused", project: "atelier", item: "t3", detail: "harness exited 1\u0007" }, at, "home:studio"),
     { actor: OPUS, role: "build", outcome: "refused", project: "atelier", item: "t3", detail: "harness exited 1", runner: "home:studio", at });
   assert.equal(cleanRun({ actor: OPUS, role: "review", outcome: "stalled" }, at, "home:studio").role, "review");
+  // The runner reports a plan job's run as a plan run (t213).
+  assert.equal(cleanRun({ actor: OPUS, role: "plan", outcome: "stalled" }, at, "home:studio").role, "plan");
   assert.match(cleanRun({ actor: OPUS, outcome: "stalled", detail: "key sk-abcdefghijklmnopqrstuvwxyz0123" }, at, "home:x").detail, /\[key removed\]/);
   for (const [body, why] of [
     [{ actor: "owner", outcome: "stalled" }, /harness\/model/],
     [{ actor: "atelier/sandbox", outcome: "stalled" }, /harness\/model/],
     [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, early_stop, permission_stop, duplicate_design, incomplete_merge/],
-    [{ actor: OPUS, outcome: "stalled", role: "plan" }, /build or review/],
+    [{ actor: OPUS, outcome: "stalled", role: "integrate" }, /build, plan or review/],
     [{ actor: OPUS, outcome: "stalled", item: "x1" }, /task id/],
     [{ actor: OPUS, outcome: "stalled", project: "a/b" }, /project/],
     [{ actor: OPUS, outcome: "stalled", token: "x" }, /never a key/],
