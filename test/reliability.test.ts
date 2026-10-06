@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
-  buildReliability, cleanDefect, cleanRun, outcomesOf, reliabilityLine, roundsPerMerge, tiebreak,
+  buildReliability, cleanDefect, cleanFinding, cleanRun, outcomesOf, reliabilityLine, roundsPerMerge, tiebreak,
   type ModelReliability, type RunReport,
 } from "../src/models/reliability.ts";
 import { route } from "../src/models/routing.ts";
@@ -143,7 +143,7 @@ test("runs the runners reported: stalled, timed out and refused per model, and r
     run({ actor: "atelier/sandbox" }),
     run({ actor: OWNER }),
   ], OWNER);
-  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0 });
+  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
   const glm = one(rel, "glm-5.3");
   assert.deepEqual([glm.runs.refused, glm.unfinishedReviews], [2, 1]);
   assert.deepEqual(glm.actors, ["opencode/GLM-5.3"]);
@@ -176,7 +176,7 @@ test("a run report is validated: an agent, a known role and outcome, a task id, 
   for (const [body, why] of [
     [{ actor: "owner", outcome: "stalled" }, /harness\/model/],
     [{ actor: "atelier/sandbox", outcome: "stalled" }, /harness\/model/],
-    [{ actor: OPUS, outcome: "crashed" }, /stalled, timed-out or refused/],
+    [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, early_stop, permission_stop, duplicate_design, incomplete_merge/],
     [{ actor: OPUS, outcome: "stalled", role: "plan" }, /build or review/],
     [{ actor: OPUS, outcome: "stalled", item: "x1" }, /task id/],
     [{ actor: OPUS, outcome: "stalled", project: "a/b" }, /project/],
@@ -190,6 +190,121 @@ test("a defect needs a note, and names the task it was found in only as a task",
   assert.throws(() => cleanDefect({ note: "   " }), /needs a note/);
   assert.throws(() => cleanDefect({ note: "x".repeat(501) }), /at most 500/);
   assert.throws(() => cleanDefect({ note: "x", foundIn: "the parser" }), /name a task/);
+});
+
+// ── t186: comparative agent data ───────────────────────────────────────────
+
+test("an adjudicated finding counts the reviewer's precision: kept or refuted, and who recorded it", () => {
+  const events = history(
+    ["t1", OPUS, "item.claimed"],
+    ["t1", OPUS, "item.submitted", { head: H1 }],
+    ["t1", GEMINI, "review.rejected", { head: H1, note: "no", findings: [{ file: "a.ts", line: 1, severity: "blocking", text: "x" }, { file: "b.ts", line: 2, severity: "blocking", text: "y" }] }],
+    ["t1", OWNER, "review.finding", { head: H1, index: 1, verdict: "confirmed", note: "fixed in t2", by: GEMINI }],
+    ["t1", OWNER, "review.finding", { head: H1, index: 2, verdict: "refuted", by: GEMINI }],
+    ["t1", OWNER, "review.finding", { head: H1, index: 1, verdict: "fixed", by: GEMINI }],
+  );
+  const gemini = one(buildReliability([{ project: "a", events }], [], OWNER), "gemini-3.1-pro");
+  assert.equal(gemini.findingsConfirmed, 2);   // confirmed and fixed both kept
+  assert.equal(gemini.findingsRefuted, 1);
+  assert.deepEqual(gemini.findingVerdicts.map((c) => c.note), ["fixed", "refuted", "confirmed: fixed in t2"]);
+  assert.deepEqual(gemini.findingVerdicts.map((c) => c.by), [OWNER, OWNER, OWNER]);
+  // The builder earns none of the reviewer's precision.
+  assert.equal(buildReliability([{ project: "a", events }], [], OWNER).get("opus-5.5")!.findingsConfirmed, 0);
+});
+
+test("timings per task, as medians over the tasks a model built: claim to push, submit, verdict and merge, and rework turnaround", () => {
+  // Each event in history() sits a minute after the last.
+  const events = history(
+    ["t1", OPUS, "item.claimed"],
+    ["t1", OPUS, "push.observed", { head: H1 }],
+    ["t1", OPUS, "item.submitted", { head: H1 }],
+    ["t1", GPT, "review.rejected", { head: H1, note: "no" }],
+    ["t1", OPUS, "item.submitted", { head: H2 }],
+    ["t1", GPT, "review.approved", { head: H2 }],
+    ["t1", OWNER, "item.merged", { head: H2 }],
+    ["t2", OPUS, "item.claimed"],
+    ["t2", OPUS, "push.observed", { head: H3 }],
+    ["t2", OPUS, "item.submitted", { head: H3 }],
+    ["t2", GPT, "review.approved", { head: H3 }],
+    ["t2", OWNER, "item.merged", { head: H3 }],
+  );
+  const opus = one(buildReliability([{ project: "a", events }], [], OWNER), "opus-5.5");
+  assert.deepEqual(opus.timings, { claimToPush: 60, claimToSubmit: 120, claimToVerdict: 180, claimToMerge: 300, rework: 60 });
+  // A model with no timed tasks reports nothing timed.
+  const gpt = one(buildReliability([{ project: "a", events }], [], OWNER), "gpt-6-astra");
+  assert.deepEqual(gpt.timings, { claimToPush: null, claimToSubmit: null, claimToVerdict: null, claimToMerge: null, rework: null });
+});
+
+test("a reported check an observed check contradicted counts against the reporter, and changed paths outside scope count at submission", () => {
+  const events = history(
+    ["t1", OPUS, "item.created", { title: "x", scope: ["src/**"] }],
+    ["t1", OPUS, "item.claimed"],
+    ["t1", OPUS, "push.observed", { head: H1 }],
+    ["t1", OPUS, "evidence.reported", { head: H1, claim: "npm test", passed: true }],
+    ["t1", "atelier/sandbox", "evidence.observed", { head: H1, claim: "npm test", passed: false, changedPaths: ["docs/a.md"] }],
+    ["t1", OPUS, "item.submitted", { head: H1 }],
+  );
+  const opus = one(buildReliability([{ project: "a", events }], [], OWNER), "opus-5.5");
+  assert.equal(opus.checkMismatches, 1);
+  assert.equal(opus.outOfScope, 1);
+});
+
+test("a push that folded a moved main into the fork counts an integration, attributed to its pusher", () => {
+  const events = history(
+    ["t1", OPUS, "item.claimed"],
+    ["t1", OPUS, "push.observed", { head: H1 }],
+    ["t1", OPUS, "item.submitted", { head: H1 }],
+    ["t1", GPT, "review.rejected", { head: H1, note: "rebase" }],
+    ["t1", OPUS, "push.observed", { head: H2, rebasedFrom: H1 }],
+    ["t1", OPUS, "item.submitted", { head: H2 }],
+    ["t1", GPT, "review.approved", { head: H2 }],
+    ["t1", OWNER, "item.merged", { head: H2 }],
+  );
+  const opus = one(buildReliability([{ project: "a", events }], [], OWNER), "opus-5.5");
+  assert.equal(opus.integrations.length, 1);
+  assert.deepEqual([opus.integrations[0].project, opus.integrations[0].item, opus.integrations[0].by], ["a", "t1", OPUS]);
+  assert.match(opus.integrations[0].note, /rebased 1{8} onto 2{8}/);
+});
+
+test("the comparison buckets each measure by the kind of work the item asked for, else unknown", () => {
+  const events = history(
+    ["t1", OPUS, "item.created", { title: "a", scope: ["src/**"], partKind: "build" }],
+    ["t1", OPUS, "item.claimed"],
+    ["t1", OPUS, "push.observed", { head: H1 }],
+    ["t1", OPUS, "item.submitted", { head: H1 }],
+    ["t1", GEMINI, "review.approved", { head: H1 }],
+    ["t1", OWNER, "item.merged", { head: H1 }],
+    ["t1", OWNER, "item.defect", { head: H1, note: "broken" }],
+    ["t2", OPUS, "item.created", { title: "b", scope: ["docs/**"], partKind: "docs" }],
+    ["t2", OPUS, "item.claimed"],
+    ["t2", OPUS, "item.submitted", { head: H2 }],
+    ["t2", GEMINI, "review.approved", { head: H2 }],
+    ["t2", OWNER, "item.merged", { head: H2 }],
+    // An ordinary task, not a plan part: its kind is unknown.
+    ["t3", OPUS, "item.created", { title: "c", scope: ["src/**"] }],
+    ["t3", OPUS, "item.claimed"],
+    ["t3", OPUS, "item.submitted", { head: H3 }],
+    ["t3", GEMINI, "review.approved", { head: H3 }],
+    ["t3", OWNER, "item.merged", { head: H3 }],
+  );
+  const rel = buildReliability([{ project: "a", events }], [], OWNER);
+  const opus = one(rel, "opus-5.5");
+  const byKind = Object.fromEntries(opus.kinds.map((k) => [k.kind, k]));
+  assert.deepEqual([byKind.build.items, byKind.docs.items, byKind.unknown.items], [1, 1, 1]);
+  // gemini approved the build and docs work and had the build one contradicted by the defect.
+  const gemini = one(rel, "gemini-3.1-pro");
+  const g = Object.fromEntries(gemini.kinds.map((k) => [k.kind, k]));
+  assert.equal(g.build.approvals, 1);
+  assert.equal(g.docs.approvals, 1);
+  assert.equal(g.build.contradicted, 1);
+  assert.equal(g.docs.contradicted, 0);
+});
+
+test("a finding's verdict is validated: a full head, a one based index and a known verdict", () => {
+  assert.deepEqual(cleanFinding({ head: H1, index: 2, verdict: "confirmed", note: "  fixed\nlater " }), { head: H1, index: 2, verdict: "confirmed", note: "fixed later" });
+  assert.throws(() => cleanFinding({ head: "abc", index: 1, verdict: "confirmed" }), /full revision/);
+  assert.throws(() => cleanFinding({ head: H1, index: 0, verdict: "confirmed" }), /one based/);
+  assert.throws(() => cleanFinding({ head: H1, index: 1, verdict: "maybe" }), /one of confirmed, refuted, fixed/);
 });
 
 // ── routing ────────────────────────────────────────────────────────────────
