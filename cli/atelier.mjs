@@ -152,7 +152,7 @@ const FLAGS = {
   update: {},
   check: { sandbox: true },
   gc: { "dry-run": true, apply: true },
-  report: {},
+  report: { item: false },
   submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
   diff: {},
   review: { approve: true, reject: true, note: false, head: false },
