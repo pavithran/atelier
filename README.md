@@ -1015,7 +1015,10 @@ It resumes from the local merge commit. It refuses a different revision, a
 dirty checkout, or concurrent merge. If a process stops during the
 uncommitted Git merge, inspect `git status` and resolve or abort that merge
 before retrying. The journal preserves the original revision and starting
-commit. Never remove it to bypass a mismatch.
+commit. Never remove it to bypass a mismatch. While a merge holds the landing
+lease, the task cannot be abandoned, since the merge may already be on the
+baseline: finish it with `atelier merge t3`, or withdraw it with
+`atelier merge t3 --cancel` while it is not on the baseline, then abandon.
 
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under

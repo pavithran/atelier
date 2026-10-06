@@ -550,6 +550,37 @@ it("a merge holds a landing lease: no push over the revision being merged, and t
   expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
 });
 
+// Audit t105, finding F8 (task t139): abandon was allowed under the landing
+// lease, and a merge already on the baseline could then never be recorded.
+it("abandon is refused while a merge holds the landing lease, so a published merge can still be recorded", async () => {
+  const L = await setup("abandon-landing");
+  await L.newItem("Land me", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "abandon-landing--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  await L.beginLanding("t1", "owner", H1);
+  // The check the route makes before it revokes the holder's token refuses too, so nothing is revoked.
+  await refusal(L.checkAbandon("t1", "owner"), "landing", /being merged at aaaaaaaa and holds the landing lease.*atelier merge t1 records the merge.*atelier merge t1 --cancel/);
+  await refusal(L.abandon("t1", "owner", "changed my mind mid-merge"), "landing", /landing lease/);
+  expect(await L.item("t1")).toMatchObject({ state: "accepted", owner: A, acceptedHead: H1 });
+  expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
+  // Once a landing is cancelled, the task can be abandoned.
+  await L.newItem("Cancel, then abandon", [], "owner");
+  await L.claim("t2", A);
+  await L.setFork("t2", "abandon-landing--t2", H0, A);
+  await L.recordPush("t2", A, H1, H1);
+  await L.addEvidence(observed("t2", H1, ["README.md"]));
+  await L.submit("t2", A);
+  await L.accept("t2", "owner", H1);
+  await L.beginLanding("t2", "owner", H1);
+  await refusal(L.abandon("t2", "owner", "not now"), "landing", /landing lease/);
+  await L.cancelLanding("t2", "owner");
+  expect(await L.abandon("t2", "owner", "not now")).toMatchObject({ state: "abandoned", owner: null });
+});
+
 it("registration atomically refuses another project with the same baseline", async () => {
   const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   const record = { name: "repo-first", repo: "shared-baseline", policy, createdAt: new Date().toISOString() };

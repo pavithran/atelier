@@ -778,6 +778,13 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    // A merge under the landing lease may already have put the accepted
+    // revision on the baseline, and only an accepted task can record that
+    // merge. So abandon waits until the lease ends.
+    const landing = this.landing(id);
+    if (landing) {
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot be abandoned. The lease ends when atelier merge ${id} records the merge, or when atelier merge ${id} --cancel withdraws a merge that is not on the baseline; abandon ${id} after a cancel`, 409);
+    }
     return item;
   }
 
