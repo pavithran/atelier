@@ -9,7 +9,8 @@ import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
-import { route, type Candidate } from "../models/routing.ts";
+import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
+import { route, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
@@ -30,6 +31,7 @@ export interface RouteInput {
   spend?: { cap: number; used: number };  // for paid models, in the owner's unit; paid models are excluded once used reaches cap
   availability?: Readonly<Record<string, Availability>>;
   profiles?: readonly ModelProfile[];     // the registry's evidence and context windows; MODEL_PROFILES by default
+  reliability?: Reliability;              // each model's record across every project; orders equal scores only
 }
 
 export interface Choice { actor: string; reasons: string[] }
@@ -65,7 +67,7 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // window. The registry's Harness and Family types predate the pool, and
 // route() reads only ids, harness names and evidence, so the pool's wider
 // names pass through.
-function profileFor(entry: ModelEntry, profiles: readonly ModelProfile[]): ModelProfile {
+export function profileFor(entry: ModelEntry, profiles: readonly ModelProfile[]): ModelProfile {
   const names = [entry.id, ...entry.aliases].map((name) => name.toLowerCase());
   const known = profiles.find((profile) => names.includes(profile.id.toLowerCase()));
   return {
@@ -83,7 +85,23 @@ const add = (a: ActorRecord, b: ActorRecord): ActorRecord => ({
   reviewsApproved: a.reviewsApproved + b.reviewsApproved, reviewsRejected: a.reviewsRejected + b.reviewsRejected,
   handoffsAway: a.handoffsAway + b.handoffsAway, merges: a.merges + b.merges,
 });
-function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEvent[]): ModelRecord {
+// Each entry's reliability across every project, under the actor route()
+// looks up: its model by modelKey, with an alias the registry reads as
+// another model summed in. It breaks ties and never changes a score, so the
+// project's own track record and the evidence still decide.
+function tiebreaksFor(pool: readonly ModelEntry[], reliability: Reliability): Map<string, Tiebreak> {
+  const out = new Map<string, Tiebreak>();
+  for (const entry of pool) {
+    const records = [...new Set([entry.id, ...entry.aliases].map((id) => modelKey(`${entry.harness}/${id}`)))].flatMap((k) => reliability.get(k) ?? []);
+    const o = records.map(outcomesOf).reduce((a, b) => ({ good: a.good + b.good, bad: a.bad + b.bad }), { good: 0, bad: 0 });
+    const value = tiebreak(o);
+    const said = records.length ? records.map((r) => `${r.model}, ${reliabilityLine(r)}`).join(" ") : "none recorded.";
+    out.set(actorOf(entry), { value, reason: `Reliability across projects: ${said} Outcomes in its favour ${o.good}, against ${o.bad}; tie-breaker ${value.toFixed(2)}, which orders only equal scores.` });
+  }
+  return out;
+}
+
+export function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEvent[]): ModelRecord {
   const record = buildRecord(events);
   const merged = new Map<string, ActorRecord>();
   for (const entry of pool) {
@@ -116,6 +134,7 @@ interface Context {
   entries: Map<string, ModelEntry>;
   profiles: ModelProfile[];
   record: ModelRecord;
+  tiebreaks: Map<string, Tiebreak>;
   availability: Map<string, { key: string; value: Availability }>;
   governed: boolean;
 }
@@ -179,14 +198,15 @@ function choice(verdict: Verdict, lead: string[], role: string, ctx: Context): C
 function routePart(part: PlanPart, ctx: Context): PartRoute {
   const none = (unrouted: string, excluded: Choice[] = []): PartRoute => ({ key: part.key, builder: null, alternates: [], reviewer: null, excluded, unrouted });
   if (!ctx.profiles.length) return none("no models in the pool");
-  // route() ranks by score, then model id, then actor name, so the order is
-  // the same whatever order the pool is given in.
-  const ranked = route({ kind: part.taskKind }, ctx.profiles, ctx.record, { localOnly: false, allowedWhere: "any" });
+  // route() ranks by score, then the reliability tie-breaker, then model id,
+  // then actor name, so the order is the same whatever order the pool is given in.
+  const ranked = route({ kind: part.taskKind }, ctx.profiles, ctx.record, { localOnly: false, allowedWhere: "any" }, ctx.tiebreaks);
   // Every synthesized profile names one harness, so each candidate has an actor.
   const verdicts = ranked.map((candidate) => judge(candidate, ctx.entries.get(candidate.actor!)!, part, ctx));
   const excluded = verdicts.filter((v) => v.build.length).map((v) => ({ actor: v.actor, reasons: v.build }));
   const able = verdicts.filter((v) => !v.build.length);
-  const rank = (v: Verdict) => `Rank ${able.indexOf(v) + 1} of ${able.length} eligible for ${part.taskKind} work, score ${v.candidate.score}; equal scores go by model id, then actor name`;
+  const order = ctx.input.reliability ? "reliability across projects, then model id, then actor name" : "model id, then actor name";
+  const rank = (v: Verdict) => `Rank ${able.indexOf(v) + 1} of ${able.length} eligible for ${part.taskKind} work, score ${v.candidate.score}; equal scores go by ${order}`;
 
   // The plan's preference wins only when that actor passes every rule; the
   // builder's reasons say what became of it either way.
@@ -229,6 +249,7 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     entries: new Map(pool.map((entry) => [actorOf(entry), entry])),
     profiles: pool.map((entry) => profileFor(entry, input.profiles ?? MODEL_PROFILES)),
     record: recordFor(pool, input.events),
+    tiebreaks: input.reliability ? tiebreaksFor(pool, input.reliability) : new Map(),
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
     governed: input.policy.agents !== undefined,
   };

@@ -5,7 +5,7 @@ import type { CheckDeclaration } from "./checks.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned";
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
   id: string;
@@ -24,6 +24,49 @@ export interface Item {
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
+  // The owner's framing of the task, from ControlPlane's work item: what the
+  // task is not to do, what tells its holder to stop and ask, and the gate it
+  // goes to next. Each is optional; the brief and the task page show them.
+  nonGoals?: string[];
+  stopWhen?: string[];
+  nextGate?: string | null;
+  blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
+  // A plan, or a part of one (docs/orchestrator.md). An ordinary task
+  // carries none of these four fields.
+  kind?: "plan" | "part";
+  plan?: string;            // a part's plan item, tP
+  partKey?: string;         // a part's key in the approved plan
+  deps?: string[];          // the keys of the parts a part depends on
+}
+
+// Why a task is blocked, who blocked it, when, and the state it was in,
+// which `unblock` returns it to. The holder or the project owner records
+// it; while it stands the task is skipped by dispatch and stuck detection,
+// cannot be pushed, submitted, reviewed, handed off or released, and sits
+// in the owner's inbox with the reason.
+export interface Block {
+  reason: string;
+  by: string;
+  at: string;
+  from: ItemState;
+}
+
+// What `atelier new` and `atelier edit` set. A field present replaces the
+// item's value; one absent keeps it. An empty list or a null gate clears.
+export interface ItemFields {
+  nonGoals?: string[];
+  stopWhen?: string[];
+  nextGate?: string | null;
+}
+
+// Whether two items belong to one plan: two parts of it, or a part and the
+// plan item. The plan item stands for all its parts' work, and validation
+// lets parts share paths only when one depends on the other, so overlap
+// between them is ordered by the plan already.
+export function samePlan(a: Pick<Item, "id" | "kind" | "plan">, b: Pick<Item, "id" | "kind" | "plan">): boolean {
+  const planOf = (i: Pick<Item, "id" | "kind" | "plan">) => (i.kind === "plan" ? i.id : i.kind === "part" ? i.plan ?? null : null);
+  const pa = planOf(a);
+  return pa !== null && pa === planOf(b);
 }
 
 // The project owner's override of the independent review a change needs,
@@ -344,6 +387,7 @@ export function parseRuleError(err: unknown): { status: number; code: string; de
 
 export function assertClaimable(item: Item, actor: string): void {
   if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
+  assertNotBlocked(item);
   if (item.state === "merged" || item.state === "abandoned" || item.state === "accepted") {
     throw new RuleError("closed", `${item.id} is ${item.state}`);
   }
@@ -352,10 +396,11 @@ export function assertClaimable(item: Item, actor: string): void {
   }
 }
 
-// Role policy takes precedence over legacy harness eligibility.
-export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER): void {
+// Role policy takes precedence over legacy harness eligibility. Taking work
+// needs the executor role; planning a plan needs the planner role.
+export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   if (policy.agents) {
-    if (!hasRole(actor, policy, "executor")) throw new RuleError("ineligible", `${actor} needs an available agent with the executor role`, 403);
+    if (!hasRole(actor, policy, role)) throw new RuleError("ineligible", `${actor} needs an available agent with the ${role} role`, 403);
     return;
   }
   if (actor === owner || !policy.eligible?.length) return;
@@ -445,6 +490,70 @@ export function overrideAt(item: Pick<Item, "head" | "reviewOverride">, owner = 
   return o && item.head && o.head === item.head && o.by === owner && o.reason.trim() ? o : null;
 }
 
+// A blocked task answers every move with the same refusal: the reason it is
+// blocked, and the command that lets it go on. Claims, pushes, reviews,
+// submission, handoff and release all stop here; abandon does not, so the
+// owner can still close it.
+export function assertNotBlocked(item: Item): void {
+  if (item.state !== "blocked") return;
+  const reason = item.blocked?.reason ?? "no reason recorded";
+  throw new RuleError("blocked", `${item.id} is blocked: ${reason}. Run atelier unblock ${item.id} first`);
+}
+
+// Only a task that is waiting, in progress or in review can be blocked: an
+// accepted one is the owner's to merge or send back, and a closed one is
+// closed. One already blocked keeps its first reason; unblock it to change it.
+export function assertBlockable(item: Item): void {
+  if (item.state === "blocked") {
+    throw new RuleError("already_blocked", `${item.id} is already blocked: ${item.blocked?.reason ?? "no reason recorded"}. Run atelier unblock ${item.id} to lift that, then block it again with the new reason`);
+  }
+  if (item.state !== "open" && item.state !== "claimed" && item.state !== "submitted") {
+    throw new RuleError("closed", `${item.id} is ${item.state}; only an open, claimed or submitted task can be blocked`);
+  }
+}
+
+export const REASON_MAX = 500;
+export const FIELD_MAX = 300;
+export const FIELD_LIST_MAX = 20;
+
+// A line of the owner's text as stored: control characters as spaces,
+// trimmed. Empty means absent.
+const line = (v: unknown): string => (typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "");
+
+// The reason a block records. A missing, blank or over-long reason is
+// refused, not cut or filled in, because it is what the owner reads in the
+// inbox to decide what to do.
+export function blockReason(value: unknown): string {
+  const reason = line(value);
+  if (!reason) throw new RuleError("block_reason", "a block needs a reason: atelier block ID \"what it is waiting on\"", 400);
+  if (reason.length > REASON_MAX) throw new RuleError("block_reason", `a block's reason is at most ${REASON_MAX} characters`, 400);
+  return reason;
+}
+
+// The item fields a request sets, checked at the boundary: each list is
+// strings with something in each, at most FIELD_LIST_MAX of them; the gate is
+// one line or null. A field that is not sent is left out, so the Ledger
+// keeps the item's value for it.
+export function itemFields(input: Record<string, unknown>): ItemFields {
+  const list = (v: unknown, field: string): string[] => {
+    if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !line(s))) throw new RuleError("bad_field", `${field} must be a list of strings with something in each`, 400);
+    if (v.length > FIELD_LIST_MAX) throw new RuleError("bad_field", `${field} holds at most ${FIELD_LIST_MAX} entries`, 400);
+    const entries = v.map(line);
+    if (entries.some((s) => s.length > FIELD_MAX)) throw new RuleError("bad_field", `each ${field} entry is at most ${FIELD_MAX} characters`, 400);
+    return entries;
+  };
+  const out: ItemFields = {};
+  if (input.nonGoals !== undefined) out.nonGoals = list(input.nonGoals, "nonGoals");
+  if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
+  if (input.nextGate !== undefined) {
+    if (input.nextGate !== null && typeof input.nextGate !== "string") throw new RuleError("bad_field", "nextGate must be text or null", 400);
+    const gate = line(input.nextGate);
+    if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters`, 400);
+    out.nextGate = gate || null;
+  }
+  return out;
+}
+
 export const OVERRIDE_REASON_MAX = 500;
 
 // The reason an override records: text, control characters as spaces,
@@ -474,16 +583,17 @@ export function reviewOverrideFor(
   return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
 }
 
-// Live items held by someone else whose scope overlaps this one.
+// Live items held by someone else whose scope overlaps this one. Items of
+// one plan are not counted against each other (samePlan).
 export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
   return items.filter(
-    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && scopesOverlap(item.scope, o.scope),
+    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
 }
 
-export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER): void {
+export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
-  assertEligible(actor, policy, owner);
+  assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
     const clash = overlappingLive(item, items, actor);
     if (clash.length) {
@@ -764,10 +874,15 @@ export interface InboxEntry {
   project: string;
   itemId: string;
   title: string;
-  kind: "accept" | "assess" | "merge" | "stale" | "overlap" | "scope" | "failing";
+  kind: "accept" | "assess" | "merge" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
 }
+
+// The weights of a plan's own entries, which the Ledger adds beside
+// inboxFor's (src/plans/state.ts): approving a proposed split, and deciding
+// for a blocked plan.
+export const PLAN_INBOX_WEIGHTS = { "approve-plan": 95, "plan-blocked": 85 } as const;
 
 const STALE_HOURS = 12;
 
@@ -790,12 +905,23 @@ export function inboxFor(
     // entry says so and gives its reason. An accepted item is read as
     // accept() reads it, as if still submitted.
     const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the project owner: ${g.overridden.reason}` : "");
+    // A part is reported through its plan (the Ledger's planView), so it
+    // never appears as an accept, assess, failing, scope or stale entry. An
+    // accepted part still asks to be merged.
+    const part = item.kind === "part";
     if (item.state === "accepted") {
       const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner);
       out.push({ ...base, kind: "merge", reason: `accepted${overrode(g)}; run \`atelier merge\` in the project checkout`, weight: 90 });
       continue;
     }
-    if (item.state === "submitted") {
+    // A blocked task waits on the owner to clear what blocks it, so it ranks
+    // with the decisions, below a missing review and above a scope change.
+    if (item.state === "blocked") {
+      const b = item.blocked;
+      out.push({ ...base, kind: "blocked", reason: `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}; run \`atelier unblock ${item.id}\` when it can go on`, weight: 70 });
+      continue;
+    }
+    if (item.state === "submitted" && !part) {
       const g = gate(item, policy, ev, rv, owner);
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
@@ -808,7 +934,7 @@ export function inboxFor(
         out.push({ ...base, kind: "scope", reason: `changes outside its scope: ${g.outOfScope.slice(0, 3).join(", ")}`, weight: 60 });
       }
     }
-    if (item.state === "claimed") {
+    if (item.state === "claimed" && !part) {
       const last = new Date(item.lastPushAt ?? item.updatedAt);
       const hours = (now.getTime() - last.getTime()) / 3_600_000;
       if (hours > STALE_HOURS) {
@@ -818,7 +944,7 @@ export function inboxFor(
   }
   for (let i = 0; i < live.length; i++) {
     for (let j = i + 1; j < live.length; j++) {
-      if (scopesOverlap(live[i].scope, live[j].scope)) {
+      if (!samePlan(live[i], live[j]) && scopesOverlap(live[i].scope, live[j].scope)) {
         out.push({
           project, itemId: live[i].id, title: live[i].title, kind: "overlap",
           reason: `scope overlaps ${live[j].id} (${live[j].owner ?? "unowned"})`, weight: 40,
@@ -838,14 +964,19 @@ export function repoName(project: string, itemId?: string): string {
 }
 
 // Local cache cleanup requires proof that no unpublished work will be lost.
+// A merged item's proof is its accepted head; an abandoned item, which never
+// merges, is proved by the last head Atelier recorded for it, so its workspace
+// goes only when it still sits at that head with nothing else in it.
 export function gcWorkspaceReason(
-  item: Pick<Item, "state" | "acceptedHead"> | undefined,
+  item: Pick<Item, "state" | "head" | "acceptedHead"> | undefined,
   head: string, dirty: boolean, extraCommits: boolean,
 ): string | null {
-  if (item?.state !== "merged") return "item is not confirmed merged";
-  if (!item.acceptedHead || head !== item.acceptedHead) return "HEAD is not the merged head";
-  if (dirty) return "contains changed, untracked or ignored files";
-  if (extraCommits) return "contains commits outside the merged history";
+  if (item?.state !== "merged" && item?.state !== "abandoned") return "item is neither merged nor abandoned";
+  const abandoned = item!.state === "abandoned";
+  const proof = abandoned ? item!.head : item!.acceptedHead;
+  if (!proof || head !== proof) return abandoned ? "HEAD is not the last head Atelier recorded" : "HEAD is not the merged head";
+  if (dirty) return "contains changed or untracked files";
+  if (extraCommits) return abandoned ? "contains commits outside the recorded history" : "contains commits outside the merged history";
   return null;
 }
 
@@ -864,6 +995,7 @@ export function assertRevision(item: Item, expected: string): void {
 }
 
 export function assertLive(item: Item): void {
+  assertNotBlocked(item);
   if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
 }
 
@@ -874,7 +1006,7 @@ export function latestReviews(reviews: Review[], head: string | null): Review[] 
 }
 
 export const stateLabel: Record<ItemState, string> = {
-  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed",
+  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed", blocked: "Blocked",
 };
 
 // A reason as one sentence of a longer text: ended with a full stop unless
@@ -888,6 +1020,10 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   const failed = view.checks.some((c) => c.grade === "observed" && !c.passed);
   if (item.state === "merged") return { title: "Merged into the project", detail: "The accepted revision is in the project baseline. Publishing and deployment are separate actions.", action: "none", tone: "go", passed };
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
+  if (item.state === "blocked") {
+    const b = item.blocked;
+    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its owner and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
+  }
   if (item.state === "accepted") {
     const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner).overridden;
     const detail = overridden

@@ -4,8 +4,11 @@
 // balances, each row saying which runner reported it and when. A figure
 // past the owner's threshold is tagged, and a report older than STALE_MS is
 // marked stale. Everything a runner sent is escaped before it is shown.
+// Below the tools, each model's reliability across every project, as the
+// Models page shows it.
 
-import { escapeText, page } from "../ui.ts";
+import { escapeText, page, reliabilitySection } from "../ui.ts";
+import type { Reliability } from "../models/reliability.ts";
 import { stamp } from "../time.ts";
 import { crossings, daySpend, isStale, money, SPANS, SPAN_LABELS, STALE_MS, THRESHOLD_SETTINGS, type SpanUse, type Thresholds, type UsageReport } from "./report.ts";
 
@@ -103,7 +106,8 @@ export function describeAlert(key: string): string {
   return `${tool} on ${runner}: ${what}`;
 }
 
-export function renderUsage(reports: UsageReport[], t: Thresholds, alerts: { key: string; since: string }[], now = new Date(), ownerName: string | null = null): string {
+export function renderUsage(reports: UsageReport[], t: Thresholds, alerts: { key: string; since: string }[], now = new Date(), ownerName: string | null = null,
+  reliability: { models: Reliability; events: number; unread: string[] } | null = null): string {
   const at = now.getTime();
   const tools = new Map<string, UsageReport[]>();
   for (const r of reports) tools.set(r.tool, [...(tools.get(r.tool) ?? []), r]);
@@ -120,5 +124,6 @@ export function renderUsage(reports: UsageReport[], t: Thresholds, alerts: { key
   <p class="meta">${thresholdLine(t)} A report older than ${STALE_MS / 3_600_000} hours is marked stale${stale ? `; ${plural(stale, "report is", "reports are")} stale now` : ""}. Claude's plan limits and Gemini's spend have no record on the runner's machine, so they are not reported.</p></header>
   ${inForce}
   ${body}
+  ${reliability ? reliabilitySection(reliability.models, ownerName, reliability) : ""}
 </div>`, "Usage", ownerName);
 }

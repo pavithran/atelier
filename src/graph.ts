@@ -10,6 +10,7 @@ import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
+import { withServed } from "./models/served.ts";
 import { shortStamp, stamp } from "./time.ts";
 import { withoutAddresses } from "./text.ts";
 
@@ -121,7 +122,9 @@ export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: s
 export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
   const R = !!opts.redact;
   const you = opts.ownerLabel ?? "You";
-  const sortedEvs = [...events].sort((a, b) => a.seq - b.seq);
+  // An event the owner annotated as served by another model is drawn and
+  // counted under that model; the annotations are not drawn.
+  const sortedEvs = withServed(events).sort((a, b) => a.seq - b.seq);
   const keptItems = new Set<string>();
   let filterActive = false;
   if (opts.since || opts.family) {
@@ -445,7 +448,7 @@ const BEAD_NAMES: Record<BeadKind, string> = {
   approve: "approved", reject: "sent back", handoff: "handed off", accept: "accepted", dispatch: "dispatched",
 };
 const STATE_NAMES: Record<string, string> = {
-  open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed",
+  open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed", blocked: "blocked",
 };
 
 // A mark with somewhere to go (its commit, its task's checks) is a link, so a

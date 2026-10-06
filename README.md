@@ -125,7 +125,8 @@ In detail:
 | Step | Who | What happens |
 | --- | --- | --- |
 | `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. Every check must be read-only (see [Check classes](#check-classes)). |
-| `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
+| `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. `--non-goal`, `--stop-when` and `--next-gate` frame it, and `atelier edit` changes that framing later; the brief, `atelier start` and the item's page show it. |
+| `atelier block t3 "reason"` | the item's owner or the project owner | Blocks the item with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed or submitted, and sits in the inbox with the reason until `atelier unblock t3` returns it to the state it was in. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
 | `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
@@ -820,9 +821,11 @@ Add `--apply` to remove them. `--dry-run` explicitly requests the preview.
 The command uses the configured cache (`ATELIER_CACHE` when set) and never
 deletes Artifacts repositories or changes the project's checkout.
 
-A workspace is eligible only when the server confirms that its item merged,
-its HEAD equals the accepted head, and it has no changed, untracked or ignored
-files, extra commits in refs or reflogs, linked worktrees, initialized
+A workspace is eligible only when the server confirms that its item merged or
+was abandoned, its HEAD equals the accepted head of the merge or, for an
+abandoned item, the last head Atelier recorded, and it has no changed or
+untracked files (files git ignores do not count as unpublished work), extra
+commits in refs or reflogs, linked worktrees, initialized
 submodules, or a Git operation in progress. Cleanup checks
 its recorded project and item identity and refreshes the item's state before
 removal. The current directory and its ancestors are preserved. Symlinked
@@ -910,6 +913,45 @@ else, while it waits. Names are matched and stored in lower case, so
 `home:Studio` and `home:studio` are one runner. A claim belongs to the runner
 that made it; after a handoff, the first runner to claim as the new owner
 takes it, and the task's history records which runner that was.
+
+## Plans
+
+A plan turns one goal into several items. The project owner states the goal
+with `atelier plan "goal" [--scope GLOB]... [--planner harness/model]`.
+Atelier creates the plan item and queues it as a plan job for the planner
+named, or else for the first model in the pool for research work that is not
+refused, not paid per token and may plan. A project has one active plan at a
+time. The planner, holding the plan item's claim, posts a plan document
+(`atelier.plan.v1`: the goal and its parts, each with a scope, dependencies,
+a brief and acceptance criteria) with `atelier plan post tP FILE`. An
+invalid one is refused with every error, and the planner gets one more
+attempt before the plan blocks.
+
+`atelier plan show tP` prints the newest proposal with its hash. `atelier
+plan approve tP --hash HASH [--allow-paid]` approves that exact split, once;
+an older hash is refused, and `atelier plan revise tP --note TEXT` sends a
+proposal back instead. Approval fixes the limits (two parts live at once,
+three attempts a part, four dispatches a part, 24 hours) and each part's
+routing: a builder, two alternates and a reviewer of another family, chosen
+from the model pool and the ledger's record. The parts become items, and
+Atelier dispatches each one, as `atelier/orchestrator`, once the parts it
+depends on have merged. A part its builder releases twice goes to an
+alternate. A plan that reaches a limit blocks and appears in the inbox; the
+owner decides with `atelier plan retry tN`, `atelier plan reroute tN --to
+harness/model`, `atelier abandon tN` or `atelier plan stop tP`, which closes
+the plan and its open parts and revokes their write tokens. `atelier show
+tP` prints the plan's brief.
+
+Not built yet: no runner takes a plan job, so a planner claims the plan item
+with `atelier claim tP --as harness/model --runner home:NAME` and posts its
+plan by hand; a part's runner gets the brief any task gets; nothing reviews
+a part automatically; and parts do not merge into a branch of the plan's
+own. Until then each part reaches main as any item does, through the owner's
+acceptance and merge. The inbox lists a part only once it is accepted, so
+`atelier plan show tP` gives the command for each part waiting on the owner,
+and the plan is complete once every part has merged.
+[docs/orchestrator.md](docs/orchestrator.md) holds the design and says which
+of its steps are built.
 
 ## Home runner
 
@@ -1119,6 +1161,62 @@ Changing how a model is reached (its harness, where it runs, provider,
 endpoint or Keychain entry) clears its status until it is checked again.
 An endpoint carrying a query string, or a Keychain entry name that looks
 like a key, is refused.
+
+## Each model's reliability
+
+The Models page and the Usage page show each model's record across every
+project, and `GET /api/reliability` returns it. A model is named as review
+independence names it, so the same model under two harnesses or a
+registered alias is one record. Its work is what it held: how much was
+approved at its first review by another model, how many review rounds a
+merged item went through, every rejection with the note that gave its
+cause, and every defect the owner traced to its accepted work. Its verdicts
+are its own reviews: an approval of a revision a defect was later traced to
+is contradicted, and so is a review run that never reached a verdict. Its
+runs are those that stalled, timed out or were refused, as the runners
+reported them. The owner's approvals of its work are counted apart and are
+never a model's verdict: those made on the task page, which only the
+signed-in owner reaches, apart from those recorded through the API with the
+owner token, as the orchestrator records them. An approval recorded before
+Atelier kept the two apart is counted as unrecorded.
+
+```text
+atelier defect t12 --note "pagination drops the last page" --found-in t19
+```
+
+`atelier defect` traces a defect to the revision an item was accepted at;
+the item itself does not change. A runner reports a run through
+`POST /api/runs` with the owner token and its name in `X-Atelier-Runner`,
+as it reports usage: the agent it ran, the role (`build` or `review`), the
+outcome (`stalled`, `timed-out` or `refused`), the project and task when
+there is one, and a detail. `atelier runner` sends one when a harness passes
+its time limit, exits cleanly without a new commit, or exits with an error.
+
+Routing reads the record only to order candidates of equal score: the share
+of outcomes in a model's favour (work approved at first review, merges)
+against those that are not (rejections, defects, contradicted approvals,
+runs stalled, timed out or refused), with one of each added so a model
+with no record sits at one half. The project's own track record and the
+registry's evidence still decide the score.
+
+A harness can serve another model than the one its events name: zcode
+follows its app's provider settings, and served deepseek-flash while its
+events said glm-5.3. The owner records what served them:
+
+```text
+atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
+```
+
+It lists the events recorded under `--recorded` from `--from` up to `--to`
+on the tasks `--item` names, or on every task, and records nothing; with
+`--apply` it adds an annotation of its own, an `event.served` event, for
+each one not already annotated as served by that model. The annotated
+event never changes, and the latest annotation of an event is the one that
+counts, so a mistaken one is corrected by another. The track record, the
+reliability record, the Models page and the graph count an annotated event
+under the served model in the recorded harness, here `zcode/deepseek-flash`.
+`bin/annotate-t95` holds the commands that correct the record for task t95;
+the owner runs it, first without `--apply`.
 
 ## Usage, limits and balances
 
