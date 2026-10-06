@@ -73,7 +73,8 @@ function fixture(t) {
   writeFileSync(preload, `
 import { appendFileSync } from "node:fs";
 const HEAD = ${JSON.stringify(head)}, BASELINE = ${JSON.stringify(baseline)};
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: "submitted", owner: "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null });
+// t3 is open and held by nobody; every other item is submitted by codex/test.
+const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null });
 const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
@@ -106,6 +107,18 @@ globalThis.fetch = async (url, options = {}) => {
   const clear = () => rmSync(log, { force: true });
   return { dir, checkout, workspace, run, requests, clear };
 }
+
+test("abandon says whose write token is revoked, or that nobody held the item", (t) => {
+  const f = fixture(t);
+  const held = f.run(f.checkout, ["abandon", "t1", "--project", "demo"]);
+  assert.equal(held.status, 0, held.stderr);
+  assert.equal(held.stdout, "t1 abandoned; codex/test's write token is revoked.\n");
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/abandon", { note: "" }]]);
+  const open = f.run(f.checkout, ["abandon", "t3", "--note", "Superseded by t5", "--project", "demo"]);
+  assert.equal(open.status, 0, open.stderr);
+  assert.equal(open.stdout, "t3 abandoned; nobody held it, so no write token was revoked.\n");
+  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/t3/abandon")).map((q) => q.body), [{ note: "Superseded by t5" }]);
+});
 
 test("init refuses to run in a task workspace, names its project and task, and registers nothing", (t) => {
   const f = fixture(t);
