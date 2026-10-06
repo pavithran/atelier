@@ -126,7 +126,7 @@ In detail:
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. |
+| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -338,6 +338,22 @@ Trusted, and stated here so nobody assumes otherwise:
   server and are available with `--sandbox`; `sandboxOnly` policy requires
   that evidence.
   The container integration still needs deployment and a live runtime check.
+- **A local check runs with the caller's file access.** `atelier check`,
+  `finish` and `done` run the item's check code on the caller's machine as
+  the caller, so it can read their files and Keychain and reach the network.
+  It is given only the environment variables toolchains need: `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `CI`,
+  `DEVELOPER_DIR`, `TOOLCHAINS`, the Node and OpenSSL certificate settings
+  and `npm_config_*`. It never gets `ATELIER_*`, `SSH_AUTH_SOCK` or a
+  variable whose name says it holds a token, key, secret, password or
+  credential; a check that needs another variable sets it in its own
+  command. Before the output is printed or uploaded as evidence, the CLI
+  redacts the API token, the read tokens for the fork and the baseline, and
+  the workspace's write token. Redaction matches each token exactly as
+  written, so a check that prints one encoded, reversed or in pieces is not
+  caught. Run untrusted code in the sandbox: `atelier check --sandbox`,
+  `atelier finish --sandbox`, or a project registered with
+  `atelier init --sandbox-only`.
 - **Merging happens locally.** The Artifacts binding and REST API can read
   repositories (commits, trees, blobs, files, a first-parent log) but cannot
   write. The only way to write is a git push with a write token, so Atelier

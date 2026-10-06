@@ -514,6 +514,53 @@ function forkBranch(cwd) {
 
 // ── clean-room checks ──────────────────────────────────────────────────────
 
+// A local check runs code from the item's head, which an agent wrote, so it
+// gets only the variables toolchains need to find themselves and their caches:
+//   PATH, HOME, USER, LOGNAME, SHELL  tools and the user's caches: npm's ~/.npm,
+//                                     Xcode's DerivedData, uv, Playwright's browsers
+//   LANG, LC_*, TZ                    locale and time zone, which tests may read
+//   TMPDIR                            the per-user temporary folder on macOS, used
+//                                     by xcodebuild, swift and mktemp
+//   CI                                kept when the caller sets it
+//   DEVELOPER_DIR, TOOLCHAINS         the Xcode and Swift toolchain the caller chose
+//   NODE_EXTRA_CA_CERTS, NODE_USE_SYSTEM_CA, SSL_CERT_FILE, SSL_CERT_DIR
+//                                     certificates trusted by npm ci and uv sync
+//   npm_config_*                      npm settings given as variables
+// Nothing named ATELIER_*, and no variable whose name says it holds a token, a
+// key, a secret, a password or a credential, so npm_config__authToken is
+// dropped. SSH_AUTH_SOCK is not on the list: it lets a process sign in
+// wherever the caller's SSH keys reach. A check that needs anything else sets it
+// in its own command, as ourai's check sets its own HOME. This keeps the
+// caller's credentials out of a check's environment; it does not keep the
+// check from reading the caller's files or Keychain, which is why untrusted
+// code belongs in the sandbox (atelier check --sandbox).
+const CHECK_ENV = new Set(["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR", "CI", "DEVELOPER_DIR", "TOOLCHAINS", "NODE_EXTRA_CA_CERTS", "NODE_USE_SYSTEM_CA", "SSL_CERT_FILE", "SSL_CERT_DIR"]);
+const SECRET_NAME = /token|secret|passw|credential|auth|key|otp/i;
+export function checkEnv(base = process.env) {
+  const env = {};
+  for (const [name, value] of Object.entries(base)) {
+    const listed = CHECK_ENV.has(name) || name.startsWith("LC_") || /^npm_config_/i.test(name);
+    if (listed && value !== undefined && !name.startsWith("ATELIER_") && !SECRET_NAME.test(name)) env[name] = value;
+  }
+  return env;
+}
+
+// Each secret replaced by [redacted] wherever it appears in the text, longest
+// first so a secret that contains another is cut whole.
+export function redact(text, secrets) {
+  for (const secret of [...new Set(secrets)].filter(Boolean).sort((a, b) => b.length - a.length)) text = text.split(secret).join("[redacted]");
+  return text;
+}
+
+// The Artifacts tokens a workspace's extraHeader settings hold, in
+// .git/config or in a file it includes: its write token, which a check can
+// read from disk.
+function workspaceTokens(dir) {
+  if (!existsSync(join(dir, ".git"))) return [];
+  const r = spawnSync("git", ["config", "--local", "--includes", "--get-regexp", "^http\\..*\\.extraheader$"], { cwd: dir, encoding: "utf8" });
+  return r.status === 0 ? [...r.stdout.matchAll(/Bearer (\S+)/g)].map((m) => m[1]) : [];
+}
+
 function cleanClone(remote, token, head, baseline, name) {
   mkdirSync(join(CACHE, "checks"), { recursive: true });
   const dir = mkdtempSync(join(CACHE, "checks", "run-"));
@@ -532,11 +579,15 @@ function cleanClone(remote, token, head, baseline, name) {
   return { dir, changed };
 }
 
-async function runCheck(cmd, dir) {
+// Runs one check with checkEnv's variables and returns its output with every
+// secret in `secrets` redacted. The output is redacted whole, before anything
+// cuts its tail, so no part of a secret survives at the cut, and the hash is
+// of the redacted text, the text a reader of the evidence is shown.
+async function runCheck(cmd, dir, secrets) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await new Promise((done) => {
-    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, timeout: CHECK_TIMEOUT_MS });
+    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS });
     writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: child.pid }));
     let stdout = "", stderr = "", error, bytes = 0;
     const append = (key, chunk) => {
@@ -556,7 +607,7 @@ async function runCheck(cmd, dir) {
     child.on("close", (status, signal) => done({ status, stdout, stderr, error: error ?? (signal ? new Error(`check terminated by ${signal}`) : undefined) }));
   });
   writeFileSync(markerPath(dir), JSON.stringify(record));
-  const output = `${r.stdout}${r.stderr}${r.error ? `\n[atelier] ${r.error.message}` : ""}`;
+  const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, secrets);
   return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
@@ -1444,10 +1495,14 @@ const commands = {
     if (!ws.head) die("nothing pushed yet");
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     const { dir, changed } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+    // What a check could print and this command would then upload: the API
+    // token, the read tokens for the fork and the baseline, and the write
+    // token in the workspace's Git settings.
+    const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
     let failed = 0, recorded;
     try {
       for (const cmd of cmds) {
-        const r = await runCheck(cmd, dir);
+        const r = await runCheck(cmd, dir, secrets);
         // The Worker measures the changed paths from Artifacts and ignores this
         // list, which is sent only so a deployment without that measurement
         // still records one. The list printed below is the one the Worker
