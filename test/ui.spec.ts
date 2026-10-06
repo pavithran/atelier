@@ -863,6 +863,33 @@ it('the standing page shows the newest session with escaped reported text', asyn
  expect(html).toContain('Reported: npm test: failed');
 });
 
+it('a blocked task shows who blocked it and why, offers unblock and close only, and a live task offers the block form',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();d.item.state='blocked';d.item.blocked={reason:'waiting on <keys>',by:'codex/gpt-6',at:time,from:'submitted'};d.gate={ready:false,needsAssessor:false,blockers:['state is blocked, not submitted'],outOfScope:[]};
+ const html=renderItem(project,d,'PAVI',diff);
+ expect(html).toContain('Blocked by codex/gpt-6');expect(html).toContain('waiting on &lt;keys&gt;');expect(html).not.toContain('waiting on <keys>');
+ expect(html).toContain('action="/ui/example/t1/unblock"');expect(html).toContain('returns it to in review');expect(html).toContain('example · t1 · Blocked');
+ expect(html).toContain('Decide t1 at');expect(html).toContain('Clear that, then run atelier unblock t1');
+ expect(html).not.toContain('Approve revision');expect(html).not.toContain('Request changes');expect(html).not.toContain('Release task');expect(html).not.toContain('Block this task');
+ expect(html).toContain('Close task without merging');
+ const live=renderItem(project,detail(),'PAVI',diff);
+ expect(live).toContain('Block this task');expect(live).toContain('action="/ui/example/t1/block"');expect(live).toContain('<textarea name="note" required rows="2" maxlength="500">');
+ const open=detail();open.item.state='open';open.item.owner=null;open.item.head=null;
+ expect(renderItem(project,open,'PAVI',null)).toContain('Block this task');
+ const merged=detail();merged.item.state='merged';
+ expect(renderItem(project,merged,'PAVI',null)).not.toContain('Block this task');
+});
+it('the framing is shown when any of it is set, escaped, and left out when none is',()=>{
+ const d=detail();d.item.nonGoals=['no <b>CSS</b>','no routes'];d.item.stopWhen=['a check fails twice'];d.item.nextGate='design <review>';
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('aria-label="How the task is framed"');
+ expect(html).toContain('<dt>Non-goals</dt><dd><ul><li>no &lt;b&gt;CSS&lt;/b&gt;</li><li>no routes</li></ul></dd>');
+ expect(html).toContain('<dt>Stop when</dt><dd><ul><li>a check fails twice</li></ul></dd>');expect(html).toContain('<dt>Next gate</dt><dd>design &lt;review&gt;</dd>');
+ expect(html.indexOf('How the task is framed')).toBeLessThan(html.indexOf('id="changes"'));
+ const gateOnly=detail();gateOnly.item.nextGate='demo';
+ const one=renderItem(project,gateOnly,'PAVI',null);expect(one).toContain('<dt>Next gate</dt>');expect(one).not.toContain('<dt>Non-goals</dt>');
+  expect(renderItem(project,detail(),'PAVI',null)).not.toContain('How the task is framed');
+});
 // ── projects as cards, history as a timeline ──
 it('Projects draws a card per project with its tally, a two-week graph by family, and escapes the title',async()=>{
  const {renderProjects}=await import('../src/ui');
@@ -1014,5 +1041,5 @@ it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing foc
  expect(await plain.text()).not.toContain('class="login-backdrop"');
  const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
  expect(wrong.status).toBe(401);
- expect(await wrong.text()).toContain('class="login-backdrop"');
+  expect(await wrong.text()).toContain('class="login-backdrop"');
 });

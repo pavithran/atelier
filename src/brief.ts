@@ -13,6 +13,11 @@ export type Verdict = "accept" | "merge" | "review" | "wait" | "send back" | "de
 export interface Brief {
   decided: string;
   summary: string | null;
+  // The owner's framing, as the item records it: an agent reading the brief
+  // sees what the task is not to do, when to stop and ask, and the next gate.
+  nonGoals: string[];
+  stopWhen: string[];
+  nextGate: string | null;
   evidence: string[];
   recommendation: { verdict: Verdict; reason: string };
 }
@@ -132,6 +137,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   return {
     decided,
     summary: submitted?.summary ?? null,
+    nonGoals: item.nonGoals ?? [],
+    stopWhen: item.stopWhen ?? [],
+    nextGate: item.nextGate ?? null,
     evidence: lines.map((l) => l.text),
     recommendation,
   };
@@ -200,6 +208,13 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     };
   }
   if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };
+  // A blocked task waits on the owner, not on the agent: the reason says what
+  // must be cleared, and the task keeps its owner and workspace until then.
+  if (item.state === "blocked") {
+    const b = item.blocked;
+    const reason = (b?.reason ?? "no reason recorded").replace(/[.\s]*$/, "");
+    return { verdict: "decide", reason: `${b?.by ?? "Nobody"} blocked it: ${clip(reason, 200)}. Clear that, then run atelier unblock ${item.id}; or close it with atelier abandon ${item.id}.` };
+  }
   if (item.state !== "submitted") {
     return { verdict: "wait", reason: `The task is ${state} and has not been submitted for a decision.` };
   }

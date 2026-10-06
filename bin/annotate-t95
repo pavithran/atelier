@@ -1,0 +1,105 @@
+#!/bin/sh
+# t95: correct the record. The 73 actions recorded as zcode/glm-5.3 from
+# 2026-10-04 16:00Z to 2026-10-05 20:16Z were served by deepseek-flash, as
+# zcode's own model_usage table shows; GLM-5.3 last served there at
+# 2026-10-03 23:09Z. Each command below annotates one project's matching
+# events as served by deepseek-flash. The events themselves never change;
+# the track record, the reliability record and the graph count them under
+# zcode/deepseek-flash from then on.
+#
+# The owner runs this against the real server, with the token the atelier
+# command already uses. Without --apply every command is a dry run that
+# lists what matches and records nothing. With --apply the dry run comes
+# first, and the annotations are recorded only when it matches 73 events in
+# all; if the dry run's count is the right one instead, --expect N says so.
+# Running it again annotates nothing twice: an event already annotated as
+# served by deepseek-flash is left as it is.
+set -eu
+
+atelier="${ATELIER:-atelier}"
+note="zcode served deepseek-flash, per its own model_usage; GLM-5.3 last served there at 2026-10-03T23:09Z (t95)"
+expect=73
+
+usage() {
+  cat <<'EOF'
+Usage: bin/annotate-t95 [--apply [--expect N]]
+
+Annotates the events recorded as zcode/glm-5.3 from 2026-10-04T16:00Z up to
+2026-10-05T20:17Z on the tasks t95 names as served by deepseek-flash.
+Without --apply it lists what matches and records nothing.
+
+  --apply     record the annotations, if the dry run matches 73 events
+  --expect N  the count --apply requires instead of 73
+  -h, --help  print this
+
+ATELIER names the atelier command to run; atelier on PATH by default.
+EOF
+}
+
+apply=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) apply=1 ;;
+    --dry-run) apply=0 ;;
+    --expect)
+      shift
+      expect="${1:-}"
+      case "$expect" in ''|*[!0-9]*) printf 'bin/annotate-t95: --expect needs a number, such as --expect 73\n' >&2; exit 2 ;; esac ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'bin/annotate-t95: unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# An argument list as a shell would read it back: words that need quoting
+# are single-quoted.
+quoted() {
+  line=""
+  for word in "$@"; do
+    case "$word" in
+      ''|*[!A-Za-z0-9_./:=@,+-]*) word="'$(printf '%s' "$word" | sed "s/'/'\\\\''/g")'" ;;
+    esac
+    line="${line:+$line }$word"
+  done
+  printf '%s' "$line"
+}
+
+# Prints one command, runs it, prints what it answered and adds the events
+# it matched to the total. A command that fails stops the script.
+total=0
+step() {
+  printf '\n$ %s\n' "$(quoted "$@")"
+  out=$("$@") || { status=$?; printf '%s\n' "$out"; printf 'bin/annotate-t95: that command failed; nothing after it ran.\n' >&2; exit "$status"; }
+  printf '%s\n' "$out"
+  matched=$(printf '%s\n' "$out" | sed -n '1s/^\([0-9][0-9]*\) events\{0,1\} on .*/\1/p')
+  total=$((total + ${matched:-0}))
+}
+
+# The commands. The window ends before 2026-10-05T20:17:00Z, so the whole
+# minute of the last action, 20:16Z, is inside it. cloudflare-git is called
+# atelier now; its former name reaches the same project.
+commands() {
+  step "$atelier" served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00:00Z --to 2026-10-05T20:17:00Z --note "$note" --project atelier \
+    --item t2 --item t11 --item t13 --item t21 --item t26 --item t27 --item t37 --item t38 --item t41 --item t43 --item t46 \
+    --item t53 --item t56 --item t57 --item t70 --item t71 --item t72 --item t75 --item t77 --item t79 --item t80 --item t85 "$@"
+  step "$atelier" served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00:00Z --to 2026-10-05T20:17:00Z --note "$note" --project photograph --item t1 "$@"
+  step "$atelier" served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00:00Z --to 2026-10-05T20:17:00Z --note "$note" --project agent-lens --item t1 "$@"
+  step "$atelier" served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00:00Z --to 2026-10-05T20:17:00Z --note "$note" --project soundbar --item t1 "$@"
+  step "$atelier" served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00:00Z --to 2026-10-05T20:17:00Z --note "$note" --project assetsapp --item t1 "$@"
+}
+
+printf 'Dry run: listing what matches; nothing is recorded.\n'
+commands
+printf '\n%s events match in all; zcode'"'"'s model_usage counts %s.\n' "$total" "$expect"
+if [ "$apply" -eq 0 ]; then
+  printf 'Nothing was recorded. When the matches above are right, run: bin/annotate-t95 --apply\n'
+  exit 0
+fi
+if [ "$total" -ne "$expect" ]; then
+  printf 'Nothing was recorded: %s events match, not %s. Read the matches above; if %s is right, run: bin/annotate-t95 --apply --expect %s\n' "$total" "$expect" "$total" "$total" >&2
+  exit 1
+fi
+printf '\nRecording the annotations.\n'
+total=0
+commands --apply
+printf '\nDone: the %s events are annotated as served by deepseek-flash. The Models page counts them under deepseek-flash.\n' "$expect"

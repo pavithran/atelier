@@ -125,7 +125,8 @@ In detail:
 | Step | Who | What happens |
 | --- | --- | --- |
 | `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. Every check must be read-only (see [Check classes](#check-classes)). |
-| `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
+| `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. `--non-goal`, `--stop-when` and `--next-gate` frame it, and `atelier edit` changes that framing later; the brief, `atelier start` and the item's page show it. |
+| `atelier block t3 "reason"` | the item's owner or the project owner | Blocks the item with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed or submitted, and sits in the inbox with the reason until `atelier unblock t3` returns it to the state it was in. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
 | `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
@@ -1160,6 +1161,62 @@ Changing how a model is reached (its harness, where it runs, provider,
 endpoint or Keychain entry) clears its status until it is checked again.
 An endpoint carrying a query string, or a Keychain entry name that looks
 like a key, is refused.
+
+## Each model's reliability
+
+The Models page and the Usage page show each model's record across every
+project, and `GET /api/reliability` returns it. A model is named as review
+independence names it, so the same model under two harnesses or a
+registered alias is one record. Its work is what it held: how much was
+approved at its first review by another model, how many review rounds a
+merged item went through, every rejection with the note that gave its
+cause, and every defect the owner traced to its accepted work. Its verdicts
+are its own reviews: an approval of a revision a defect was later traced to
+is contradicted, and so is a review run that never reached a verdict. Its
+runs are those that stalled, timed out or were refused, as the runners
+reported them. The owner's approvals of its work are counted apart and are
+never a model's verdict: those made on the task page, which only the
+signed-in owner reaches, apart from those recorded through the API with the
+owner token, as the orchestrator records them. An approval recorded before
+Atelier kept the two apart is counted as unrecorded.
+
+```text
+atelier defect t12 --note "pagination drops the last page" --found-in t19
+```
+
+`atelier defect` traces a defect to the revision an item was accepted at;
+the item itself does not change. A runner reports a run through
+`POST /api/runs` with the owner token and its name in `X-Atelier-Runner`,
+as it reports usage: the agent it ran, the role (`build` or `review`), the
+outcome (`stalled`, `timed-out` or `refused`), the project and task when
+there is one, and a detail. `atelier runner` sends one when a harness passes
+its time limit, exits cleanly without a new commit, or exits with an error.
+
+Routing reads the record only to order candidates of equal score: the share
+of outcomes in a model's favour (work approved at first review, merges)
+against those that are not (rejections, defects, contradicted approvals,
+runs stalled, timed out or refused), with one of each added so a model
+with no record sits at one half. The project's own track record and the
+registry's evidence still decide the score.
+
+A harness can serve another model than the one its events name: zcode
+follows its app's provider settings, and served deepseek-flash while its
+events said glm-5.3. The owner records what served them:
+
+```text
+atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
+```
+
+It lists the events recorded under `--recorded` from `--from` up to `--to`
+on the tasks `--item` names, or on every task, and records nothing; with
+`--apply` it adds an annotation of its own, an `event.served` event, for
+each one not already annotated as served by that model. The annotated
+event never changes, and the latest annotation of an event is the one that
+counts, so a mistaken one is corrected by another. The track record, the
+reliability record, the Models page and the graph count an annotated event
+under the served model in the recorded harness, here `zcode/deepseek-flash`.
+`bin/annotate-t95` holds the commands that correct the record for task t95;
+the owner runs it, first without `--apply`.
 
 ## Usage, limits and balances
 
