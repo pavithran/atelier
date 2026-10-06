@@ -122,3 +122,11 @@ test("runReview refuses an assignment outside its offer or with an unsafe path",
     assert.equal(calls.filter((c) => c.argv).length, 0);
   }
 });
+
+test("runReview releases the request when the harness wrote no verdict file at all", async () => {
+  const { io, calls } = fixture();
+  io.readVerdict = () => { throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" }); };
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is released");
+});
