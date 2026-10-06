@@ -217,7 +217,7 @@ export function parseArgs(argv, switches = SWITCHES) {
 // the command runs or contacts the server.
 function checkFlags(cmd) {
   const row = { ...COMMON, ...FLAGS[cmd] };
-  const see = usage[cmd] ? `atelier ${cmd} --help` : "atelier help";
+  const see = COMMAND_USAGE[cmd] ? `atelier ${cmd} --help` : "atelier help";
   for (const flag of Object.keys(args.multi)) if (!(flag in row)) die(`${cmd} does not take --${flag}; see ${see}`);
   if (args.rest && !REST.has(cmd)) die(`${cmd} does not take "--" and the words after it; see ${see}`);
   for (const flag of args.bare) die(typeof row[flag] === "string" ? row[flag] : `--${flag} needs a value: --${flag} VALUE or --${flag}=VALUE`);
