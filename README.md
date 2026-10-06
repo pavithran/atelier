@@ -322,6 +322,13 @@ Trusted, and stated here so nobody assumes otherwise:
   and optionally to projects. The owner token still permits declared actors
   for orchestration. Keep it with the owner's tools. A workspace write token
   controls Git pushes and is separate from an API token.
+- **Git credentials stay off the command line.** The CLI hands every
+  Artifacts token to git through git's environment (`GIT_CONFIG_COUNT`,
+  `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`), never as an argument, because
+  any local user can read a process's arguments with `ps`. A workspace keeps
+  its write token in `.git/atelier-credentials`, readable only by its user
+  (mode 0600), which `.git/config` includes; anything running as that user
+  can still read it.
 - **Check execution is explicit.** Local checks run in a clean clone at
   the verified head, but a caller authorised to record checks, the item's own
   agent included, can forge a local result. It cannot forge what the change
