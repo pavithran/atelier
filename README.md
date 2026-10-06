@@ -745,6 +745,36 @@ only for a model that is probed, and goes only into the environment of the
 process that needs it. It is never printed, reported or put in a URL, and no
 other Keychain entry is listed or read.
 
+`atelier runner --usage` reports how much of each tool's allowance this
+machine has used: Codex's 5-hour and weekly windows from its session logs
+(percent used and when each resets), the requests and tokens zcode's
+`model_usage` table records by served model, the requests, tokens and cost
+opencode's `message` table records by served model, each over the last 5
+hours, 24 hours and 7 days, and the DeepSeek account's balance. Each tool
+goes to `POST /api/usage/TOOL` under the runner's name, the Usage page
+shows them, and the Worker alerts at the owner's thresholds (see Usage,
+limits and balances). It is a one-shot command, not a step in the runner
+loop: the loop polls every 30 seconds and must stay cheap, while this reads
+logs that can be gigabytes and asks DeepSeek for a balance, and it is just
+as useful on a machine that runs the tools but no runner. Schedule it
+hourly, for example from a LaunchAgent, with `--dry-run` to see what it
+would report first. Claude's plan limits and Gemini's spend have no record
+on the machine, so neither is reported, and the command says so.
+
+The DeepSeek balance needs its API key. The runner config names the
+Keychain entry that holds it, as `keychain` names a model's:
+
+```json
+"balances": { "deepseek": "deepseek.API_KEY" }
+```
+
+Without the entry no balance is asked for. The key is read by that name
+only and goes only into the environment of the child process that makes
+the one balance call; the child prints currencies and amounts, and any key
+a tool echoes back is removed from what the command prints. The report
+carries counts, windows, model names, costs and balances, never a prompt,
+a file name, a session id, a key or a header.
+
 The CLI's exit codes let the runner tell a task's own failure from the
 server's: 0 success, 1 a refusal or failure of the command, 3 a claim the
 server refused, 4 the server unavailable or a request that failed in
@@ -795,6 +825,38 @@ Changing how a model is reached (its harness, where it runs, provider,
 endpoint or Keychain entry) clears its status until it is checked again.
 An endpoint carrying a query string, or a Keychain entry name that looks
 like a key, is refused.
+
+## Usage, limits and balances
+
+The Usage page (`/usage`) shows where each tool stands, as the home runners
+last reported it with `atelier runner --usage`: one table per tool, with
+its rate-limit windows (percent used, when each resets), the models it
+served with requests, tokens and cost over the last 5 hours, 24 hours and
+7 days, and any pay-per-use balance. Each row says which runner reported it
+and when; a report older than three hours is marked stale, and a figure
+past a threshold is tagged. `GET /api/usage` returns the same reports with
+the thresholds and the alerts in force. A report is a status like a
+model's: `POST /api/usage/TOOL` takes the owner token and the runner's
+name in `X-Atelier-Runner`, and keeps one report per tool and runner.
+
+Alerts go through the `NTFY_TOPIC` notification already used for decisions,
+once per crossing: when a report first shows a figure past its threshold
+the Worker sends one message and records the crossing; later reports
+showing the same figure still past it send nothing, and a report showing it
+back under clears the crossing, so the next time it is passed alerts
+again. The thresholds are settings with defaults, each a number or `off`:
+
+```sh
+printf 80 | npx wrangler secret put USAGE_WEEKLY_PERCENT    # a weekly window past this percent
+printf 90 | npx wrangler secret put USAGE_WINDOW_PERCENT    # a 5-hour window past this percent
+printf 10 | npx wrangler secret put USAGE_DAILY_SPEND       # a tool's spend over 24 hours above this, in dollars
+printf 10 | npx wrangler secret put USAGE_BALANCE_FLOOR     # a balance below this, in its own currency
+```
+
+A window that has already reset does not alert, whatever its last reading
+was. Spend is summed over a tool's models from the cost its record carries,
+so zcode, which records none, has no spend alert. Each alert and each
+clearing is recorded as an event on the index Ledger.
 
 ## The Studio
 

@@ -605,7 +605,7 @@ const usage = {
   done: 'usage: atelier done "summary"',
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
-  runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]",
+  runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
   projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
 };
 
@@ -738,6 +738,20 @@ function wrapReady(name, cwd, report) {
   return branch;
 }
 
+// A report a runner makes under its name: a model's status, a tool's usage.
+// The answer is the server's JSON; a refusal is an error naming its detail.
+async function postAsRunner(path, body, runner, signal) {
+  const res = await fetch(`${server()}/api${path}`, {
+    method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "x-atelier-runner": runner, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* a reply that is not JSON has no detail */ }
+  if (!res.ok) throw new Error(`${res.status}${data?.detail ? ` ${data.detail}` : ""}`);
+  return data;
+}
+
 // The pool is read as `atelier models` reads it. A status goes to the status
 // route under the runner's name; one that fails does not stop the others, and
 // runDiscover names every failure at the end.
@@ -749,18 +763,21 @@ async function discoverModels() {
     await runDiscover(args, {
       signal: controller.signal,
       pool: () => call("GET", "/models", undefined, OWNER),
-      async report(id, body, runner) {
-        const res = await fetch(`${server()}/api/models/${encodeURIComponent(id)}/status`, {
-          method: "POST", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
-          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "x-atelier-runner": runner, "content-type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          let detail = "";
-          try { detail = (await res.json()).detail ?? ""; } catch { /* a reply that is not JSON has no detail */ }
-          throw new Error(`${res.status}${detail ? ` ${detail}` : ""}`);
-        }
-      },
+      report: (id, body, runner) => postAsRunner(`/models/${encodeURIComponent(id)}/status`, body, runner, controller.signal),
+    });
+  } catch (error) { die(error.message); }
+}
+
+// Each tool's usage goes to the usage route under the runner's name; one
+// that fails does not stop the others, and runUsage names every failure.
+async function reportUsage() {
+  const { runUsage } = await import("./usage.mjs");
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  try {
+    await runUsage(args, {
+      signal: controller.signal,
+      report: (tool, body, runner) => postAsRunner(`/usage/${encodeURIComponent(tool)}`, body, runner, controller.signal),
     });
   } catch (error) { die(error.message); }
 }
@@ -939,9 +956,11 @@ const commands = {
     die("put ops first: atelier ops COMMAND [ARGS...]; everything after it goes to the operations toolkit", 2);
   },
 
-  // `runner --discover` reports what each home model's harness serves; see discover.mjs.
+  // `runner --discover` reports what each home model's harness serves (discover.mjs);
+  // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
   async runner() {
     if (args.discover !== undefined) return discoverModels();
+    if (args.usage !== undefined) return reportUsage();
     const { runRunner } = await import("./runner.mjs");
     try {
       await runRunner(args, {
@@ -1707,7 +1726,7 @@ Models     models · models add ID --harness H --where home|cloud [--provider P]
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
-Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]\n           runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
+Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]\n           runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)\n           runner --usage [--name home:NAME] [--dry-run] [--config PATH]   (each tool's windows, served models, costs and balances)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
 Docs       guide   (paste into a project's AGENTS.md)
 

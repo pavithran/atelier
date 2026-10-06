@@ -55,6 +55,7 @@ const ICONS: Record<string, string> = {
   projects: '<path d="M3 6h7l2 3h9v11H3V6Z"/>',
   history: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/>',
   models: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13v7M13 16.5h7"/>',
+  usage: '<path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 17 4-6"/><circle cx="12" cy="17" r="1.2"/>',
   flow: '<path d="M3 6h18"/><path d="M6 6c3 0 2 6 5 6h7c3 0 2-6 5-6M6 6c3 0 2 12 5 12h4"/>',
   arrow: '<path d="m9 6 6 6-6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
@@ -69,6 +70,7 @@ const NAV: [string, string, string][] = [
   ["Flow", "/flow", "flow"],
   ["Studio", "/studio", "studio"],
   ["Models", "/models", "models"],
+  ["Usage", "/usage", "usage"],
   ["Projects", "/projects", "projects"],
   ["History", "/history", "history"],
 ];

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { notificationRequest } from "../src/notify.ts";
+import { notificationRequest, usageAlertRequest } from "../src/notify.ts";
 import { briefFor } from "../src/brief.ts";
 import { gate } from "../src/rules.ts";
 import type { Detail } from "../src/ui.ts";
@@ -41,4 +41,13 @@ test("title control characters cannot become headers and the body stays on one l
   const r = notificationRequest("topic", "https://atelier.test", "p", detail("Title\r\nPriority: max"));
   assert.equal(r.headers.get("Priority"), "default");
   assert.doesNotMatch(await r.text(), /[\r\n]/);
+});
+
+test("a usage alert goes to the same topic, opens the Usage page, and keeps its body to one line", async () => {
+  const r = usageAlertRequest("random-topic", "https://atelier.test/api/usage/codex", "codex: weekly window 81% used", "codex on home:studio has used 81%\nof its weekly window.");
+  assert.equal(r.url, "https://ntfy.sh/random-topic");
+  assert.equal(r.headers.get("Click"), "https://atelier.test/usage");
+  assert.equal(r.headers.get("Tags"), "warning");
+  assert.equal(Buffer.from(r.headers.get("Title")!.slice(10, -2), "base64").toString("utf8"), "Atelier: codex: weekly window 81% used");
+  assert.equal(await r.text(), "codex on home:studio has used 81% of its weekly window.");
 });
