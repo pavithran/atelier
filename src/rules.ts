@@ -187,10 +187,15 @@ export function parseExecution(value: unknown): ExecutionPolicy {
 // OWNER_ACTOR; "owner" is the default.
 export const DEFAULT_OWNER = "owner";
 
+// The longest actor a task can be handed to, as harness/model. The actor
+// pattern holds the same limit, so an over-long name is invalid wherever an
+// actor is checked, and a handoff names the limit in its refusal.
+export const ACTOR_MAX = 200;
+
 // harness/model. A model may carry a ":profile" suffix, as the AI Studio's
 // oMLX profile ids do; the harness may not, so a runner name (kind:name) and
 // an actor never read alike.
-const ACTOR = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._:-]*)?$/i;
+const ACTOR = new RegExp(`^(?=.{1,${ACTOR_MAX}}$)[a-z0-9][a-z0-9._-]*(\\/[a-z0-9][a-z0-9._:-]*)?$`, "i");
 
 export function validActor(actor: string): boolean {
   return ACTOR.test(actor);
