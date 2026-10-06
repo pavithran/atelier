@@ -765,9 +765,15 @@ and runs its configured harness in the claimed workspace. The brief is kept
 outside that workspace. Each opencode run also gets a data folder of its own
 (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
 it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
-deadlock on it. Such a run finds its provider keys in its environment and
-opencode's config, as the runner passes them; a key saved with
-`opencode auth login` lives in the shared data folder and is not seen. After a successful harness exit with a new commit,
+deadlock on it. Such a run finds its provider keys in the variables its
+config entry names and in opencode's config; a key saved with
+`opencode auth login` lives in the shared data folder and is not seen.
+A harness does not inherit the runner's environment. It gets what a local
+check gets (the toolchain's variables, such as `PATH`, `HOME`, `LANG` and
+`TMPDIR`; nothing named `ATELIER_*` and nothing whose name says it holds a
+token, key or secret) and the variables its config entry names in `env`. A
+named variable that holds the owner's Atelier token is withheld, and the
+runner says so. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
 in place for inspection. Two counters are kept for each project and task id,
@@ -795,7 +801,8 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
     {
       "agent": "opencode",
       "models": ["GLM-5.3-Flash-4_8bit"],
-      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."]
+      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."],
+      "env": ["ZAI_API_KEY"]
     }
   ]
 }
@@ -805,7 +812,11 @@ Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `anti
 and command arguments to match the installed harness. Commands are argv
 arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
 the runner invokes them directly without a shell. The example requires that
-model to be configured in opencode. Atelier login and credentials are shared
+model to be configured in opencode. `env` is optional: the names of the
+runner's variables this harness also gets, such as a provider key it reads or
+`XDG_CONFIG_HOME`; a name starting with `ATELIER_` is refused. A runner started
+from a LaunchAgent has only the variables the LaunchAgent sets, so a key named
+here must be set there too. Atelier login and credentials are shared
 with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
 deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry terminates the process group, with forced

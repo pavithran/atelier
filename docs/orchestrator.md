@@ -214,7 +214,7 @@ A failed integration attempts to restore its previous head.
 - Routes to add to t43's allowlist: `plan` post (for the plan item's current holder only), `review-claim`, `job-brief` and `base-token`; `integrated` and `integration-failed` for the integrator only.
 - **Conflict to settle:** t43 refuses `POST models/ID/status` for agent tokens, but runners use it to report model status. Either allow it with the runner header, or drop status reporting.
 
-**Harness environment.** `execute()` in `cli/runner.mjs` spawns the harness with the runner's inherited environment. It should pass a scrubbed one, without `ATELIER_TOKEN`. A harness with shell access can still reach the Keychain; agent tokens limit what such a leak can do.
+**Harness environment.** `runTask` in `cli/runner.mjs` gives the harness what a check gets (`checkEnv`) and the variables its runner config entry names in `env`; never a variable named `ATELIER_*`, and never one that holds the owner's token. A harness with shell access can still reach the Keychain; agent tokens limit what such a leak can do.
 
 **Limits, fixed at approval:**
 - `maxParallel` 2;

@@ -6,7 +6,8 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, harnessEnv } from "../cli/runner.mjs";
+import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
@@ -114,6 +115,7 @@ function fixture(options = {}) {
   let reads = 0;
   const io = {
     log: (s) => logs.push(s), stopped: () => options.stopped ?? false,
+    env: options.env ?? {}, ownerTokens: () => { calls.push({ ownerTokens: true }); return options.ownerTokens ?? []; },
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
     async cli(argv, cwd) {
       calls.push({ argv, cwd });
@@ -832,13 +834,107 @@ test("an opencode run gets a data folder beside the workspace, removed as the ha
   }
 });
 
-test("other harnesses run with the runner's environment and no data folder", async () => {
+test("other harnesses run with no data folder", async () => {
   const claude = { ...entry, agent: "claude-code" };
-  const { io, calls, homes } = fixture();
+  const { io, calls, homes } = fixture({ env: { PATH: "/bin" } });
   const state = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${entry.models[0]}` }, { agents: [claude] }, "home:studio", io);
   assert.equal(state.phase, "submitted");
   assert.deepEqual(homes, [{ ran: undefined }]);
-  assert.equal(calls.find((c) => c.harness).env, undefined);
+  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin" });
+});
+
+// The variables of a runner's environment on the owner's Mac, with dummy values.
+const RUNNER_ENV = {
+  PATH: "/usr/bin:/bin", HOME: "/Users/owner", USER: "owner", LANG: "en_US.UTF-8", TMPDIR: "/tmp/",
+  ATELIER_TOKEN: "atl_DUMMY_OWNER_TOKEN_0000", ATELIER_SERVER: "https://atelier.example",
+  HF_TOKEN: "hf_DUMMY0000", AZURE_SPEECH_KEY: "DUMMY-azure", TYPESAFE_API_KEY: "DUMMY-typesafe",
+  ANTHROPIC_API_KEY: "sk-ant-DUMMY", ZAI_API_KEY: "DUMMY-zai", SSH_AUTH_SOCK: "/tmp/agent.sock", NODE_OPTIONS: "--require /tmp/x.js",
+};
+
+test("harnessEnv gives what a check gets, and the variables the entry names unless one holds the owner's token", () => {
+  assert.deepEqual(harnessEnv(RUNNER_ENV), { env: checkEnv(RUNNER_ENV), withheld: [] });
+  assert.deepEqual(harnessEnv(RUNNER_ENV).env, { PATH: "/usr/bin:/bin", HOME: "/Users/owner", USER: "owner", LANG: "en_US.UTF-8", TMPDIR: "/tmp/" });
+  const base = { ...RUNNER_ENV, COPY: `Bearer ${RUNNER_ENV.ATELIER_TOKEN}`, STORED: "stored-owner-token" };
+  const { env, withheld } = harnessEnv(base, ["ZAI_API_KEY", "TERM", "COPY", "STORED", "ATELIER_TOKEN", "atelier_server"], [RUNNER_ENV.ATELIER_TOKEN, "stored-owner-token"]);
+  assert.deepEqual(env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai" }, "a named variable that is not set is left out");
+  assert.deepEqual(withheld, ["COPY", "STORED"]);
+  for (const name of ["ATELIER_TOKEN", "ATELIER_SERVER", "HF_TOKEN", "AZURE_SPEECH_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK", "NODE_OPTIONS"]) assert.ok(!(name in env), name);
+});
+
+test("the runner config names the variables a harness also gets, never an ATELIER_ one", () => {
+  const parsed = parseConfig({ agents: [{ ...entry, env: ["ZAI_API_KEY", "XDG_CONFIG_HOME"] }] });
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.agents[0].env, ["ZAI_API_KEY", "XDG_CONFIG_HOME"]);
+  assert.equal("env" in parseConfig(config).agents[0], false);
+  for (const [env, why] of [
+    ["ZAI_API_KEY", /env must list distinct environment variable names/], [[7], /env must list/], [["two words"], /env must list/],
+    [["1ST"], /env must list/], [["A=B"], /env must list/], [["ZAI_API_KEY", "ZAI_API_KEY"], /env must list/],
+    [["ATELIER_TOKEN"], /must not name an ATELIER_ variable/], [["atelier_server"], /must not name an ATELIER_ variable/],
+  ]) {
+    const result = parseConfig({ agents: [{ ...entry, env }] });
+    assert.match(result.errors.join("; "), why, JSON.stringify(env));
+    assert.deepEqual(result.agents, []);
+  }
+});
+
+test("runTask hands the harness the filtered environment, and reads the owner's token only for named variables", async () => {
+  const base = { ...RUNNER_ENV, OWNER_COPY: RUNNER_ENV.ATELIER_TOKEN };
+  const named = { ...entry, env: ["ZAI_API_KEY", "OWNER_COPY"] };
+  const { io, calls, logs } = fixture({ env: base, ownerTokens: [RUNNER_ENV.ATELIER_TOKEN] });
+  assert.equal((await runTask(assignment, { agents: [named] }, "home:studio", io)).phase, "submitted");
+  const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
+  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home });
+  assert.ok(logs.includes("OWNER_COPY holds the Atelier owner token, so opencode does not get it; take it out of env in the runner config"));
+  assert.equal(calls.filter((c) => c.ownerTokens).length, 1);
+
+  const plain = fixture({ env: base });
+  await runTask(assignment, config, "home:studio", plain.io);
+  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home });
+  assert.equal(plain.calls.filter((c) => c.ownerTokens).length, 0, "no token is read when no variable is named");
+});
+
+test("a real harness gets neither Atelier's credentials nor the owner's other keys, only what its entry names", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const { dir, workspace, path, args } = gitWorkspace(t);
+  // The owner's stored token, in a file store instead of the Keychain.
+  const store = join(dir, "config");
+  mkdirSync(store);
+  writeFileSync(join(store, "secrets.json"), JSON.stringify({ API_TOKEN: "stored-owner-token-0000" }), { mode: 0o600 });
+  // The test's own PATH, HOME, USER and TMPDIR stay, so git runs as usual,
+  // and NODE_OPTIONS is left out, as it would break the test's own children.
+  const given = Object.fromEntries(Object.entries({ ...RUNNER_ENV, OWNER_COPY: "stored-owner-token-0000", ATELIER_SECRET_STORE: "file", ATELIER_CONFIG_DIR: store })
+    .filter(([name]) => !["PATH", "HOME", "USER", "TMPDIR", "NODE_OPTIONS"].includes(name)));
+  const saved = Object.fromEntries(Object.keys(given).map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  Object.assign(process.env, given);
+  const seen = join(dir, "env.json"), script = join(dir, "harness.mjs");
+  writeFileSync(script, `import { writeFileSync } from "node:fs";
+    import { execFileSync } from "node:child_process";
+    writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env));
+    execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "work"]);`);
+  for (const agent of ["codex", "opencode"]) {
+    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, agent, env: ["ZAI_API_KEY", "OWNER_COPY"], command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
+    const commands = [];
+    await runRunner({ ...args, once: true }, {
+      workspacePath: () => workspace, queue: async () => [{ ...assignment, agent, actor: `${agent}/${entry.models[0]}` }],
+      executeChild: async (argv, options) => {
+        if (!argv[1]?.endsWith("atelier.mjs")) return execute(argv, options);
+        commands.push(argv[2]);
+        return execute([process.execPath, "-e", ""], options);
+      },
+    });
+    assert.deepEqual(commands, ["claim", "finish"], agent);
+    const env = JSON.parse(readFileSync(seen, "utf8"));
+    for (const name of ["ATELIER_TOKEN", "ATELIER_SERVER", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR", "HF_TOKEN", "AZURE_SPEECH_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK", "OWNER_COPY"]) {
+      assert.equal(env[name], undefined, `${agent} does not get ${name}`);
+    }
+    assert.equal(env.ZAI_API_KEY, "DUMMY-zai", agent);
+    assert.equal(env.PATH, process.env.PATH, agent);
+    assert.equal(env.HOME, process.env.HOME, agent);
+    assert.equal(env.LANG, "en_US.UTF-8", agent);
+    assert.equal(!!env.XDG_DATA_HOME, agent === "opencode", agent);
+    assert.ok(!Object.values(env).some((value) => value.includes("stored-owner-token") || value.includes(RUNNER_ENV.ATELIER_TOKEN)), agent);
+  }
 });
 
 test("a data folder that cannot be removed is reported, and the task goes on", async () => {
