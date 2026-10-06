@@ -344,11 +344,14 @@ test("timeout kills the process group even when its leader exits before a child 
       spawn(process.execPath, ['-e', ${JSON.stringify(child)}], {stdio: 'inherit'});
       ${UNTIL_TEST_EXITS}`;
     const start = Date.now();
-    const result = await execute([process.execPath, "-e", script], { capture: true, timeoutMs: 1000 });
+    // The timeout runs from the spawn, so it is also the budget for two node
+    // starts before "ready" is printed; a machine running another test suite
+    // stretches those past a second, so the budget is four.
+    const result = await execute([process.execPath, "-e", script], { capture: true, timeoutMs: 4000 });
     assert.equal(result.output, "ready");
     assert.equal(result.timedOut, true);
     assert.equal(result.signal, ignore ? "SIGKILL" : "SIGTERM");
-    assert.ok(Date.now() - start >= 5900);
+    assert.ok(Date.now() - start >= 8900);
   }
 });
 
@@ -895,7 +898,9 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
       if (mode === "fail") process.exit(1);
       if (mode === "interrupt") process.kill(process.ppid, "SIGINT");
       ${UNTIL_TEST_EXITS}`);
-    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }], ...(mode === "timeout" ? { taskTimeoutMs: 300 } : {}) }));
+    // The task timeout must fire after the harness has started and written
+    // its folder's name, which a loaded machine delays past 300 ms.
+    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }], ...(mode === "timeout" ? { taskTimeoutMs: 3000 } : {}) }));
     const listeners = process.listenerCount("exit"), commands = [];
     await runRunner({ ...args, once: true }, {
       workspacePath: () => workspace, queue: async () => [assignment],

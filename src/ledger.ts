@@ -8,6 +8,7 @@ import {
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
 } from "./rules";
 import { cleanSummary } from "./brief";
+import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -20,6 +21,7 @@ import {
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
 } from "./plans/state.ts";
 import type { PlanView } from "./plans/show.ts";
+import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -105,6 +107,9 @@ function rerouted(route: PartRoute, actor: string | undefined): PartRoute {
   if (!actor) return route;
   return { ...route, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: route.alternates.filter((a) => a.actor !== actor) };
 }
+
+// The longest actor a task can be handed to, as harness/model:profile.
+const ACTOR_MAX = 200;
 
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
@@ -233,7 +238,7 @@ export class Ledger extends DurableObject<Env> {
 
   putAgentToken(token: AgentToken): void {
     this.sql.exec(`INSERT INTO agent_tokens (id, hash, json) VALUES (?, ?, ?)`, token.id, token.hash, JSON.stringify(token));
-    this.log(null, this.owner, "token.issued", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
+    this.log(null, this.owner, "token.issued", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt }, new Date().toISOString());
   }
 
   agentToken(hash: string): AgentToken | null {
@@ -253,9 +258,10 @@ export class Ledger extends DurableObject<Env> {
     if (!row) return false;
     const token = JSON.parse(row.json as string) as AgentToken;
     if (token.revokedAt) return true;
-    token.revokedAt = new Date().toISOString();
+    const at = new Date().toISOString();
+    token.revokedAt = at;
     this.sql.exec(`UPDATE agent_tokens SET json = ? WHERE id = ?`, JSON.stringify(token), id);
-    this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
+    this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt }, at);
     return true;
   }
 
@@ -333,10 +339,15 @@ export class Ledger extends DurableObject<Env> {
     return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
   }
 
+  // Every request that names a project resolves it here, so the names table
+  // is read once, and the project list once, however many are registered.
   resolveProject(name: string): ProjectRef {
-    const key = this.keyOf(name);
-    const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => this.keyOf(n) === key);
-    return { name: registered ?? name, key, names: this.namesOf(key), registered: registered !== undefined, former: registered !== undefined && registered !== name };
+    const keys = new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string]));
+    const keyOf = (n: string) => keys.get(n) ?? n;
+    const key = keyOf(name);
+    const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => keyOf(n) === key);
+    const names = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)];
+    return { name: registered ?? name, key, names, registered: registered !== undefined, former: registered !== undefined && registered !== name };
   }
 
   // The project registered as `from`, or that `from` was a name of, answers
@@ -354,7 +365,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`DELETE FROM projects WHERE name = ?`, source.name);
     this.sql.exec(`INSERT INTO projects (name, json) VALUES (?, ?)`, to, JSON.stringify(record));
     if (to !== source.key) this.sql.exec(`INSERT OR REPLACE INTO names (name, key) VALUES (?, ?)`, to, source.key);
-    this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key });
+    this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key }, new Date().toISOString());
     return { from: source.name, to, key: source.key, names: this.namesOf(source.key) };
   }
 
@@ -416,11 +427,12 @@ export class Ledger extends DurableObject<Env> {
     const active = crossings(report, thresholds, Date.parse(report.at));
     const held = new Set(this.sql.exec(`SELECT key FROM usage_alerts WHERE tool = ? AND runner = ?`, report.tool, report.runner).toArray().map((r) => r.key as string));
     const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+    const at = new Date().toISOString();
     const alerts: string[] = [];
     for (const c of active) {
       if (held.has(c.key)) continue;
       this.sql.exec(`INSERT INTO usage_alerts (key, tool, runner, since) VALUES (?, ?, ?, ?)`, c.key, report.tool, report.runner, report.at);
-      this.log(null, this.owner, "usage.alert", { key: c.key, runner: report.runner, title: c.title });
+      this.log(null, this.owner, "usage.alert", { key: c.key, runner: report.runner, title: c.title }, at);
       alerts.push(c.title);
       if (topic) this.deliver(usageAlertRequest(topic, origin, c.title, c.body));
     }
@@ -428,7 +440,7 @@ export class Ledger extends DurableObject<Env> {
     for (const key of held) {
       if (keys.has(key)) continue;
       this.sql.exec(`DELETE FROM usage_alerts WHERE key = ?`, key);
-      this.log(null, this.owner, "usage.cleared", { key, runner: report.runner });
+      this.log(null, this.owner, "usage.cleared", { key, runner: report.runner }, at);
     }
     return { report, alerts };
   }
@@ -440,14 +452,15 @@ export class Ledger extends DurableObject<Env> {
   // the read and the write.
   initProject(init: ProjectInit, actor: string): ProjectRecord {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
-    const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, new Date().toISOString());
-    this.setProject(record, actor);
+    const at = new Date().toISOString();
+    const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, at);
+    this.setProject(record, actor, at);
     return record;
   }
 
-  setProject(record: ProjectRecord, actor: string): void {
+  setProject(record: ProjectRecord, actor: string, at = new Date().toISOString()): void {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
-    this.log(null, actor, "project.set", { policy: record.policy, ...(record.policy.approval ? { approval: record.policy.approval } : {}) });
+    this.log(null, actor, "project.set", { policy: record.policy, ...(record.policy.approval ? { approval: record.policy.approval } : {}) }, at);
   }
 
   project(): ProjectRecord {
@@ -463,7 +476,7 @@ export class Ledger extends DurableObject<Env> {
     if (current.name === to) return current;
     const record = { ...current, name: to };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
-    this.log(null, actor, "project.renamed", { from: current.name, to });
+    this.log(null, actor, "project.renamed", { from: current.name, to }, new Date().toISOString());
     return record;
   }
 
@@ -476,7 +489,7 @@ export class Ledger extends DurableObject<Env> {
       `INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)`,
       id, title.trim(), JSON.stringify(scope), now, now,
     );
-    this.log(id, actor, "item.created", { title, scope });
+    this.log(id, actor, "item.created", { title, scope }, now);
     return this.item(id);
   }
 
@@ -510,6 +523,7 @@ export class Ledger extends DurableObject<Env> {
   // that one replaces: the caller revokes it, and records the new one with
   // recordToken under this generation.
   claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
+    const at = new Date().toISOString();
     const item = this.item(id);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
@@ -525,11 +539,11 @@ export class Ledger extends DurableObject<Env> {
       }
       // After a handoff the new owner holds no runner yet; the first runner to
       // claim as that owner takes the claim, and any other is refused above.
-      if (!held && asking) this.update(id, { owner: actor, runner: asking });
+      if (!held && asking) this.update(id, { owner: actor, runner: asking }, at);
       return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
     }
-    this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null });
-    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {}, proved);
+    this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null }, at);
+    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {}, at, proved);
     return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
   }
 
@@ -576,7 +590,7 @@ export class Ledger extends DurableObject<Env> {
     assertDispatchable(item);
     const d = makeDispatch(input, actor, new Date().toISOString());
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note });
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note }, d.at);
     return this.item(id);
   }
 
@@ -585,8 +599,9 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     this.assertNotPlanned(item);
     if (!item.dispatch || item.state !== "open") throw new RuleError("not_dispatched", `${id} is not waiting for a runner`);
-    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, new Date().toISOString(), id);
-    this.log(id, actor, "item.undispatched", {});
+    const at = new Date().toISOString();
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+    this.log(id, actor, "item.undispatched", {}, at);
     return this.item(id);
   }
 
@@ -600,13 +615,15 @@ export class Ledger extends DurableObject<Env> {
 
   // A failed fork must not leave an owner holding nothing.
   unclaim(id: string, actor: string, reason: string, proved = false): void {
-    this.update(id, { owner: null, state: "open" });
-    this.log(id, actor, "item.claim_failed", { reason }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { owner: null, state: "open" }, at);
+    this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
 
   setFork(id: string, fork: string, base: string | null, actor: string, proved = false): void {
-    this.update(id, { fork, base, head: base });
-    this.log(id, actor, "fork.created", { fork, base }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { fork, base, head: base }, at);
+    this.log(id, actor, "fork.created", { fork, base }, at, proved);
   }
 
   // The worker has already read the fork's head from Artifacts; what is logged
@@ -662,14 +679,14 @@ export class Ledger extends DurableObject<Env> {
       head: observedHead, last_push_at: now,
       state: item.state === "submitted" ? "submitted" : "claimed",
       ...(reopened ? { accepted_head: null } : {}),
-    });
+    }, now);
     this.log(id, actor, "push.observed", {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
       ...(rewritten ? { rebasedFrom: item.head } : {}),
       ...(unverified ? { unverified: true } : {}),
       ...(reopened ? { approvalInvalidated: true } : {}),
-    }, proved);
+    }, now, proved);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -694,14 +711,14 @@ export class Ledger extends DurableObject<Env> {
       const last = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'push.unrecorded' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const noted = last ? (JSON.parse(last.data as string) as { head?: string; recorded?: string }) : null;
       if (noted?.head !== observedHead || noted.recorded !== item.head) {
-        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source: "artifacts", reason: holdsRecorded === null ? "ancestry_unverified" : "history_rewritten" });
+        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source: "artifacts", reason: holdsRecorded === null ? "ancestry_unverified" : "history_rewritten" }, new Date().toISOString());
       }
       return item;
     }
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
-      state: item.state === "accepted" ? "submitted" : item.state });
-    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted" });
+      state: item.state === "accepted" ? "submitted" : item.state }, now);
+    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted" }, now);
     return this.item(id);
   }
 
@@ -746,7 +763,7 @@ export class Ledger extends DurableObject<Env> {
 
   recordSandboxRequest(id: string, actor: string, runId: string): void {
     this.item(id);
-    this.log(id, actor, "sandbox.requested", { runId }, true);
+    this.log(id, actor, "sandbox.requested", { runId }, new Date().toISOString(), true);
   }
 
   addEvidence(e: Evidence, origin?: string, proved = false): void {
@@ -755,13 +772,14 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
-    this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, proved);
+    this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     this.afterPlanChange(e.itemId);
   }
 
   addReview(r: Review, origin?: string, proved = false): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
+    assertLength(r.note, NOTE_MAX, "the review note");
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
@@ -773,10 +791,11 @@ export class Ledger extends DurableObject<Env> {
     // The holder under another letter case, profile or registered name is still the holder.
     if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
+    const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
-    if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null });
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head }, proved);
+    if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head }, at, proved);
     this.notify(r.itemId, origin);
     this.afterPlanChange(r.itemId);
   }
@@ -788,9 +807,11 @@ export class Ledger extends DurableObject<Env> {
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
-    this.update(id, { state: "submitted" });
+    // Cleaned first: a summary over its limit is refused before anything is written.
     const text = cleanSummary(summary);
-    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { state: "submitted" }, at);
+    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
     this.notify(id, origin);
     this.afterPlanChange(id);
     return this.item(id);
@@ -799,12 +820,17 @@ export class Ledger extends DurableObject<Env> {
   // The checks a handoff, release or abandon makes, asked alone. The caller
   // revokes the holder's write token before it changes the owner, and asks
   // these first, so a change that would be refused revokes nothing. The
-  // change itself checks again.
-  checkHandoff(id: string, from: string, to: string): void { this.handoffAllowed(id, from, to); }
-  checkRelease(id: string, actor: string): void { this.releaseAllowed(id, actor); }
-  checkAbandon(id: string, actor: string): void { this.abandonAllowed(id, actor); }
+  // change itself checks again. The note is checked here too, so a note over
+  // its limit is refused before the token is revoked.
+  checkHandoff(id: string, from: string, to: string, note: string): void { this.handoffAllowed(id, from, to, note); }
+  checkRelease(id: string, actor: string, note: string): void { this.releaseAllowed(id, actor, note); }
+  checkAbandon(id: string, actor: string, note: string): void { this.abandonAllowed(id, actor, note); }
 
-  private handoffAllowed(id: string, from: string, to: string): Item {
+  private handoffAllowed(id: string, from: string, to: string, note: string): Item {
+    assertLength(note, NOTE_MAX, "the handoff note");
+    // The name is stored as the task's owner and in its event, so it is
+    // held to a length no harness/model name reaches.
+    assertLength(to, ACTOR_MAX, "the name of the agent it is handed to");
     const item = this.item(id);
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
@@ -813,20 +839,29 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
-  private releaseAllowed(id: string, actor: string): Item {
+  private releaseAllowed(id: string, actor: string, note: string): Item {
+    assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
     assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
     return item;
   }
 
-  private abandonAllowed(id: string, actor: string): Item {
+  private abandonAllowed(id: string, actor: string, note: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
+    assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     // A plan's parts go with it; stopping the plan closes them in one step.
     const open = item.kind === "plan" ? this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned") : [];
     if (open.length) throw new RuleError("plan_parts", `${id} is a plan with parts not merged or abandoned (${open.map((p) => p.id).join(", ")}); stop it with atelier plan stop ${id}, which closes them too`, 409);
+    // A merge under the landing lease may already have put the accepted
+    // revision on the baseline, and only an accepted task can record that
+    // merge. So abandon waits until the lease ends.
+    const landing = this.landing(id);
+    if (landing) {
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot be abandoned. The lease ends when atelier merge ${id} records the merge, or when atelier merge ${id} --cancel withdraws a merge that is not on the baseline; abandon ${id} after a cancel`, 409);
+    }
     return item;
   }
 
@@ -835,18 +870,20 @@ export class Ledger extends DurableObject<Env> {
   // `token`, and the change is made only if that is still the token recorded
   // (see dropToken).
   handoff(id: string, from: string, to: string, note: string, proved = false, token?: string | null): Item {
-    const item = this.handoffAllowed(id, from, to);
+    const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
-    this.update(id, { owner: to, state: "claimed" });
-    this.log(id, from, "item.handoff", { from: item.owner, to, note }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { owner: to, state: "claimed" }, at);
+    this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
     return this.item(id);
   }
 
   release(id: string, actor: string, note: string, proved = false, token?: string | null): Item {
-    const item = this.releaseAllowed(id, actor);
+    const item = this.releaseAllowed(id, actor, note);
     this.dropToken(id, token);
-    this.update(id, { owner: null, state: "open" });
-    this.log(id, actor, "item.released", { from: item.owner, note }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { owner: null, state: "open" }, at);
+    this.log(id, actor, "item.released", { from: item.owner, note }, at, proved);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -866,16 +903,22 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
     const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
+    const at = new Date().toISOString();
     const override = overrideReason === undefined ? null
-      : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, new Date().toISOString());
+      : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
     const g = gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     if (override) {
-      this.update(id, { review_override: JSON.stringify(override.override) });
-      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors });
+      this.update(id, { review_override: JSON.stringify(override.override) }, at);
+      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors }, at);
     }
-    this.update(id, { state: "accepted", accepted_head: item.head });
-    this.log(id, actor, "item.accepted", { head: item.head, protected: [...policy.protected], ...(override ? { reviewOverridden: true } : {}) });
+    this.update(id, { state: "accepted", accepted_head: item.head }, at);
+    // The policy the acceptance is made under, for the merge guard's
+    // comparison with the policy at merge time.
+    this.log(id, actor, "item.accepted", {
+      head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
+      ...(override ? { reviewOverridden: true } : {}),
+    }, at);
     return this.item(id);
   }
 
@@ -918,17 +961,19 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409);
     }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
-    this.update(id, { state: "merged", owner: null });
-    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed });
+    const at = new Date().toISOString();
+    this.update(id, { state: "merged", owner: null }, at);
+    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
 
   abandon(id: string, actor: string, note: string, token?: string | null): Item {
-    this.abandonAllowed(id, actor);
+    this.abandonAllowed(id, actor, note);
     this.dropToken(id, token);
-    this.update(id, { state: "abandoned", owner: null });
-    this.log(id, actor, "item.abandoned", { note });
+    const at = new Date().toISOString();
+    this.update(id, { state: "abandoned", owner: null }, at);
+    this.log(id, actor, "item.abandoned", { note }, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -947,7 +992,7 @@ export class Ledger extends DurableObject<Env> {
     let data;
     try { data = cleanSession(value); }
     catch (err) { throw new RuleError("bad_session", (err as Error).message, 400); }
-    this.log(null, actor, "session.wrapped", { ...data });
+    this.log(null, actor, "session.wrapped", { ...data }, new Date().toISOString());
     return this.sessions(1)[0];
   }
 
@@ -955,6 +1000,40 @@ export class Ledger extends DurableObject<Env> {
     this.project();
     return this.sql.exec(`SELECT actor, at, data FROM events WHERE kind = 'session.wrapped' ORDER BY seq DESC LIMIT ?`, Math.max(1, Math.min(20, limit))).toArray()
       .map((r) => ({ actor: r.actor as string, at: r.at as string, data: JSON.parse(r.data as string) }));
+  }
+
+  // ── protected actions (src/actions.ts) ──────────────────────────────────
+  // Approvals bound to one revision of the main line, and the steps a ship
+  // ran. Each is a project-level event: approved, withdrawn, consumed, ran.
+
+  private get actionStore(): ActionStore {
+    return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
+  }
+
+  approveAction(body: Record<string, unknown>, actor: string): ApprovalView {
+    this.project();
+    return approveAction(this.actionStore, actor, body, new Date().toISOString());
+  }
+
+  actionApprovals(): ApprovalView[] {
+    this.project();
+    return listApprovals(this.actionStore, new Date().toISOString());
+  }
+
+  withdrawAction(id: string, actor: string, note: unknown): ApprovalView {
+    return withdrawAction(this.actionStore, actor, id, note, new Date().toISOString());
+  }
+
+  consumeAction(body: Record<string, unknown>, actor: string): ApprovalView {
+    return consumeAction(this.actionStore, actor, body, new Date().toISOString());
+  }
+
+  recordActionRun(body: Record<string, unknown>, actor: string): ActionRun {
+    return recordActionRun(this.actionStore, actor, body);
+  }
+
+  actionRuns(limit = 20): (ActionRun & { at: string; actor: string })[] {
+    return actionRuns(this.sql, limit);
   }
 
   events(id?: string, limit = 200): LedgerEvent[] {
@@ -984,8 +1063,14 @@ export class Ledger extends DurableObject<Env> {
     // Read acceptance separately so later events cannot hide its snapshot.
     const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.accepted' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
     const acceptance = row ? JSON.parse(row.data as string) : null;
-    const acceptanceProtected: string[] | null = acceptance?.head === item.acceptedHead ? acceptance.protected ?? null : null;
-    return { item, policy, acceptanceProtected, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    const current = acceptance?.head === item.acceptedHead ? acceptance : null;
+    const acceptanceProtected: string[] | null = current?.protected ?? null;
+    // The fields the acceptance recorded of the policy it was made under; an
+    // older acceptance recorded the protected paths alone.
+    const acceptancePolicy: Record<string, unknown> | null = current
+      ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
+      : null;
+    return { item, policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string): InboxEntry[] {
@@ -1045,19 +1130,19 @@ export class Ledger extends DurableObject<Env> {
     const parsed = parsePlan(value);
     const errors = parsed.ok ? validatePlan(parsed.plan) : parsed.errors;
     const hash = parsed.ok && !errors.length ? await planHash(parsed.plan) : null;
+    const at = new Date().toISOString();
     const item = this.planItem(id);
     const record = this.planRecord(id);
     if (record.approval) throw new RuleError("plan_approved", `${id}'s plan was approved at ${record.approval.hash.slice(0, 12)} and does not change; to change the split, stop the plan with atelier plan stop ${id} and start another`, 409);
     if (item.state !== "claimed") throw new RuleError("not_planning", `${id} is ${item.state}; a plan is posted by the holder of its claim`, 409);
     assertOwner(item, actor);
     if (!parsed.ok || hash === null) {
-      this.log(id, actor, "plan.invalid", { errors }, proved);
+      this.log(id, actor, "plan.invalid", { errors }, at, proved);
       return { valid: false, errors, attempt: plannerAttempts(this.events(id)).failed + 1, attempts: PLANNER_ATTEMPTS };
     }
-    const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO plans (plan_id, hash, json, actor, at) VALUES (?, ?, ?, ?, ?)`, id, hash, JSON.stringify(parsed.plan), actor, at);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
-    this.log(id, actor, "plan.proposed", { hash, parts: parsed.plan.parts.length }, proved);
+    this.log(id, actor, "plan.proposed", { hash, parts: parsed.plan.parts.length }, at, proved);
     this.setBlocked(id, record, null);
     return { valid: true, hash, parts: parsed.plan.parts.length };
   }
@@ -1096,7 +1181,7 @@ export class Ledger extends DurableObject<Env> {
       // A plan job still queued (a revise the planner has not taken) is withdrawn.
       if (item.dispatch && item.state === "open" && !item.owner) {
         this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
-        this.log(id, ORCHESTRATOR, "item.undispatched", { reason: "the plan is approved" });
+        this.log(id, ORCHESTRATOR, "item.undispatched", { reason: "the plan is approved" }, at);
       }
       const parts = newest.plan.parts.map((p) => ({
         key: p.key,
@@ -1105,7 +1190,7 @@ export class Ledger extends DurableObject<Env> {
       record.approval = { hash, at, by: actor, allowPaid, limits, deadline, parts, routes };
       record.blocked = null;
       this.savePlanRecord(id, record);
-      this.log(id, actor, "plan.approved", { hash, allowPaid, limits, deadline, parts: Object.fromEntries(parts.map((p) => [p.key, p.id])) });
+      this.log(id, actor, "plan.approved", { hash, allowPaid, limits, deadline, parts: Object.fromEntries(parts.map((p) => [p.key, p.id])) }, at);
       this.tick(id, at);
     });
     await this.ctx.storage.setAlarm(Date.parse(deadline) + 1000);
@@ -1123,7 +1208,7 @@ export class Ledger extends DurableObject<Env> {
     const { record } = this.planningPlan(id, actor, "revise");
     const text = cleanNote(note);
     const at = new Date().toISOString();
-    this.log(id, actor, "plan.revised", { note: text });
+    this.log(id, actor, "plan.revised", { note: text }, at);
     this.askPlanner(id, record, actor, at);
     return this.item(id);
   }
@@ -1137,7 +1222,7 @@ export class Ledger extends DurableObject<Env> {
       const { record } = this.planningPlan(id, actor, "reroute");
       const planner = namedActor(to, policy, "planner", this.owner);
       this.planDispatch(planner, record.goal, actor, at);
-      this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner });
+      this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner }, at);
       record.planner = planner;
       record.plannerReasons = ["Rerouted by the project owner"];
       this.askPlanner(id, record, actor, at);
@@ -1153,7 +1238,7 @@ export class Ledger extends DurableObject<Env> {
     record.reroutes[key] = builder;
     this.savePlanRecord(item.plan!, record);
     this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
-    this.log(id, actor, "plan.rerouted", { to: builder, from });
+    this.log(id, actor, "plan.rerouted", { to: builder, from }, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -1164,13 +1249,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     if (item.kind === "plan") {
       const { record } = this.planningPlan(id, actor, "retry");
-      this.log(id, actor, "plan.retried", { planner: record.planner });
+      this.log(id, actor, "plan.retried", { planner: record.planner }, at);
       this.askPlanner(id, record, actor, at);
       return this.item(id);
     }
     this.openPart(item, "retry");
     this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
-    this.log(id, actor, "plan.retried", {});
+    this.log(id, actor, "plan.retried", {}, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -1195,13 +1280,14 @@ export class Ledger extends DurableObject<Env> {
     if (tokens && targets.some((t) => t.tokenId !== (tokens[t.id] ?? null))) {
       throw new RuleError("token_changed", `a part of ${id} was claimed again while this was asked, and its workspace token changed; try again`, 409);
     }
+    const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
       for (const t of [...targets].reverse()) {
         if (tokens) this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, t.id);
-        this.update(t.id, { state: "abandoned", owner: null });
-        this.log(t.id, actor, "item.abandoned", { note, plan: id });
+        this.update(t.id, { state: "abandoned", owner: null }, at);
+        this.log(t.id, actor, "item.abandoned", { note, plan: id }, at);
       }
-      this.log(id, actor, "plan.stopped", { note, closed: targets.map((t) => t.id) });
+      this.log(id, actor, "plan.stopped", { note, closed: targets.map((t) => t.id) }, at);
     });
     return this.item(id);
   }
@@ -1368,7 +1454,7 @@ export class Ledger extends DurableObject<Env> {
 
   private writeDispatch(id: string, d: Dispatch, extra: Record<string, unknown> = {}): void {
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
-    this.log(id, d.by, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job } : {}), ...extra });
+    this.log(id, d.by, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job } : {}), ...extra }, d.at);
   }
 
   // A part is put in the queue for the actor the tick chose, from the routing
@@ -1387,7 +1473,7 @@ export class Ledger extends DurableObject<Env> {
       `INSERT INTO items (id, title, scope, state, created_at, updated_at, kind, plan, part_key, deps) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
       id, title, JSON.stringify(scope), at, at, plan.kind, plan.plan ?? null, plan.partKey ?? null, plan.deps ? JSON.stringify(plan.deps) : null,
     );
-    this.log(id, actor, "item.created", { title, scope, kind: plan.kind, ...data });
+    this.log(id, actor, "item.created", { title, scope, kind: plan.kind, ...data }, at);
     return id;
   }
 
@@ -1395,10 +1481,11 @@ export class Ledger extends DurableObject<Env> {
   private setBlocked(id: string, record: PlanRecord, reason: string | null): void {
     if (record.blocked === reason) return;
     const was = record.blocked;
+    const at = new Date().toISOString();
     record.blocked = reason;
     this.savePlanRecord(id, record);
-    if (reason) this.log(id, ORCHESTRATOR, "plan.blocked", { reason });
-    else this.log(id, ORCHESTRATOR, "plan.unblocked", { was });
+    if (reason) this.log(id, ORCHESTRATOR, "plan.blocked", { reason }, at);
+    else this.log(id, ORCHESTRATOR, "plan.unblocked", { was }, at);
   }
 
   // Runs the tick of the plan an item belongs to, after a change to the item.
@@ -1415,7 +1502,7 @@ export class Ledger extends DurableObject<Env> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("Atelier plan tick failed", plan, message);
-      this.log(plan, ORCHESTRATOR, "plan.tick_failed", { after: id, error: message.slice(0, 500) });
+      this.log(plan, ORCHESTRATOR, "plan.tick_failed", { after: id, error: message.slice(0, 500) }, at);
     }
   }
 
@@ -1440,8 +1527,8 @@ export class Ledger extends DurableObject<Env> {
       record.completedAt = at;
       record.blocked = null;
       this.savePlanRecord(id, record);
-      this.update(id, { state: "merged", owner: null });
-      this.log(id, ORCHESTRATOR, "plan.completed", { approval: approval.hash, parts: Object.fromEntries(parts.map((p) => [p.id, p.state])) });
+      this.update(id, { state: "merged", owner: null }, at);
+      this.log(id, ORCHESTRATOR, "plan.completed", { approval: approval.hash, parts: Object.fromEntries(parts.map((p) => [p.id, p.state])) }, at);
       return;
     }
     if (done === "empty") return this.setBlocked(id, record, EMPTY_PLAN);
@@ -1469,7 +1556,7 @@ export class Ledger extends DurableObject<Env> {
       else if (p.dispatch && !waiting.has(p.partKey!)) this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
       else if (p.dispatch && blocked) {
         this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
-        this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: `the plan is blocked: ${blocked}` });
+        this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: `the plan is blocked: ${blocked}` }, at);
       }
     }
   }
@@ -1483,7 +1570,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     if (item.dispatch && item.state === "open" && !item.owner) {
       this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
-      this.log(id, ORCHESTRATOR, "item.undispatched", { reason });
+      this.log(id, ORCHESTRATOR, "item.undispatched", { reason }, at);
     }
     this.setBlocked(id, record, reason);
   }
@@ -1512,7 +1599,10 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private update(id: string, fields: Record<string, string | null>): void {
+  // One Ledger change takes one timestamp, `at`, and passes it to update and
+  // log alike, so an item's updatedAt and the event that changed it never
+  // differ, and a reader comparing the two sees one moment.
+  private update(id: string, fields: Record<string, string | null>, at: string): void {
     // A change of owner always ends the previous holder's runner, and moves
     // the claim generation on, so no claim the previous holder had in flight
     // can record its token afterwards.
@@ -1520,13 +1610,13 @@ export class Ledger extends DurableObject<Env> {
     if (owning && !("runner" in fields)) fields = { ...fields, runner: null };
     const keys = Object.keys(fields);
     const set = [...keys.map((k) => `${k} = ?`), ...(owning ? ["claim_gen = claim_gen + 1"] : [])].join(", ");
-    this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), new Date().toISOString(), id);
+    this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), at, id);
   }
 
-  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, proved = false): void {
+  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
     this.sql.exec(
       `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?)`,
-      itemId, new Date().toISOString(), actor, kind, JSON.stringify(data), proved ? 1 : null,
+      itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null,
     );
   }
 }
