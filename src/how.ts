@@ -6,6 +6,7 @@ import how from "./how.css";
 import { ORCHESTRATOR, LIMITS, LOOP, LOOP_CAPTION, LOOP_LABEL, LOOP_RETURN, RULES, TERMS, type Lane } from "./how-data.ts";
 import { HELP_GROUPS, guideText } from "./usage.ts";
 import { REPO_URL, escapeText as e, publicPage } from "./ui";
+import { layersFigure } from "./diagrams.ts";
 
 // Escape, then turn `code` spans into <code>.
 const md = (s: string) => e(s).replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -66,6 +67,12 @@ const section = ([heading, body]: [string, string]) => `<section id="${slug(head
 
 const terms = (): string => `<dl class="how-terms">${TERMS.map((t) => `<div><dt>${e(t.term)}</dt><dd>${md(t.meaning)}</dd></div>`).join("")}</dl>`;
 
+function where(): string {
+  return `
+<p>Atelier runs in five layers. The owner and anyone acting for them work through one command, the CLI, which is the only way into Cloudflare; agents work below it, each in its own workspace, calling its own model.</p>
+${layersFigure()}`;
+}
+
 function loop(): string {
   return `
 <p>A task goes through seven steps. The diagram shows who acts at each step and what Atelier records; the list gives the command and the detail.</p>
@@ -108,7 +115,7 @@ ${groups}
 }
 
 export function renderHow(): string {
-  const sections: [string, string][] = [["Terms", terms()], ["The loop", loop()], ["Rules", rules()], ["The orchestrator", orchestrator()], ["Commands", commands()]];
+  const sections: [string, string][] = [["Terms", terms()], ["Where it runs", where()], ["The loop", loop()], ["Rules", rules()], ["The orchestrator", orchestrator()], ["Commands", commands()]];
   return publicPage({
     title: "How it works · Atelier",
     description: "What Atelier is, the loop from task to merge, the rules it enforces and why, which parts of the orchestrator are built, and every command.",
