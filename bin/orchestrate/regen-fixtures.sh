@@ -5,6 +5,7 @@
 set -eu
 D=$(mktemp -d "${TMPDIR:-/tmp}/atelier-cfg.XXXXXX")
 trap 'rm -rf "$D"' EXIT
+mkdir -p test/fixtures/cli
 ATELIER_CONFIG_DIR=$D node cli/atelier.mjs help > test/fixtures/cli/help.txt
 node --input-type=module -e '
 import { COMMAND_USAGE } from "./src/usage.ts";

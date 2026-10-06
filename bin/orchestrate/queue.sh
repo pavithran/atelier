@@ -6,7 +6,7 @@
 # merged tree fails its type check, and 6 when main cannot be fetched or merged.
 set -u
 source "${0:A:h}/lib.sh"
-t=$1 ctx=$2 note=$3
+t=$1 ctx=${2:A} note=$3
 M=$(checkout_of "$ATELIER_PROJECT") || exit 1
 W=$(workspace_of "$ATELIER_PROJECT" "$t")
 # One landing at a time on this machine: the script runs again under the
