@@ -272,12 +272,32 @@ async function claimWorkspace(name, id, as, runner) {
   // and a revoked one alongside the fresh one is refused.
   git(["config", "--local", "--replace-all", `http.${r.workspace.remote}.extraHeader`, `Authorization: Bearer ${r.workspace.token}`], { cwd: dir });
   if (!fresh) git(["fetch", "--quiet", "origin"], { cwd: dir });
-  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch: r.workspace.defaultBranch })) {
+  // Each claim writes the branch the server gives, the project's branch,
+  // which is the one Atelier reads, and says so when that changes what the
+  // workspace held. Local commits are untouched: only where the next push
+  // goes changes. The fork's own HEAD is then compared, so a registration
+  // that disagrees with it shows here rather than at the push.
+  const was = fresh ? null : wsConfig("branch", dir);
+  const branch = r.workspace.defaultBranch;
+  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch })) {
     git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
   }
+  if (was && was !== branch) console.log(`This workspace pushed to ${was}; it now pushes to ${branch}, the branch Atelier reads. Commits pushed to ${was} in the fork are not seen there: push them again with atelier push.`);
+  const reads = forkBranch(dir);
+  if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
   // Commit as the project's checkout does, not as this machine's global identity.
   const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
   return { item: r.item, workspace: r.workspace, dir, identity };
+}
+
+// The branch a fork's HEAD names, as its Git remote reports it. Atelier
+// reads a task's head from the fork's HEAD (headOf in src/index.ts), so this
+// is the one branch a push is seen on. null when origin cannot be read or
+// does not name a branch.
+function forkBranch(cwd) {
+  const r = git(["ls-remote", "--symref", "origin", "HEAD"], { cwd, allowFail: true });
+  if (r.status !== 0) return null;
+  return /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(r.stdout)?.[1] ?? null;
 }
 
 // ── clean-room checks ──────────────────────────────────────────────────────
@@ -1147,7 +1167,15 @@ const commands = {
 
   async push() {
     const name = project(), id = itemArg(), as = await actor();
-    const branch = wsConfig("branch") ?? "main";
+    // A push to any branch but the one the fork's HEAD names lands where
+    // Atelier never reads, so it is refused before anything is sent. When
+    // origin does not name its branch, the push goes ahead and the
+    // comparison below still reports a head Atelier did not see.
+    const recorded = wsConfig("branch"), reads = forkBranch();
+    if (recorded && reads && recorded !== reads) {
+      die(`${id}'s fork reads its head from ${reads}, but this workspace pushes to ${recorded} (git config atelier.branch); nothing was pushed. Run atelier claim ${id} to refresh the workspace's branch, then push again.`);
+    }
+    const branch = recorded ?? reads ?? "main";
     const head = git(["rev-parse", "HEAD"]);
     // --force after `atelier update` rebased the workspace; the lease refuses
     // to overwrite anything pushed since this workspace last fetched.
@@ -1164,7 +1192,7 @@ const commands = {
     git([...auth(t.token), "fetch", "--quiet", t.remote, t.defaultBranch]);
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
     if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, \`git rebase --continue\`, then \`atelier push --force\`.\n${r.stdout}${r.stderr}`);
-    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. Push with: git push --force-with-lease origin HEAD:${wsConfig("branch") ?? "main"} && atelier push`);
+    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. Push with: atelier push --force`);
   },
 
   // Observed evidence: run each required check (or the given command) in a
