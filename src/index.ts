@@ -20,6 +20,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./gr
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { planBrief } from "./plans/show.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { renderActions } from "./actions-page.ts";
@@ -678,6 +679,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(r.data, r.status);
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
+  // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
+  // one (docs/orchestrator.md, section 2), for the owner alone, with the
+  // pool to choose its planner from.
+  if (parts.length === 3 && m === "POST" && body.kind === "plan") {
+    requireOwner(env, actor);
+    if (body.planner !== undefined && typeof body.planner !== "string") throw new RuleError("bad_actor", "planner must be harness/model", 400);
+    return json(await L.newPlan(body.goal, asStrings(body.scope, "scope"), actor, body.planner ?? null, await index(env).models()), 201);
+  }
   if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor), 201);
   if (parts.length === 3 && m === "GET") return json(await L.items());
 
@@ -685,6 +694,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const verb = parts[4];
   if (!verb && m === "GET") return json(await L.detail(id));
   if (verb === "brief" && parts.length === 5 && m === "GET") {
+    // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
+    const asked = await L.item(id);
+    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)) });
     const detail = await L.detail(id) as Detail;
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
@@ -705,6 +717,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
     return json(await itemDiff(env.ARTIFACTS, (await L.project()).repo, item.fork));
   }
+  // What atelier plan show reads, for a plan or any of its parts; with the
+  // pool, a plan not yet approved also shows the routing an approval would fix.
+  if (verb === "plan" && parts.length === 5 && m === "GET") return json(await L.planView(id, await index(env).models()));
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
@@ -928,6 +943,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       return json(await L.beginLanding(id, actor, String(body.head ?? "")));
     }
+    case "plan":
+      if (parts.length > 6) break;
+      return await planRoute(c, L, id, parts[5]);
     case "abandon": {
       requireOwner(env, actor);
       const note = String(body.note ?? "");
@@ -937,6 +955,48 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await revoke(env, before.fork, oldToken);
       const item = await L.abandon(id, actor, note, oldToken);
       return json(item);
+    }
+  }
+  throw new RuleError("not_found", "no such route", 404);
+}
+
+// The plan routes under POST items/tN/plan (docs/orchestrator.md, sections
+// 6 and 7). With no further word, the holder of the plan item's claim posts
+// its plan document as the body: this is how the planner submits, and the
+// one plan route an agent token reaches (agentRoute). The rest are the
+// owner's: approve the newest proposal by its hash, revise, reroute or retry
+// a planner or a part, and stop the plan. Stop revokes the write token of
+// each item it closes before closing them, as abandon does for one.
+async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: string | undefined): Promise<Response> {
+  const { env, actor, body } = c;
+  if (sub === undefined) {
+    const post = await L.postPlan(id, actor, body, !!c.token);
+    if (post.valid) return json({ ...post, next: `the owner reads it with atelier plan show ${id} and approves that hash; release the plan item when done` });
+    return json({ error: "invalid_plan", detail: `the plan was refused (attempt ${post.attempt} of ${post.attempts}): ${post.errors.join("; ")}`, ...post }, 422);
+  }
+  requireOwner(env, actor);
+  const note = body.note === undefined ? "" : typeof body.note === "string" ? body.note : null;
+  if (note === null) throw new RuleError("bad_note", "note must be text", 400);
+  switch (sub) {
+    case "approve": {
+      if (body.allowPaid !== undefined && typeof body.allowPaid !== "boolean") throw new RuleError("bad_allow_paid", "allowPaid must be true or false", 400);
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models());
+      return json(await L.planView(id));
+    }
+    case "revise":
+      await L.revisePlan(id, actor, body.note);
+      return json(await L.planView(id));
+    case "reroute":
+      await L.reroutePlan(id, actor, body.to);
+      return json(await L.planView(id));
+    case "retry":
+      await L.retryPlan(id, actor);
+      return json(await L.planView(id));
+    case "stop": {
+      const targets = await L.stopTargets(id, actor);
+      for (const t of targets) await revoke(env, t.fork, t.tokenId);
+      await L.stopPlan(id, actor, note, Object.fromEntries(targets.map((t) => [t.id, t.tokenId])));
+      return json(await L.planView(id));
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -1063,8 +1123,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const r = parseRunner(typeof body.runner === "string" ? body.runner : null);
   if (!r) throw new RuleError("bad_runner", "say which runner is asking, e.g. home:studio", 400);
   const agents = Array.isArray(body.agents) ? body.agents : [];
+  // The jobs besides building that the runner runs, such as "plan".
+  const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
   return {
-    runner: r.runner, kind: r.kind,
+    runner: r.runner, kind: r.kind, jobs,
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };
       return typeof x.agent === "string" && Array.isArray(x.models)
