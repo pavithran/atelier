@@ -64,6 +64,8 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "release ID", about: "Gives the item up: it returns to open and the write token is revoked." },
     { form: "diff ID", about: "For a reviewer: prints the item's commits and diff against the baseline, from a clean read-only clone." },
     { form: "review ID --approve|--reject", about: "Records a verdict on the item's current head, with `--note` giving the reason. The rules say whose approval counts." },
+    { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the item's open review request and gets the part, its brief's inputs and a read token for its fork." },
+    { form: "review-release ID", about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it." },
   ]] },
   { name: "Owner", lines: [[
     { form: "accept ID [--override-review REASON]", about: "The project owner accepts the item at its current head. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
@@ -161,6 +163,9 @@ export const COMMAND_USAGE: Record<string, string> = {
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
   projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
   report: 'usage: atelier report [ID] "what you verified and how" [--item ID] [--project P]   (in a workspace, ID is its item unless --item or --project says otherwise)',
+  review: "usage: atelier review ID --approve|--reject --note T [--head SHA] [--findings JSON]",
+  "review-claim": "usage: atelier review-claim ID [--runner home:NAME]",
+  "review-release": "usage: atelier review-release ID [--note T]",
   plan: 'usage: atelier plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json] · plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT · plan reroute ID --to H/M · plan retry ID · plan stop ID [--note TEXT] · plan post ID FILE',
   approve: "usage: atelier approve ACTION --head SHA [--note T] [--expires 24h] [--project P]   (ACTION: deploy, install, push, paid-run, photos-writeback, or a kind the project's ship files name; --expires from 1m to 30d)",
   approvals: "usage: atelier approvals [--all] [--project P] · approvals withdraw ID [--note T] [--project P]",

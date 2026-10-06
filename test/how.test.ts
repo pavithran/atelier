@@ -51,16 +51,16 @@ test("a part marked built has its files and code; a part marked not built has no
   assert.ok(ORCHESTRATOR.some((p) => p.built) && ORCHESTRATOR.some((p) => !p.built));
 });
 
-// The review code in src/review is marked built and, the page says, called
-// by nothing yet, so an import of it from anywhere else, static or dynamic,
-// fails here until the page is updated. The plan code runs in the Ledger.
-// The help lists atelier plan exactly when the page marks its command built.
-test("while the review code is marked as called by nothing, nothing outside it and its tests calls it", () => {
+// The review code in src/review runs in the Ledger and the runner (build
+// steps 9 and 10); nothing else imports it, so the page's account of who
+// calls it stays true. The help lists atelier plan exactly when the page
+// marks its command built.
+test("the review code is called by the ledger and the runner, and nothing else", () => {
   const inside = join("src", "review") + sep;
   const imports = /(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\//;
   const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && imports.test(read(file)));
-  assert.deepEqual(callers, [], "something now imports the review code: the page says nothing calls it");
-  assert.ok(ORCHESTRATOR.find((p) => p.name === "Review requests and runner job" && !p.built));
+  assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
+  assert.ok(ORCHESTRATOR.find((p) => p.name === "Review requests and runner job" && p.built));
   const command = ORCHESTRATOR.find((p) => p.name === "Plan routes and command")!;
   assert.equal(HELP_FORMS.some((form) => form.split(" ")[0] === "plan"), command.built, "the help and the page disagree on whether atelier plan exists");
 });

@@ -3,7 +3,7 @@ import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions,
 import { itemDiff, measureWorkspace, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
@@ -538,7 +538,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
-      try { return (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item })); }
+      try {
+        const waiting = (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item }));
+        const reviews = (await ledgerOf(env, p).reviewWaiting()).map((item) => ({ project: p.name, item }));
+        return [...waiting, ...reviews];
+      }
       catch { unreadable.push(p.name); return []; }
     }));
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
@@ -872,8 +876,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
+        ...(body.findings !== undefined ? { findings: body.findings } : {}),
       }, c.url.origin, !!c.token);
       return json(await L.detail(id));
+    }
+    case "review-claim": {
+      const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
+      // The review job clones the part read-only, so the claim also carries a
+      // read token for the fork, as the read-token route mints one.
+      if (claim.item.fork) {
+        const t = await mint(env, claim.item.fork, "read", await projectBranch(env, await L.project()));
+        return json({ ...claim, readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch } });
+      }
+      return json(claim);
+    }
+    case "review-release": {
+      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
+      return json({ released: true });
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.

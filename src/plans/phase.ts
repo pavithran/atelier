@@ -134,6 +134,21 @@ function histories(events: readonly LedgerEvent[]): Map<string, PartHistory> {
         committed.set(key, false);
         h.waiting = false;
         break;
+      // A review rejected a submitted part with blocking findings and the
+      // part was released back to its builder. The builder's finished attempt
+      // becomes a failed one, so the next dispatch retries the same builder
+      // once with the findings, then moves to an alternate, then blocks the
+      // plan, as a failed finish does (docs/orchestrator.md, section 4).
+      case "review.rework": {
+        const builder = typeof event.data.builder === "string" ? event.data.builder : holder.get(key);
+        const last = h.attempts.at(-1);
+        if (last && last.outcome === "finished" && last.actor === builder) last.outcome = "failed";
+        else if (builder) h.attempts.push({ actor: builder, outcome: "failed" });
+        holder.set(key, null);
+        committed.set(key, false);
+        h.waiting = false;
+        break;
+      }
       case "item.submitted":
         if (holder.get(key)) h.attempts.push({ actor: holder.get(key)!, outcome: "finished" });
         holder.set(key, null);
