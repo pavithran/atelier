@@ -1,0 +1,14 @@
+atelier atelier/t178 "Decision (PAVI asked for the orchestrator's judgment, 2026-10-06): a failing merged check at the current main survives a later plain run of the head's own checks; only a passing merged run or a new head clears it (src/rules.ts mergedBlockers; README and rule text updated to match)"
+accepted head d31e493ec33a5e69a406568c7b41a0ec2492a218
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T17:38:11.473Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T17:38:14.740Z
+REVIEW approve — antigravity/gemini-3.1-pro: Ship --push needs no separate approval (t179); re-init narrows no check (t180); the duplicate merged-check model removed in favour of t66.
+2026-10-06T14:39:32.369Z pavi item.created
+2026-10-06T14:42:29.963Z opencode/glm-5.3 item.claimed
+2026-10-06T14:42:33.917Z opencode/glm-5.3 fork.created
+2026-10-06T17:35:22.832Z opencode/glm-5.3 push.observed
+2026-10-06T17:38:12.307Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:38:15.173Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:38:16.049Z opencode/glm-5.3 item.submitted
+2026-10-06T17:40:35.361Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T17:40:36.228Z pavi item.accepted
