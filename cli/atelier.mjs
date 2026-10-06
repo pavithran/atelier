@@ -638,10 +638,12 @@ function remoteStatusLines(name, cwd) {
     const tracking = `refs/remotes/${remote}/${branch}`;
     if (git(["--no-optional-locks", "rev-parse", "--verify", "--quiet", tracking], { cwd, allowFail: true }).status !== 0)
       return `Remote ${shown}: no ${where} recorded; fetch to compare.`;
-    const [ahead = 0, behind = 0] = git(["--no-optional-locks", "rev-list", "--left-right", "--count", `refs/heads/${branch}...${tracking}`], { cwd }).trim().split(/\s+/).map(Number);
+    const counted = git(["--no-optional-locks", "rev-list", "--left-right", "--count", `refs/heads/${branch}...${tracking}`], { cwd, allowFail: true });
+    if (counted.status !== 0) return `Remote ${shown}: cannot compare ${flat(branch)} with ${where} (git rev-list exited ${counted.status}).`;
+    const [ahead = 0, behind = 0] = counted.stdout.trim().split(/\s+/).map(Number);
     if (!ahead && !behind) return `Remote ${shown}: ${flat(branch)} is in step with ${where} (as last fetched or pushed).`;
-    const drift = ahead && behind ? `${commit(ahead)} ahead and ${behind} behind` : ahead ? `${commit(ahead)} ahead` : `${commit(behind)} behind`;
-    return `Remote ${shown}: ${flat(branch)} is ${drift} of ${where} (as last fetched or pushed)${ahead ? "; not published" : ""}.`;
+    const drift = ahead && behind ? `${commit(ahead)} ahead of and ${commit(behind)} behind` : ahead ? `${commit(ahead)} ahead of` : `${commit(behind)} behind`;
+    return `Remote ${shown}: ${flat(branch)} is ${drift} ${where} (as last fetched or pushed)${ahead ? "; not published" : ""}.`;
   });
 }
 

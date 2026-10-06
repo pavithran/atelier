@@ -105,7 +105,7 @@ test("unwrap reads an untracked PROJECT.md as the state file", (t) => {
   const r = f.run("unwrap");
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /PROJECT\.md:\nProject handoff/);
-  assert.doesNotMatch(r.stdout, /Could not compare/);
+  assert.doesNotMatch(r.stdout, /State file: none/);
 });
 
 test("unwrap compares the registered branch with each remote's tracking ref, as last fetched or pushed", (t) => {
@@ -129,6 +129,28 @@ test("unwrap compares the registered branch with each remote's tracking ref, as 
   assert.equal(unfetched.status, 0, unfetched.stderr);
   assert.ok(unfetched.stdout.includes(`Remote mirror: no mirror/${branch} recorded; fetch to compare.`));
   assert.deepEqual(snapshot(f.checkout), before, "no checkout or Git file changed, the index included");
+  const line = (r) => r.stdout.split("\n").find((l) => l.startsWith("Remote github:"));
+  const unwrapped = () => { const r = f.run("unwrap"); assert.equal(r.status, 0, r.stderr); return line(r); };
+  f.git("push", "-q", "github", branch);
+  assert.equal(unwrapped(), `Remote github: ${branch} is in step with github/${branch} (as last fetched or pushed).`);
+  f.git("reset", "-q", "--hard", "HEAD~1");
+  assert.equal(unwrapped(), `Remote github: ${branch} is 1 commit behind github/${branch} (as last fetched or pushed).`);
+  writeFileSync(join(f.checkout, "three.txt"), "Three\n");
+  f.git("add", "three.txt");
+  f.git("commit", "-qm", "Three");
+  assert.equal(unwrapped(), `Remote github: ${branch} is 1 commit ahead of and 1 commit behind github/${branch} (as last fetched or pushed); not published.`);
+});
+
+test("unwrap reports a tracking ref it cannot compare and carries on", (t) => {
+  const f = fixture(t), branch = f.git("branch", "--show-current");
+  remote(f, "broken");
+  // A tracking ref naming an object the repository does not have.
+  mkdirSync(join(f.checkout, ".git", "refs", "remotes", "broken"), { recursive: true });
+  writeFileSync(join(f.checkout, ".git", "refs", "remotes", "broken", branch), `${"0".repeat(39)}1\n`);
+  const r = f.run("unwrap");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`Remote broken: cannot compare ${branch} with broken/${branch} \\(git rev-list exited \\d+\\)\\.`));
+  assert.match(r.stdout, /Say in a short paragraph/);
 });
 
 test("wrap commits with summary, next and trailer, records failed checks and updates baseline", (t) => {
