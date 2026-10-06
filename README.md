@@ -124,7 +124,7 @@ In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. |
+| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. Every check must be read-only (see [Check classes](#check-classes)). |
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
@@ -138,8 +138,9 @@ In detail:
 | `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
-every required check observed passing at the current head; the changed paths
-observed; no rejection at that head; and, if a protected path changed, an
+every required check that applies to the change observed passing at the
+current head (see [Checks that apply to some paths](#checks-that-apply-to-some-paths));
+the changed paths observed; no rejection at that head; and, if a protected path changed, an
 approval at that head from a model of another family than every recorded
 contributor's, or the project owner's override of that review. A model's
 family is read from its name ([`src/models/pool.ts`](src/models/pool.ts)), and
@@ -227,6 +228,11 @@ merged.
   refused when the policy says `overlapping_claims: refuse`. Protected paths
   include execution policy patterns, adapter surfaces, maintenance paths,
   agent instructions, ControlPlane files and the files that run checks.
+  The adapter's capability classes declare checks read-only (see
+  [Check classes](#check-classes)), and its `change_rules` set the paths
+  each check applies to (see
+  [Checks that apply to some paths](#checks-that-apply-to-some-paths)); init
+  sets both, and `sync` and `merge` leave them as init set them.
   Atelier never writes these policy files.
 - `claude-code/*` maps to `claude`, `codex/*` to `codex`, and `zcode/*`
   and `opencode/glm*` to `glm`. `antigravity/*` maps to `antigravity` for a
@@ -360,6 +366,93 @@ directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
 names `pickup-card`, `control-plane-paste`, `session-receipt` or
 `audit record`, with its file and line number. The same list is recorded on
 the task as reported notes, so the reviewer and the owner see it there.
+
+## Check classes
+
+Atelier runs a check in a clean clone of an item's head whenever anyone asks,
+on an agent's machine or in a Cloudflare container, so a check must be
+read-only: it reads the project and writes only in its clone, the caller's
+caches and temporary files. A command that deploys, installs onto a device or
+the machine, publishes, pushes, reaches another machine or spends money is
+never read-only. `atelier init` refuses to register it, whatever is declared,
+and the sandbox route, the container runner, `atelier check`, `wrap` and the
+evidence route refuse to run or count it. The list, in
+[`src/checks.ts`](src/checks.ts), covers `wrangler deploy` and `publish`
+(and other Cloudflare writes), `npm publish` and package scripts named for a
+deploy or release (`npm run deploy`, `db:push`), `git push`, `xcrun altool`
+and `notarytool`, `fastlane`, `devicectl install` and other device installs,
+`ssh`, `scp` and remote `rsync`, `curl` or `wget` with a write method or a
+body, global package installs, `brew install`, `launchctl load`, the GitHub
+CLI's writes, cloud and cluster deploys, paid model CLIs such as `claude`
+and `codex`, and `atelier` itself. A `--dry-run` of a deploy or publish is
+allowed. Atelier reads the command as a shell would: each command joined by
+`&&`, `|` or `;`, inside `$( )`, `sh -c '…'`, `trap '…'` or `eval`, and
+behind `env`, `timeout`, `xargs`, `npx` or `sudo`, is classed.
+
+A check is read-only in one of three ways, recorded with the project:
+
+- its command is a known build or test form, such as `npm ci && npm test`,
+  `npm run typecheck`, `xcodebuild build-for-testing …`, `swift test`,
+  `python3 -m unittest …` or `git diff --exit-code`;
+- the project's ControlPlane adapter lists the same command, word for word,
+  as a capability of class `local-read-only` or `local-write` (a build's
+  writes stay in the clone); a capability of any other class (`deploy`,
+  `device`, `network` and the rest) is refused;
+- the project owner declares it, with the reason, as init records its
+  approval: `atelier init --check "./check.sh" --declare-read-only "PAVI,
+  2026-10-06: check.sh runs the unit tests and builds nothing it ships"`.
+  Without `--check`, `--declare-read-only` declares the registered checks
+  that are still undeclared.
+
+An init that names its checks with `--check` must show each one read-only,
+or it is refused before anything is created. A check registered before
+checks had classes carries none: Atelier treats it as read-only when its
+command is a known form and as undeclared otherwise. An undeclared check
+still runs, so a project's existing checks keep working, and the next init
+that names it must declare it. Each check's class, and how it is known, is
+shown in init's summary, under "Checks" in `atelier status --project NAME`
+and the standing JSON, and in the project page's policy.
+
+The class is of the command as registered. What a script it runs does is
+the item's code: an item could rewrite `package.json`'s `test` script, which
+is why the files a check executes are protected (see How it works) and why
+untrusted code belongs in the sandbox, which has no credentials and reaches
+only the npm registry.
+
+## Checks that apply to some paths
+
+A required check may apply only when an item changes a path its globs match,
+as ControlPlane's `change_rules` said which checks a change needs. The gate
+requires such a check exactly when one of the item's changed paths, measured
+by the Worker against main's head, matches its globs, whatever the letter
+case or Unicode form, so a variant spelling of a path still needs the check.
+Otherwise the check is not applicable: the task page lists it as such, the
+decision brief counts it, and it never blocks. Until the changed paths are
+measured, a check with globs may apply, so it waits like any other.
+
+`atelier check` measures the changed paths in its clean clone against
+main's head and does not run a check whose globs none of them match. It
+records the check as not applicable instead, and the Worker accepts that
+record only when the paths it measures itself from Artifacts show the same;
+otherwise it refuses, saying which changed path the check applies to, and
+the check must be run. The record carries no result and measures the
+changed paths, so a change that no check applies to can still be accepted.
+A check run in a Cloudflare container is handled the same way, and when no
+check applies no container is started. A command given after
+`atelier check --` always runs.
+
+`atelier init` takes the globs from a ControlPlane project's
+`project-adapter.v1.json`. A change rule requires capabilities when a
+changed path matches its patterns. A registered check runs a capability when
+every command the capability runs is one of the check's, word for word, so
+`npm ci && npm run check && npm test` runs the capabilities `npm run check`
+and `npm test`. Such a check applies where any rule requiring a capability
+it runs applies; a check that runs none applies to every change. ControlPlane
+matched patterns as Python's `fnmatch` does, where `*` crosses directories,
+so each `*` is recorded as `**`. Init's summary prints each check's globs
+and names any capability a rule requires that no registered check runs, and
+`atelier status --project NAME` and the project page show the globs. An
+adapter without change rules leaves every check applying to every change.
 
 ## What is enforced and what is trusted
 
@@ -808,10 +901,15 @@ model, and refuses a claim with no runner at all until the owner withdraws
 the dispatch. A runner that gives up releases the task, and it waits in the
 queue again. `atelier queue` lists everything waiting. If a project cannot be read, the
 response names it in the `X-Atelier-Incomplete` header and `atelier queue` says so.
+`atelier undispatch` withdraws a dispatch while the task is open; a claimed
+or submitted task keeps its dispatch, which applies again if it is released.
 
 A runner's name is declared independently of its actor token; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
-else, while it waits.
+else, while it waits. Names are matched and stored in lower case, so
+`home:Studio` and `home:studio` are one runner. A claim belongs to the runner
+that made it; after a handoff, the first runner to claim as the new owner
+takes it, and the task's history records which runner that was.
 
 ## Plans
 
@@ -859,9 +957,15 @@ and runs its configured harness in the claimed workspace. The brief is kept
 outside that workspace. Each opencode run also gets a data folder of its own
 (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
 it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
-deadlock on it. Such a run finds its provider keys in its environment and
-opencode's config, as the runner passes them; a key saved with
-`opencode auth login` lives in the shared data folder and is not seen. After a successful harness exit with a new commit,
+deadlock on it. Such a run finds its provider keys in the variables its
+config entry names and in opencode's config; a key saved with
+`opencode auth login` lives in the shared data folder and is not seen.
+A harness does not inherit the runner's environment. It gets what a local
+check gets (the toolchain's variables, such as `PATH`, `HOME`, `LANG` and
+`TMPDIR`; nothing named `ATELIER_*` and nothing whose name says it holds a
+token, key or secret) and the variables its config entry names in `env`. A
+named variable that holds the owner's Atelier token is withheld, and the
+runner says so. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
 in place for inspection. Two counters are kept for each project and task id,
@@ -878,8 +982,14 @@ Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner
 validation are skipped and remembered so other tasks
 can run.
-SIGINT stops polling and interrupts the active child process. A second
-interrupt exits immediately.
+The harness, and every command the runner starts, leads a process group of
+its own, and the group ends with it: when the harness exits, whether it
+succeeded or failed, when its deadline passes and when the runner is
+interrupted, every process left in the group gets SIGTERM, then SIGKILL after
+five seconds, before the runner goes on. A process that starts a session of
+its own (`setsid`) leaves the group and is not ended. SIGINT stops polling and
+interrupts the active child process. A second interrupt kills every group at
+once and exits.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
@@ -889,7 +999,8 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
     {
       "agent": "opencode",
       "models": ["GLM-5.3-Flash-4_8bit"],
-      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."]
+      "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."],
+      "env": ["ZAI_API_KEY"]
     }
   ]
 }
@@ -899,11 +1010,15 @@ Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `anti
 and command arguments to match the installed harness. Commands are argv
 arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
 the runner invokes them directly without a shell. The example requires that
-model to be configured in opencode. Atelier login and credentials are shared
+model to be configured in opencode. `env` is optional: the names of the
+runner's variables this harness also gets, such as a provider key it reads or
+`XDG_CONFIG_HOME`; a name starting with `ATELIER_` is refused. A runner started
+from a LaunchAgent has only the variables the LaunchAgent sets, so a key named
+here must be set there too. Atelier login and credentials are shared
 with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
 deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
-deadline from 60 minutes. Expiry terminates the process group, with forced
-termination after five seconds. A finish timeout leaves the claim held.
+deadline from 60 minutes. Expiry ends the process group as above. A finish
+timeout leaves the claim held.
 
 ```sh
 atelier runner --name home:studio
@@ -975,7 +1090,11 @@ only and goes only into the environment of the child process that makes
 the one balance call; the child prints currencies and amounts, and any key
 a tool echoes back is removed from what the command prints. The report
 carries counts, windows, model names, costs and balances, never a prompt,
-a file name, a session id, a key or a header.
+a file name, a session id, a key or a header. Each window, model and
+provider name a tool's record gives is cleaned before it is printed or
+reported, as the server cleans it: that key, control characters and
+anything shaped like a key are removed, and it is cut to the server's
+length.
 
 The CLI's exit codes let the runner tell a task's own failure from the
 server's: 0 success, 1 a refusal or failure of the command, 2 a required
@@ -1075,10 +1194,11 @@ clearing is recorded as an event on the index Ledger.
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
-banded by who has held it, with a mark for every claim, push, check,
-handoff, submission and review. A handoff is a visible change of band, and
-every check mark says whether it ran in a Cloudflare container or on the
-agent's machine. The page refreshes every fifteen seconds. The Decisions page
+banded by who has held it, each band and the thread along it in the
+holder's family colour as the Flow graph draws a thread, with a mark for
+every claim, push, check, handoff, submission and review. A handoff is a
+visible change of band and colour, and every check mark says whether it ran
+in a Cloudflare container or on the agent's machine. The page refreshes every fifteen seconds. The Decisions page
 shows the same agents in brief before anything is opened. `DESIGN.md`
 describes the marks.
 

@@ -377,11 +377,13 @@ for (const content of ["{", "", "{}", "null"]) {
       assert.equal(sync.status, 0, sync.stderr);
       assert.match(sync.stdout, /Warning: ControlPlane policy could not be read: docs\/control-plane\/agent-policy\.v1\.json: .*The stored policy was not refreshed\./);
       // A merge never skips the comparison: it stops until the file is fixed.
+      const gitBefore = gitCalls().length;
       const merge = command(["merge", "t1"]);
       assert.equal(merge.status, 1);
       assert.match(merge.stderr, /^atelier: ControlPlane policy could not be read: docs\/control-plane\/agent-policy\.v1\.json: .*\. Fix the file, then run atelier merge t1 again\.$/m);
       assert.doesNotMatch(merge.stderr, /merge conflicts|newly protected|\n\s+at /);
-      assert.ok(!gitCalls().some((args) => args.includes("merge") || args.includes("fetch")));
+      // Only the refused merge's own calls: a cancel later in the loop fetches the baseline.
+      assert.ok(!gitCalls().slice(gitBefore).some((args) => args.includes("merge") || args.includes("fetch")));
       // init stops the same way, with a message and no stack trace.
       const init = command(["init", "--approval", "Owner approved"]);
       assert.equal(init.status, 1);

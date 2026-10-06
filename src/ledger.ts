@@ -8,6 +8,7 @@ import {
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
 } from "./rules";
 import { cleanSummary } from "./brief";
+import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
@@ -80,6 +81,8 @@ export interface ProjectInit {
   branch?: string;
   title?: string | null;
   checks?: string[];
+  checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
+  checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -127,6 +130,11 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const title = i.title === undefined ? current?.title : i.title ?? undefined;
   const approval = i.approval === undefined ? p?.approval : i.approval ?? undefined;
   const branch = i.branch ?? current?.branch;
+  const checks = i.checks ?? p?.checks ?? [];
+  // An init that names the checks must show each one read-only; one that
+  // does not keeps their classes and may declare the undeclared ones.
+  const checkClasses = settleCheckClasses(checks, i.checkClasses, p?.checkClasses, i.checks !== undefined);
+  const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -136,7 +144,9 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
     policy: {
       ...((i.agents ?? p?.agents) !== undefined ? { agents: i.agents ?? p?.agents } : {}),
       ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),
-      checks: i.checks ?? p?.checks ?? [],
+      checks,
+      ...(checkClasses.length ? { checkClasses } : {}),
+      ...(checkPaths.length ? { checkPaths } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -539,7 +549,10 @@ export class Ledger extends DurableObject<Env> {
       }
       // After a handoff the new owner holds no runner yet; the first runner to
       // claim as that owner takes the claim, and any other is refused above.
-      if (!held && asking) this.update(id, { owner: actor, runner: asking }, at);
+      if (!held && asking) {
+        this.update(id, { owner: actor, runner: asking }, at);
+        this.log(id, actor, "item.runner_adopted", { runner: asking }, at, proved);
+      }
       return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
     }
     this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null }, at);
@@ -598,7 +611,14 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner withdraws a dispatch", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
-    if (!item.dispatch || item.state !== "open") throw new RuleError("not_dispatched", `${id} is not waiting for a runner`);
+    if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`);
+    // A claimed or submitted task keeps its dispatch, and waits in the queue
+    // again if it is released; an accepted, merged or abandoned one never does.
+    if (item.state !== "open") {
+      throw new RuleError("not_dispatched", ["claimed", "submitted"].includes(item.state)
+        ? `${id} is ${item.state} by ${item.owner}; its dispatch applies again only if it is released, so withdraw it then`
+        : `${id} is ${item.state}, so its dispatch no longer applies and there is nothing to withdraw`);
+    }
     const at = new Date().toISOString();
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     this.log(id, actor, "item.undispatched", {}, at);
@@ -772,7 +792,8 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
-    this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, new Date().toISOString(), proved);
+    // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     this.afterPlanChange(e.itemId);
   }
