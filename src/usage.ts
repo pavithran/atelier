@@ -33,7 +33,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   { name: "Setup", lines: [[
     { form: "login --server URL", about: "Stores this server's address and the owner's token, asking for the token when none is stored for it. A token the server refuses is not stored." },
     { form: "login --store", about: "Names the token store in use and whether it holds a token. It never prints the token." },
-    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
+    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
     { form: "sync", about: "Refreshes the stored policy from the project's ControlPlane files. For a baseline built with `--history-since`, it also carries commits made in the checkout outside Atelier to the baseline." },
     { form: "publish", about: "Pushes the registered branch to the baseline with a write token. It is refused for a baseline that holds only part of the history; `sync` does that job." },
   ], [
@@ -80,6 +80,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "accept ID [--head SHA] [--override-review REASON]", about: "The project owner accepts the item at its current head; `--head` names that head, and any other is refused. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
     { form: "merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted item is accepted at that exact revision first: `--approve` records the owner's review, with `--note` as its reason, which is not the independent review, and `--override-review` accepts with the owner's override, as `accept` does. Run again, it resumes an interrupted merge; `--cancel` ends one." },
     { form: "merge ID --cancel [--discard-local]", about: "Ends an interrupted merge: the landing lease is released, so the item's owner can push again. An unpublished merge commit in the checkout is kept unless `--discard-local` removes it and returns the branch to where the merge began." },
+    { form: "land ID [--reviewer H/M] [--no-review] [--dry-run]", about: "The project owner lands one task whole. It takes the project's landing lease on the server, so two sessions never race main, then merges main into the task's workspace, stopping on conflicts and leaving them for the owner, naming the files. It regenerates the project's fixtures when the policy declares how (`init --regenerate`), pushes, runs the required checks and submits. It requests the independent review the gate needs through the review-request routes and waits for the verdict, then accepts and merges. Each step, its duration and the commits that came from main are recorded as land.* events, for the integration record. It refuses to start when the server's deployed main does not hold this CLI's commit, saying to deploy. `--reviewer` names the reviewer; `--no-review` leaves the task submitted; `--dry-run` prints the steps and the refusals without changing anything." },
     { form: "abandon ID [--note TEXT]", about: "Closes the item without merging it. The holder's write token is revoked; the history and evidence stay. `--note` says why." },
     { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the item was accepted at. Nothing about the item changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
   ], [
@@ -207,6 +208,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--approval TEXT": "records the project owner's approval of the copy in Artifacts; a ControlPlane project needs it",
       "--reset": "rebuilds the policy from the defaults and the options given",
       "--history-since YYYY-MM-DD": "builds the baseline from the commits since that day only, for a project too large for Artifacts",
+      "--regenerate CMD": "the command that regenerates the project's generated fixtures, run by atelier land in a task's workspace after it merges main; --regenerate \"\" clears it",
       "--name NAME": "the project's name; the checkout folder's name unless given",
       "--rename-local": "with --name, changes only this machine's name for the registered checkout",
     },
@@ -332,6 +334,14 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--discard-local": "with --cancel, removes the unpublished merge commit from the checkout",
     },
     example: "atelier merge t3 --project demo",
+  },
+  land: {
+    flags: {
+      "--reviewer H/M": "names the reviewer the request goes to; otherwise the server picks a model of another family than every contributor",
+      "--no-review": "skips waiting: the task is left submitted for the owner to settle the review by hand",
+      "--dry-run": "prints the steps and the refusals without changing anything",
+    },
+    example: "atelier land t3 --project demo",
   },
   block: { example: 'atelier block t3 "Waiting on the schema decision" --project demo' },
   unblock: { example: "atelier unblock t3 --project demo" },

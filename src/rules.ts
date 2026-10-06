@@ -166,6 +166,10 @@ export interface ProjectPolicy {
   // reads to say a merged revision is not delivered (src/actions.ts).
   shipRuns?: string[];
   shipKinds?: string[];
+  // The command that regenerates the project's generated fixtures, run in a
+  // task's workspace after it merges main (atelier land) and before its
+  // checks, so the checks see fixtures current with both lines.
+  regenerate?: string;
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item

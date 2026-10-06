@@ -55,6 +55,10 @@ type Settings = {
   CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string; TIMEZONE?: string;
   // The usage alert thresholds (src/usage/report.ts); each a number, "off", or unset for the default.
   USAGE_WEEKLY_PERCENT?: string; USAGE_WINDOW_PERCENT?: string; USAGE_DAILY_SPEND?: string; USAGE_BALANCE_FLOOR?: string;
+  // The main commit this deployment was built from, set by `npm run deploy`
+  // and read by GET /api/version, so a CLI can refuse to run against a
+  // server older than itself (atelier land).
+  DEPLOYED_MAIN?: string;
 };
 
 function thresholds(env: Env): Thresholds {
@@ -656,6 +660,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
       ...(has("shipRuns") ? { shipRuns: asStrings(body.shipRuns, "shipRuns") } : {}),
       ...(has("shipKinds") ? { shipKinds: asStrings(body.shipKinds, "shipKinds") } : {}),
+      // The command that regenerates the project's fixtures after a task
+      // merges main (atelier land): text, or null or "" to clear it.
+      ...(has("regenerate") ? {
+        regenerate: body.regenerate === null || body.regenerate === "" ? null
+          : typeof body.regenerate === "string" && body.regenerate.trim() ? body.regenerate
+            : (() => { throw new RuleError("bad_regenerate", "regenerate must be the command that regenerates the project's fixtures, or \"\" to clear it", 400); })(),
+      } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
@@ -735,6 +746,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
+  // One landing at a time per project (atelier land, t187): GET reads who
+  // holds the lease; POST takes it for one task, refusing while another live
+  // task's landing holds it, and { cancel: true } releases it.
+  if (parts[2] === "landing-lease" && parts.length === 3) {
+    if (m === "GET") return json({ lease: await L.readProjectLanding() });
+    requireOwner(env, actor);
+    if (body.cancel === true) return json(await L.cancelProjectLanding(actor));
+    return json({ item: await L.beginProjectLanding(String(body.item ?? ""), actor) });
+  }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
@@ -1022,6 +1042,24 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-release": {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
       return json({ released: true });
+    }
+    // A review request for an item outside a plan (atelier land): the owner
+    // asks for the independent review the gate needs, naming the reviewer or
+    // letting the pool pick one, and the landing waits for the verdict.
+    case "review-request": {
+      requireOwner(env, actor);
+      const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models()));
+    }
+    // One recorded step of a landing (atelier land): what it was, how long it
+    // took and what it settled, for the integration record (t186).
+    case "land": {
+      requireOwner(env, actor);
+      if (typeof body.ms !== "number") throw new RuleError("bad_ms", "ms must be the step's duration in milliseconds", 400);
+      const data = { ...body } as Record<string, unknown>;
+      delete data.step;
+      delete data.ms;
+      return json({ item: await L.landEvent(id, actor, String(body.step ?? ""), body.ms, data, !!c.token) });
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
@@ -1619,6 +1657,13 @@ export default {
           return json({ error: "actor_mismatch", detail: "X-Atelier-Actor must equal the agent token actor" }, 403);
         }
         if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token ? { actor: token.actor } : {}) });
+        // The deployed main commit, as the deploy recorded it. A CLI that
+        // needs routes this server may lack (atelier land) compares it with
+        // the commit it runs from and refuses, saying to deploy, when the
+        // server's main does not hold the CLI's.
+        if (parts.length === 2 && parts[1] === "version" && req.method === "GET") {
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null });
+        }
         const actor = token?.actor ?? declared ?? "";
         if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
