@@ -256,7 +256,10 @@ merged.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
-  every merge receipt.
+  every merge receipt. Once recorded it stands: a later `init` that changes
+  the checks, the title or the policy keeps it, and it is asked for again
+  only when `--reset` starts the policy over or `--history-since` replaces
+  the baseline.
 - `atelier merge` writes a `control-plane.landing-receipt` into
   `docs/control-plane/landing-receipts/` as part of the merge commit, so the
   merge and its record are one change.
