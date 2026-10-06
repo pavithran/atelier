@@ -662,15 +662,43 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  // Ownership moves; the work does not fork. The new owner inherits the same
-  // workspace repo, and the old owner's write token, `token`, is revoked by
-  // the caller (see dropToken).
-  handoff(id: string, from: string, to: string, note: string, proved = false, token?: string | null): Item {
+  // The checks a handoff, release or abandon makes, asked alone. The caller
+  // revokes the holder's write token before it changes the owner, and asks
+  // these first, so a change that would be refused revokes nothing. The
+  // change itself checks again.
+  checkHandoff(id: string, from: string, to: string): void { this.handoffAllowed(id, from, to); }
+  checkRelease(id: string, actor: string): void { this.releaseAllowed(id, actor); }
+  checkAbandon(id: string, actor: string): void { this.abandonAllowed(id, actor); }
+
+  private handoffAllowed(id: string, from: string, to: string): Item {
     const item = this.item(id);
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    return item;
+  }
+
+  private releaseAllowed(id: string, actor: string): Item {
+    const item = this.item(id);
+    assertLive(item);
+    if (actor !== this.owner) assertOwner(item, actor);
+    return item;
+  }
+
+  private abandonAllowed(id: string, actor: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    return item;
+  }
+
+  // Ownership moves; the work does not fork. The new owner inherits the same
+  // workspace repo. The caller has revoked the old owner's write token,
+  // `token`, and the change is made only if that is still the token recorded
+  // (see dropToken).
+  handoff(id: string, from: string, to: string, note: string, proved = false, token?: string | null): Item {
+    const item = this.handoffAllowed(id, from, to);
     this.dropToken(id, token);
     this.update(id, { owner: to, state: "claimed" });
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, proved);
@@ -678,9 +706,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   release(id: string, actor: string, note: string, proved = false, token?: string | null): Item {
-    const item = this.item(id);
-    assertLive(item);
-    if (actor !== this.owner) assertOwner(item, actor);
+    const item = this.releaseAllowed(id, actor);
     this.dropToken(id, token);
     this.update(id, { owner: null, state: "open" });
     this.log(id, actor, "item.released", { from: item.owner, note }, proved);
@@ -760,9 +786,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   abandon(id: string, actor: string, note: string, token?: string | null): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
-    const item = this.item(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    this.abandonAllowed(id, actor);
     this.dropToken(id, token);
     this.update(id, { state: "abandoned", owner: null });
     this.log(id, actor, "item.abandoned", { note });
