@@ -21,6 +21,7 @@ import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
 import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
+import { jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
@@ -206,6 +207,22 @@ export function assertProjectRemovable(items: Pick<Item, "state">[], force: bool
   if (!force && items.some((i) => ["claimed", "submitted", "accepted", "blocked"].includes(i.state))) {
     throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409);
   }
+}
+
+// A rejecting review's findings, as jobBrief quotes them. The findings field
+// arrives with the review job (docs/orchestrator.md, section 4, t39); until
+// a review carries one there is nothing to quote, and a part sent back for
+// rework is shown the failing check alone.
+function reviewFindings(r: Review): ReviewFindings | null {
+  const raw = (r as Review & { findings?: unknown }).findings;
+  if (!Array.isArray(raw)) return null;
+  const findings: Finding[] = raw.flatMap((f): Finding[] => {
+    const v = f as { file?: unknown; line?: unknown; severity?: unknown; text?: unknown };
+    return typeof v.file === "string" && typeof v.text === "string" && (v.severity === "blocking" || v.severity === "follow-up")
+      ? [{ file: v.file, line: typeof v.line === "number" ? v.line : null, severity: v.severity, text: v.text }]
+      : [];
+  });
+  return { by: r.by, head: r.head, summary: r.note || null, findings };
 }
 
 export class Ledger extends DurableObject<Env> {
@@ -1353,6 +1370,69 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "plan.proposed", { hash, parts: parsed.plan.parts.length }, at, proved);
     this.setBlocked(id, record, null);
     return { valid: true, hash, parts: parsed.plan.parts.length };
+  }
+
+  // The brief for the holder of a plan item's claim (its planner) or of a
+  // part's (its builder), from the pure renderers in src/plans/brief.ts
+  // (docs/orchestrator.md, sections 2 and 3). The job-brief route reads it,
+  // so a runner fetches the brief the server wrote instead of assuming one.
+  // Only the holder may read it: the brief is the work this dispatch asked
+  // for, and it names the interfaces other parts rely on.
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string }> {
+    const item = this.item(id);
+    if (item.kind !== "plan" && item.kind !== "part") {
+      throw new RuleError("not_a_plan", `${id} is not a plan or a part of one; its runner writes its own brief`, 404);
+    }
+    assertOwner(item, actor);
+    const project = this.project();
+    if (item.kind === "plan") {
+      const record = this.planRecord(id);
+      const { failed, lastErrors } = plannerAttempts(this.events(id));
+      const revised = this.events(id).find((e) => e.kind === "plan.revised");
+      const note = revised && typeof revised.data.note === "string" && revised.data.note ? revised.data.note : null;
+      return {
+        job: "plan",
+        ...await plannerBrief({
+          item: { id, project: project.name }, goal: record.goal, scope: record.scope,
+          actor: record.planner, attempt: failed + 1, note, errors: lastErrors,
+        }),
+      };
+    }
+    const planId = item.plan!;
+    const record = this.planRecord(planId);
+    const approval = record.approval;
+    if (!approval) throw new RuleError("no_approval", `${id} is a part of ${planId}, which has no approved plan`, 409);
+    const document = this.approvedPlan(planId, approval.hash);
+    const spec = document.parts.find((p) => p.key === item.partKey);
+    if (!spec) throw new RuleError("no_proposal", `${id}'s key ${item.partKey} is not in ${planId}'s approved plan`, 500);
+    const parts = this.planParts(planId);
+    const landed = new Map(parts.map((p) => [p.partKey!, p]));
+    const dependencies: Dependency[] = (item.deps ?? []).flatMap((key) => {
+      const dep = landed.get(key), specOf = document.parts.find((p) => p.key === key);
+      return dep && specOf ? [{ key, title: specOf.title, provides: specOf.provides, scope: specOf.scope, head: dep.acceptedHead ?? dep.head }] : [];
+    });
+    const attempts = partAttempts(tickEvents(this.partEvents(planId), new Map(parts.map((p) => [p.id, p.partKey!])))).get(item.partKey!) ?? [];
+    const job = attempts.some((a) => a.outcome === "failed") ? "rework" : "build";
+    const dispatched = this.events(id).find((e) => e.kind === "item.dispatched");
+    const reason = dispatched && typeof dispatched.data.reason === "string" ? dispatched.data.reason : null;
+    const failed = this.evidenceFor(id).filter((e) => e.grade === "observed" && e.passed === false).at(-1) ?? null;
+    const rejection = this.reviewsFor(id).filter((r) => !r.approve).at(-1) ?? null;
+    return {
+      job,
+      ...await buildBrief({
+        job,
+        item: { id, plan: planId, project: project.name },
+        goal: record.goal,
+        part: spec,
+        dependencies,
+        checks: project.policy.checks,
+        actor: item.owner,
+        attempt: attempts.length + 1,
+        reason,
+        findings: rejection ? reviewFindings(rejection) : null,
+        failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "" } : null,
+      }),
+    };
   }
 
   // The owner approves the newest valid proposal by its hash, once. Each

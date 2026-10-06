@@ -20,9 +20,9 @@ const now = new Date("2026-10-04T09:30:00Z");
 const at = (minAgo) => new Date(now.getTime() - minAgo * 60_000).toISOString();
 
 const policy = { checks: ["npm ci && npm test", "npm run types && npm run typecheck"], protected: ["src/rules.ts", "src/ledger.ts", "src/index.ts"], sandboxOnly: true };
-const project = { name: "cloudflare-git", repo: "cloudflare-git", policy, createdAt: at(900) };
+const project = { name: "atelier", repo: "atelier", policy, createdAt: at(900) };
 const make = (id, title, state, owner, head = HEAD) => ({
-  id, title, state, scope: ["src/**"], owner, fork: `cloudflare-git--${id}`, base: BASE, head,
+  id, title, state, scope: ["src/**"], owner, fork: `atelier--${id}`, base: BASE, head,
   acceptedHead: state === "accepted" || state === "merged" ? head : null, lastPushAt: at(4), updatedAt: at(4), createdAt: at(300),
 });
 const items = [
@@ -100,7 +100,7 @@ const server = createServer((req, res) => {
   else if (url.pathname === "/studio") html = ui.renderStudio(state === "empty" ? { benches: [], from: floor.from, to: floor.to } : floor, "PAVI", now);
   else if (url.pathname === "/projects") html = ui.renderProjects([{ project, items }], "PAVI");
   else if (url.pathname === "/history") html = ui.renderHistory([{ project, items: [make("t5", "Add guarded cache cleanup", "merged", null)] }], "PAVI");
-  else if (url.pathname === "/p/cloudflare-git") html = ui.renderProject(project, items, events.slice(-8).reverse(), "PAVI");
+  else if (url.pathname === "/p/atelier") html = ui.renderProject(project, items, events.slice(-8).reverse(), "PAVI");
   else if (url.pathname.startsWith("/p/")) html = ui.renderItem(project, d, "PAVI", state === "unavailable" ? "unavailable" : diff);
   else if (url.pathname === "/error") html = ui.renderError("This task changed since you opened it. Refresh and review the new revision.");
   else html = ui.renderInbox(state === "empty" ? [] : entries, [project], "PAVI", state === "empty" ? undefined : { project, detail: d, diff }, [{ project, items }], state === "empty" ? undefined : floor, now);

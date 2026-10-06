@@ -77,7 +77,7 @@ No policy at HEAD means no ceiling.
 
 Before closing, file defects in Atelier or project tooling as tasks in the
 project they belong to with `atelier new "…" --project NAME`. Atelier defects
-belong to `--project cloudflare-git`. File a lesson worth keeping the same way
+belong to `--project atelier`. File a lesson worth keeping the same way
 with a title starting `Lesson: `. Repeatable `--found TEXT` files tasks in the
 current project and records their IDs in the note.
 
@@ -1145,7 +1145,7 @@ from commit trailers in the history before Atelier, where a name that is only
 an address is not taken. Nothing is shown until the owner names a project:
 
 ```text
-printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
+printf 'atelier' | npx wrangler secret put SHOWCASE
 ```
 
 `SHOWCASE` takes project names separated by commas; deleting it hides the
@@ -1454,7 +1454,7 @@ adding the consumer handler alone does not activate event delivery. See
 
 Run `node test/preview.mjs` for a local, read-only preview with illustrative
 content. It prints its URL. The preview cannot approve, merge, or create live
-tasks. Use `?state=empty`, `/p/cloudflare-git/t1?state=failed`, `state=ready`,
+tasks. Use `?state=empty`, `/p/atelier/t1?state=failed`, `state=ready`,
 `state=accepted`, `state=merged`, `state=unavailable`, or `state=long` to inspect
 important states. The pages follow the device's light or dark setting;
 change that setting to inspect the other palette.

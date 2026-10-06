@@ -39,7 +39,8 @@ export const PLAN_LIMITS = {
   tests: { count: 12, entry: 2000 },
 } as const;
 
-const TASK_KINDS = ["mechanical-edit", "feature", "refactor", "tests", "docs", "ui", "research"] as const satisfies readonly TaskKind[];
+// The taskKind values a part may name; the planner's brief lists them.
+export const TASK_KINDS = ["mechanical-edit", "feature", "refactor", "tests", "docs", "ui", "research"] as const satisfies readonly TaskKind[];
 const PART_FIELDS = ["key", "title", "kind", "taskKind", "scope", "dependsOn", "provides", "uses", "brief", "acceptance", "tests", "size", "prefer"];
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const plain = (s: string) => s.normalize("NFC").replace(TEXT_CONTROLS, " ").trim();
