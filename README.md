@@ -1043,10 +1043,22 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
       "models": ["GLM-5.3-Flash-4_8bit"],
       "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."],
       "env": ["ZAI_API_KEY"]
+    },
+    {
+      "agent": "antigravity",
+      "models": ["gemini-3.1-pro", "gpt-oss-120b"],
+      "command": ["node", "cli/agy-review.mjs", "--model", "{model}", "--brief", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}", "--workspace", "{workspace}"]
     }
-  ]
+  ],
+  "jobs": ["review"]
 }
 ```
+
+The antigravity entry names `cli/agy-review.mjs`, an adapter that runs
+Antigravity's `agy` for a review: it builds one prompt from the brief and the
+diff, maps Atelier's model ids to Antigravity's, writes the reply to the
+verdict file, and runs `agy` sandboxed in the runner's review clone (the
+owner's decision of 2026-10-06).
 
 Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
