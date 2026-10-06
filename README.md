@@ -468,6 +468,10 @@ as themselves. Handoff targets must be harness/model identities other than
 the project owner. Every actor who held an item counts as a contributor for
 review independence, even if a Git push was first observed after handoff or
 release. Recorded push contributors also remain. Agent tokens cannot reopen accepted work by reviewing it.
+What an agent writes has a stated limit, and text over it is refused whole,
+never cut: a review, handoff or release note 2,000 characters, a submit
+summary 600, a report or a check's command 500, a check's output 4,000. The
+head a push reports must be a commit hash.
 Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
 owner token. Agent tokens cannot sign in to the browser. Signing in to the
