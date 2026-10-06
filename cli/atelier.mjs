@@ -1577,9 +1577,10 @@ const commands = {
     // the ones registered now, and only declarations are sent.
     const declaring = args["declare-read-only"];
     if (declaring !== undefined && (typeof declaring !== "string" || !declaring.trim())) die('--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"');
-    let registered = null;
+    let registered = null, onServer = false;
     if (!policy.checks && (cp?.adapter || declaring !== undefined)) {
       const list = await call("GET", "/projects", undefined, OWNER);
+      onServer = Array.isArray(list) && list.some((p) => p.name === name);
       registered = (Array.isArray(list) ? list.find((p) => p.name === name)?.policy : null) ?? { checks: [] };
     }
     const classed = policy.checks ?? registered?.checks ?? [];
@@ -1595,10 +1596,25 @@ const commands = {
     const owned = declaring === undefined ? [] : needing.map((command) => ({ command, by: "owner", note: declaring.trim() }));
     if (declaring !== undefined && !owned.length) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
     if (fromAdapter.declarations.length || owned.length) policy.checkClasses = [...fromAdapter.declarations, ...owned];
-    // The adapter's change_rules say which checks apply to which paths; a
-    // ControlPlane project's adapter always sets them, as it sets protected paths.
+    // The adapter's change_rules say which checks apply to which paths. A
+    // first init, or one that names the checks with --check or starts over
+    // with --reset, takes them, as it takes protected paths. A re-init that
+    // names no check narrows nothing: rules that condition a check to some
+    // paths can drop coverage outright, since a change to none of the checks'
+    // paths then runs no check at all (on 2026-10-06 Omniscope's check would
+    // have applied only to **.py, omniscope/**, tests/**, frontend/** and
+    // **.sh, leaving family/** and package.json with no check). The recorded
+    // paths stand, and each narrowing the rules would make is named here.
     const fromRules = cp?.adapter ? adapterCheckPaths(cp.adapter, classed) : null;
-    if (fromRules) policy.checkPaths = fromRules.paths;
+    const reinit = onServer && !policy.checks;
+    if (fromRules && !reinit) policy.checkPaths = fromRules.paths;
+    if (fromRules && reinit) {
+      for (const rule of fromRules.paths) {
+        const current = registered.checkPaths?.find((c) => c.command === rule.command);
+        if (current && current.paths.join("\u0000") === rule.paths.join("\u0000")) continue;
+        console.log(`Warning: ControlPlane's change rules would set \`${rule.command}\` to apply only when the change touches ${rule.paths.join(", ")}; as registered it applies to ${current ? `${current.paths.join(", ")} only` : "every change"}, and a re-init does not narrow a check's coverage. Take the rules with atelier init --reset.`);
+      }
+    }
     // The ship order's commands and kinds are recorded with the policy from
     // the checkout's own files, so the gate guards what ship runs like a
     // check's files and the inbox can say a merged revision is not delivered.
