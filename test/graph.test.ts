@@ -207,6 +207,19 @@ test("a public story keeps what happened and leaves out what anyone wrote", () =
   assert.deepEqual(s.tally, buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER).tally);
 });
 
+// Task t158: the public showcase draws task and project titles, and an
+// address in one is a person's, so the redacted story leaves it out.
+test("a public story draws titles without email addresses; the owner's own story keeps them as recorded", () => {
+  const items = [{ id: "t1", title: "Reply to jane2@private.example about the export", state: "merged" }] as never[];
+  const pub = buildStory("demo", items, night(), OWNER, false, "Demo for <ops@private.example>", { redact: true });
+  assert.equal(pub.threads[0].title, "Reply to about the export");
+  assert.equal(pub.title, "Demo for");
+  assert.ok(!drawStory(pub, OWNER).includes("@"));
+  const own = buildStory("demo", items, night(), OWNER, false, "Demo for <ops@private.example>");
+  assert.equal(own.threads[0].title, "Reply to jane2@private.example about the export");
+  assert.equal(own.title, "Demo for <ops@private.example>");
+});
+
 // A story of one task, as the task page and a Decisions card draw it.
 function oneTask() {
   seq = 0;

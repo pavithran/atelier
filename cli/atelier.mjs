@@ -22,7 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
-import { pathCollisions } from "../src/rules.ts";
+import { assertEligible, pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
@@ -35,6 +35,8 @@ import { describeStore, promptSecret, readSecret, writeSecret } from "./credenti
 import { checkEnv } from "./check-env.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
+import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
+import { formatApprovals, knownKinds, runCommand, ship as runShip, shipSecrets } from "./ship.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -225,7 +227,10 @@ const FLAGS = {
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
   "notes-remote": { off: true },
-  dispatch: { to: false, agent: false, model: false, note: false },
+  approve: { head: false, note: false, expires: false },
+  approvals: { all: true, note: false },
+  ship: { "dry-run": true, push: true },
+  dispatch:{ to: false, agent: false, model: false, note: false },
   undispatch: {},
   queue: {},
   // models add refuses --key, --api-key and --token itself, saying where keys go.
@@ -482,6 +487,22 @@ async function call(method, path, body, as, extra = {}) {
 const P = (name) => `/projects/${encodeURIComponent(name)}`;
 const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 const short = (s) => (s ? s.slice(0, 8) : "—");
+
+// The owner's approval recorded on the project, or null when the project is
+// not registered yet or records none. Asked with a plain request rather than
+// `call`, because a project not yet registered answers 404, and here that is
+// an answer, not a failure.
+async function recordedApproval(name) {
+  await resolveTokenActor();
+  let res, data;
+  try {
+    res = await fetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+    data = await res.json().catch(() => ({}));
+  } catch (error) { die(`server request failed: ${error.message}`, 4); }
+  if (res.status === 404) return null;
+  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? "the project could not be read"}`, res.status >= 500 ? 4 : 1);
+  return data.project?.policy?.approval ?? null;
+}
 
 function workspacePath(name, id) {
   return join(CACHE, "work", name, id);
@@ -1324,8 +1345,17 @@ const commands = {
     }
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
     const cp = readControlPlane(top);
+    // A ControlPlane project is copied into Artifacts with the owner's
+    // approval recorded on it. An init that changes the checks, the title or
+    // the policy of a project already registered keeps that approval; it is
+    // asked for again when --reset starts the policy over, which drops it,
+    // and when --history-since replaces the baseline.
     if (cp && !args.approval) {
-      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      const replaced = args.reset === true ? "--reset starts the policy over" : args["history-since"] !== undefined ? "--history-since replaces the baseline" : null;
+      const recorded = replaced ? null : await recordedApproval(name);
+      if (!recorded) {
+        die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      }
     }
     // Only what this command names is sent; the server keeps everything else
     // as it is. --reset starts the policy over from these options and the
@@ -1405,6 +1435,12 @@ const commands = {
     try { adoption({ project: name, checkout: p.path, workspace: p.path, guide: guideText() }); }
     catch (error) { die(error.message); }
     const as = await actor(OWNER);
+    // The project's policy says who may claim here. It is asked before the
+    // task exists, as the claim would ask it, so an agent it does not admit
+    // leaves no unclaimed task behind.
+    const { project: record } = await call("GET", P(name), undefined, as);
+    try { assertEligible(as, record?.policy ?? {}, OWNER); }
+    catch (error) { die(`${error.message}. The move was not started; run it as an eligible agent: atelier adopt --project ${name} --as HARNESS/MODEL`); }
     const item = await call("POST", `${P(name)}/items`, { title: `Move ${name} from ControlPlane to Atelier`, scope: SCOPE }, as);
     const { dir } = await claimWorkspace(name, item.id, as);
     let plan;
@@ -1951,6 +1987,78 @@ const commands = {
     } finally { unlock(); }
   },
 
+  // The project owner approves one protected action at one revision of the
+  // main line (src/actions.ts). atelier ship uses it once, at that revision only.
+  async approve() {
+    const kind = args._[1];
+    if (args._.length !== 2 || !kind) die(COMMAND_USAGE.approve);
+    const name = project();
+    if (!KIND.test(kind)) die(`"${kind}" is not an action name: use lower-case letters, digits and dashes, such as deploy`);
+    const head = typeof args.head === "string" ? args.head.trim().toLowerCase() : "";
+    if (!REVISION.test(head)) die(`--head needs the full revision of the main line, 40 or 64 hex digits: atelier approve ${kind} --head SHA. In the registered checkout, atelier ship --dry-run prints it`);
+    const checkout = cfg.projects?.[name]?.path;
+    const known = knownKinds(checkout && existsSync(checkout) ? checkout : null);
+    if (!known.has(kind)) die(`${name} has no action called ${kind}. Atelier knows ${ACTION_KINDS.join(", ")}; ${name}'s ship files name ${[...known].filter((k) => !ACTION_KINDS.includes(k)).join(", ") || "no others"}`);
+    const expires = args.expires ?? DEFAULT_EXPIRY;
+    try { expirySeconds(expires); } catch (error) { die(`--expires: ${error.message}`); }
+    const a = await call("POST", `${P(name)}/actions`, { kind, commit: head, note: args.note ?? "", expires }, OWNER);
+    console.log(`${a.id}: ${a.kind} approved at ${short(a.commit)} until ${at(a.expiresAt)}. The next atelier ship at that revision uses it, once. To withdraw it: atelier approvals withdraw ${a.id}`);
+  },
+
+  async approvals() {
+    const [, sub, id] = args._;
+    const name = project();
+    if (sub === "withdraw") {
+      if (!id || args._.length !== 3) die(COMMAND_USAGE.approvals);
+      const a = await call("POST", `${P(name)}/actions/${encodeURIComponent(id)}/withdraw`, { note: args.note ?? "" }, OWNER);
+      return console.log(`${a.id}: ${a.kind} at ${short(a.commit)} is withdrawn; no ship will use it.`);
+    }
+    if (sub !== undefined || args.note !== undefined) die(COMMAND_USAGE.approvals);
+    const { approvals } = await call("GET", `${P(name)}/actions`, undefined, OWNER);
+    const shown = args.all ? approvals : approvals.filter((a) => a.status === "active");
+    if (!shown.length) {
+      return console.log(args.all || !approvals.length
+        ? `No action has been approved for ${name}. The owner approves one with: atelier approve KIND --head SHA`
+        : `No approval stands for ${name}; atelier approvals --all lists the used, withdrawn and expired ones.`);
+    }
+    console.log(formatApprovals(shown));
+  },
+
+  // The project owner runs the project's ship order in its registered
+  // checkout (cli/ship.mjs): each protected step only with an approval at the
+  // revision shipped, each step recorded on the ledger.
+  async ship() {
+    if (args._.length !== 1) die(COMMAND_USAGE.ship);
+    const name = project(), as = await actor(OWNER);
+    if (as !== OWNER) die(`only the project owner ships: run ship as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
+    const p = cfg.projects?.[name];
+    if (!p?.path || !existsSync(p.path)) die(`ship runs in ${name}'s registered checkout, and this machine has none; run atelier init in that checkout first`);
+    const top = git(["rev-parse", "--show-toplevel"], { allowFail: true });
+    if (top.status !== 0 || realpathSync(top.stdout.trim()) !== realpathSync(p.path)) die(`run ship in ${name}'s registered checkout: cd ${JSON.stringify(p.path)}`);
+    const cwd = p.path, gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+    const { head: baselineHead } = await call("GET", `${P(name)}/baseline-head`, undefined, OWNER);
+    // The operations wrap refuses to run beside, read the way wrapReady reads them.
+    const inProgress = () => [...new Set(Object.keys(WRAP_MARKERS).filter((marker) => (marker === "landing"
+      ? [landingJournalFile(landingHome(gitDir)), oldLandingJournalFile(gitDir)]
+      : [resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))]).some((file) => existsSync(file))).map((marker) => WRAP_MARKERS[marker]))];
+    await runShip({
+      name, cwd, branch: p.branch, baselineHead, inProgress,
+      paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
+      git: (a, o = {}) => git(a, o),
+      request: (method, path, body) => call(method, path, body, OWNER),
+      stage: (text) => { doneStep = text ?? undefined; },
+      fail: (message) => die(message),
+      print: (line) => console.log(line),
+      // The wrap step is atelier wrap itself, run in the checkout as the owner would.
+      wrap: (summary) => runCommand([process.execPath, fileURLToPath(import.meta.url), "wrap", summary, "--project", name], { cwd, env: process.env }),
+      env: process.env,
+      secrets: shipSecrets(process.env, [apiToken(), ...workspaceTokens(cwd)]),
+      redact,
+      dryRun: args["dry-run"] === true,
+      push: args.push === true,
+    });
+  },
+
   // One line per live item, for a wrap to copy into STATE.md's Owner section.
   // The project owner: choose a remote that receives refs/notes/atelier on every
   // merge, or --off. Kept per Mac, beside the checkout path, never on the server.
@@ -2034,6 +2142,9 @@ const commands = {
     if (sub === "rename") {
       if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
       const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
+      // The server answers the new name for both when the request named it
+      // to finish a rename: no entry moves, and the one under it stays.
+      if (r.from === r.to) return console.log(`${r.to} is the project's name on ${server()}, and the rename that gave it that name is complete. The local config is unchanged.`);
       // The server says which name the project was registered under; the
       // local entry moves from that name. An entry already under the new
       // name is kept, and the old one dropped, saying what it held.
