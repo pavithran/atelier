@@ -124,7 +124,7 @@ it('the flow route is served behind sign-in, under a policy that allows only the
 });
 
 // ── project titles ──
-import {cleanTitle,titleOf,renderProjects,renderStudio} from '../src/ui';
+import {cleanTitle,titleOf,renderProjects,renderStudio,renderLogin} from '../src/ui';
 it('a project title is one clean line, and the name stands in when there is none',()=>{
  expect(cleanTitle('  Atelier ')).toBe('Atelier');
  expect(cleanTitle('A\ntwo\u0007line')).toBe('A two line');
@@ -870,4 +870,88 @@ it('History is a timeline of merges by day, each marked with the family that hel
  expect(html).toContain('<time datetime="2026-10-05T10:00:00.000Z">10:00 UTC</time>');
  expect(html).toContain('class="cap-key"');
  expect(renderHistory([{project,items:[]}],'PAVI','pavi')).not.toContain('class="legend-line"');
+});
+
+// ── Studio lanes in Flow's language, stripes by family, and sign-in over the showcase ──
+it('a Studio lane is banded and threaded in each holder\'s family colour, with the marks and a breathing head',()=>{
+ const base={id:'t1',title:'Lane',scope:[],state:'claimed' as const,owner:'opencode/glm-5.3-flash',fork:'example--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
+ const at=(m:number)=>`2026-10-03T12:${String(m).padStart(2,'0')}:00.000Z`;
+ const events=[
+  {seq:1,itemId:'t1',at:at(0),actor:'codex/gpt-6',kind:'item.claimed',data:{}},
+  {seq:2,itemId:'t1',at:at(2),actor:'codex/gpt-6',kind:'push.observed',data:{head}},
+  {seq:3,itemId:'t1',at:at(9),actor:'pavi',kind:'item.handoff',data:{from:'codex/gpt-6',to:'opencode/glm-5.3-flash'}},
+  {seq:4,itemId:'t1',at:at(9),actor:'opencode/glm-5.3-flash',kind:'item.claimed',data:{}},
+ ];
+ const floor=buildFloor([{project,items:[base],events}],new Date(at(10)));
+ const html=renderStudio(floor,'PAVI',new Date(at(10)),false,[project],'pavi');
+ expect(html).toContain('class="span-past" style="--c:var(--m-openai)"');
+ expect(html).toContain('class="span-now" style="--c:var(--m-zai)"');
+ expect(html).toContain('class="g-thread g-lane" style="--c:var(--m-openai)"');
+ expect(html).toContain('class="g-thread g-lane local" style="--c:var(--m-zai)"');
+ expect(html).toContain('<circle class="g-head" cx="100%"');expect(html).toContain('<g class="g-task live">');
+ expect(html).toContain('<li class="lane" id="example-t1" style="--c:var(--m-zai)">');
+ for(const m of ['m-claim','m-push','m-handoff'])expect(html).toContain(`class="${m}"`);
+ expect(html).toContain('class="legend-line"');expect(html).toContain('dotted: ran locally');expect(html).toContain('>GPT<');expect(html).toContain('>GLM<');
+ // A band that starts late is labelled to its left, so the label never runs past now.
+ expect(html).toContain('dx="-8" y="22" text-anchor="end" class="span-label now"');
+ expect(renderStudio({benches:[],from:at(0),to:at(10)},'PAVI',new Date(at(10)))).not.toContain('class="legend-line"');
+});
+it('Code and Log carry a stripe per entry and per commit in the family the commit names, with the name in words',async()=>{
+ const {renderTree,renderLog,renderCommit,commitFamily}=await import('../src/browse/view');
+ const c=(id:string,message:string)=>({hash:id.repeat(40),treeHash:'b'.repeat(40),message,author:{name:'<A>',email:'a@x'},parents:[],authoredAt:1759600000});
+ const fable=c('1','Subject\n\nAgent: claude-code/fable-5.1'),gpt=c('2','Other\n\nCo-Authored-By: GPT-6 Astra <n@x>'),none=c('3','Plain <b>subject</b>');
+ expect(commitFamily(fable)).toEqual({label:'fable-5.1',colour:'var(--m-anthropic)'});
+ expect(commitFamily(gpt)).toEqual({label:'gpt-6-astra',colour:'var(--m-openai)'});
+ expect(commitFamily(none)).toEqual({label:'no agent named',colour:'var(--text-dim)'});
+ const w={project,item:null,at:null};
+ const node={kind:'tree' as const,hash:'d'.repeat(40),entries:[{name:'src',type:'tree',mode:'40000',hash:'e'.repeat(40)},{name:'<x>.ts',type:'blob',mode:'100644',hash:'f'.repeat(40)},{name:'old.md',type:'blob',mode:'100644',hash:'0'.repeat(40)}],total:3};
+ const touched={by:new Map([['src',fable],['<x>.ts',gpt]]),examined:60,complete:false};
+ const tree=renderTree(w,fable,[],node,'PAVI',touched);
+ expect(tree).toContain('<li class="dir striped"><i class="stripe" style="--c:var(--m-anthropic)" aria-hidden="true"></i>');
+ expect(tree).toContain('fable-5.1 · <a class="mono" href="/p/example/commit/'+'1'.repeat(40)+'">11111111</a>');
+ expect(tree).toContain('gpt-6-astra · <a class="mono"');
+ expect(tree).toContain('<i class="stripe none" aria-hidden="true"></i><span class="entry"><a href="/p/example/code/old.md">old.md</a></span><span class="meta touch">not changed in the commits read</span>');
+ expect(tree).toContain('among the last 60 commits on the first-parent line');
+ expect(tree).toContain('&lt;x&gt;.ts');
+ const plain=renderTree(w,fable,[],node,'PAVI');
+ expect(plain).not.toContain('class="stripe');expect(plain).not.toContain(' striped"');expect(plain).toContain('<li class="dir"><span class="entry"><a href="/p/example/code/src">src/</a></span></li>');
+ expect(renderTree(w,fable,[],node,'PAVI',null)).toContain('could not be read just now');
+ expect(renderTree(w,fable,[],node,'PAVI',{by:new Map(),examined:0,complete:false})).toContain('too deep or too busy');
+ const log=renderLog(w,fable,[fable,gpt,none],0,false,'PAVI');
+ expect(log).toContain('<li><i class="stripe" style="--c:var(--m-anthropic)" aria-hidden="true"></i><a class="mono"');
+ expect(log).toContain('<span class="meta">gpt-6-astra · &lt;A&gt; · ');
+ expect(log).toContain('<li><i class="stripe" style="--c:var(--text-dim)" aria-hidden="true"></i>');
+ expect(log).toContain('no agent named · &lt;A&gt;');expect(log).not.toContain('<b>subject</b>');
+ const commit=renderCommit(w,{commit:fable,parent:null,files:[],truncated:false},'PAVI');
+ expect(commit).toContain('<section class="commit-head" style="--c:var(--m-anthropic)">');
+ expect(commit).toContain(' · fable-5.1 · &lt;A&gt; · ');
+});
+it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing focusable or private in it',async()=>{
+ const s=buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
+  ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','claude-code/opus-5.5','review.rejected',{note:'secret reviewer note'}),
+  ev(3,'t1','pavi','item.accepted'),ev(4,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
+ const html=renderLogin(undefined,true,{stories:[s],owner:'pavi',who:'PAVI'});
+ expect(html).toContain('<section class="login over-graph"><div class="login-backdrop" aria-hidden="true"><svg class="graph"');
+ expect(html).not.toContain('tabindex="0"');expect(html).not.toContain('href="/p/');expect(html).not.toContain('secret reviewer note');
+ expect(html).toContain('<a href="/showcase">See the public showcase</a>');
+ expect(html).toContain('<form method="post" action="/login" class="login-form">');
+ const bare=buildStory('bare',[],[],'pavi',false,'Bare',{redact:true});
+ expect(renderLogin(undefined,true,{stories:[bare],owner:'pavi',who:'PAVI'})).not.toContain('class="login-backdrop"');
+ expect(renderLogin()).not.toContain('class="login-backdrop"');
+ expect(renderLogin('That token is not this server\'s.',false)).toContain('role="alert"');
+ // The route: with a showcased project that has work, the graph is drawn; without one, it is not.
+ const record={name:'backdrop',repo:'backdrop',title:'Backdrop',policy:{checks:[],protected:[]},createdAt:time};
+ const L=env.LEDGER.get(env.LEDGER.idFromName('project:backdrop'));
+ await L.setProject(record,'owner');
+ await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
+ await L.newItem('Shown work',[],'owner');await L.claim('t1','codex/gpt-6');
+ const shown=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ expect(shown.status).toBe(200);
+ const body=await shown.text();
+ expect(body).toContain('class="login-backdrop"');expect(body).toContain('Shown work');expect(body).not.toContain('href="/p/');
+ const plain=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x'} as typeof env);
+ expect(await plain.text()).not.toContain('class="login-backdrop"');
+ const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ expect(wrong.status).toBe(401);
+ expect(await wrong.text()).toContain('class="login-backdrop"');
 });

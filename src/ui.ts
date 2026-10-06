@@ -18,7 +18,7 @@ import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
-import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
 import {
   DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf,
@@ -162,8 +162,16 @@ function trustLine(checks: { grade: string; passed: boolean | null; where?: "san
 
 // ── sign in ────────────────────────────────────────────────────────────────
 
-export function renderLogin(error?: string, showcase = false): string {
-  return page("Sign in", `<section class="login">
+// `backdrop` draws the public showcase's stories dimmed behind the form:
+// the same redacted stories the showcase page draws, so nothing private is
+// on the sign-in page. They are decoration here, hidden from assistive
+// technology, and no mark in them takes focus.
+export function renderLogin(error?: string, showcase = false, backdrop?: { stories: Story[]; owner: string; who: string }): string {
+  const drawn = backdrop?.stories.filter((s) => s.threads.length) ?? [];
+  const graph = drawn.length
+    ? `<div class="login-backdrop" aria-hidden="true">${drawn.map((s) => drawStory(s, backdrop!.owner, { replaySeconds: 12, ownerLabel: backdrop!.who })).join("").replace(/ tabindex="0"/g, "")}</div>`
+    : "";
+  return page("Sign in", `<section class="login${graph ? " over-graph" : ""}">${graph}
   <h1>Many agents.<br>One decision at a time.</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
@@ -283,10 +291,12 @@ const taskHref = (project: string) => (th: { id: string }) => href("p", project,
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
+const LOCAL_KEY = '<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran locally</li>';
+
 function legendLine(vendors: Vendor[], hasLocal: boolean, who = "You"): string {
   const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
     .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
-  const local = hasLocal ? `<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran locally</li>` : "";
+  const local = hasLocal ? LOCAL_KEY : "";
   return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}${local}<li><i style="--c:var(--fault)"></i>sent back</li><li class="meta">times in ${e(zoneLabel())}</li></ul>`;
 }
 
@@ -628,16 +638,26 @@ function markShape(kind: MarkKind): string {
 const TRACK_H = 76;
 const MID = 40;
 
-// One lane: a band per holder (the current one tinted), the shared axis, and a
-// mark for every recorded event, staggered where marks crowd together.
-function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): string {
+// One lane, drawn as the Flow graph draws a thread: a band per holder and
+// the thread along the shared axis, both in the holder's family colour (a
+// local run dotted), so a handoff is a change of band and colour; a mark for
+// every recorded event, staggered where marks crowd together; and the
+// current holder's band and thread running to the now line, where the head
+// breathes.
+function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>, owner: string): string {
   const pct = (at: string) => position(at, floor) * 100;
-  const spans = b.spans.map((sp, i) => {
+  const colour = (actor: string) => `var(--m-${vendorFor(actor, owner)})`;
+  const spans = b.spans.map((sp) => {
     const x = pct(sp.from), w = Math.max(0.6, pct(sp.to ?? now.toISOString()) - x);
     const current = sp.to === null;
     const label = splitActor(sp.holder).model;
-    return `<rect x="${x.toFixed(2)}%" y="8" width="${w.toFixed(2)}%" height="${TRACK_H - 16}" rx="6" class="${current ? "span-now" : i % 2 ? "span-past alt" : "span-past"}"><title>${e(sp.holder)} held it from ${e(clock(sp.from))}${sp.to ? ` to ${e(clock(sp.to))}` : " until now"}</title></rect>
-      <text x="${x.toFixed(2)}%" dx="8" y="22" class="span-label${current ? " now" : ""}">${e(label)}</text>`;
+    const c = colour(sp.holder);
+    // A band that starts in the last fifth of the axis is too short for its
+    // label, which then sits to the left of the band instead of running past now.
+    const before = x > 80;
+    return `<rect x="${x.toFixed(2)}%" y="8" width="${w.toFixed(2)}%" height="${TRACK_H - 16}" rx="6" class="${current ? "span-now" : "span-past"}" style="--c:${c}"><title>${e(sp.holder)} held it from ${e(clock(sp.from))}${sp.to ? ` to ${e(clock(sp.to))}` : " until now"}</title></rect>
+      <line x1="${x.toFixed(2)}%" y1="${MID}" x2="${(x + w).toFixed(2)}%" y2="${MID}" class="g-thread g-lane${isLocalRun(sp.holder) ? " local" : ""}" style="--c:${c}"/>
+      <text x="${x.toFixed(2)}%" dx="${before ? -8 : 8}" y="22"${before ? ' text-anchor="end"' : ""} class="span-label${current ? " now" : ""}" style="--c:${c}">${e(label)}</text>`;
   }).join("");
   const xs = b.marks.map((m) => position(m.at, floor));
   const dy = staggers(xs);
@@ -648,7 +668,7 @@ function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): s
     ? `<p class="chain" aria-label="Held by, in order">${b.chain.map((a) => `<span title="${e(a)}">${e(splitActor(a).model || a)}</span>`).join('<span aria-hidden="true"> → </span>')}</p>`
     : "";
   const tone = b.item.state === "accepted" ? "go" : b.item.state === "submitted" ? "ask" : "";
-  return `<li class="lane" id="${e(b.project)}-${e(b.item.id)}">
+  return `<li class="lane" id="${e(b.project)}-${e(b.item.id)}" style="--c:${colour(b.agent)}">
   <div class="bench">
     <p class="who"><strong>${e(b.model)}</strong><span class="meta">${e(b.harness || "agent")}</span></p>
     <p class="task"><a href="${href("p", b.project, b.item.id)}">${e(b.item.title)}</a></p>
@@ -657,25 +677,30 @@ function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): s
   </div>
   <div class="track">
     <svg class="track-svg" width="100%" height="${TRACK_H}" role="img" aria-label="${e(`${b.marks.length} recorded events for ${b.item.id}, held by ${b.chain.map(modelOf).join(", then ")}; latest: ${last ? `${MARK_NAMES[last.kind]} ${ago(last.at, now)}` : "none"}`)}">
-      ${spans}
+      <g class="g-task live">
       <line x1="0" y1="${MID}" x2="100%" y2="${MID}" class="axis"/>
+      ${spans}
       <line x1="100%" y1="4" x2="100%" y2="${TRACK_H - 4}" class="now-line"/>
       ${marks}
+      <circle class="g-head" cx="100%" cy="${MID}" r="4.5" style="--c:${colour(b.agent)}"><title>${e(b.agent)} holds it now</title></circle>
+      </g>
     </svg>
     <p class="meta latest">${last ? `<strong>${e(MARK_NAMES[last.kind])}</strong> · ${e(last.label)} · ${e(ago(last.at, now))}` : "No activity recorded yet."}</p>
   </div>
 </li>`;
 }
 
-export function renderStudio(floor: Floor, ownerName: string | null = null, now = new Date(), unavailable = false, projects: ProjectRecord[] = []): string {
+export function renderStudio(floor: Floor, ownerName: string | null = null, now = new Date(), unavailable = false, projects: ProjectRecord[] = [], owner = DEFAULT_OWNER): string {
   const titles = titleMap(projects);
   const agents = new Set(floor.benches.map((b) => b.agent)).size;
+  const vendors = [...new Set(floor.benches.flatMap((b) => b.chain.map((a) => vendorFor(a, owner))))];
+  const hasLocal = floor.benches.some((b) => b.chain.some(isLocalRun));
   const legend = (Object.keys(MARK_NAMES) as MarkKind[]).map((k) =>
     `<li><svg width="24" height="24" aria-hidden="true"><svg x="12" y="12" overflow="visible" class="mark">${markShape(k)}</svg></svg>${e(MARK_NAMES[k])}</li>`).join("");
   const mid = new Date((Date.parse(floor.from) + Date.parse(floor.to)) / 2).toISOString();
   const body = floor.benches.length
-    ? `<div class="axis-labels" aria-hidden="true"><span>${e(clock(floor.from))}</span><span>${e(clock(mid))}</span><span>now</span></div>
-<ol class="lanes">${floor.benches.map((b) => lane(b, floor, now, titles)).join("")}</ol>`
+    ? `${familyLegend(vendors, "You", hasLocal ? LOCAL_KEY : "")}<div class="axis-labels" aria-hidden="true"><span>${e(clock(floor.from))}</span><span>${e(clock(mid))}</span><span>now</span></div>
+<ol class="lanes">${floor.benches.map((b) => lane(b, floor, now, titles, owner)).join("")}</ol>`
     : `<div class="empty"><h3>The floor is quiet.</h3><p>When an agent claims a task, its bench appears here with every push, check and handoff as it happens.</p></div>`;
   return page("Studio", `<div class="studio">
   <header><h1>Studio</h1>
