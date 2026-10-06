@@ -654,6 +654,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
+      ...(has("shipRuns") ? { shipRuns: asStrings(body.shipRuns, "shipRuns") } : {}),
+      ...(has("shipKinds") ? { shipKinds: asStrings(body.shipKinds, "shipKinds") } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),

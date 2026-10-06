@@ -41,3 +41,10 @@ test("a plan's entries point to what the plan shows", () => {
   assert.equal(out.filter((l) => l === "      next: atelier plan show t1 --project demo").length, 1);
   assert.equal(out.filter((l) => l === "      next: atelier plan show t2 --project demo").length, 1);
 });
+
+test("an undelivered merge's entry names the dry run, and the merged task itself stays out of In progress", () => {
+  const out = formatStatus([{ name: "demo", items: [item("t1", "merged")], inbox: [entry("t1", "ship")] }]).split("\n");
+  assert.ok(out.includes("    t1  ship  Task t1"));
+  assert.ok(out.includes("      next: atelier ship --dry-run --project demo"));
+  assert.ok(!out.includes("In progress"));
+});
