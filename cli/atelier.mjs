@@ -216,6 +216,17 @@ function summaryArg(cmd) {
   if (typeof args.summary !== "string" || !args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
 }
 
+// --check, --protect and --scope take text, once per use. A bare flag, which
+// the parser records as the value true, and an empty or blank value are
+// refused before any request: a forgotten command after --check would
+// otherwise register a required check named "true", which `sh -c true`
+// passes every time. The server refuses the same (asStrings in src/index.ts).
+function listArg(flag, cmd) {
+  const values = args.multi[flag] ?? [];
+  if (values.some((v) => typeof v !== "string" || !v.trim())) die(`--${flag} needs text: atelier ${cmd} --${flag} "TEXT", once per entry`);
+  return values.map((v) => v.trim());
+}
+
 function itemArg(i = 1) {
   const id = args._[i] ?? wsConfig("item");
   if (!id) die("which item? pass its id (t3) or run inside its workspace");
@@ -965,6 +976,7 @@ const commands = {
     // A bare --title has no value, like a bare --approval: refuse rather than
     // silently clear the stored title.
     if (args.title === true) die('give the title as --title TEXT, or --title "" to clear it');
+    const checks = listArg("check", "init"), given = args.multi.protect ? listArg("protect", "init") : null;
     const top = git(["rev-parse", "--show-toplevel"]);
     let name, existing;
     try { ({ name, existing } = initName(cfg.projects, top, args.name, args["rename-local"] === true)); }
@@ -985,9 +997,9 @@ const commands = {
     // as it is. --reset starts the policy over from these options and the
     // defaults. A ControlPlane project always sends the policy ControlPlane holds.
     const reset = args.reset === true;
-    const protect = args.multi.protect ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
+    const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
     const policy = {};
-    if (args.multi.check || reset) policy.checks = args.multi.check ?? [];
+    if (args.multi.check || reset) policy.checks = checks;
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
     if (cp) {
       policy.eligible = cp.eligible ?? [];
@@ -1096,7 +1108,8 @@ const commands = {
   async new() {
     const title = args._.slice(1).join(" ");
     if (!title) die('usage: atelier new "title" [--scope GLOB]...');
-    const item = await call("POST", `${P(project())}/items`, { title, scope: args.multi.scope ?? [] }, await actor(OWNER));
+    const scope = listArg("scope", "new");
+    const item = await call("POST", `${P(project())}/items`, { title, scope }, await actor(OWNER));
     console.log(`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`);
   },
 
