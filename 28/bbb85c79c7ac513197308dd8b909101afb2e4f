@@ -1,0 +1,31 @@
+atelier atelier/t213 "Runner reliability (audit 2026-10-06 #1, #4, #5, #6): runReview releases its claim on any error after claiming; integrate and refresh jobs release theirs and reset to the remote branch first; before a re-claim resets a workspace, uncommitted work is saved to refs/atelier/rescue/ID-TIME; review jobs are offered before builds; opencode reviews get their own data folder; run reports carry the job's role; parseConfig refuses a harness offered for reviews whose command has no {verdict_file}"
+accepted head 6b13ef0af83ba21a6b639e097d9930e0eee7cd48
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T23:45:16.466Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T23:45:21.055Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T23:53:08.533Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T23:53:12.180Z
+REVIEW approve — antigravity/gemini-3.1-pro: I verified the logic for releasing review and integrate claims on errors, the new rescueWork function for stashing uncommitted drafts, the reordering of the queue to prioritize reviews, and the isolation of opencode review environments; all changes are correct and fulfill the goals.
+2026-10-06T23:15:08.827Z pavi item.created
+2026-10-06T23:15:20.731Z claude-code/opus-5.5 item.claimed
+2026-10-06T23:15:30.091Z claude-code/opus-5.5 fork.created
+2026-10-06T23:42:38.509Z pavi land.lease
+2026-10-06T23:42:41.499Z pavi land.merge
+2026-10-06T23:42:49.792Z pavi land.regenerate
+2026-10-06T23:42:52.527Z claude-code/opus-5.5 push.observed
+2026-10-06T23:42:52.670Z pavi land.push
+2026-10-06T23:45:17.259Z claude-code/opus-5.5 evidence.observed
+2026-10-06T23:45:21.377Z claude-code/opus-5.5 evidence.observed
+2026-10-06T23:45:22.030Z pavi land.check
+2026-10-06T23:50:51.024Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T23:50:51.894Z pavi land.lease
+2026-10-06T23:50:53.491Z pavi land.merge
+2026-10-06T23:51:01.967Z pavi land.regenerate
+2026-10-06T23:51:03.286Z pavi land.push
+2026-10-06T23:53:09.248Z claude-code/opus-5.5 evidence.observed
+2026-10-06T23:53:12.473Z claude-code/opus-5.5 evidence.observed
+2026-10-06T23:53:13.078Z pavi land.check
+2026-10-06T23:53:13.612Z claude-code/opus-5.5 item.submitted
+2026-10-06T23:53:13.871Z pavi land.submit
+2026-10-06T23:53:14.118Z pavi land.review
+2026-10-06T23:53:14.795Z pavi item.accepted
+2026-10-06T23:53:14.930Z pavi land.accept
