@@ -11,6 +11,7 @@ import { cleanSummary } from "./brief";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
+import type { RunReport } from "./models/reliability.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -79,6 +80,9 @@ export interface ProjectInit {
 }
 
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+
+// How many run reports the index returns: the most recent, for the reliability record.
+export const RUN_REPORTS = 1000;
 
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
@@ -158,6 +162,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -393,6 +398,21 @@ export class Ledger extends DurableObject<Env> {
       this.log(null, this.owner, "usage.cleared", { key, runner: report.runner });
     }
     return { report, alerts };
+  }
+
+  // ── runs ─────────────────────────────────────────────────────────────────
+  // Runs that ended without a result the ledger could record, as the runners
+  // reported them (src/models/reliability.ts), on the index instance beside
+  // the usage reports. Each report is kept as it arrived; none replaces another.
+
+  putRun(report: RunReport): RunReport {
+    this.sql.exec(`INSERT INTO runs (json) VALUES (?)`, JSON.stringify(report));
+    return report;
+  }
+
+  // The most recent reports, newest first.
+  runs(limit = RUN_REPORTS): RunReport[] {
+    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
   }
 
   // ── project instance ─────────────────────────────────────────────────────
@@ -716,7 +736,11 @@ export class Ledger extends DurableObject<Env> {
     if (e.grade === "observed") this.notify(e.itemId, origin);
   }
 
-  addReview(r: Review, origin?: string, proved = false): void {
+  // `via` says where a review by the project owner was recorded: "page" is a
+  // form on the task page, which only the signed-in owner reaches; "api" is
+  // the owner token, as the orchestrator and the CLI use it. The reliability
+  // record (src/models/reliability.ts) counts the two apart.
+  addReview(r: Review, origin?: string, proved = false, via?: "page" | "api"): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
@@ -732,7 +756,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null });
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head }, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(via && r.by === this.owner ? { via } : {}) }, proved);
     this.notify(r.itemId, origin);
   }
 
@@ -879,6 +903,21 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { state: "abandoned", owner: null });
     this.log(id, actor, "item.abandoned", { note });
     return this.item(id);
+  }
+
+  // The owner traces a defect to the revision this item was accepted at,
+  // merged or not. Nothing about the item changes: the event is the record,
+  // and the reliability record counts it against the model that built that
+  // revision and every model that approved it. An item never accepted
+  // carries no approved change, so it is refused.
+  traceDefect(id: string, actor: string, note: string, foundIn: string | null): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner traces a defect to a change", 403);
+    const item = this.item(id);
+    if (!item.acceptedHead) {
+      throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
+    }
+    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) });
+    return item;
   }
 
   evidenceFor(id: string): Evidence[] {

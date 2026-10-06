@@ -16,11 +16,12 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
+import { reliabilityLine, roundsPerMerge, type Cause, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -535,9 +536,12 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map()): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
+    // The entry's model across every project and harness, by modelKey; an
+    // alias the registry reads as another model shows as its own line.
+    const across = [...new Set(actors.map(modelKey))].flatMap((k) => reliability.get(k) ?? []);
     const r = actors.map((a) => record.get(a)).filter(Boolean).reduce((acc, x) => ({
       claimed: acc.claimed + x!.itemsClaimed, merges: acc.merges + x!.merges, pass: acc.pass + x!.checkPasses,
       fail: acc.fail + x!.checkFailures, back: acc.back + x!.reviewsRejected,
@@ -552,6 +556,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
   <p class="model-status">${status}</p>
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
+  ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
   <form method="post" action="/models/remove" class="inline"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
 </li>`;
@@ -567,6 +572,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
   ${group("home", "At home", "No home models yet. Add one served by your Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
+  ${reliabilitySection(reliability, ownerName, window)}
   <details class="new-task"${entries.length ? "" : " open"}><summary>Add a model</summary>
     <form method="post" action="/models/add" class="stack">
       <label>Model id, as the harness names it<input name="id" required maxlength="128" placeholder="gemini-3.1-pro, GLM-5.3-Flash-4_8bit"></label>
@@ -582,6 +588,57 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
     </form>
   </details>
 </div>`, "Models", ownerName);
+}
+
+// ── reliability ────────────────────────────────────────────────────────────
+// Each model's reliability across every project (src/models/reliability.ts),
+// on the Models page and the Usage page alike: one row per model that has
+// acted, pool or not, and under it the causes the record holds.
+
+const CAUSES_SHOWN = 5;
+
+function causeList(title: string, causes: Cause[]): string {
+  if (!causes.length) return "";
+  const rows = causes.slice(0, CAUSES_SHOWN).map((c) =>
+    `<li><span class="meta">${e(c.project)}${c.item ? `/${e(c.item)}` : ""} · ${e(c.by)} · ${e(when(c.at))}</span> ${e(c.note || "no note")}</li>`).join("");
+  const more = causes.length > CAUSES_SHOWN ? `<li class="meta">and ${causes.length - CAUSES_SHOWN} more</li>` : "";
+  return `<h4>${e(title)} · ${causes.length}</h4><ul class="usage-notes">${rows}${more}</ul>`;
+}
+
+function reliabilityRow(r: ModelReliability, who: string): string {
+  const rounds = roundsPerMerge(r);
+  const merges = !r.merged ? '<span class="meta">none merged</span>'
+    : rounds ? `${e(rounds)} each<span class="meta">over ${e(plural(r.mergedReviewed, "reviewed merge"))}${r.merged > r.mergedReviewed ? `, ${r.merged - r.mergedReviewed} merged without a model's review` : ""}</span>`
+    : `${e(plural(r.merged, "merge"))}<span class="meta">none reviewed by a model</span>`;
+  const owner = r.ownerApprovals;
+  const causes = [
+    causeList("Rejections of its work", r.rejections),
+    causeList("Defects traced to its work", r.defects),
+    causeList("Its approvals a defect contradicted", r.contradicted),
+    causeList("Runs reported", r.runCauses),
+  ].join("");
+  return `<tr><th scope="row"><code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")} · ${e(plural(r.projects.length, "project"))}</span></th>
+  <td class="num">${r.firstReviews ? `${r.approvedFirst} of ${r.firstReviews}` : '<span class="meta">none reviewed</span>'}</td>
+  <td class="num">${merges}</td>
+  <td class="num">${r.rejections.length}<span class="meta">${e(plural(r.defects.length, "defect"))} traced to its work</span></td>
+  <td class="num">${r.contradicted.length} of ${e(plural(r.approvals, "approval"))}<span class="meta">${e(plural(r.unfinishedReviews, "review"))} without a verdict</span></td>
+  <td class="num">${r.runs.stalled} stalled · ${r.runs["timed-out"]} timed out · ${r.runs.refused} refused</td>
+  <td class="num">${owner.page} by ${e(who)} on the page<span class="meta">${owner.api} through the API · ${owner.unrecorded} unrecorded</span></td>
+</tr>${causes ? `<tr class="causes"><td colspan="7"><details><summary>Causes for ${e(r.model)}</summary>${causes}</details></td></tr>` : ""}`;
+}
+
+export function reliabilitySection(models: Reliability, ownerName: string | null, window: { events: number; unread: string[] }): string {
+  const who = ownerName || "the owner";
+  const rows = [...models.values()];
+  const lead = `Each model's record across the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
+  return `<section class="reliability" aria-label="Reliability by model">
+  <h2 class="section-title">Reliability by model · ${rows.length}</h2>
+  <p class="meta">${lead}</p>
+  ${rows.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Model</th><th scope="col">Approved at first review</th><th scope="col">Review rounds to merge</th><th scope="col">Rejections</th><th scope="col">Approvals contradicted</th><th scope="col">Runs stalled, timed out, refused</th><th scope="col">Owner approvals of its work</th></tr></thead>
+    <tbody>${rows.map((r) => reliabilityRow(r, who)).join("")}</tbody>
+  </table>` : '<p class="empty">No model has acted yet.</p>'}
+</section>`;
 }
 
 // ── studio ─────────────────────────────────────────────────────────────────

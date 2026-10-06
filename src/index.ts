@@ -12,6 +12,7 @@ import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type 
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
+import { buildReliability, cleanDefect, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
@@ -487,6 +488,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
+  // Runs that stalled, timed out or were refused, which the ledger never
+  // sees: a runner reports each under its name, as it reports usage. The
+  // owner reads them, and each model's reliability across every project.
+  if (parts[0] === "runs" && parts.length === 1) {
+    const I = index(env);
+    if (m === "GET") return json(await I.runs());
+    if (m === "POST") {
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner", 400);
+      return json(await I.putRun(cleanRun(body, new Date().toISOString(), runner.runner)), 201);
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
+  if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
+    const { reliability, events, unread } = await trackRecords(env);
+    const res = json({ events, models: reliabilityJson(reliability) });
+    if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
+    return res;
+  }
   // The queue across every project. GET lists it for the owner; a runner POSTs
   // what it can run and gets back the tasks it may claim, with the name to claim under.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
@@ -768,7 +788,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
-      }, c.url.origin, !!c.token);
+      }, c.url.origin, !!c.token, "api");
       return json(await L.detail(id));
     }
     case "submit":
@@ -842,6 +862,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.abandon(id, actor, String(body.note ?? ""), oldToken);
       return json(item);
     }
+    case "defect": {
+      requireOwner(env, actor);
+      const { note, foundIn } = cleanDefect(body);
+      return json(await L.traceDefect(id, actor, note, foundIn), 201);
+    }
   }
   throw new RuleError("not_found", "no such route", 404);
 }
@@ -868,21 +893,30 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, projects] = await Promise.all([I.models(), I.projects()]);
-  // Each model's record is read from every project's most recent events;
-  // the page says how many, and which projects could not be read.
-  const unread: string[] = [];
-  const events = (await Promise.all(projects.map(async (p) => {
-    try { return (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[]; } catch { unread.push(titleOf(p)); return []; }
-  })));
+  const [entries, track] = await Promise.all([I.models(), trackRecords(env)]);
   const record = new Map<string, ActorRecord>();
-  for (const evs of events) {
-    for (const [actor, r] of buildRecord([...evs].sort((a, b) => a.seq - b.seq))) {
+  for (const { events } of track.sources) {
+    for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
       const k = record.get(actor);
       record.set(actor, k ? Object.fromEntries(Object.entries(k).map(([f, n]) => [f, n + r[f as keyof ActorRecord]])) as unknown as ActorRecord : r);
     }
   }
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, { events: MODEL_EVENTS, unread }), error ? 400 : 200);
+  const window = { events: track.events, unread: track.unread.map(titleOf) };
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
+}
+
+// Each model's record is read from every project's most recent events, and
+// its reliability from those and the runners' reports. The pages and the
+// API say how many events, and which projects could not be read.
+async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; events: number; unread: ProjectRecord[] }> {
+  const I = index(env);
+  const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
+  const unread: ProjectRecord[] = [];
+  const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
+    try { return { project: p.name, events: (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[] }; }
+    catch { unread.push(p); return null; }
+  }))).filter((s): s is ProjectEvents => s !== null);
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: MODEL_EVENTS, unread };
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -993,8 +1027,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "models" && (parts.length === 1 || (parts.length === 2 && req.method === "POST"))) return await modelsPage(c, parts[1]);
   if (parts[0] === "usage" && parts.length === 1 && req.method === "GET") {
     const I = index(env);
-    const [reports, alerts] = await Promise.all([I.usage(), I.usageAlerts()]);
-    return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env)));
+    const [reports, alerts, track] = await Promise.all([I.usage(), I.usageAlerts(), trackRecords(env)]);
+    const reliability = { models: track.reliability, events: track.events, unread: track.unread.map(titleOf) };
+    return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env), reliability));
   }
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
@@ -1044,7 +1079,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "release") await L.release(id, owner, note, false, oldToken);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin);
+      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
     } else return html(renderError("Unknown action."), 400);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
