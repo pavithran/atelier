@@ -1,0 +1,30 @@
+atelier atelier/t184 "Site review (fable-5.1, 2026-10-06), public pages: the showcase and sign-in backdrop draw every thread (cap and clip), sign-in uses the public shell, the showcase leads with what Atelier is, Before/With picks the project with real history, /how's Commands collapse, public nav wraps at 400 px, task not item on /how (findings 1, 3, 4, 5, 13, 14, 16)"
+accepted head acc34f5b5c964d3b132cdcee3912b6f1af0326ea
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T18:32:45.077Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T18:32:48.453Z
+REVIEW approve — antigravity/gemini-3.1-pro: Public pages with an anonymised portfolio; comparison pick fixed
+2026-10-06T15:39:24.528Z pavi item.created
+2026-10-06T16:10:52.179Z opencode/glm-5.3 item.claimed
+2026-10-06T16:10:57.909Z opencode/glm-5.3 fork.created
+2026-10-06T17:49:00.914Z opencode/glm-5.3 push.observed
+2026-10-06T17:50:49.336Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:50:52.181Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:50:53.042Z opencode/glm-5.3 item.submitted
+2026-10-06T17:57:32.279Z opencode/glm-5.3 push.observed
+2026-10-06T17:59:38.561Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:59:41.621Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:59:42.461Z opencode/glm-5.3 item.submitted
+2026-10-06T18:04:51.847Z opencode/glm-5.3 push.observed
+2026-10-06T18:06:51.936Z opencode/glm-5.3 evidence.observed
+2026-10-06T18:06:54.916Z opencode/glm-5.3 evidence.observed
+2026-10-06T18:06:55.739Z opencode/glm-5.3 item.submitted
+2026-10-06T18:16:55.260Z opencode/glm-5.3 push.observed
+2026-10-06T18:18:57.375Z opencode/glm-5.3 evidence.observed
+2026-10-06T18:19:00.578Z opencode/glm-5.3 evidence.observed
+2026-10-06T18:19:01.393Z opencode/glm-5.3 item.submitted
+2026-10-06T18:30:07.403Z opencode/glm-5.3 push.observed
+2026-10-06T18:32:45.886Z opencode/glm-5.3 evidence.observed
+2026-10-06T18:32:48.889Z opencode/glm-5.3 evidence.observed
+2026-10-06T18:32:49.786Z opencode/glm-5.3 item.submitted
+2026-10-06T18:36:43.802Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T18:36:45.151Z pavi item.accepted
