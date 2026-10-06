@@ -1,0 +1,14 @@
+atelier atelier/t185 "Site review (fable-5.1, 2026-10-06), signed-in pages: Flow filters wrap at 400 px, one replay control, one status line on the review sheet, a project lists each task once, nav order and phone layout, Flow's graph above the fold, the live note moved, harness labels unbroken, an open task is not shaped like a review, error page owner and active tab, history views named apart, Studio's legend visible, Models' Remove quiet, summaries styled as links, no in-graph note on the task page, commit tab and crumb, one tagline, Studio means the page (findings 2, 6 to 12, 15, 17 to 25)"
+accepted head b34dedc7a3965237c0f79187ded11048fac1868a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T19:54:19.744Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T19:54:23.225Z
+REVIEW approve — antigravity/gemini-3.1-pro: Site organised by project; plan view (t17)
+2026-10-06T15:39:25.002Z pavi item.created
+2026-10-06T17:06:26.389Z opencode/glm-5.3 item.claimed
+2026-10-06T17:06:34.126Z opencode/glm-5.3 fork.created
+2026-10-06T19:52:20.277Z opencode/glm-5.3 push.observed
+2026-10-06T19:54:20.746Z opencode/glm-5.3 evidence.observed
+2026-10-06T19:54:23.601Z opencode/glm-5.3 evidence.observed
+2026-10-06T19:54:24.491Z opencode/glm-5.3 item.submitted
+2026-10-06T19:57:10.574Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T19:57:11.482Z pavi item.accepted
