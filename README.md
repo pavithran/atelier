@@ -553,7 +553,8 @@ about 700 commits, oldest first, and prints a line for each step. If a step
 fails, init says which commit the baseline holds, and running the same
 `atelier init` again carries on from there: what is left is pushed whole, and
 if that is refused too, the steps begin after the commit the baseline holds.
-The baseline's branch holds only part of the history until the last step has
+Each step runs the checkout's pre-push hook, as the whole push does. The
+baseline's branch holds only part of the history until the last step has
 pushed.
 
 Artifacts holds at most 1 GB per repository and 32 MB per file. A project

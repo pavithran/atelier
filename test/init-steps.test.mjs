@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PUSH_STEP, pushHistory, refusedForSize } from "../cli/push-steps.mjs";
@@ -71,13 +71,15 @@ done
 // of more than `limit` commits.
 function scenario(t, { count, limit, merges = [] }) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-steps-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const checkout = join(dir, "demo"), baseline = join(dir, "baseline.git");
   history(checkout, count, merges);
   git(["init", "-q", "--bare", "-b", "main", baseline]);
   mkdirSync(join(baseline, "hooks"), { recursive: true });
   writeFileSync(join(baseline, "hooks", "pre-receive"), HOOK, { mode: 0o755 });
   git(["config", "core.hooksPath", join(baseline, "hooks")], { cwd: baseline });
+  // A push of thousands of commits would start a background gc that writes into the folder as the test removes it.
+  git(["config", "receive.autogc", "false"], { cwd: baseline });
   writeFileSync(join(baseline, "limit"), String(limit));
   const decisions = () => (existsSync(join(baseline, "log")) ? readFileSync(join(baseline, "log"), "utf8").trim().split("\n").filter(Boolean).map((l) => {
     const [old, next, commits, outcome, why] = l.split(" ");
@@ -133,7 +135,7 @@ test("a history too large for one push goes in steps of 700 commits, each a fast
   for (const d of accepted.slice(0, 3)) assert.ok(d.commits >= 700, `${d.commits} commits in a step`);
   assert.equal(PUSH_STEP, 700);
   // Progress is one line per step, after the refusal and the plan.
-  assert.match(lines[0], /^The baseline refused main's history in one push:\n  remote: push too large/);
+  assert.match(lines[0], /^The push of main's history in one piece was refused:\n  remote: push too large/);
   assert.match(lines[1], /^Pushing the first-parent history of main, 2500 commits, in 4 steps of about 700 commits, oldest first\.$/);
   assert.deepEqual(lines.slice(2).map((l) => l.replace(/\([0-9a-f]{8}\)/, "(id)")), [
     "Step 1 of 4: the baseline holds main up to commit 700 of 2500 (id).",
@@ -220,6 +222,28 @@ test("the baseline token is cut out of what a failure says", () => {
   );
 });
 
+// A pre-push hook in the checkout, with the file `pre-push.log` counting its runs.
+function prePushHook(s, body = "") {
+  const hooks = join(s.checkout, ".git", "hooks");
+  mkdirSync(hooks, { recursive: true });
+  git(["config", "core.hooksPath", hooks], { cwd: s.checkout });
+  writeFileSync(join(hooks, "pre-push"), `#!/bin/sh\necho ran >> "${join(s.dir, "pre-push.log")}"\n${body}\n`, { mode: 0o755 });
+  return () => (existsSync(join(s.dir, "pre-push.log")) ? readFileSync(join(s.dir, "pre-push.log"), "utf8").trim().split("\n").length : 0);
+}
+
+// The git helper with every command run for real, except that the nth push is
+// reported as a gateway timeout, after it has run, when `fails(n)` says so, and
+// the nth ls-remote is reported as unreadable when `unreadable(n)` says so.
+function flaky({ fails = () => false, unreadable = () => false } = {}) {
+  let pushes = 0, reads = 0;
+  return (args, opts) => {
+    if (args[0] === "ls-remote" && unreadable(++reads)) return { status: 128, stdout: "", stderr: "fatal: unable to access 'https://x.test/r.git/': Could not resolve host: x.test" };
+    const r = git(args, opts);
+    if (args[0] === "push" && fails(++pushes)) return { status: 1, stdout: "", stderr: "error: RPC failed; HTTP 504 curl 22 The requested URL returned error: 504" };
+    return r;
+  };
+}
+
 // The first push is refused for size whatever the baseline holds, so the
 // steps' own decisions can be seen on a baseline whose branch is not an
 // ancestor of the checkout's.
@@ -266,11 +290,7 @@ test("a baseline branch that came in by a merge's second parent is continued fro
 // bare repository as its baseline.
 function cliFixture(t, options) {
   const s = scenario(t, options);
-  git(["config", "core.hooksPath", join(s.checkout, ".git", "hooks")], { cwd: s.checkout });
-  const prePush = join(s.checkout, ".git", "hooks", "pre-push");
-  mkdirSync(join(s.checkout, ".git", "hooks"), { recursive: true });
-  writeFileSync(prePush, `#!/bin/sh\necho ran >> "${join(s.dir, "pre-push.log")}"\n`);
-  chmodSync(prePush, 0o755);
+  const hookRuns = prePushHook(s, options.hook);
   writeFileSync(join(s.dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", ownerName: "Pavi", projects: {} }));
   const preload = join(s.dir, "server.mjs");
   writeFileSync(preload, `
@@ -286,7 +306,6 @@ globalThis.fetch = async (url, options = {}) => {
     cwd: s.checkout, encoding: "utf8",
     env: { ...GIT_ENV, ATELIER_CONFIG_DIR: s.dir, ATELIER_CACHE: join(s.dir, "cache"), ATELIER_TOKEN: "fake-owner-token", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner" },
   });
-  const hookRuns = () => (existsSync(join(s.dir, "pre-push.log")) ? readFileSync(join(s.dir, "pre-push.log"), "utf8").trim().split("\n").length : 0);
   const registered = () => JSON.parse(readFileSync(join(s.dir, "config.json"), "utf8")).projects.demo;
   return { ...s, run, hookRuns, registered };
 }
@@ -297,14 +316,14 @@ test("atelier init pushes a large history in steps and registers the project", (
   assert.equal(r.status, 0, r.stderr);
   const head = git(["rev-parse", "main"], { cwd: f.checkout });
   assert.equal(f.tip(), head);
-  assert.match(r.stdout, /The baseline refused main's history in one push:/);
+  assert.match(r.stdout, /The push of main's history in one piece was refused:/);
   assert.match(r.stdout, /Pushing the first-parent history of main, 2500 commits, in 4 steps of about 700 commits, oldest first\./);
   assert.match(r.stdout, /Step 1 of 4: the baseline holds main up to commit 700 of 2500/);
   assert.match(r.stdout, /Step 4 of 4: the baseline holds main up to commit 2500 of 2500/);
   assert.match(r.stdout, new RegExp(`baseline demo now holds main @ ${head.slice(0, 8)}`));
   assert.equal(f.registered().branch, "main");
-  // The pre-push hook saw the whole push once, not once per step.
-  assert.equal(f.hookRuns(), 1);
+  // The pre-push hook ran for the whole push and again for each of the four steps.
+  assert.equal(f.hookRuns(), 5);
 });
 
 test("atelier init that stops partway says where, and the next init resumes", (t) => {
@@ -336,4 +355,79 @@ test("atelier init pushes a history the baseline takes in one push as before", (
   assert.doesNotMatch(r.stdout, /Step \d/);
   assert.equal(f.tip(), git(["rev-parse", "main"], { cwd: f.checkout }));
   assert.equal(f.decisions().length, 1);
+});
+
+for (const message of ["file exceeds the 50 MB limit", "test suite failed: Test timed out in 5000ms"]) {
+  test(`a pre-push hook that refuses with "${message}" is not stepped past`, (t) => {
+    const s = scenario(t, { count: 1600, limit: 1000000 });
+    const runs = prePushHook(s, `echo "${message}" >&2\nexit 1`);
+    assert.throws(
+      () => pushHistory(git, s.checkout, { remote: s.baseline, token: TOKEN, branch: "main", say: () => {} }),
+      (error) => error.message.includes(message) && /the push for step 1 of 3 /.test(error.message) && error.message.includes("The baseline holds none of main's history yet."),
+    );
+    // The hook ran for the whole push and for the first step, and refused both:
+    // nothing reached the baseline.
+    assert.equal(runs(), 2);
+    assert.deepEqual(s.decisions(), []);
+    assert.equal(s.tip(), null);
+  });
+
+  test(`atelier init dies with the pre-push hook's refusal "${message}" and pushes nothing`, (t) => {
+    const f = cliFixture(t, { count: 1600, limit: 1000000, hook: `echo "${message}" >&2\nexit 1` });
+    const r = f.run();
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes(message), r.stderr);
+    assert.deepEqual(f.decisions(), []);
+    assert.equal(f.tip(), null);
+    assert.equal(f.registered(), undefined);
+  });
+}
+
+test("a push reported as failed after the baseline took it all counts as pushed", (t) => {
+  const s = scenario(t, { count: 300, limit: 1000 });
+  const lines = [];
+  pushHistory(flaky({ fails: (n) => n === 1 }), s.checkout, { remote: s.baseline, token: TOKEN, branch: "main", say: (line) => lines.push(line) });
+  assert.equal(s.tip(), git(["rev-parse", "main"], { cwd: s.checkout }));
+  assert.equal(s.decisions().length, 1);
+  assert.match(lines.join("\n"), /The push was reported as failed, but the baseline holds main at [0-9a-f]{8}: nothing is left to push\./);
+  assert.doesNotMatch(lines.join("\n"), /Step \d/);
+});
+
+test("a step reported as failed after the baseline took it counts as done", (t) => {
+  const s = scenario(t, { count: 2500, limit: 1000 });
+  const lines = [];
+  // The first push is the whole history, refused for size; the second is step 1.
+  pushHistory(flaky({ fails: (n) => n === 2 }), s.checkout, { remote: s.baseline, token: TOKEN, branch: "main", say: (line) => lines.push(line) });
+  assert.equal(s.tip(), git(["rev-parse", "main"], { cwd: s.checkout }));
+  assert.equal(lines.filter((l) => l.startsWith("Step ")).length, 4);
+  assert.deepEqual(s.decisions().filter((d) => d.outcome === "accepted").map((d) => d.new).slice(0, 2), [onLine(s.checkout, 700), onLine(s.checkout, 1400)]);
+});
+
+test("a baseline that cannot be read after a refusal is said so, not taken to hold nothing", (t) => {
+  const s = scenario(t, { count: 2500, limit: 1000 });
+  assert.throws(
+    () => pushHistory(flaky({ unreadable: () => true }), s.checkout, { remote: s.baseline, token: TOKEN, branch: "main", say: () => assert.fail("no steps") }),
+    (error) => {
+      assert.match(error.message, /main:main failed:\n[^]*push too large/);
+      assert.match(error.message, /The baseline's main could not be read afterwards, so the steps cannot start from what it holds\. git said:\n  fatal: unable to access '[^']*': Could not resolve host: x\.test/);
+      assert.doesNotMatch(error.message, /holds none/);
+      return true;
+    },
+  );
+  assert.equal(s.decisions().length, 1);
+});
+
+test("a step that fails when the baseline cannot be read says what it could not check", (t) => {
+  const s = scenario(t, { count: 2500, limit: 1000 });
+  s.set("budget", 1);
+  assert.throws(
+    () => pushHistory(flaky({ unreadable: (n) => n === 2 }), s.checkout, { remote: s.baseline, token: TOKEN, branch: "main", say: () => {} }),
+    (error) => {
+      assert.ok(error.message.startsWith("the push for step 2 of 4 "), error.message);
+      assert.ok(error.message.includes(`The baseline holds main up to commit 700 of 2500: ${onLine(s.checkout, 700)}.`), error.message);
+      assert.match(error.message, /Reading the baseline's main afterwards failed too, so this may be less than it holds\. git said:\n  fatal: unable to access/);
+      assert.match(error.message, /git said:\n  remote: the request timed out/);
+      return true;
+    },
+  );
 });
