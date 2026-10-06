@@ -21,7 +21,7 @@ import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, session
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
-import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision } from "../src/control-plane.ts";
+import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { assertEligible, checkApplies, pathCollisions } from "../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
@@ -39,7 +39,7 @@ export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
-import { formatApprovals, knownKinds, runCommand, ship as runShip, shipSecrets } from "./ship.mjs";
+import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -861,13 +861,18 @@ export async function refreshControlPlane(top, name, request = call, report = co
   if (!cp) return null;
   const current = await request("GET", P(name), undefined, OWNER);
   const before = current.project.policy;
-  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
+  // The ship order is the checkout's own declaration too: its commands and
+  // kinds travel with the policy, so the gate guards what ship runs and the
+  // inbox knows what a merged revision still needs.
+  const ship = shipPolicy(top);
+  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, shipRuns: ship.runs, shipKinds: ship.kinds, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
   // Roles and change classes are compared here too, as whole values with their
   // keys in a fixed order; the merge guard compares the fields an acceptance
-  // records (mergePolicyDecision).
+  // records (mergePolicyDecision), and the ship order with shipChanges.
   const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
   const changes = [...controlPlaneChanges(before, policy),
-    ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`)];
+    ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`),
+    ...shipChanges(before, policy)];
   if (changes.length) {
     await request("PUT", P(name), policy, OWNER);
     for (const change of changes) report(`ControlPlane ${change}`);
@@ -1594,6 +1599,12 @@ const commands = {
     // ControlPlane project's adapter always sets them, as it sets protected paths.
     const fromRules = cp?.adapter ? adapterCheckPaths(cp.adapter, classed) : null;
     if (fromRules) policy.checkPaths = fromRules.paths;
+    // The ship order's commands and kinds are recorded with the policy from
+    // the checkout's own files, so the gate guards what ship runs like a
+    // check's files and the inbox can say a merged revision is not delivered.
+    const ship = shipPolicy(top);
+    policy.shipRuns = ship.runs;
+    policy.shipKinds = ship.kinds;
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
     if (cp) {
       policy.eligible = cp.eligible ?? [];
@@ -1647,6 +1658,7 @@ const commands = {
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
     for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
     if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
+    console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
