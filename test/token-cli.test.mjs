@@ -42,6 +42,9 @@ test("stored agent tokens resolve their actor and respect environment overrides"
   const config = mkdtempSync(resolve(".cache/token-store-"));
   try {
     writeFileSync(resolve(config, "secrets.json"), JSON.stringify({ API_TOKEN: "atl_stored" }), { mode: 0o600 });
+    // The server the stored token belongs to, as login records it when that
+    // server accepts the token; the stored token is sent to that server alone.
+    writeFileSync(resolve(config, "config.json"), JSON.stringify({ server: "https://atelier.test" }));
     const result = run(["queue"], "", config);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stderr.trim().split("\n")[1]).actor, "codex/gpt-6-astra");
