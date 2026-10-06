@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { constants, readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
 const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
@@ -36,7 +36,8 @@ test("landing receipts record the computed class with the legacy fallback", () =
   for (const kind of ["direct", "protected", "coordinated", undefined]) {
     let receipt;
     const write = runInNewContext(`${code}; writeReceipt`, {
-      join: (...parts) => parts.join("/"), existsSync: () => true, readJson: () => ({}),
+      join: (...parts) => parts.join("/"), lstatSync: () => ({ isDirectory: () => true, isFile: () => true }), readJson: () => ({}),
+      RECEIPTS_DIR: "docs/control-plane/landing-receipts", RECEIPT_TEMPLATE: "docs/control-plane/landing-receipt.v1.json", fsConstants: constants,
       short: (s) => s.slice(0, 8), OWNER_NAME: "owner", writeFileSync: (_, text) => { receipt = JSON.parse(text); },
     });
     write("checkout", { name: "p", id: "t1", item: { acceptedHead: "a".repeat(40) }, owners: [], view: [], reviews: [], policy: {}, branch: "main", changeClass: kind });
@@ -53,7 +54,8 @@ test("landing receipts record the owner's override of the independent review at 
   const receiptFor = (item, reviews = []) => {
     let receipt;
     const write = runInNewContext(`${code}; writeReceipt`, {
-      join: (...parts) => parts.join("/"), existsSync: () => true, readJson: () => ({}),
+      join: (...parts) => parts.join("/"), lstatSync: () => ({ isDirectory: () => true, isFile: () => true }), readJson: () => ({}),
+      RECEIPTS_DIR: "docs/control-plane/landing-receipts", RECEIPT_TEMPLATE: "docs/control-plane/landing-receipt.v1.json", fsConstants: constants,
       short: (s) => s.slice(0, 8), OWNER_NAME: "Pavi", writeFileSync: (_, text) => { receipt = JSON.parse(text); },
     });
     write("checkout", { name: "p", id: "t1", item, owners: [], view: [], reviews, policy: {}, branch: "main", changeClass: "protected" });
