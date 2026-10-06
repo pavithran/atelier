@@ -296,6 +296,21 @@ export async function changedPaths(r: Reader, baseTree: string, headTree: string
   return pairs.map(([l, rt]) => (rt ?? l)!.path);
 }
 
+// The workspace's head and every path it changes against its fork point, both
+// read from Artifacts, as the sandbox runner reads them. The gate classifies a
+// change on these paths, so they come from here and never from the caller.
+// When forkPoint finds no commit the workspace shares with the baseline,
+// nothing is measured: the paths are null and the gate waits.
+export interface Measurement { head: string | null; changedPaths: string[] | null }
+
+export async function measureWorkspace(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<Measurement> {
+  using fork = await artifacts.get(workspaceRepo);
+  using baseline = await artifacts.get(baselineRepo);
+  const fp = await forkPoint(fork, baseline);
+  if (!fp) return { head: (await fork.log({ limit: 1 }))[0]?.hash ?? null, changedPaths: null };
+  return { head: fp.head, changedPaths: await changedPaths(repoReader(fork), fp.baseTree, fp.headTree) };
+}
+
 export async function itemDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
   using fork = await artifacts.get(workspaceRepo);
   using baseline = await artifacts.get(baselineRepo);
