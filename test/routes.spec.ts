@@ -623,6 +623,82 @@ it("the project page carries the same standing as the route", async () => {
   expect(html).toContain("A queued &lt;task&gt;");
 });
 
+// Task t185: the site organised by project. Home is the portfolio, each
+// project has its own area with tabs, and the URLs that moved answer with a
+// permanent redirect so links in the ledger, the notifications and the README
+// keep working.
+it("the project's area serves each tab, and the URLs that moved redirect permanently", async () => {
+  const name = "area-routes";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Route work", ["src/**"], "owner");
+  // Claimed, so the task has a thread on the Flow tab and a holder on Tasks.
+  await L.claim("t1", "codex/gpt-6");
+  const signedIn = await signIn(TOKEN, testEnv);
+  const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn }, redirect: "manual" }), testEnv);
+
+  // /projects is Home now, and a project's flow is its own tab: both permanent.
+  const projects = await get("/projects");
+  expect(projects.status).toBe(301);
+  expect(projects.headers.get("location")).toBe("/");
+  const oldFlow = await get(`/flow?project=${name}&since=7d`);
+  expect(oldFlow.status).toBe(301);
+  expect(oldFlow.headers.get("location")).toBe(`/p/${name}/flow`);
+
+  // Home: the portfolio, one card per project, its links to Flow and History.
+  const home = await get("/");
+  expect(home.status).toBe(200);
+  const homeHtml = await home.text();
+  expect(homeHtml).toContain("<h1>Home</h1>");
+  expect(homeHtml).toContain(`href="/p/${name}"`);
+  expect(homeHtml).toContain('href="/flow">the whole flow</a>');
+  expect(homeHtml).toContain('href="/history">the timeline of merges</a>');
+
+  // The area's tabs, each its own page with its own tab current.
+  const over = await get(`/p/${name}`);
+  expect(over.status).toBe(200);
+  const overHtml = await over.text();
+  expect(overHtml).toContain('aria-label="area-routes"');
+  expect(overHtml).toContain('href="/p/area-routes" aria-current="page">Overview');
+  expect(overHtml).toContain("Where it stands");
+  const tasks = await get(`/p/${name}/tasks`);
+  expect(tasks.status).toBe(200);
+  const tasksHtml = await tasks.text();
+  expect(tasksHtml).toContain('href="/p/area-routes/tasks" aria-current="page">Tasks');
+  expect(tasksHtml).toContain(`href="/p/${name}/t1"`);
+  expect(tasksHtml).toContain(`action="/ui/${name}/new"`);
+  expect(tasksHtml.match(/<ul class="task-list">/g)).toHaveLength(1);
+  const flow = await get(`/p/${name}/flow`);
+  expect(flow.status).toBe(200);
+  const flowHtml = await flow.text();
+  expect(flowHtml).toContain('href="/p/area-routes/flow" aria-current="page">Flow');
+  expect(flowHtml).toContain(`id="${name}"`);
+  const plans = await get(`/p/${name}/plans`);
+  expect(plans.status).toBe(200);
+  expect(await plans.text()).toContain("No plans yet.");
+  const ship = await get(`/p/${name}/ship`);
+  expect(ship.status).toBe(200);
+  const shipHtml = await ship.text();
+  expect(shipHtml).toContain('href="/p/area-routes/ship" aria-current="page">Ship');
+  expect(shipHtml).toContain('id="actions"');
+  expect(shipHtml).toContain("Protected actions");
+  const settings = await get(`/p/${name}/settings`);
+  expect(settings.status).toBe(200);
+  const settingsHtml = await settings.text();
+  expect(settingsHtml).toContain("Required checks");
+  expect(settingsHtml).toContain("<code>npm test</code>");
+  expect(settingsHtml).toContain("Protected files");
+
+  // The task page sits inside the area, and History stays cross-project.
+  const task = await get(`/p/${name}/t1`);
+  expect(task.status).toBe(200);
+  const taskHtml = await task.text();
+  expect(taskHtml).toContain('href="/p/area-routes/tasks" aria-current="page">Tasks');
+  expect(taskHtml).toContain("Route work");
+  const history = await get("/history");
+  expect(history.status).toBe(200);
+});
+
 // Over a thousand Durable Object calls: under a loaded machine they take
 // longer than vitest's 5 s default, so this test has its own limit.
 it("the standing route reads each section from its own source, not a window over the whole record", async () => {

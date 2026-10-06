@@ -185,7 +185,7 @@ it("pages under a former name redirect to the current one with their path and qu
     expect(res.headers.get("location")).toBe(to);
     expect(res.headers.get("cache-control")).toBe("no-store");
   }
-  const page = await get("/p/page-new");
+  const page = await get("/p/page-new/tasks");
   expect(page.status).toBe(200);
   expect(await page.text()).toContain('href="/p/page-new/t1"');
   const task = await get("/p/page-new/t1");

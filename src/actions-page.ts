@@ -24,7 +24,7 @@ const EXPIRIES: [string, string][] = [["1h", "1 hour"], ["24h", "24 hours"], ["7
 // not be read; the form is offered only with a head to bind the approval to.
 export function renderActions(project: string, approvals: ApprovalView[], runs: (ActionRun & { at: string })[], head: string | null): string {
   const form = head
-    ? `<details class="new-task"><summary>Approve an action at ${e(short(head))}</summary>
+    ? `<details class="new-task"><summary>+ Approve an action at ${e(short(head))}</summary>
     <form method="post" action="${href("ui", project, "actions", "approve")}" class="stack">
       <input type="hidden" name="head" value="${e(head)}">
       <label>Action<input name="kind" type="text" required list="action-kinds" pattern="[a-z][a-z0-9\\-]{0,62}" maxlength="63" placeholder="deploy"></label>
