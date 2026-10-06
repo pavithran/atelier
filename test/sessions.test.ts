@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, wrapRelay, sessionCommitMessage, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
+import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, wrapRelay, sessionCommitMessage, WRAP_MARKERS, unmergedPaths, wrapRefusal, failingChecksRefusal, failingChecksOverridden } from "../src/sessions.ts";
 
 const input = { summary: "A\nB\u202e\u200bC", next: "x".repeat(3000), head: "a".repeat(40), dirty: true, checks: [{ command: "npm test", passed: false, grade: "observed" }] };
 test("session text is cleaned, capped and always reported", () => {
@@ -68,6 +68,28 @@ test("the relay line names each failed push and a failing check, and says nothin
   assert.equal(wrapRelay(note([{ remote: "nas", passed: false }], false)), "Relay: session closed with a failing check and a failed push to nas.");
   assert.equal(wrapRelay(note(undefined, false)), "Relay: session closed with a failing check.");
   assert.equal(wrapRelay(note([{ remote: "bad\u202e\nname", passed: false }])), "Relay: session closed with a failed push to bad name.", "a remote's name is cleaned like any text");
+});
+
+test("an override records the failed checks it let through, cleaned and bounded, and the note and relay name it", () => {
+  const data = cleanSession({ ...input, checksOverridden: ["npm test‮", " tsc "] });
+  assert.deepEqual(data.checksOverridden, ["npm test", "tsc"]);
+  assert.equal(cleanSession(input).checksOverridden, undefined, "absent unless given");
+  for (const bad of [[], "npm test", [""], ["​"], [7], Array(101).fill("x")]) assert.throws(() => cleanSession({ ...input, checksOverridden: bad }), /overridden checks must name one to 100 commands/, JSON.stringify(bad));
+  const overridden = { actor: "owner", at: "2026-10-05T12:00:00Z", data };
+  assert.match(sessionNoteText(overridden), /^Failing checks overridden by --allow-failing: npm test, tsc\.$/m);
+  assert.doesNotMatch(sessionNoteText({ ...overridden, data: cleanSession(input) }), /overridden/);
+  assert.equal(wrapRelay(overridden), "Relay: session closed with a failing check overridden by --allow-failing.");
+  assert.equal(wrapRelay({ ...overridden, data: { ...data, pushes: [{ remote: "nas", passed: false }] } }), "Relay: session closed with a failing check overridden by --allow-failing and a failed push to nas.");
+});
+
+test("the refusal and the override line name each failed check with how it ended", () => {
+  const exited = { command: "npm test", status: 1, signal: null, timedOut: false };
+  const killed = { command: "make‮ check", status: null, signal: "SIGKILL", timedOut: false };
+  const late = { command: "slow", status: null, signal: "SIGTERM", timedOut: true };
+  const absent = { command: "ghost", status: null, signal: null, timedOut: false };
+  assert.equal(failingChecksRefusal([exited]), "wrap refuses to commit with a failing check: npm test (exited 1). Fix it, or run again with --allow-failing to commit anyway. Nothing was staged, recorded or pushed.");
+  assert.equal(failingChecksRefusal([exited, killed, late, absent]), "wrap refuses to commit with 4 failing checks: npm test (exited 1), make check (ended by SIGKILL), slow (timed out), ghost (did not run). Fix them, or run again with --allow-failing to commit anyway. Nothing was staged, recorded or pushed.");
+  assert.equal(failingChecksOverridden([exited, late]), "Failing checks overridden by --allow-failing: npm test (exited 1), slow (timed out).");
 });
 
 test("unmerged paths are read from the NUL separated index listing, each once", () => {

@@ -11,6 +11,10 @@ export interface SessionData {
   dirty: boolean;
   checks: { command: string; passed: boolean; grade: "reported" }[];
   checksSkipped: boolean;
+  // The registered checks that failed and `wrap --allow-failing` committed
+  // past, by command. Absent when every check passed, when the checks were
+  // skipped, and in notes from before the flag existed.
+  checksOverridden?: string[];
 }
 export interface SessionNote {
   actor: string;
@@ -53,6 +57,10 @@ export function cleanSession(value: Record<string, unknown>): SessionData {
     if (!Array.isArray(value.found) || value.found.length > 100 || value.found.some((id) => typeof id !== "string" || !/^t[0-9]{1,20}$/.test(id))) throw new Error("invalid filed task ids");
     metadata.found = value.found;
   }
+  if (value.checksOverridden !== undefined) {
+    if (!Array.isArray(value.checksOverridden) || !value.checksOverridden.length || value.checksOverridden.length > 100 || value.checksOverridden.some((c) => !sessionText(c))) throw new Error("overridden checks must name one to 100 commands");
+    metadata.checksOverridden = value.checksOverridden.map((c) => sessionText(c));
+  }
   return { ...metadata, summary, next: sessionText(value.next), head: value.head, dirty: value.dirty, checks, checksSkipped: value.checksSkipped === true };
 }
 
@@ -89,15 +97,42 @@ export function sessionNoteText(note?: SessionNote): string {
     ...(d.pushes ?? []).map((p) => `Remote ${sessionText(p.remote, 200)}: ${p.passed ? "pushed" : "failed"}.`),
     ...(d.found?.length ? [`Filed tasks: ${d.found.join(", ")}`] : []),
     ...d.checks.map((c) => `Reported: ${c.command}: ${c.passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`),
-    ...(d.checksSkipped ? ["Registered checks skipped (--no-check)."] : [])].join("\n");
+    ...(d.checksSkipped ? ["Registered checks skipped (--no-check)."] : []),
+    ...(d.checksOverridden?.length ? [`Failing checks overridden by --allow-failing: ${d.checksOverridden.join(", ")}.`] : [])].join("\n");
+}
+
+// A registered check that did not pass, with how it ended: `status` is its
+// exit status, or null when a signal ended it, `timedOut` when that signal
+// was wrap's own timeout.
+export interface FailedCheck { command: string; status: number | null; signal: string | null; timedOut: boolean }
+
+function checkEnding(c: FailedCheck): string {
+  if (c.status !== null) return `exited ${c.status}`;
+  if (c.timedOut) return "timed out";
+  return c.signal ? `ended by ${c.signal}` : "did not run";
+}
+const failedList = (failed: FailedCheck[]) => failed.map((c) => `${sessionText(c.command, 200)} (${checkEnding(c)})`).join(", ");
+
+// Why wrap stops when a registered check fails: each failed check with how it
+// ended, the override, and what was left untouched. Printed as the refusal.
+export function failingChecksRefusal(failed: FailedCheck[]): string {
+  const count = failed.length === 1 ? "a failing check" : `${failed.length} failing checks`;
+  return `wrap refuses to commit with ${count}: ${failedList(failed)}. Fix ${failed.length === 1 ? "it" : "them"}, or run again with --allow-failing to commit anyway. Nothing was staged, recorded or pushed.`;
+}
+
+// The line wrap prints when --allow-failing lets failing checks through.
+export function failingChecksOverridden(failed: FailedCheck[]): string {
+  return `Failing checks overridden by --allow-failing: ${failedList(failed)}.`;
 }
 export const FILING_RELAY = 'Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project cloudflare-git. File a lesson worth keeping the same way with a title starting "Lesson: ".';
 export const UNWRAP_RELAY = "Say in a short paragraph what is true, what is open and what you will do. " + FILING_RELAY;
-// The line the agent relays to the owner. A failing check and each remote that
-// did not take the push are named, never folded into "closed".
+// The line the agent relays to the owner. A failing check, the override that
+// let it through, and each remote that did not take the push are named, never
+// folded into "closed".
 export function wrapRelay(note: SessionNote): string {
   const problems: string[] = [];
-  if (note.data.checks.some((c) => !c.passed)) problems.push("a failing check");
+  if (note.data.checksOverridden?.length) problems.push("a failing check overridden by --allow-failing");
+  else if (note.data.checks.some((c) => !c.passed)) problems.push("a failing check");
   const failed = (note.data.pushes ?? []).filter((p) => !p.passed).map((p) => sessionText(p.remote, 200));
   if (failed.length) problems.push(`${failed.length === 1 ? "a failed push" : "failed pushes"} to ${failed.join(", ")}`);
   return problems.length ? `Relay: session closed with ${problems.join(" and ")}.` : "Relay: session closed; checks are Reported, not Observed.";
