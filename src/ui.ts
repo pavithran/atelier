@@ -5,6 +5,7 @@ import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // layout.css only arranges them.
 
 import { TEXT_CONTROLS } from "./text.ts";
+import { appliesText, checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
@@ -711,6 +712,9 @@ export interface Standing {
   merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
+  // Each registered check, its class, that class in words (src/checks.ts),
+  // and the paths it applies to, or null when it applies to every change.
+  checks: { command: string; class: CheckClass; text: string; paths: string[] | null }[];
   // What this view could not read in full, in words. Empty when it read everything it shows.
   partial: string[];
 }
@@ -798,6 +802,7 @@ export function buildStanding(
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
       : null,
+    checks: checkClasses(p.policy).map((v) => ({ command: v.command, class: v.class, text: classText(v), paths: p.policy.checkPaths?.find((c) => c.command === v.command)?.paths ?? null })),
     partial,
   };
 }
@@ -838,7 +843,7 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   const live = items.filter((i) => !closed(i));
   const done = items.filter(closed);
   const policy = `<dl>
-    <dt>Required checks</dt><dd>${p.policy.checks.map((c) => `<code>${e(c)}</code>`).join("<br>") || "None configured"}</dd>
+    <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
     <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or the agent's machine"}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
@@ -1031,7 +1036,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
 
   const checkRows = view.checks.map((c) => {
     const last = d.evidence
-      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && (!d.policy.sandboxOnly || x.where === "sandbox"))
+      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
       .sort((a, b) => a.at.localeCompare(b.at))
       .pop();
     const status = c.grade === "pending" ? tag("Waiting", "ask") : c.passed ? tag("Passed", "go") : tag("Failed", "bad");
@@ -1045,6 +1050,13 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     return `<details class="check-row"${c.passed === false ? " open" : ""}>
       <summary>${status}<code>${e(c.claim)}</code>${where}</summary>
       <p class="meta">${detail}</p>${last?.outputTail ? `<pre tabindex="0">${e(last.outputTail)}</pre>` : ""}</details>`;
+  }).join("");
+  // A check whose paths this revision does not touch is shown, and never blocks.
+  const notApplicableRows = view.notApplicable.map((claim) => {
+    const last = d.evidence.filter((x) => x.head === item.head && x.claim === claim && x.notApplicable).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    return `<details class="check-row">
+      <summary>${tag("Not applicable")}<code>${e(claim)}</code></summary>
+      <p class="meta">This check ${e(appliesText(d.policy, claim))}, and this revision touches none of those paths.${last ? ` Recorded by ${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}` : ""}</p></details>`;
   }).join("");
   const reports = view.reports.length
     ? `<details class="disclosure"><summary>Reported by agents · ${view.reports.length}</summary>
@@ -1086,8 +1098,8 @@ ${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
-  <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : "This project requires no checks."}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
-  ${checkRows}${reports}${reviews}${overrideNote}${blockers}
+  <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
+  ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
 </section>
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
