@@ -1,0 +1,16 @@
+atelier atelier/t107 "A task on a project whose branch is not main pushes to the wrong branch: claim records the fork's defaultBranch as reported by Artifacts (main) in the workspace's atelier.branch, but llm-basics' baseline and forks default to master, so atelier push sent llm-basics t2's commits to a new main branch in the fork while the server read master and reported the base commit ('pushed 045e5dec but Artifacts reports cfb1f765'); seen 2026-10-05, worked around by setting atelier.branch to master. Claim should take the project's registered branch, and push should refuse when the fork's default branch differs"
+accepted head 14d6bd8fd1b3a78841aaa53d948d40cb9d0b0055
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T01:09:50.050Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T01:09:52.238Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. projectBranch is the single source of the branch for init, claim, the token routes and the push-event handler, falling back to the baseline's info for projects registered earlier; branchArg refuses option-like, traversal, control and reserved names; push refuses when the fork's HEAD names another branch and lets a failed ls-remote through; only the owner sets the branch; tests prove the fix.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T00:09:21.989Z pavi item.created
+2026-10-06T00:46:04.294Z claude-code/opus-5.5 item.claimed
+2026-10-06T00:46:06.796Z claude-code/opus-5.5 fork.created
+2026-10-06T01:08:42.418Z claude-code/opus-5.5 push.observed
+2026-10-06T01:09:50.161Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:09:52.335Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:09:52.995Z claude-code/opus-5.5 item.submitted
+2026-10-06T01:16:16.949Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T01:16:17.555Z pavi review.approved
+2026-10-06T01:16:18.247Z pavi item.accepted
