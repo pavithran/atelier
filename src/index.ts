@@ -9,7 +9,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
@@ -19,6 +19,8 @@ import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
+import { buildPulse } from "./pulse";
+import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
@@ -59,60 +61,97 @@ function thresholds(env: Env): Thresholds {
   return thresholdsFrom(env as unknown as Record<string, string | undefined>);
 }
 
-// The projects the owner shows publicly at /showcase, by name, comma-separated
-// in the SHOWCASE setting. Unset shows nothing.
-function showcased(env: Env): string[] {
-  return ((env as unknown as Settings).SHOWCASE ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+// The projects the owner shows publicly at /showcase, and whether each is
+// shown by name or anonymised. The setting lives in the index Durable Object
+// (set from the signed-in Projects page or with `atelier showcase`); the
+// SHOWCASE variable seeds it the same way, comma separated, for a server
+// that sets it before any command has. An entry may say its mode after a
+// colon, `NAME:anonymous` or `NAME:named`; a bare name is shown named, as
+// the variable has always meant. Unset shows nothing.
+type ShowMode = "named" | "anonymous";
+function parseShowcaseSetting(raw: string | undefined): { name: string; mode: ShowMode }[] {
+  return (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((entry) => {
+    const at = entry.lastIndexOf(":");
+    const mode = at > 0 ? entry.slice(at + 1) : "";
+    return mode === "anonymous" || mode === "named" ? { name: entry.slice(0, at), mode } : { name: entry, mode: "named" as const };
+  });
 }
 
-// The showcased projects that are still registered, under whichever of their
-// names the setting uses: the page, the login link and the front door all use
-// this, so none of them points at a showcase that would answer 404 after its
-// last project was removed.
-async function liveShowcase(env: Env): Promise<ProjectRecord[]> {
-  const names = showcased(env);
-  if (!names.length) return [];
+// The showcase setting as it stands: the index's rows, with the variable's
+// entries over theirs, resolved onto the projects still registered. A name
+// the project has answered to before still reaches it, so a rename leaves
+// the setting working.
+async function liveShowcase(env: Env): Promise<{ project: ProjectRecord; mode: ShowMode }[]> {
+  const settings = new Map((await index(env).showcaseEntries().catch(() => [])).map((s) => [s.name, s.mode] as const));
+  for (const e of parseShowcaseSetting((env as unknown as Settings).SHOWCASE)) settings.set(e.name, e.mode);
+  if (!settings.size) return [];
   const registered = await index(env).projects();
-  return [...new Set(names.map((name) => projectNamed(registered, name)).filter((p): p is ProjectRecord => p !== undefined))];
+  const byProject = new Map<string, { project: ProjectRecord; mode: ShowMode }>();
+  for (const [name, mode] of settings) {
+    const project = projectNamed(registered, name);
+    if (project && !byProject.has(project.name)) byProject.set(project.name, { project, mode });
+  }
+  return [...byProject.values()].sort((a, b) => a.project.name.localeCompare(b.project.name));
 }
 
-// The showcased projects' stories, redacted (graph.ts), with each project's
-// record and where its history before Atelier ends: what the showcase
-// draws, and what the sign-in page draws dimmed behind its form. A project
-// that cannot be read is left out, and the caller sees fewer stories than projects.
-async function publicStories(env: Env, projects: ProjectRecord[]): Promise<{ stories: Story[]; records: ProjectRecord[]; cutoffs: Map<string, number | null> }> {
+// The file names at a project's baseline root, for the neutral label an
+// anonymised project is titled by (src/kind.ts). Null when the repository
+// cannot be read; the label then falls back to the checks alone.
+async function rootFiles(env: Env, repo: string): Promise<string[] | null> {
+  try {
+    using r = await env.ARTIFACTS.get(repo);
+    const head = (await r.log({ limit: 1 }))[0];
+    if (!head) return [];
+    const tree = await r.readTree(head.treeHash).catch(() => null);
+    return tree ? tree.map((entry) => entry.name) : null;
+  } catch { return null; }
+}
+
+// The showcased projects as the public page draws them: each with its story,
+// redacted (graph.ts) and, when anonymous, titled by a neutral label from its
+// kind with each task titled by its kind of work, and with its two weeks of
+// moves for the card's bar graph. A project that cannot be read is left out,
+// and the caller sees fewer shown projects than the setting names.
+async function publicStories(env: Env, entries: { project: ProjectRecord; mode: ShowMode }[]): Promise<{ shown: ShownProject[]; cutoffs: Map<string, number | null> }> {
   const owner = ownerActor(env);
   const cutoffs = new Map<string, number | null>();
-  const records: ProjectRecord[] = [];
-  const stories = (await Promise.all(projects.map(async (p) => {
-    const { name } = p;
+  const found = await Promise.all(entries.map(async ({ project: p, mode }) => {
     try {
       const L = ledgerOf(env, p);
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
-      const [project, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
-      cutoffs.set(name, firstTaskAt(items));
-      records.push(project);
-      return buildStory(name, items, events, owner, events.length >= STORY_EVENTS, titleOf(project), { redact: true, ownerLabel: ownerName(env) || "The owner" });
-    } catch { return null; }
-  }))).filter((s): s is NonNullable<typeof s> => s !== null);
-  return { stories, records, cutoffs };
+      const [record, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
+      cutoffs.set(p.name, firstTaskAt(items));
+      const anon = mode === "anonymous";
+      const title = anon
+        ? projectKind(record.policy.checks, await rootFiles(env, record.repo))
+        : titleOf(record);
+      return {
+        project: record, mode,
+        story: buildStory(p.name, items, events, owner, events.length >= STORY_EVENTS, title, { redact: true, ownerLabel: ownerName(env) || "The owner", anon }),
+        pulse: buildPulse(events, owner, new Date(), events.length >= STORY_EVENTS),
+      };
+    } catch { return null; /* left out; the page says a project could not be read */ }
+  }));
+  const shown = found.filter((f): f is NonNullable<typeof f> => f !== null);
+  return { shown, cutoffs };
 }
 
-// The public page, read without signing in. It reads only the named projects,
-// builds their stories redacted, and may be cached for a minute.
+// The public page, read without signing in. It reads only the projects the
+// owner's setting names, builds their stories redacted and anonymised as the
+// setting says, and may be cached for a minute.
 async function showcase(env: Env, url: URL): Promise<Response> {
-  // Read index membership before using a cached page. Removed projects must
+  // Read the setting before using a cached page. Removed projects must
   // not remain visible through a previously cached showcase.
-  const projects = await liveShowcase(env);
-  const names = projects.map((p) => p.name);
-  if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
-  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
+  const entries = await liveShowcase(env);
+  if (!entries.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
+  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(entries.map((e) => [e.project.name, e.mode])))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
   const hit = await caches.default.match(key);
   if (hit) return hit;
   const owner = ownerActor(env);
-  const { stories, records, cutoffs } = await publicStories(env, projects);
-  const imported = await importedAll(env, records, cutoffs);
-  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length, imported));
+  const { shown, cutoffs } = await publicStories(env, entries);
+  const imported = await importedAll(env, shown.map((s) => s.project), cutoffs);
+  const stories = shown.map((s) => s.story);
+  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), shown.length < entries.length, imported, shown));
   res.headers.set("cache-control", "public, max-age=60");
   // A copy the cache refuses is not an error: the page is still served.
   await caches.default.put(key, res.clone()).catch(() => undefined);
@@ -120,7 +159,8 @@ async function showcase(env: Env, url: URL): Promise<Response> {
 }
 
 // The sign-in page. When the owner shows projects publicly, their stories
-// are drawn dimmed behind the form, redacted as the showcase draws them.
+// are drawn dimmed behind the form, anonymised as the setting says and as
+// the showcase draws them.
 async function loginPage(env: Env, error?: string, status = 200): Promise<Response> {
   const shown = await liveShowcase(env).catch(() => []);
   const backdrop = shown.length
@@ -131,13 +171,14 @@ async function loginPage(env: Env, error?: string, status = 200): Promise<Respon
 
 // The backdrop's stories, cached for a minute as the showcase page is: the
 // sign-in page is open to anyone, so a request to it must not cost a read
-// of every showcased project's record. The key names the projects shown and
-// the owner's label, which the stories carry.
-async function backdropStories(env: Env, projects: ProjectRecord[]): Promise<Story[]> {
-  const key = new Request(`https://atelier.internal/login-stories?projects=${encodeURIComponent(JSON.stringify(projects.map((p) => p.name)))}&who=${encodeURIComponent(ownerName(env) ?? "")}`);
+// of every showcased project's record. The key names the projects shown,
+// how each is shown, and the owner's label, which the stories carry.
+async function backdropStories(env: Env, entries: { project: ProjectRecord; mode: ShowMode }[]): Promise<Story[]> {
+  const key = new Request(`https://atelier.internal/login-stories?projects=${encodeURIComponent(JSON.stringify(entries.map((e) => [e.project.name, e.mode])))}&who=${encodeURIComponent(ownerName(env) ?? "")}`);
   const hit = await caches.default.match(key).catch(() => undefined);
   if (hit) return (await hit.json()) as Story[];
-  const { stories } = await publicStories(env, projects);
+  const { shown } = await publicStories(env, entries);
+  const stories = shown.map((s) => s.story);
   await caches.default.put(key, new Response(JSON.stringify(stories), { headers: { "cache-control": "max-age=60" } })).catch(() => undefined);
   return stories;
 }
@@ -503,6 +544,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ ...publicRecord, token }, 201);
     }
     if (parts.length === 2 && m === "DELETE") return json({ revoked: await I.revokeAgentToken(parts[1]) });
+    throw new RuleError("not_found", "no such route", 404);
+  }
+  // The public showcase setting: which projects the owner shows, and whether
+  // each is named or anonymised. Reading it is open to any caller in scope;
+  // changing it is the owner's alone.
+  if (parts[0] === "showcase") {
+    const I = index(env);
+    if (parts.length === 1 && m === "GET") return json({ showcase: await I.showcaseEntries() });
+    if (parts.length === 2 && (m === "PUT" || m === "DELETE")) {
+      requireOwner(env, actor);
+      const name = parts[1];
+      const ref = await resolveProject(env, name);
+      if (!ref.registered) throw new RuleError("no_project", `no project ${name}`, 404);
+      if (m === "DELETE") {
+        const removed = (await I.removeShowcase(name)) || (ref.name !== name && await I.removeShowcase(ref.name));
+        return json({ removed, name: ref.name });
+      }
+      if (body.mode !== undefined && body.mode !== "named" && body.mode !== "anonymous") {
+        throw new RuleError("bad_mode", 'mode must be "named" or "anonymous"; omit it for anonymous', 400);
+      }
+      const mode: ShowMode = body.mode === "named" ? "named" : "anonymous";
+      await I.setShowcase(ref.name, mode);
+      return json({ name: ref.name, mode });
+    }
     throw new RuleError("not_found", "no such route", 404);
   }
   if (parts[0] === "inbox" && m === "GET") return json(await inbox(env, c.token));
@@ -1270,6 +1335,27 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const reliability = { models: track.reliability, events: track.events, unread: track.unread.map(titleOf) };
     return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env), reliability));
   }
+  // The Projects page's showcase form: the owner sets which projects the
+  // public page shows and whether each is named. Only the owner reaches a
+  // browser route, and the form is same-origin as every owner form is.
+  if (req.method === "POST" && parts[0] === "projects" && parts[1] === "showcase") {
+    if (req.headers.get("origin") !== c.url.origin) return html("Cross-origin form refused.", 403);
+    const form = Object.fromEntries((await req.formData()).entries());
+    const asked = String(form.project ?? "");
+    const ref = await resolveProject(env, asked);
+    if (!ref.registered) return html(renderError(`no project ${asked} is registered, so it cannot be shown publicly.`, "/projects"), 404);
+    const mode = String(form.mode ?? "");
+    if (mode === "") {
+      // The row may hold any of the project's names; take it under both.
+      await index(env).removeShowcase(asked);
+      if (ref.name !== asked) await index(env).removeShowcase(ref.name);
+    } else if (mode === "anonymous" || mode === "named") {
+      await index(env).setShowcase(ref.name, mode);
+    } else {
+      return html(renderError("The public showcase mode must be anonymous or named.", "/projects"), 400);
+    }
+    return Response.redirect(new URL("/projects", c.url).toString(), 303);
+  }
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
     if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);
@@ -1349,7 +1435,18 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
           return { ...v, events, cut: events.length >= STORY_EVENTS };
         } catch { return { ...v, unavailable: true }; }
       }));
-      return html(parts[0] === "projects" ? renderProjects(read, ownerName(env), now, ownerActor(env)) : renderHistory(read, ownerName(env), ownerActor(env)));
+      if (parts[0] === "projects") {
+        // The showcase setting as the cards read it: a mode per project, under
+        // whichever of its names the setting's row holds.
+        const entries = await index(env).showcaseEntries().catch(() => [] as { name: string; mode: "named" | "anonymous" }[]);
+        const modes: Record<string, "named" | "anonymous"> = {};
+        for (const p of projects) {
+          const hit = entries.find((e) => namesOf(p).includes(e.name));
+          if (hit) modes[p.name] = hit.mode;
+        }
+        return html(renderProjects(read, ownerName(env), now, ownerActor(env), modes));
+      }
+      return html(renderHistory(read, ownerName(env), ownerActor(env)));
     }
     // The floor reads each project's recent events; a project that cannot be read is left off it.
     const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
