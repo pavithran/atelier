@@ -506,24 +506,88 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
 
 // A check runs from the item's own head, so an item could weaken the check it
 // is graded by. What a check executes is therefore protected: a script it runs
-// directly or through an interpreter, and package.json when it goes through a
-// package manager, whose scripts an item could otherwise rewrite. Files a check
-// merely reads, such as the code under test, are not.
+// directly or through an interpreter; the recipe files make and just run; the
+// manifest a package manager or build tool runs scripts from, whose scripts an
+// item could otherwise rewrite, with the configuration that changes what it
+// runs; and the local binary npx and its kin would run. Files a check merely
+// reads, such as the code under test, are not, and nor is test configuration.
 const INTERPRETERS = new Set(["node", "sh", "bash", "zsh", "python", "python3", "deno", "bun", "tsx", "ruby", "perl"]);
-const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
+// What each package manager runs scripts from, and the configuration that
+// can change what it runs: npm's script shell, pnpm's install hooks, yarn's
+// committed release and plugins, bun's preloads.
+const PACKAGE_MANAGERS: Record<string, string[]> = {
+  npm: ["package.json", ".npmrc"],
+  pnpm: ["package.json", ".npmrc", ".pnpmfile.cjs"],
+  yarn: ["package.json", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**"],
+  bun: ["package.json", "bunfig.toml"],
+};
+// Build tools whose manifest names code they run: cargo's build scripts and
+// runner configuration, swift's package manifest, an Xcode project's or
+// workspace's build phases and schemes.
+const BUILD_TOOLS: Record<string, string[]> = {
+  cargo: ["**/Cargo.toml", "**/build.rs", ".cargo/config", ".cargo/config.toml"],
+  swift: ["**/Package.swift", "**/Package@swift-*.swift"],
+  xcodebuild: ["**/*.xcodeproj/**", "**/*.xcworkspace/**", "**/Package.swift", "**/Package@swift-*.swift"],
+};
+// The recipe files make and just read from the working directory, the files
+// those can include, and the options that name another file or directory.
+const RECIPES: Record<string, { files: string[]; included: string; file: string[]; dir: string[] }> = {
+  make: { files: ["Makefile", "makefile", "GNUmakefile"], included: "**/*.mk", file: ["-f", "--file", "--makefile"], dir: ["-C", "--directory"] },
+  just: { files: ["justfile", "Justfile", ".justfile"], included: "**/*.just", file: ["-f", "--justfile"], dir: ["-d", "--working-directory"] },
+};
 
 export function checkFiles(checks: string[]): string[] {
   const files = new Set<string>();
+  // A path inside the repository, as Git names it.
+  const inside = (path: string) => !path.startsWith("/") && !path.startsWith("../") && path !== "..";
+  const add = (path: string) => { if (inside(path)) files.add(path.replace(/^\.\//, "")); };
+  // The value of one of the named options at words[i]: the word after it, or
+  // what follows = in the option itself; null when words[i] is none of them.
+  const option = (words: string[], i: number, names: string[]): string | null => {
+    const [name, inline] = words[i].split(/=(.*)/s);
+    return names.includes(name) ? inline ?? words[i + 1] ?? null : null;
+  };
   for (const cmd of checks) {
-    const words = cmd.split(/[\s;&|()<>"'`]+/).filter(Boolean);
-    words.forEach((word, i) => {
-      const prev = words[i - 1];
-      if (word.startsWith("-")) return;
-      if (word.startsWith("./") || /\.sh$/.test(word) || (prev && INTERPRETERS.has(prev) && /[./]/.test(word))) {
-        files.add(word.replace(/^\.\//, ""));
+    // Each command of a line, as the shell separates them.
+    for (const segment of cmd.split(/[;&|()]+/)) {
+      const words = segment.split(/[\s<>"'`]+/).filter(Boolean);
+      // The command word: the first that is not an environment assignment.
+      const at = words.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+      if (at === -1) continue;
+      const command = words[at], rest = words.slice(at + 1);
+      words.forEach((word, i) => {
+        const prev = words[i - 1];
+        if (word.startsWith("-")) return;
+        if (word.startsWith("./") || /\.sh$/.test(word) || (prev && INTERPRETERS.has(prev) && /[./]/.test(word))) add(word);
+      });
+      // A path run directly: bin/check, scripts/verify.
+      if (command.includes("/")) add(command);
+      for (const file of [...(PACKAGE_MANAGERS[command] ?? []), ...(BUILD_TOOLS[command] ?? [])]) files.add(file);
+      if (command === "deno" && rest[0] === "task") ["deno.json", "deno.jsonc"].forEach((file) => files.add(file));
+      // npx, bunx and a package manager's dlx, exec or x run a local binary by
+      // its name, resolved through the manager's own files.
+      const viaManager = command in PACKAGE_MANAGERS && ["dlx", "exec", "x"].includes(rest[0]);
+      if (command === "npx" || command === "bunx" || viaManager) {
+        for (const file of PACKAGE_MANAGERS[command === "npx" ? "npm" : command === "bunx" ? "bun" : command]) files.add(file);
+        const args = rest.slice(viaManager ? 1 : 0);
+        let i = 0;
+        while (i < args.length && args[i].startsWith("-")) i += ["-p", "--package", "-c", "--call"].includes(args[i]) ? 2 : 1;
+        // The binary's name: a scoped package's own name, without a version.
+        const bin = args[i]?.split("/").pop()?.replace(/(?!^)@.*$/, "");
+        if (bin && !args[i].startsWith(".")) files.add(`node_modules/.bin/${bin}`);
       }
-      if (PACKAGE_MANAGERS.has(word)) files.add("package.json");
-    });
+      const recipe = RECIPES[command];
+      if (recipe) {
+        let dir = "", named: string | null = null;
+        for (let i = at + 1; i < words.length; i++) {
+          const d = option(words, i, recipe.dir), f = option(words, i, recipe.file);
+          if (d !== null) dir = d.replace(/\/?$/, "/");
+          if (f !== null) named = f;
+        }
+        if (inside(dir)) for (const file of named !== null ? [named] : recipe.files) add(file.startsWith("/") ? file : dir + file);
+        files.add(recipe.included);
+      }
+    }
   }
   return [...files].sort();
 }
