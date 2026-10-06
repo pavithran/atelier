@@ -1162,6 +1162,62 @@ endpoint or Keychain entry) clears its status until it is checked again.
 An endpoint carrying a query string, or a Keychain entry name that looks
 like a key, is refused.
 
+## Each model's reliability
+
+The Models page and the Usage page show each model's record across every
+project, and `GET /api/reliability` returns it. A model is named as review
+independence names it, so the same model under two harnesses or a
+registered alias is one record. Its work is what it held: how much was
+approved at its first review by another model, how many review rounds a
+merged item went through, every rejection with the note that gave its
+cause, and every defect the owner traced to its accepted work. Its verdicts
+are its own reviews: an approval of a revision a defect was later traced to
+is contradicted, and so is a review run that never reached a verdict. Its
+runs are those that stalled, timed out or were refused, as the runners
+reported them. The owner's approvals of its work are counted apart and are
+never a model's verdict: those made on the task page, which only the
+signed-in owner reaches, apart from those recorded through the API with the
+owner token, as the orchestrator records them. An approval recorded before
+Atelier kept the two apart is counted as unrecorded.
+
+```text
+atelier defect t12 --note "pagination drops the last page" --found-in t19
+```
+
+`atelier defect` traces a defect to the revision an item was accepted at;
+the item itself does not change. A runner reports a run through
+`POST /api/runs` with the owner token and its name in `X-Atelier-Runner`,
+as it reports usage: the agent it ran, the role (`build` or `review`), the
+outcome (`stalled`, `timed-out` or `refused`), the project and task when
+there is one, and a detail. `atelier runner` sends one when a harness passes
+its time limit, exits cleanly without a new commit, or exits with an error.
+
+Routing reads the record only to order candidates of equal score: the share
+of outcomes in a model's favour (work approved at first review, merges)
+against those that are not (rejections, defects, contradicted approvals,
+runs stalled, timed out or refused), with one of each added so a model
+with no record sits at one half. The project's own track record and the
+registry's evidence still decide the score.
+
+A harness can serve another model than the one its events name: zcode
+follows its app's provider settings, and served deepseek-flash while its
+events said glm-5.3. The owner records what served them:
+
+```text
+atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
+```
+
+It lists the events recorded under `--recorded` from `--from` up to `--to`
+on the tasks `--item` names, or on every task, and records nothing; with
+`--apply` it adds an annotation of its own, an `event.served` event, for
+each one not already annotated as served by that model. The annotated
+event never changes, and the latest annotation of an event is the one that
+counts, so a mistaken one is corrected by another. The track record, the
+reliability record, the Models page and the graph count an annotated event
+under the served model in the recorded harness, here `zcode/deepseek-flash`.
+`bin/annotate-t95` holds the commands that correct the record for task t95;
+the owner runs it, first without `--apply`.
+
 ## Usage, limits and balances
 
 The Usage page (`/usage`) shows where each tool stands, as the home runners
