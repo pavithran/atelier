@@ -28,11 +28,27 @@ export interface LedgerEvent {
 
 export interface ProjectRecord {
   revision?: number;      // one more on every init; the index keeps the newest copy
-  name: string;           // the key: storage, links, commands
+  name: string;           // links, commands, and storage until the project is renamed
   title?: string;         // what people read; the name when absent
   repo: string;
   policy: ProjectPolicy;
   createdAt: string;
+  // The two below are set by the index on the records it lists, never stored.
+  key?: string;           // where the ledger and repositories live, when that is not the name
+  formerly?: string[];    // names the project answered to before; each still resolves to it
+}
+
+// What a requested project name resolves to: the name the project is
+// registered under (the requested name itself when nothing is registered),
+// the key its ledger and repositories live under, and every name that
+// reaches that key. `former` says the request used a name the project no
+// longer has, so a page can redirect and an API answer can say the new name.
+export interface ProjectRef {
+  name: string;
+  key: string;
+  names: string[];
+  registered: boolean;
+  former: boolean;
 }
 
 type Row = Record<string, SqlStorageValue>;
@@ -88,6 +104,17 @@ export function assertRepoAvailable(projects: ProjectRecord[], name: string, rep
   if (other) throw new RuleError("repo_taken", `baseline ${repo} is already registered to ${other.name}`, 409);
 }
 
+// A project may take a name that reaches no other project's storage: not one
+// a project is registered under, and not one a project was called before,
+// whether that project is still registered or only retained.
+export function assertNameFree(source: ProjectRef, to: string, target: ProjectRef): void {
+  if (target.key === source.key) return;
+  if (target.registered) {
+    throw new RuleError("name_taken", `${to} is ${target.name === to ? "the name" : "a former name"} of ${target.name}, which still answers to it`, 409);
+  }
+  if (target.key !== to) throw new RuleError("name_taken", `${to} was a name of a removed project, stored under ${target.key}, which still answers to it`, 409);
+}
+
 export function assertProjectRemovable(items: Pick<Item, "state">[], force: boolean): void {
   if (!force && items.some((i) => ["claimed", "submitted", "accepted"].includes(i.state))) {
     throw new RuleError("live_work", "project has claimed, submitted or accepted work; use --force to remove it", 409);
@@ -107,6 +134,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
@@ -168,24 +196,78 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Two inits finishing out of order must not leave the older copy listed.
+  // What the index adds to a listed record (key, formerly) is read from the
+  // names table each time, so it is left out of the stored copy.
   registerProject(record: ProjectRecord): void {
     this.assertRepoAvailable(record.name, record.repo);
     const row = this.sql.exec(`SELECT json FROM projects WHERE name = ?`, record.name).toArray()[0];
     const held = row ? (JSON.parse(row.json as string) as ProjectRecord).revision ?? 0 : -1;
     if ((record.revision ?? 0) < held) return;
-    this.sql.exec(`INSERT OR REPLACE INTO projects (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
+    const { key: _key, formerly: _formerly, ...stored } = record;
+    this.sql.exec(`INSERT OR REPLACE INTO projects (name, json) VALUES (?, ?)`, record.name, JSON.stringify(stored));
   }
 
   assertRepoAvailable(name: string, repo: string): void {
     assertRepoAvailable(this.projects(), name, repo);
   }
 
+  // The names table is kept: the ledger is retained too, and a later init
+  // under any of the project's names finds it again.
   removeProject(name: string): boolean {
     return this.sql.exec(`DELETE FROM projects WHERE name = ?`, name).rowsWritten > 0;
   }
 
   projects(): ProjectRecord[] {
-    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => JSON.parse(r.json as string));
+    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => this.listed(JSON.parse(r.json as string)));
+  }
+
+  // ── names ────────────────────────────────────────────────────────────────
+  // A project's ledger is the Durable Object named after it, and its
+  // repositories are named after it too; neither can be renamed. So a renamed
+  // project keeps its storage under the name it was created with, its key,
+  // and the names table maps each name it has been given since to that key.
+  // A name with no row is its own key. Which of a key's names is current is
+  // whichever is registered, so renaming back needs no special case, and
+  // every former name resolves in one step.
+
+  private keyOf(name: string): string {
+    const row = this.sql.exec(`SELECT key FROM names WHERE name = ?`, name).toArray()[0];
+    return row ? (row.key as string) : name;
+  }
+
+  private namesOf(key: string): string[] {
+    return [key, ...this.sql.exec(`SELECT name FROM names WHERE key = ? ORDER BY name`, key).toArray().map((r) => r.name as string)];
+  }
+
+  private listed(record: ProjectRecord): ProjectRecord {
+    const key = this.keyOf(record.name);
+    const formerly = this.namesOf(key).filter((n) => n !== record.name);
+    return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
+  }
+
+  resolveProject(name: string): ProjectRef {
+    const key = this.keyOf(name);
+    const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => this.keyOf(n) === key);
+    return { name: registered ?? name, key, names: this.namesOf(key), registered: registered !== undefined, former: registered !== undefined && registered !== name };
+  }
+
+  // The project registered as `from`, or that `from` was a name of, answers
+  // to `to` from now on. Its storage stays under its key, and its former
+  // names keep resolving to it, so renaming back is the same operation. A
+  // name that reaches another project's key is refused: one registered under
+  // it or that had it before.
+  renameProject(from: string, to: string): { from: string; to: string; key: string; names: string[] } {
+    const source = this.resolveProject(from);
+    if (!source.registered) throw new RuleError("no_project", `no project ${from}`, 404);
+    if (source.name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
+    assertNameFree(source, to, this.resolveProject(to));
+    const row = this.sql.exec(`SELECT json FROM projects WHERE name = ?`, source.name).toArray()[0];
+    const record = { ...(JSON.parse(row.json as string) as ProjectRecord), name: to };
+    this.sql.exec(`DELETE FROM projects WHERE name = ?`, source.name);
+    this.sql.exec(`INSERT INTO projects (name, json) VALUES (?, ?)`, to, JSON.stringify(record));
+    if (to !== source.key) this.sql.exec(`INSERT OR REPLACE INTO names (name, key) VALUES (?, ?)`, to, source.key);
+    this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key });
+    return { from: source.name, to, key: source.key, names: this.namesOf(source.key) };
   }
 
   // The model pool, on the index instance like the project list: shared by
@@ -242,6 +324,17 @@ export class Ledger extends DurableObject<Env> {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     if (!row) throw new RuleError("no_project", "project not initialised; run `atelier init`", 404);
     return JSON.parse(row.value as string);
+  }
+
+  // The record's name follows a rename decided at the index: links and
+  // commands on the project's pages, inbox entries and notifications read it.
+  setName(to: string, actor: string): ProjectRecord {
+    const current = this.project();
+    if (current.name === to) return current;
+    const record = { ...current, name: to };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
+    this.log(null, actor, "project.renamed", { from: current.name, to });
+    return record;
   }
 
   newItem(title: string, scope: string[], actor: string): Item {
