@@ -350,3 +350,12 @@ test("send back: the required checks fail on the merge with main, which moved af
   assert.equal(same.recommendation.verdict, "accept");
   assert.deepEqual(same.evidence, ["Required checks at this revision: 1 passed in a Cloudflare container."]);
 });
+
+test("the reviews line says who recorded each review, as atelier show prints it (t215)", () => {
+  const reviews = [
+    rev({ by: "codex/gpt-5.5", recordedBy: "codex/gpt-5.5", proved: true, claimed: false }),
+    rev({ by: "antigravity/gemini-3.1-pro", recordedBy: OWNER, proved: false, claimed: false }),
+  ];
+  const b = briefFor(detail({ reviews }), []);
+  assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved (recorded with its own token), gemini-3.1-pro approved (recorded by the project owner with the owner token)."), b.evidence.join("\n"));
+});

@@ -99,7 +99,8 @@ for (const transfer of ["handoff", "release"]) {
     const items = await L(name).items();
     expect(items[0]).toEqual(await L(name).item("t1"));
     expect(items[1].pushActors).toEqual(["qwen/qwen3"]);
-    await L(name).addReview({ ...review, by: "opencode/glm-5.3" });
+    // Recorded with the reviewer's own token, so the gate counts it (t215).
+    await L(name).addReview({ ...review, by: "opencode/glm-5.3" }, undefined, true);
     // Task t94: after a release, the push observed while nobody held the
     // item counted atelier/events, the name the Ledger logs it under, as a
     // contributor of no recognised family, and no review could then count.
