@@ -186,7 +186,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Part routing", stage: "t15, build step 3", built: true,
-    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record. It leaves out refused models, and paid models unless the owner allows them.",
+    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them.",
     files: ["src/plans/route.ts"],
     code: [{ file: "src/plans/route.ts", symbol: "routeParts" }],
   },

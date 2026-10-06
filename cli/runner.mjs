@@ -232,7 +232,24 @@ export function infrastructureFailureCount(count, state) {
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped ? count + 1 : 0;
 }
 
-export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute }) {
+// How a run ended, as the runner reports it to the server for the model's
+// reliability record (src/models/reliability.ts), or null when the ledger
+// already holds the reason or the reason is not the model's: a refused
+// claim, the workspace, an interrupt, a harness that could not start, or a
+// step after the harness. A harness past its time limit timed out; one that
+// exited cleanly without a new commit stalled; one that exited with an error
+// was refused, by the harness or its provider.
+export function runOutcome(state) {
+  if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
+  if (state.reason === "harness timed out") return "timed-out";
+  if (state.reason === "harness made no new commit") return "stalled";
+  if (/^harness exited /.test(state.reason ?? "")) return "refused";
+  return null;
+}
+
+// `reportRun(body, runner, signal)` sends a run report; a report that fails
+// is logged and the loop goes on.
+export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute, reportRun }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH]");
@@ -276,6 +293,13 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
           state = await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
+          const outcome = runOutcome(state);
+          if (outcome && reportRun) {
+            try {
+              await reportRun({ actor: task.actor, role: "build", outcome, project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
+              io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
+            } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
+          }
           const key = taskKey(task), count = failureCount(failures.get(key) ?? 0, state);
           failures.set(key, count);
           if (count === 2) io.log(`${task.project}/${task.item.id} needs the owner's attention after 2 failures; skipped for this process`);

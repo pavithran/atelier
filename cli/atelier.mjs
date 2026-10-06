@@ -217,6 +217,7 @@ const FLAGS = {
   release: { note: false },
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false },
+  defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
   done: { sandbox: true, summary: false },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
@@ -1274,6 +1275,9 @@ const commands = {
           if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
           return res.json();
         },
+        // A run that stalled, timed out or was refused goes to the run
+        // reports, under the runner's name, as a model's status does.
+        reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
       });
     } catch (error) { die(error.message); }
   },
@@ -1732,6 +1736,15 @@ const commands = {
     const name = project(), id = itemArg();
     await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
     console.log(`${id} abandoned.`);
+  },
+
+  // The project owner traces a defect to an item's accepted revision. The
+  // server refuses an item never accepted, and a blank note.
+  async defect() {
+    const name = project(), id = itemArg();
+    if (typeof args.note !== "string" || !args.note.trim()) die('a defect needs a note: atelier defect ID --note "what is wrong" [--found-in ID]');
+    const item = await call("POST", `${I(name, id)}/defect`, { note: args.note.trim(), ...(args["found-in"] !== undefined ? { foundIn: args["found-in"] } : {}) }, OWNER);
+    console.log(`Defect traced to ${id} at ${short(item.acceptedHead)}. It counts against the model that built that revision and each model that approved it; the Models page shows the record.`);
   },
 
   async done() {
