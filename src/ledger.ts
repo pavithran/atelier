@@ -214,6 +214,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
@@ -330,6 +331,29 @@ export class Ledger extends DurableObject<Env> {
 
   endSession(hash: string): boolean {
     return this.sql.exec(`DELETE FROM sessions WHERE hash = ?`, hash).rowsWritten > 0;
+  }
+
+  // ── the public showcase setting ───────────────────────────────────────────
+  // Which projects the owner shows at /showcase and whether each is named or
+  // anonymous. The default is none, so nothing is published by accident. The
+  // row holds whichever of the project's names the owner gave; the public
+  // pages resolve it through the project list, so a renamed project stays
+  // shown under the name it has now.
+
+  setShowcase(name: string, mode: "named" | "anonymous"): void {
+    this.sql.exec(`INSERT OR REPLACE INTO showcase (name, mode) VALUES (?, ?)`, name, mode);
+    this.log(null, this.owner, "showcase.set", { name, mode }, new Date().toISOString());
+  }
+
+  removeShowcase(name: string): boolean {
+    const gone = this.sql.exec(`DELETE FROM showcase WHERE name = ?`, name).rowsWritten > 0;
+    if (gone) this.log(null, this.owner, "showcase.removed", { name }, new Date().toISOString());
+    return gone;
+  }
+
+  showcaseEntries(): { name: string; mode: "named" | "anonymous" }[] {
+    return this.sql.exec(`SELECT name, mode FROM showcase ORDER BY name`).toArray()
+      .map((r) => ({ name: r.name as string, mode: r.mode === "named" ? "named" as const : "anonymous" as const }));
   }
 
   // Two inits finishing out of order must not leave the older copy listed.

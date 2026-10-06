@@ -68,7 +68,7 @@ const terms = (): string => `<dl class="how-terms">${TERMS.map((t) => `<div><dt>
 
 function loop(): string {
   return `
-<p>An item goes through seven steps. The diagram shows who acts at each step and what Atelier records; the list gives the command and the detail.</p>
+<p>A task goes through seven steps. The diagram shows who acts at each step and what Atelier records; the list gives the command and the detail.</p>
 <figure class="how-fig"><div class="scroll">${diagram()}</div><figcaption>${e(LOOP_CAPTION)}</figcaption></figure>
 <ol class="how-steps">${LOOP.map((s) => `<li><h3>${e(s.name)}</h3><p>${md(s.detail)}</p></li>`).join("")}</ol>`;
 }
@@ -91,14 +91,17 @@ function rules(): string {
 
 function orchestrator(): string {
   return `
-<p>The orchestrator turns a goal into work: a planner proposes a plan of parts, the owner approves it once, and Atelier then dispatches the parts, routes each to a model, reviews it and integrates the results. <code>docs/orchestrator.md</code> holds the design and its build sequence, and the list below says which parts are built. The plan code in <code>src/plans</code> runs in the project's ledger: a plan's proposals, its approval and the tick that dispatches its parts. The review code in <code>src/review</code> is pure functions with tests, and nothing else calls it yet. <code>atelier plan</code> starts a plan and takes the owner's decisions on it. No runner takes a plan job yet, so a planner posts its plan by hand, and each part a runner takes gets the brief any task gets. Outside plans the owner sends each item to a runner by hand: <code>atelier dispatch</code> queues it, and <code>atelier runner</code> claims it and works it.</p>
+<p>The orchestrator turns a goal into work: a planner proposes a plan of parts, the owner approves it once, and Atelier then dispatches the parts, routes each to a model, reviews it and integrates the results. <code>docs/orchestrator.md</code> holds the design and its build sequence, and the list below says which parts are built. The plan code in <code>src/plans</code> runs in the project's ledger: a plan's proposals, its approval and the tick that dispatches its parts. The review code in <code>src/review</code> is pure functions with tests, and nothing else calls it yet. <code>atelier plan</code> starts a plan and takes the owner's decisions on it. No runner takes a plan job yet, so a planner posts its plan by hand, and each part a runner takes gets the brief any task gets. Outside plans the owner sends each task to a runner by hand: <code>atelier dispatch</code> queues it, and <code>atelier runner</code> claims it and works it.</p>
 <ul class="how-status">${ORCHESTRATOR.map((p) => `<li><span class="tag ${p.built ? "go" : "ask"}">${p.built ? "Built" : "Not built yet"}</span><div><h3>${e(p.name)} <span class="meta">${e(p.stage)}</span></h3><p>${md(p.what)}</p></div></li>`).join("")}</ul>`;
 }
 
+// The command reference is most of the page's bytes, so each group arrives
+// closed in a details element: the page opens at its explanation, and a
+// reader opens the group they need.
 function commands(): string {
-  const groups = HELP_GROUPS.map((g) => `<div class="how-group"><h3>${e(g.name)}</h3><dl class="how-cmds">${g.lines.flat().map((c) => `<div class="how-cmd"><dt><code>atelier ${e(c.form)}</code></dt><dd>${md(c.about)}</dd></div>`).join("")}</dl></div>`).join("");
+  const groups = HELP_GROUPS.map((g) => `<details class="how-group"><summary>${e(g.name)}</summary><dl class="how-cmds">${g.lines.flat().map((c) => `<div class="how-cmd"><dt><code>atelier ${e(c.form)}</code></dt><dd>${md(c.about)}</dd></div>`).join("")}</dl></details>`).join("");
   return `
-<p>Every command the CLI's help lists, in its groups and order. The list is drawn from <code>src/usage.ts</code>, the table <code>atelier help</code> prints from, so the two cannot differ. <code>H/M</code> stands for harness/model, such as <code>claude-code/opus-5.5</code>. Square brackets mark what is optional, a bar separates alternatives, and <code>...</code> marks a flag that may repeat.</p>
+<p>Every command the CLI's help lists, in its groups and order, each group closed until opened. The list is drawn from <code>src/usage.ts</code>, the table <code>atelier help</code> prints from, so the two cannot differ. <code>H/M</code> stands for harness/model, such as <code>claude-code/opus-5.5</code>. Square brackets mark what is optional, a bar separates alternatives, and <code>...</code> marks a flag that may repeat.</p>
 ${groups}
 <h3 class="how-sub">Agent instructions</h3>
 <details class="disclosure"><summary>The text <code>atelier guide</code> prints</summary><pre>${e(guideText())}</pre></details>`;
@@ -117,7 +120,7 @@ export function renderHow(): string {
 <header class="how-hero">
   <span class="kicker">How it works · public · reads no project data</span>
   <h1>How Atelier works</h1>
-  <p class="lead">Atelier is a Git platform for several coding agents working on one project at the same time. Each item of work has one owner at a time and its own fork of the code, checks run on a clean clone of exactly what was pushed, and no agent's work reaches the project until the project owner accepts and merges it.</p>
+  <p class="lead">Atelier is a Git platform for several coding agents working on one project at the same time. Each task has one owner at a time and its own fork of the code, checks run on a clean clone of exactly what was pushed, and no agent's work reaches the project until the project owner accepts and merges it.</p>
   <p class="lead">It runs on Cloudflare Workers, Durable Objects and Artifacts. A Durable Object for each project holds the ledger: the items, the evidence, the reviews and an append-only event log. Artifacts holds the repositories. Agents and the owner work through one command, <code>atelier</code>, which needs only Node and git; the owner also has a web inbox that ranks what needs a decision.</p>
   <nav class="how-toc" aria-label="On this page">${sections.map(([h]) => `<a href="#${slug(h)}">${e(h)}</a>`).join("")}</nav>
 </header>

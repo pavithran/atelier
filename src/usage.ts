@@ -23,7 +23,7 @@ export interface HelpGroup {
   lines: Command[][];
 }
 
-export const HELP_TITLE = "atelier — one owner per item, observed evidence, the project owner decides.";
+export const HELP_TITLE = "atelier — one owner per task, observed evidence, the project owner decides.";
 
 export const HELP_GROUPS: HelpGroup[] = [
   { name: "Sessions", lines: [[
@@ -40,42 +40,42 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "notes-remote [REMOTE | --off]", about: "Names a git remote that receives `refs/notes/atelier`, the merge provenance, and only that ref, on every merge. `--off` stops it; with no argument it says what is set. The setting is kept on this machine." },
   ]] },
   { name: "Items", lines: [[
-    { form: 'new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates an item with a title and, optionally, the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. The brief, `atelier start` and the item's page show them." },
-    { form: "edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes an item's non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it." },
+    { form: 'new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates a task with a title and, optionally, the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. The brief, `atelier start` and the task's page show them." },
+    { form: "edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it." },
   ], [
-    { form: "ls [--all]", about: "Lists the project's items with state, owner and head. Merged and abandoned items need `--all`." },
-    { form: "show ID", about: "Prints an item's decision brief: what is decided, the recorded evidence, a recommendation and the item's address. `--json` prints it for scripts." },
-    { form: "owners [--json]", about: "Prints one line per live item: its state, its owner and since when." },
-    { form: "inbox", about: "Prints the decision brief of each item that needs the project owner, most urgent first." },
+    { form: "ls [--all]", about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`." },
+    { form: "show ID", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--json` prints it for scripts." },
+    { form: "owners [--json]", about: "Prints one line per live task: its state, its owner and since when." },
+    { form: "inbox", about: "Prints the decision brief of each task that needs the project owner, most urgent first." },
     { form: "status [--project P]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
-    { form: "start ID [--as H/M]", about: "Claims the item, prepares its workspace as `claim` does, and prints its title, scope and any dispatch note." },
-    { form: 'done "summary"', about: "Pushes, runs the required checks and submits, in that order, and stops at the first step that fails, naming it. Its last line says `Ready for the owner` or what still blocks the item." },
+    { form: "start ID [--as H/M]", about: "Claims the task, prepares its workspace as `claim` does, and prints its title, scope and any dispatch note." },
+    { form: 'done "summary"', about: "Pushes, runs the required checks and submits, in that order, and stops at the first step that fails, naming it. Its last line says `Ready for the owner` or what still blocks the task." },
   ], [
-    { form: "claim ID --as H/M [--runner home:NAME]", about: "Takes ownership of an item, forks the baseline into the item's workspace, mints a write token for the claimant alone, clones the workspace and records the project's branch as the one it pushes to. Claiming again refreshes the token and that branch, saying when the branch changed. `--runner` names the runner when a runner claims a dispatched task." },
+    { form: "claim ID --as H/M [--runner home:NAME]", about: "Takes ownership of a task, forks the baseline into the task's workspace, mints a write token for the claimant alone, clones the workspace and records the project's branch as the one it pushes to. Claiming again refreshes the token and that branch, saying when the branch changed. `--runner` names the runner when a runner claims a dispatched task." },
     { form: "finish [--sandbox] [--summary T]", about: "Run in the claimed workspace: pushes, runs the required checks and submits, only if they pass and the workspace has not changed meanwhile. `--sandbox` runs the checks in a Cloudflare container. `done` is `finish` with a required summary." },
-    { form: "push", about: "Pushes the workspace to the item's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease." },
+    { form: "push", about: "Pushes the workspace to the task's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease." },
     { form: "update", about: "Rebases the workspace onto whatever has merged to the baseline since the fork, then names the next step, `atelier push --force`, whose lease refuses to overwrite anything pushed since the workspace last fetched." },
     { form: "check [--sandbox] [--merged] [-- CMD]", about: "Runs each required check, or the command after `--`, in a clean clone of exactly the head Artifacts holds, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs them in a Cloudflare container instead. `--merged` runs them on the would-be merge, the head merged with main as main is now, in a temporary merge commit that is never pushed; the result is recorded against both revisions, shown beside the merge preview, and goes stale when either moves. A local check runs with the caller's file access, so it can read their files and Keychain and reach the network; it is given only the environment variables toolchains need, and Atelier's tokens are redacted from its output before upload. Run untrusted code with `--sandbox`." },
-    { form: "report [ID] \"…\" [--item ID]", about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted as a check." },
-    { form: "submit [--summary T]", about: "Marks the item ready for the owner and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission." },
+    { form: "report [ID] \"…\" [--item ID]", about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the task named, else on the workspace's task; in a workspace, another task's id needs `--item ID`. It is shown and never counted as a check." },
+    { form: "submit [--summary T]", about: "Marks the task ready for the owner and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission." },
   ], [
     { form: "handoff ID --to H/M", about: "Moves ownership to another agent, with `--note` saying why. The old write token is revoked; the workspace and its history carry over." },
-    { form: "release ID", about: "Gives the item up: it returns to open and the write token is revoked." },
-    { form: 'block [ID] "reason"', about: "The holder or the project owner blocks the item with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed, submitted, reviewed, handed off or released, and sits in the owner's inbox with the reason until it is unblocked." },
-    { form: "unblock [ID]", about: "The holder or the project owner lifts the block, and the item returns to the state it was in." },
-    { form: "diff ID", about: "For a reviewer: prints the item's commits and diff against the baseline, from a clean read-only clone." },
-    { form: "review ID --approve|--reject", about: "Records a verdict on the item's current head, with `--note` giving the reason. The rules say whose approval counts." },
-    { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the item's open review request and gets the part, its brief's inputs and a read token for its fork." },
+    { form: "release ID", about: "Gives the task up: it returns to open and the write token is revoked." },
+    { form: 'block [ID] "reason"', about: "The holder or the project owner blocks the task with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed, submitted, reviewed, handed off or released, and sits in the owner's inbox with the reason until it is unblocked." },
+    { form: "unblock [ID]", about: "The holder or the project owner lifts the block, and the task returns to the state it was in." },
+    { form: "diff ID", about: "For a reviewer: prints the task's commits and diff against the baseline, from a clean read-only clone." },
+    { form: "review ID --approve|--reject", about: "Records a verdict on the task's current head, with `--note` giving the reason. The rules say whose approval counts." },
+    { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the task's open review request and gets the part, its brief's inputs and a read token for its fork." },
     { form: "review-release ID", about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it." },
   ]] },
   { name: "Owner", lines: [[
-    { form: "accept ID [--override-review REASON]", about: "The project owner accepts the item at its current head. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
-    { form: "merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted item is accepted at that exact revision first: `--approve` records the owner's review, which is not the independent review, and `--override-review` accepts with the owner's override, as `accept` does. Run again, it resumes an interrupted merge; `--cancel` ends one." },
-    { form: "abandon ID", about: "Closes the item without merging it. The write token is revoked; the history and evidence stay." },
-    { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the item was accepted at. Nothing about the item changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
+    { form: "accept ID [--override-review REASON]", about: "The project owner accepts the task at its current head. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
+    { form: "merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted task is accepted at that exact revision first: `--approve` records the owner's review, which is not the independent review, and `--override-review` accepts with the owner's override, as `accept` does. Run again, it resumes an interrupted merge; `--cancel` ends one." },
+    { form: "abandon ID", about: "Closes the task without merging it. The write token is revoked; the history and evidence stay." },
+    { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the task was accepted at. Nothing about the task changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
   ], [
     { form: "served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--apply]", about: "The project owner records which model served events recorded under another, as when zcode served deepseek-flash while its events named glm-5.3. Each event recorded as `--recorded` from `--from` up to `--to`, on the tasks `--item` names or on every task, gets an annotation of its own, and the track record, the reliability record and the graph count it under the served model; the event itself never changes. Without `--apply` it lists the matches and records nothing. `--note` says how the owner knows." },
     { form: "approve ACTION --head SHA [--note T] [--expires 24h]", about: "The project owner approves one protected action, such as `deploy`, `install`, `push`, `paid-run` or `photos-writeback`, at one exact revision of the main line: the full SHA of a commit the baseline holds. `atelier ship` uses the approval once, at that revision only, and a later revision needs its own. It stands for 24 hours unless `--expires` gives from `1m` to `30d`; `--note` records why. Any other kind must be one the project's ship files name." },
@@ -85,7 +85,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "ship [--dry-run] [--push]", about: "Run by the project owner in the registered checkout, clean and at the baseline's head: composes the ship order from the project's ControlPlane ship policy and adapter, or from `docs/atelier/ship.json`, and refuses before running anything when a protected step has no approval at that revision, naming the command that approves it. It then runs the steps in order and stops at the first that fails, recording each step's command, exit status, duration and redacted output tail on the ledger. It pushes only with `--push` and an approval for `push`, and never forces a push. `--dry-run` prints the steps and which approvals are present or missing, and runs nothing." },
   ]] },
   { name: "Plans", lines: [[
-    { form: 'plan "goal" [--scope GLOB]... [--planner H/M]', about: "The project owner states a goal. Atelier creates the plan item and queues it as a plan job for the planner named, or else for the first model in the pool for research work that is not refused, not paid per token and may plan. A project has one active plan at a time. No runner takes a plan job yet: a planner claims the plan item with `--runner` and posts the plan by hand." },
+    { form: 'plan "goal" [--scope GLOB]... [--planner H/M]', about: "The project owner states a goal. Atelier creates the plan's task and queues it as a plan job for the planner named, or else for the first model in the pool for research work that is not refused, not paid per token and may plan. A project has one active plan at a time. No runner takes a plan job yet: a planner claims the plan's task with `--runner` and posts the plan by hand." },
     { form: "plan show ID [--json]", about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, the part dispatches used, why it is blocked, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now. It accepts a part's id too." },
   ], [
     { form: "plan approve ID --hash HASH [--allow-paid]", about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no model of another family can review, refuses the approval. `--allow-paid` lets models paid per token build and review." },
@@ -95,21 +95,24 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "plan retry ID", about: "Counts an open part's attempts afresh, so its builder is asked again; before approval, asks the planner again." },
     { form: "plan stop ID [--note TEXT]", about: "Closes the plan and every part not yet merged, revoking their write tokens. The history and evidence stay." },
   ], [
-    { form: "plan post ID FILE", about: "The holder of the plan item's claim, its planner, posts the plan document in FILE. An invalid one is refused with every error, and the planner gets one more attempt before the plan blocks." },
+    { form: "plan post ID FILE", about: "The holder of the plan task's claim, its planner, posts the plan document in FILE. An invalid one is refused with every error, and the planner gets one more attempt before the plan blocks." },
   ]] },
   { name: "Models", lines: [[
     { form: "models", about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found." },
     { form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]...", about: "Adds or replaces a pool entry. Atelier never stores a key: `--keychain` names the Keychain entry that holds it, and a request that carries a key is refused." },
     { form: "models remove ID", about: "Removes a model from the pool." },
   ], [
-    { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T]", about: "Queues an open item for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it. Project owner only." },
-    { form: "undispatch ID", about: "Takes the item out of the queue." },
+    { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T]", about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it. Project owner only." },
+    { form: "undispatch ID", about: "Takes the task out of the queue." },
     { form: "queue", about: "Lists everything waiting for a runner, across projects, oldest first." },
   ]] },
   { name: "Projects", lines: [[
     { form: "projects rename OLD NEW", about: "The project owner gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every fork stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused." },
     { form: "projects remove NAME [--force]", about: "Removes a project from the index and from this machine's config. The Artifacts repository and the ledger are kept. It is refused while work is live unless `--force` is given." },
     { form: "init --name NAME --rename-local", about: "Changes only this machine's local name for the registered checkout. Nothing on the server changes." },
+  ], [
+    { form: "showcase set NAME [--named|--anonymous]", about: "The project owner adds a project to the public showcase. Anonymous is the default: the project's card and its task stories carry a neutral label from the project's kind, never its name, a task title, a path, a commit message or an address. `--named` shows the project by name. Nothing is public until this is run." },
+    { form: "showcase remove NAME", about: "Takes the project off the public showcase. With no subcommand, `showcase` lists what is shown and how." },
   ], [
     { form: "adopt --project NAME [--as H/M]", aside: "a ControlPlane project moves to Atelier", about: "Moves a ControlPlane project to Atelier as an ordinary task: claims it and, in its workspace, writes `bin/control-plane`, inserts the text `atelier guide` prints into AGENTS.md and commits without pushing. It then lists what the finishing agent must settle." },
   ]] },
@@ -167,12 +170,13 @@ export const COMMAND_USAGE: Record<string, string> = {
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
   new: 'usage: atelier new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]',
   edit: 'usage: atelier edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]   (a flag given replaces that field; --next-gate "", or one empty --non-goal or --stop-when, clears it)',
-  block: 'usage: atelier block [ID] "what it is waiting on"   (in a workspace, ID is its item)',
-  unblock: "usage: atelier unblock [ID]   (in a workspace, ID is its item)",
+  block: 'usage: atelier block [ID] "what it is waiting on"   (in a workspace, ID is its task)',
+  unblock: "usage: atelier unblock [ID]   (in a workspace, ID is its task)",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
   projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
-  report: 'usage: atelier report [ID] "what you verified and how" [--item ID] [--project P]   (in a workspace, ID is its item unless --item or --project says otherwise)',
+  showcase: "usage: atelier showcase set NAME [--named|--anonymous] · showcase remove NAME   (with no subcommand, lists what is shown; anonymous is the default)",
+  report: 'usage: atelier report [ID] "what you verified and how" [--item ID] [--project P]   (in a workspace, ID is its task unless --item or --project says otherwise)',
   review: "usage: atelier review ID --approve|--reject --note T [--head SHA] [--findings JSON]",
   "review-claim": "usage: atelier review-claim ID [--runner home:NAME]",
   "review-release": "usage: atelier review-release ID [--note T]",
@@ -188,8 +192,8 @@ export const COMMAND_USAGE: Record<string, string> = {
 export function guideText(): string {
   return `## Working through Atelier
 
-Several agents may work on this project at once. Each piece of work is an
-item with exactly one owner. Never edit the project checkout directly.
+Several agents may work on this project at once. Each piece of work is a
+task with exactly one owner. Never edit the project checkout directly.
 
 1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
    and prints its workspace, title, scope and note. Work only there.
@@ -205,10 +209,10 @@ item with exactly one owner. Never edit the project checkout directly.
    or \`atelier release ID\`. Your write token is revoked either way.
    Waiting on something only the owner can settle: \`atelier block ID "what"\`.
    The owner sees the reason in the inbox and runs \`atelier unblock ID\`.
-7. Reviewing someone else's item: \`atelier diff ID\`, then
+7. Reviewing someone else's task: \`atelier diff ID\`, then
    \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
    paths need approval from a model of another family than every agent
-   that worked on the item.
+   that worked on the task.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
 
 For each session the project owner runs in the registered checkout:

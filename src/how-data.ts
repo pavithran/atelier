@@ -28,8 +28,8 @@ export interface Step {
 export const LOOP: Step[] = [
   {
     name: "Task", lane: "owner", command: "new", moves: "a new task",
-    records: ["Item and scope", "recorded; the", "item is open"],
-    detail: "The project owner creates the item with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the item intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another.",
+    records: ["Task and scope", "recorded; the", "task is open"],
+    detail: "The project owner creates the task with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the task intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another.",
   },
   {
     name: "Claim", lane: "agent", command: "start", moves: "a claim",
@@ -39,17 +39,17 @@ export const LOOP: Step[] = [
   {
     name: "Workspace", lane: "agent", command: "push", moves: "a push",
     records: ["Own fork made;", "head read from", "Artifacts, not", "as reported"],
-    detail: "The Worker forks the baseline into a repository for the item and mints an eight-hour write token for the claimant alone. The agent works in a clone outside the project checkout, commits, and runs `atelier push`. Atelier reads the head from Artifacts and records that head; when the agent named a different one, the ledger records the mismatch.",
+    detail: "The Worker forks the baseline into a repository for the task and mints an eight-hour write token for the claimant alone. The agent works in a clone outside the project checkout, commits, and runs `atelier push`. Atelier reads the head from Artifacts and records that head; when the agent named a different one, the ledger records the mismatch.",
   },
   {
     name: "Checks", lane: "agent", command: "check", moves: "a check result",
     records: ["Observed result", "at that head:", "pass or fail"],
-    detail: "`atelier check` clones the workspace afresh at that head, runs each required check, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs the checks in a Cloudflare container instead. `--merged` runs them on the would-be merge, the head merged with main as it is now, and the result stands beside the merge preview, bound to both revisions. `atelier report` adds a Reported claim. `atelier submit` marks the item ready, and `atelier done \"summary\"` runs push, check and submit in order.",
+    detail: "`atelier check` clones the workspace afresh at that head, runs each required check, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs the checks in a Cloudflare container instead. `--merged` runs them on the would-be merge, the head merged with main as it is now, and the result stands beside the merge preview, bound to both revisions. `atelier report` adds a Reported claim. `atelier submit` marks the task ready, and `atelier done \"summary\"` runs push, check and submit in order.",
   },
   {
     name: "Review", lane: "reviewer", command: "review", moves: "a review", conditional: true,
     records: ["Verdict at that", "head; it counts", "if the reviewer", "is independent"],
-    detail: "A reviewer, an agent that did not work on the item, reads the change with `atelier diff t3` and records `atelier review t3 --approve`, or `--reject --note \"…\"`. A review is required when the change touches a protected path and, under a ControlPlane policy, when it is a coordinated change; Independent review of protected paths says whose approval counts. The owner may review too, and the owner's rejection blocks, but the owner's approval is never the required review.",
+    detail: "A reviewer, an agent that did not work on the task, reads the change with `atelier diff t3` and records `atelier review t3 --approve`, or `--reject --note \"…\"`. A review is required when the change touches a protected path and, under a ControlPlane policy, when it is a coordinated change; Independent review of protected paths says whose approval counts. The owner may review too, and the owner's rejection blocks, but the owner's approval is never the required review.",
   },
   {
     name: "Accept", lane: "owner", command: "accept", moves: "an acceptance",
@@ -59,7 +59,7 @@ export const LOOP: Step[] = [
   {
     name: "Merge", lane: "owner", command: "merge", moves: "a merge commit",
     records: ["Merge commit", "found on the", "baseline"],
-    detail: "In the project checkout the owner runs `atelier merge t3`. It fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the project's branch to the baseline. Pushing to the project's own remotes and deploying remain separate decisions.",
+    detail: "In the project checkout the owner runs `atelier merge t3`. It fetches exactly the accepted head, merges it with `--no-ff`, attaches the task's provenance as a git note on `refs/notes/atelier`, and pushes the project's branch to the baseline. Pushing to the project's own remotes and deploying remain separate decisions.",
   },
 ];
 
@@ -67,19 +67,19 @@ export const LOOP_RETURN = "a later push moves the head: back to step 4";
 
 export const LOOP_CAPTION = "The loop from task to merge. The owner, an agent and a reviewer act in the three upper lanes. Each step sends one thing to Atelier, named on its arrow, and the lowest lane shows what Atelier records. The review is dashed because only some changes require one. A push after step 4 moves the head, so checks, reviews and acceptance start again.";
 
-export const LOOP_LABEL = "The loop from task to merge in seven steps across four lanes. The owner creates a task. An agent claims it, pushes work to its own fork, and runs checks that Atelier records as Observed at that head. A reviewer reviews when the change requires it. The owner accepts the exact head and merges it, and Atelier records the merge commit found on the baseline. A later push returns the item to the checks.";
+export const LOOP_LABEL = "The loop from task to merge in seven steps across four lanes. The owner creates a task. An agent claims it, pushes work to its own fork, and runs checks that Atelier records as Observed at that head. A reviewer reviews when the change requires it. The owner accepts the exact head and merges it, and Atelier records the merge commit found on the baseline. A later push returns the task to the checks.";
 
 export interface Term { term: string; meaning: string }
 
 export const TERMS: Term[] = [
-  { term: "Item", meaning: "One piece of work: a title, a scope of the paths it intends to touch and, once claimed, an owner. The web pages call it a task." },
+  { term: "Task", meaning: "One piece of work: a title, a scope of the paths it intends to touch and, once claimed, an owner. The CLI and the API reference call it an item." },
   { term: "Baseline", meaning: "Atelier's copy of the project's branch, the one `atelier init` registered (often `main`), held in an Artifacts repository." },
-  { term: "Workspace", meaning: "An item's own fork of the baseline, also an Artifacts repository. Only the item's owner holds a write token for it." },
+  { term: "Workspace", meaning: "A task's own fork of the baseline, also an Artifacts repository. Only the task's owner holds a write token for it." },
   { term: "Head", meaning: "The latest commit in a workspace. Results, reviews and acceptance each name the head they apply to." },
   { term: "Observed", meaning: "A required check's result, recorded against the head Atelier read from Artifacts, from a run on a clean clone of that head." },
   { term: "Reported", meaning: "A statement an agent made about its own work. It is shown and never counted." },
   { term: "Pending", meaning: "A required check with no Observed result at the current head." },
-  { term: "Gate", meaning: "The function that decides whether an item can be accepted and lists what still blocks it: `gate` in `src/rules.ts`." },
+  { term: "Gate", meaning: "The function that decides whether a task can be accepted and lists what still blocks it: `gate` in `src/rules.ts`." },
   { term: "Protected path", meaning: "A path whose change needs an independent review. The project lists some; Atelier adds the files its required checks execute." },
 ];
 
@@ -95,15 +95,15 @@ export interface Rule {
 
 export const RULES: Rule[] = [
   {
-    title: "One owner per item",
-    enforced: "An item has at most one owner. The project's Durable Object handles one request at a time, so when two agents claim an item the second is refused. Ownership changes only through a recorded event: a claim, a handoff, a release, an abandonment or a merge.",
+    title: "One owner per task",
+    enforced: "A task has at most one owner. The project's Durable Object handles one request at a time, so when two agents claim a task the second is refused. Ownership changes only through a recorded event: a claim, a handoff, a release, an abandonment or a merge.",
     why: "Two agents writing to one workspace overwrite each other, and nobody could say afterwards who did what.",
     where: [{ file: "src/rules.ts", symbol: "assertClaimable" }, { file: "src/rules.ts", symbol: "assertOwner" }],
   },
   {
     title: "Separate forks for agents",
-    enforced: "A claim forks the baseline into a repository for that item, and the claimant's write token covers that repository alone. Only the owner token can obtain a write token for the baseline; an agent token is refused.",
-    why: "A wrong or abandoned change in one workspace cannot touch the baseline or another item's work.",
+    enforced: "A claim forks the baseline into a repository for that task, and the claimant's write token covers that repository alone. Only the owner token can obtain a write token for the baseline; an agent token is refused.",
+    why: "A wrong or abandoned change in one workspace cannot touch the baseline or another task's work.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }],
   },
   {
@@ -120,19 +120,19 @@ export const RULES: Rule[] = [
   },
   {
     title: "Evidence bound to a head",
-    enforced: "A result, a review and an acceptance each name the head they apply to. Atelier refuses a result or a review for any head but the item's current one, reads the head from Artifacts instead of taking the agent's word for it, and withdraws acceptance when a push moves the head.",
+    enforced: "A result, a review and an acceptance each name the head they apply to. Atelier refuses a result or a review for any head but the task's current one, reads the head from Artifacts instead of taking the agent's word for it, and withdraws acceptance when a push moves the head.",
     why: "An approval of one revision must not authorise another, and a pass at one revision says nothing about the next.",
     where: [{ file: "src/rules.ts", symbol: "assertRevision" }, { file: "src/ledger.ts", symbol: "recordPush" }],
   },
   {
     title: "Independent review of protected paths",
-    enforced: "A change that touches a protected path needs an approving review from a model of another family than every model that contributed to the item, in every project, with or without a ControlPlane policy. The family is read from the model's name, and a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md` and `wrangler.*`) and what a required check executes: the scripts it runs, the recipe files of make and just, the manifest and configuration a package manager or build tool runs scripts from, and the local binary npx would run. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from any agent who did not contribute, and the owner's approval is not that review either.",
+    enforced: "A change that touches a protected path needs an approving review from a model of another family than every model that contributed to the task, in every project, with or without a ControlPlane policy. The family is read from the model's name, and a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md` and `wrangler.*`) and what a required check executes: the scripts it runs, the recipe files of make and just, the manifest and configuration a package manager or build tool runs scripts from, and the local binary npx would run. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from any agent who did not contribute, and the owner's approval is not that review either.",
     why: "The model that wrote a change to the files that instruct agents or grade their work must not approve it, and nor should a model of its family, which is likely to share its blind spots.",
     where: [{ file: "src/rules.ts", symbol: "changeClass" }, { file: "src/rules.ts", symbol: "checkFiles" }, { file: "src/rules.ts", symbol: "independentApproval" }, { file: "src/rules.ts", symbol: "reviewOverrideFor" }],
   },
   {
     title: "No self-review",
-    enforced: "The item's current owner cannot record a review of it. Everyone who has held the item or pushed to its workspace stays a contributor, so a review by any of them never counts as the independent one.",
+    enforced: "The task's current owner cannot record a review of it. Everyone who has held the task or pushed to its workspace stays a contributor, so a review by any of them never counts as the independent one.",
     why: "A review by the author checks nothing.",
     where: [{ file: "src/ledger.ts", symbol: "addReview" }, { file: "src/rules.ts", symbol: "pushActors" }],
   },
@@ -144,7 +144,7 @@ export const RULES: Rule[] = [
   },
   {
     title: "Tokens scoped to an actor",
-    enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading. Creating items, accepting, merging, dispatching, the model pool, project settings and token management need the owner token, and agent tokens cannot sign in to the browser.",
+    enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the owner token, and agent tokens cannot sign in to the browser.",
     why: "A leaked or misused agent token can act only as its own actor, in its own projects, and cannot decide for the owner.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }, { file: "src/tokens.ts", symbol: "tokenActive" }, { file: "src/tokens.ts", symbol: "inScope" }],
   },
@@ -198,7 +198,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Plan ledger", stage: "t15, build step 5", built: true,
-    what: "The project's ledger keeps plans. A plan is an item whose planner is dispatched as a plan job and posts a plan document; each valid proposal is kept, unchanged, and an invalid one gets the planner one more attempt before the plan blocks. The owner approves the newest proposal by its hash, once: the routing of each part is fixed then, with the limits (2 parts live, 3 attempts a part, 4 dispatches a part, 24 hours), and the parts become items. After each push, check, review, submit, release, merge or abandon of a part, and at the deadline, the ledger runs `planActions` and dispatches what may start, as `atelier/orchestrator`, or blocks the plan with the reason. The inbox gains `approve-plan` and `plan-blocked`; a part never appears there to accept, review, fix, rescope or hand off, and items of one plan are not flagged as overlapping. Until the integration branch exists, each part reaches main by the owner's own merge, and the plan is complete when every part has merged.",
+    what: "The project's ledger keeps plans. A plan is a task whose planner is dispatched as a plan job and posts a plan document; each valid proposal is kept, unchanged, and an invalid one gets the planner one more attempt before the plan blocks. The owner approves the newest proposal by its hash, once: the routing of each part is fixed then, with the limits (2 parts live, 3 attempts a part, 4 dispatches a part, 24 hours), and the parts become tasks. After each push, check, review, submit, release, merge or abandon of a part, and at the deadline, the ledger runs `planActions` and dispatches what may start, as `atelier/orchestrator`, or blocks the plan with the reason. The inbox gains `approve-plan` and `plan-blocked`; a part never appears there to accept, review, fix, rescope or hand off, and tasks of one plan are not flagged as overlapping. Until the integration branch exists, each part reaches main by the owner's own merge, and the plan is complete when every part has merged.",
     files: ["src/plans/state.ts", "test/plans.spec.ts"],
     code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/ledger.ts", symbol: "postPlan" }],
   },
@@ -222,7 +222,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Review rules", stage: "t39, build step 8", built: true,
-    what: "`src/review/` decides when a submission gets an automatic review, and how the review is asked for and read. `reviewNeeded` asks for one once every required check is observed passing at the head and the changed paths are measured, unless that head already has an approval that suffices, a rejection awaiting rework, an open request or, outside a plan, the owner's override. The owner's approval never suffices. Every part of a plan is reviewed; any other item only when the gate needs an independent review. `pickReviewer` takes a model whose family is recognised and differs from every contributor's, available, not refused and paid only when allowed, and names each model it passed over and why. `reviewBrief` writes what the reviewer reads, fencing quoted text so it cannot pose as instructions. `parseVerdict` reads the reply and refuses one that states no verdict, states both, or gives findings that contradict its verdict; a rejection needs a blocking finding.",
+    what: "`src/review/` decides when a submission gets an automatic review, and how the review is asked for and read. `reviewNeeded` asks for one once every required check is observed passing at the head and the changed paths are measured, unless that head already has an approval that suffices, a rejection awaiting rework, an open request or, outside a plan, the owner's override. The owner's approval never suffices. Every part of a plan is reviewed; any other task only when the gate needs an independent review. `pickReviewer` takes a model whose family is recognised and differs from every contributor's, available, not refused and paid only when allowed, and names each model it passed over and why. `reviewBrief` writes what the reviewer reads, fencing quoted text so it cannot pose as instructions. `parseVerdict` reads the reply and refuses one that states no verdict, states both, or gives findings that contradict its verdict; a rejection needs a blocking finding.",
     files: ["src/review/needed.ts", "src/review/reviewer.ts", "src/review/brief.ts", "src/review/verdict.ts"],
     code: [{ file: "src/review/needed.ts", symbol: "reviewNeeded" }, { file: "src/review/reviewer.ts", symbol: "pickReviewer" }, { file: "src/review/brief.ts", symbol: "reviewBrief" }, { file: "src/review/verdict.ts", symbol: "parseVerdict" }],
   },
@@ -234,7 +234,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Integration rules", stage: "t16, build step 11", built: true,
-    what: "`src/plans/integrate.ts` holds the rules for merging parts into a plan's branch. `integrationBlockers` lets a part in only when it is submitted, every part it depends on has landed, and its head carries an approval from a model of another family than its builders; the owner's approval is not one, and a part takes no override. `verifyIntegration` accepts the integrator's merge commit only when it has exactly two parents, sits on the branch's first-parent line, and merges the part's head onto the integration head, the branch's head as the ledger last recorded it. `rollbackFor` says how a failed integration is undone, and refuses when that would discard commits it did not make. `planGate` adds to the plan item's gate: every part integrated or abandoned before integration, at least one integrated, each integrated part approved at the head that was integrated, and the branch's head at the integration head.",
+    what: "`src/plans/integrate.ts` holds the rules for merging parts into a plan's branch. `integrationBlockers` lets a part in only when it is submitted, every part it depends on has landed, and its head carries an approval from a model of another family than its builders; the owner's approval is not one, and a part takes no override. `verifyIntegration` accepts the integrator's merge commit only when it has exactly two parents, sits on the branch's first-parent line, and merges the part's head onto the integration head, the branch's head as the ledger last recorded it. `rollbackFor` says how a failed integration is undone, and refuses when that would discard commits it did not make. `planGate` adds to the plan task's gate: every part integrated or abandoned before integration, at least one integrated, each integrated part approved at the head that was integrated, and the branch's head at the integration head.",
     files: ["src/plans/integrate.ts"],
     code: [{ file: "src/plans/integrate.ts", symbol: "integrationBlockers" }, { file: "src/plans/integrate.ts", symbol: "verifyIntegration" }, { file: "src/plans/integrate.ts", symbol: "rollbackFor" }, { file: "src/plans/integrate.ts", symbol: "planGate" }],
   },
