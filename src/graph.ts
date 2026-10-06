@@ -217,7 +217,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       case "evidence.observed": {
         t.checks++;
         if (d.where === "sandbox") t.inCloud++;
-        const where = d.where === "sandbox" ? "in a Cloudflare container" : "on the agent's machine";
+        const where = `${d.merged ? "on the merge with main " : ""}${d.where === "sandbox" ? "in a Cloudflare container" : "on the agent's machine"}`;
         if (d.passed === false) { bead("fail", R ? `Failed ${where}` : `Failed ${where}: ${str(d.claim)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`); say(`A check on ${id} failed ${where}`, "catch"); }
         else bead("pass", R ? `Passed ${where}` : `Passed ${where}: ${str(d.claim)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`);
         break;

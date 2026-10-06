@@ -30,8 +30,8 @@ import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./puls
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, stateLabel, modelOf, modelKey,
+  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -1130,6 +1130,9 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   const action = (verb: string) => href("ui", p.name, item.id, verb);
   const revision = `<input type="hidden" name="head" value="${e(item.head ?? "")}">`;
   const evidenceVisible = !!diff && diff !== "unavailable" && diff.head === item.head;
+  // The checks on the would-be merge, read against main's head as the
+  // preview read it, so a run main has moved past is marked stale.
+  const mergedChecks = diff && diff !== "unavailable" && diff.main ? mergedChecksAt(d.policy, d.evidence, item.head, diff.main.head) : undefined;
 
   const reject = live && item.head
     ? `<details class="request-changes"><summary>Request changes</summary>
@@ -1241,14 +1244,16 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     ? `<div class="notice"><h3>${gate.changeClass === "coordinated" ? "Coordinated change" : "Protected change"}</h3><p>${e(gate.requirement ? `${gate.requirement}.` : "These files affect protected behavior and need an approval from a model of another family than every contributor.")} Your own approval does not count as that review.</p></div>`
     : "";
 
+  // The head's own runs: a merged check ran on another tree and is shown
+  // beside the merge preview instead.
   const checkRows = view.checks.map((c) => {
     const last = d.evidence
-      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
+      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
       .sort((a, b) => a.at.localeCompare(b.at))
       .pop();
     const status = c.grade === "pending" ? tag("Waiting", "ask") : c.passed ? tag("Passed", "go") : tag("Failed", "bad");
     const where = c.grade === "observed" ? whereChip(c.where) : "";
-    const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && x.where !== "sandbox");
+    const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && x.where !== "sandbox");
     const detail = last
       ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}`
       : uncounted
@@ -1303,7 +1308,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   return `${header}
 ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
-<section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
+<section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
   ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
@@ -1348,7 +1353,7 @@ export function renderFile(f: FileChange, open: boolean): string {
   return `<details class="file"${open ? " open" : ""}><summary><span class="tag ${tone}">${label}</span><code>${e(f.path)}</code>${counts}</summary>${body}</details>`;
 }
 
-function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null): string {
+function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null, merged?: MergedCheckView): string {
   if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
   if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
   if (!diff.files.length) return `<p class="empty">No changes: the workspace at <span class="mono">${short(diff.head)}</span> holds the same tree as main at <span class="mono">${short(diff.base)}</span>.</p>`;
@@ -1365,22 +1370,47 @@ function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string 
     ? ` Paths main changed since this task forked, and the workspace has not taken, are listed here as the workspace's changes until <code>atelier update</code> brings them in.`
     : "";
   return `${moved}<p class="meta">${summary}${behind}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
-${renderMainPreview(diff.main)}
+${renderMainPreview(diff.main, merged)}
 ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 }
 
-// Whether the task would merge into main as main is now. Read only; the merge
-// itself is still made by atelier merge.
-export function renderMainPreview(m: MainPreview | null | undefined): string {
+// Whether the task would merge into main as main is now, with the checks run
+// on that merge beside it. Read only; the merge itself is still made by
+// atelier merge.
+export function renderMainPreview(m: MainPreview | null | undefined, merged?: MergedCheckView): string {
   if (m === undefined) return "";
   if (m === null) return `<p class="meta">Whether this merges cleanly into main could not be read just now.</p>`;
   const plural = (n: number, w: string) => `${n.toLocaleString("en")} ${w}${n === 1 ? "" : "s"}`;
-  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date", "go")} Main has not moved since this task forked; it merges as it is.</p>`;
+  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date", "go")} Main has not moved since this task forked; it merges as it is.</p>${renderMergedChecks(merged, m, false)}`;
   const moved = `Main has moved ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} along its first-parent line since this task forked (a merge counts once), changing ${plural(m.merge.ours, "path")}`;
   if (m.merge.clean) {
     const shared = m.merge.both.length ? `; both sides changed ${plural(m.merge.both.length, "path")}, and the changes do not overlap` : "; none of them are paths this task changed";
-    return `<p class="merge-preview">${tag("Merges cleanly", "go")} ${moved}${shared}.</p>`;
+    return `<p class="merge-preview">${tag("Merges cleanly", "go")} ${moved}${shared}.</p>${renderMergedChecks(merged, m, true)}`;
   }
   const rows = m.merge.conflicts.map((c) => `<li><code>${e(c.path)}</code> <span class="meta">${e(c.reason)}</span></li>`).join("");
-  return `<div class="merge-preview">${tag(plural(m.merge.conflicts.length, "conflict"), "bad")} ${moved}. Merging now would stop at:<ul class="merge-conflicts">${rows}</ul><p class="meta">Bring main into the task's workspace and resolve these before accepting.</p></div>`;
+  return `<div class="merge-preview">${tag(plural(m.merge.conflicts.length, "conflict"), "bad")} ${moved}. Merging now would stop at:<ul class="merge-conflicts">${rows}</ul><p class="meta">Bring main into the task's workspace and resolve these before accepting.</p></div>${renderMergedChecks(merged, m, false)}`;
+}
+
+// The required checks run on the would-be merge: each one's latest run at
+// this revision, with the main head it merged with, marked stale once main
+// has moved past it. A merged check is shown, never required, except that a
+// failing one blocks acceptance when main moved after the revision's own
+// checks passed (see mergedBlockers in src/rules.ts), until a merged run
+// passes or the head moves; a later run of the revision's own checks does
+// not clear it. The readiness details then say so. `offer` names the command when no run exists yet and
+// main has moved, where the revision's own checks say nothing about the merge.
+function renderMergedChecks(merged: MergedCheckView | undefined, m: MainPreview, offer: boolean): string {
+  if (!merged || !merged.checks.length) return "";
+  if (!merged.run) {
+    return offer
+      ? `<p class="meta merge-checks">Checks on the merge: not run. <code>atelier check --merged</code> runs the required checks on the merge of this revision with main at <code>${short(m.head)}</code>, locally or with <code>--sandbox</code>.</p>`
+      : "";
+  }
+  const rows = merged.checks.map((c) => {
+    if (c.grade === "pending") return `<li>${tag("Not run", "ask")}<code>${e(c.claim)}</code></li>`;
+    const status = c.passed ? tag("Passed", "go") : tag("Failed", "bad");
+    const stale = c.stale ? ` ${tag("Stale", "ask")}<span class="meta">main is now at <code>${short(m.head)}</code>; run <code>atelier check --merged</code> again</span>` : "";
+    return `<li>${status}<code>${e(c.claim)}</code>${whereChip(c.where)}<span class="meta">with main at <code>${short(c.mainHead ?? null)}</code>${c.by ? ` · ${e(c.by)}` : ""}${c.at ? ` · ${when(c.at)}` : ""}</span>${stale}</li>`;
+  }).join("");
+  return `<div class="merge-checks"><p class="meta">Checks on the merge with main, at this revision:</p><ul class="merge-check-rows">${rows}</ul></div>`;
 }

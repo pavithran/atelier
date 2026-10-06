@@ -219,7 +219,7 @@ const FLAGS = {
   claim: { runner: false },
   push: { force: true },
   update: {},
-  check: { sandbox: true },
+  check: { sandbox: true, merged: true },
   gc: { "dry-run": true, apply: true },
   report: { item: false },
   submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
@@ -668,6 +668,29 @@ function cleanClone(remote, token, head, baseline, name) {
   return { dir, changed, againstMain };
 }
 
+// The would-be merge, for atelier check --merged: a temporary merge commit of
+// the clone's head with main's head, which cleanClone fetched to FETCH_HEAD.
+// It is made in the clean clone with hooks and signing off, under an identity
+// of its own, and goes away with the clone; nothing pushes it. Returns main's
+// head, which the evidence is bound to. A merge that stops on conflicts ends
+// the command: the preview on the item page lists the same paths, and the
+// workspace's owner resolves them with atelier update.
+function mergeWithMain(dir, id) {
+  const main = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
+  if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
+    process.stderr.write(`atelier: main at ${short(main)} is already in this revision; the merge is the revision itself\n`);
+    return main;
+  }
+  const r = git(["-c", "user.name=atelier", "-c", "user.email=atelier@localhost", "-c", "commit.gpgsign=false", "merge", "--no-ff", "--no-verify", "--no-edit", "-m", `atelier check --merged: main at ${main}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+  if (r.status !== 0) {
+    const conflicts = git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir, allowFail: true }).stdout.trim();
+    git(["merge", "--abort"], { cwd: dir, allowFail: true });
+    die(`the merge of ${id} with main at ${short(main)} stops${conflicts ? ` on conflicts in:\n${conflicts}` : `:\n${(r.stderr || r.stdout).trim()}`}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
+  }
+  process.stderr.write(`atelier: merged with main at ${short(main)} in the clean clone\n`);
+  return main;
+}
+
 // Runs one check with checkEnv's variables and returns its output with every
 // secret in `secrets` redacted. The output is redacted whole, before anything
 // cuts its tail, so no part of a secret survives at the cut, and the hash is
@@ -811,7 +834,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
     },
     tests: view.map((e) =>
       e.grade === "observed"
-        ? `Observed by Atelier in a clean clone at ${short(e.head)}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
+        ? `Observed by Atelier in a clean clone at ${short(e.head)}${e.merged ? ` merged with main at ${short(e.mainHead)}` : ""}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
         : `Reported, not verified: ${e.claim} (${e.by}, ${e.at})`),
     next_gate: `${OWNER_NAME} chooses the next work. The merge is not deployed and not pushed to the project's own remotes.`,
     protected_actions_not_taken: [
@@ -832,8 +855,11 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
 // here. The Worker records the results itself; this only starts and waits.
 async function checkInSandbox() {
   const name = project(), id = itemArg(), as = await actor();
-  const { runId } = await call("POST", `${I(name, id)}/sandbox`, {}, as);
-  process.stderr.write(`atelier: running the checks for ${id} in a Cloudflare container (run ${runId})…\n`);
+  // --merged asks for the checks on the merge of the head with main's head;
+  // the Worker builds that tree itself and records the results bound to both.
+  const merged = args.merged === true;
+  const { runId } = await call("POST", `${I(name, id)}/sandbox`, merged ? { merged: true } : {}, as);
+  process.stderr.write(`atelier: running the checks for ${id}${merged ? " on its merge with main" : ""} in a Cloudflare container (run ${runId})…\n`);
   let state;
   for (let waited = 0; ; waited += 5) {
     state = await call("GET", `${I(name, id)}/sandbox/${encodeURIComponent(runId)}`, undefined, as);
@@ -841,12 +867,14 @@ async function checkInSandbox() {
     if (waited > 20 * 60) die(`still ${state.status} after 20 minutes; check later with atelier show ${id}`);
     await new Promise((ok) => setTimeout(ok, 5000));
   }
+  const on = state.request?.merged && state.mainHead ? ` merged with main ${short(state.mainHead)}` : "";
   for (const r of state.results ?? []) {
-    if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}  (not run: this change touches none of the paths it applies to)`); continue; }
-    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}  (${r.seconds}s, in Cloudflare)`);
+    if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}${on}  (not run: this change touches none of the paths it applies to)`); continue; }
+    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}${on}  (${r.seconds}s, in Cloudflare)`);
     if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
   }
-  if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
+  if (on) console.log(`Recorded on the merge with main at ${short(state.mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
+  else if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
   if (state.results.some((r) => r.passed === false)) {
@@ -1744,8 +1772,13 @@ const commands = {
     // token, the read tokens for the fork and the baseline, and the write
     // token in the workspace's Git settings.
     const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
-    let failed = 0, recorded;
+    let failed = 0, recorded, mainHead;
     try {
+      // --merged checks the would-be merge: the head merged with main's head,
+      // in this clone. The evidence is bound to both revisions, and the
+      // Worker refuses a main head that is not on main's line.
+      if (args.merged) mainHead = mergeWithMain(dir, id);
+      const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
       for (const cmd of cmds) {
         // A registered check whose paths this change does not touch is not
         // run. It is recorded as not applicable, which the Worker accepts only
@@ -1762,14 +1795,15 @@ const commands = {
         // list, which is sent only so a deployment without that measurement
         // still records one. The list printed below is the one the Worker
         // recorded, which is the one the gate reads; this clone's is shown only
-        // when the reply carries none.
+        // when the reply carries none. A merged check measures no paths.
         const d = await call("POST", `${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+          ...(mainHead ? { merged: true, mainHead } : {}),
         }, as);
-        const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
+        const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
         if (row) recorded = row.changedPaths;
-        console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}`);
+        console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}`);
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
     } finally {
@@ -1777,7 +1811,8 @@ const commands = {
       rmSync(markerPath(dir), { force: true });
     }
     const paths = recorded === undefined ? changed : recorded;
-    console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
+    if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
+    else console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
     if (failed) {
       if (doneStep) die("required checks failed", 2);
       process.exit(2);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, validActor,
-  decisionFor, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
+  decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
@@ -746,4 +746,96 @@ test("pathCollisions names each group of paths that would share one file, where 
   // A file and a directory of the same folded name are one name on the disk.
   assert.deepEqual(pathCollisions(["readme", "README/a.md"]), [["readme", "README"]]);
   assert.deepEqual(pathCollisions(["a.md", "b/a.md", "B.md"]), []);
+});
+
+// The checks on the would-be merge, the head merged with main as it is now,
+// are bound to both revisions: they stand beside the merge preview and never
+// in place of the head's own run.
+test("a merged check never satisfies the head's own check, and is read beside the preview with its main head", () => {
+  const M0 = "c".repeat(40), M1 = "d".repeat(40);
+  const merged = pass({ merged: true, mainHead: M1, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  assert.equal(evidenceAt(policy, [merged], H1).checks[0].grade, "pending");
+  assert.equal(evidenceAt(policy, [merged], H1).changedPaths, null);
+  assert.match(gate(item(), policy, [merged], []).blockers.join(), /not yet observed at this head/);
+  const view = mergedChecksAt(policy, [merged], H1, M1);
+  assert.deepEqual(view.checks.map((c) => [c.claim, c.grade, c.passed, c.mainHead, c.stale, c.where]), [["npm test", "observed", true, M1, false, "runner"]]);
+  assert.equal(view.run, true);
+  assert.equal(mergedChecksAt(policy, [merged], H1, M0).checks[0].stale, true, "stale once main has moved past the head it merged with");
+  assert.equal(mergedChecksAt(policy, [merged], H2, M1).run, false, "a new head retires every merged run");
+  assert.deepEqual(mergedChecksAt(policy, [], H1, M1), { checks: [{ claim: "npm test", grade: "pending", passed: null, stale: false }], run: false });
+  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on the agent's machine does not count");
+  // The head's own run records main's head too, and is still the head's check.
+  const own = pass({ mainHead: M0 });
+  assert.deepEqual(evidenceAt(policy, [own], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "runner", mainHead: M0 }]);
+});
+
+test("a failing merged check blocks only when main moved after the head's own checks passed, until a later run passes", () => {
+  const M0 = "c".repeat(40), M1 = "d".repeat(40), M2 = "e".repeat(40);
+  const own = pass({ mainHead: M0 });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  const g = gate(item(), policy, [own, failing], []);
+  assert.equal(g.ready, false);
+  assert.deepEqual(g.blockers, ["`npm test` failed on the merge with main at dddddddd, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace"]);
+  assert.deepEqual(mergedBlockers(policy, [own, failing], H1), g.blockers);
+  const decision = decisionFor(item(), policy, [own, failing], []);
+  assert.equal(decision.title, "Checks need attention");
+  assert.match(decision.detail, /fail on its merge with main/);
+  assert.equal(inboxFor("p", [item()], policy, [own, failing], [], new Date(T))[0]?.kind, "failing");
+  // Shown, not required: main had not moved when the head's own check passed against the same commit.
+  assert.equal(gate(item(), policy, [pass({ mainHead: M1 }), failing], []).ready, true);
+  // A head check that recorded no main head cannot say main moved.
+  assert.equal(gate(item(), policy, [pass(), failing], []).ready, true);
+  // A merged run that precedes every run of the head's own check leaves nothing to compare main with, and the head's own run that follows does not clear it (t178).
+  assert.equal(gate(item(), policy, [pass({ mainHead: M0, at: "2026-10-03T15:00:00.000Z" }), failing], []).ready, false);
+  // A passing merged run never blocks, and a later one clears an earlier failure.
+  assert.equal(gate(item(), policy, [own, pass({ merged: true, mainHead: M1, changedPaths: null })], []).ready, true);
+  assert.equal(gate(item(), policy, [own, failing, pass({ merged: true, mainHead: M2, changedPaths: null, at: "2026-10-03T14:00:00.000Z" })], []).ready, true);
+  // While the head's own check is pending or failing, that check is the blocker.
+  assert.deepEqual(gate(item(), policy, [failing], []).blockers.filter((b) => b.includes("merge")), []);
+  assert.deepEqual(gate(item(), policy, [own, pass({ passed: false, mainHead: M0, at: "2026-10-03T12:30:00.000Z" }), failing], []).blockers.filter((b) => b.includes("merge")), []);
+  // Under sandboxOnly, a merged run on the agent's machine neither blocks nor counts.
+  const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
+  assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), failing], []).ready, true);
+  assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), { ...failing, where: "sandbox" }], []).ready, false);
+});
+
+// PAVI's decision of 2026-10-06 (t178): a failing merged check at the head
+// stands until a merged run passes or the head moves. The head's own check,
+// run again later, passes on the head's tree and says nothing about the merge.
+test("a failing merged check survives a later plain run of the head's own check", () => {
+  const M0 = "c".repeat(40), M1 = "d".repeat(40);
+  const own = pass({ mainHead: M0 });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  assert.equal(gate(item(), policy, [own, failing], []).ready, false);
+  // Run again later against main as it now is: the same main head the merged run named.
+  const again = pass({ mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
+  const g = gate(item(), policy, [own, failing, again], []);
+  assert.equal(g.ready, false);
+  assert.deepEqual(g.blockers, mergedBlockers(policy, [own, failing], H1));
+  assert.equal(mergedBlockers(policy, [own, failing, again], H1).length, 1);
+  // And against the older main head the first run saw.
+  assert.equal(gate(item(), policy, [own, failing, pass({ mainHead: M0, at: "2026-10-03T14:00:00.000Z" })], []).ready, false);
+  // The head's own check still has to pass: a later failing plain run is the blocker, not the merged one.
+  assert.deepEqual(gate(item(), policy, [own, failing, pass({ passed: false, mainHead: M1, at: "2026-10-03T14:00:00.000Z" })], []).blockers.filter((b) => b.includes("merge")), []);
+});
+
+test("a passing merged run clears a failing one, whatever plain runs came between", () => {
+  const M1 = "d".repeat(40);
+  const own = pass({ mainHead: "c".repeat(40) });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  const again = pass({ mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
+  const passing = pass({ merged: true, mainHead: M1, changedPaths: null, at: "2026-10-03T15:00:00.000Z" });
+  assert.equal(gate(item(), policy, [own, failing, again], []).ready, false);
+  assert.equal(gate(item(), policy, [own, failing, again, passing], []).ready, true);
+  assert.deepEqual(mergedBlockers(policy, [own, failing, again, passing], H1), []);
+});
+
+test("a new head clears a failing merged check", () => {
+  const M1 = "d".repeat(40);
+  const own = pass({ mainHead: "c".repeat(40) });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  assert.equal(mergedBlockers(policy, [own, failing], H1).length, 1);
+  assert.deepEqual(mergedBlockers(policy, [own, failing], H2), []);
+  const next = pass({ head: H2, mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
+  assert.equal(gate(item({ head: H2 }), policy, [own, failing, next], []).ready, true);
 });

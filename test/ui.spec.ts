@@ -863,6 +863,36 @@ it('the standing page shows the newest session with escaped reported text', asyn
  expect(html).toContain('Reported: npm test: failed');
 });
 
+it('the checks on the would-be merge stand beside the preview, bound to the main head they merged with, and never as the revision\'s own check',async()=>{
+ const {renderMainPreview}=await import('../src/ui');
+ const {mergedChecksAt}=await import('../src/rules');
+ const M0='c'.repeat(40),M1='d'.repeat(40);
+ const preview=(mainHead:string,ahead=2)=>({head:mainHead,ahead,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:1,theirs:1}});
+ const merged=(over:Partial<Detail['evidence'][number]>={})=>({itemId:'t1',claim:'npm test',grade:'observed' as const,head,passed:true,by:'codex/gpt-6',at:time,changedPaths:null,merged:true,mainHead:M1,...over});
+ // Beside the preview: a current run, a stale one, and the offer when none was run.
+ const current=renderMainPreview(preview(M1),mergedChecksAt(project.policy,[merged()],head,M1));
+ expect(current).toContain('Checks on the merge with main, at this revision');
+ expect(current).toContain(`with main at <code>${M1.slice(0,8)}</code>`);
+ expect(current).toContain('<span class="tag go">Passed</span><code>npm test</code>');
+ expect(current).not.toContain('Stale');
+ const stale=renderMainPreview(preview(M0),mergedChecksAt(project.policy,[merged({passed:false})],head,M0));
+ expect(stale).toContain('<span class="tag bad">Failed</span><code>npm test</code>');
+ expect(stale).toContain('<span class="tag ask">Stale</span>');
+ expect(stale).toContain(`main is now at <code>${M0.slice(0,8)}</code>; run <code>atelier check --merged</code> again`);
+ const offer=renderMainPreview(preview(M1),mergedChecksAt(project.policy,[],head,M1));
+ expect(offer).toContain('Checks on the merge: not run. <code>atelier check --merged</code>');
+ expect(renderMainPreview(preview(M1,0),mergedChecksAt(project.policy,[],head,M1))).not.toContain('Checks on the merge');
+ expect(renderMainPreview(preview(M1))).not.toContain('Checks on the merge');
+ // On the item page the merged run is listed beside the preview, and the revision's own check still waits.
+ const d=detail();d.evidence=[merged()];d.gate={ready:false,needsAssessor:false,blockers:['`npm test` not yet observed at this head'],outOfScope:[]};
+ const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[{path:'src/a.ts',status:'modified',added:1,removed:0,hunks:[]}],truncated:false,main:preview(M1)});
+ expect(html).toContain('Checks on the merge with main, at this revision');
+ expect(html).toContain('<span class="tag ask">Waiting</span><code>npm test</code>');
+ expect(html).toContain('The task owner must run this required check.');
+ expect(html).not.toContain('Accept revision');
+ // Without a preview there is nothing to mark stale against, so the merged run is not shown beside it.
+ expect(renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false})).not.toContain('Checks on the merge');
+});
 it('a blocked task shows who blocked it and why, offers unblock and close only, and a live task offers the block form',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.item.state='blocked';d.item.blocked={reason:'waiting on <keys>',by:'codex/gpt-6',at:time,from:'submitted'};d.gate={ready:false,needsAssessor:false,blockers:['state is blocked, not submitted'],outOfScope:[]};

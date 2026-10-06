@@ -100,6 +100,13 @@ export interface Evidence {
   // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
   // Worker's own code can record "sandbox"; anything posted to the API is "runner".
   where?: "sandbox" | "runner";
+  // Main's head when an observed check was recorded, read by the Worker from
+  // Artifacts. A merged check ran on the merge of `head` with that commit
+  // rather than on `head` alone, so it is bound to both revisions: it is
+  // stale once main moves on, and it never satisfies a required check at the
+  // head, which the head's own run does.
+  mainHead?: string;
+  merged?: boolean;
   // An observed record that the check does not apply at this head: its paths
   // match none of the changed paths Atelier measured. It carries no result.
   notApplicable?: boolean;
@@ -639,16 +646,20 @@ export function checkApplies(policy: Pick<ProjectPolicy, "checkPaths">, command:
 // listed as not applicable and never blocks. Reports are listed but never
 // satisfy a check.
 export interface EvidenceView {
-  checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner" }[];
+  checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner"; mainHead?: string }[];
   notApplicable: string[];
   reports: Evidence[];
   changedPaths: string[] | null;  // null until an observed check has measured them
 }
 
+// Whether an observed result counts as a check at the head: a merged check
+// does not, since it ran on another tree, and under sandboxOnly a check run
+// on someone's machine is still shown but does not count.
+const countsAtHead = (policy: ProjectPolicy, e: Evidence) => e.grade === "observed" && !e.merged && (!policy.sandboxOnly || e.where === "sandbox");
+
 export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null): EvidenceView {
   const atHead = head ? evidence.filter((e) => e.head === head) : [];
-  // Under sandboxOnly, a check run on someone's machine is still shown but does not count.
-  const counts = (e: Evidence) => e.grade === "observed" && (!policy.sandboxOnly || e.where === "sandbox");
+  const counts = (e: Evidence) => countsAtHead(policy, e);
   const latest = (claim: string) =>
     atHead.filter((e) => counts(e) && !e.notApplicable && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
   const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
@@ -658,7 +669,7 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
   const checks = policy.checks.filter(applies).map((claim) => {
     const e = latest(claim);
     return e
-      ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner" }
+      ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", ...(e.mainHead ? { mainHead: e.mainHead } : {}) }
       : { claim, grade: "pending" as Grade, passed: null };
   });
   return {
@@ -667,6 +678,57 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
     reports: atHead.filter((e) => e.grade === "reported"),
     changedPaths,
   };
+}
+
+// The checks on the would-be merge at one head: for each required check, the
+// latest merged run at this head that counts, with the main head it merged
+// with. A run is stale once main has moved past that commit; a check with no
+// merged run is pending. Only the head's own moves retire a run outright,
+// since a merged run is bound to the head it names. A check that does not
+// apply to the change (checkApplies) is left out, as it is from the head's
+// own checks: a merged run of it is not needed either.
+export interface MergedCheckView {
+  checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner"; mainHead?: string; stale: boolean; at?: string; by?: string }[];
+  run: boolean;   // whether any merged check has been run at this head
+}
+
+export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, mainNow: string | null): MergedCheckView {
+  const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox")) : [];
+  const changed = evidenceAt(policy, evidence, head).changedPaths;
+  const checks = policy.checks.filter((claim) => checkApplies(policy, claim, changed) !== false).map((claim) => {
+    const e = runs.filter((e) => e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    return e
+      ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", mainHead: e.mainHead, stale: !!mainNow && e.mainHead !== mainNow, at: e.at, by: e.by }
+      : { claim, grade: "pending" as Grade, passed: null, stale: false };
+  });
+  return { checks, run: runs.length > 0 };
+}
+
+// A failing merged check blocks acceptance only where the head's own passing
+// run no longer speaks for the merge: main had moved on from the head that
+// run recorded by the time the merged check ran, so the merged run names
+// another main head. The comparison is with the head's own run the merged
+// run followed, and a head's own run made after it does not clear the
+// failure: that run passes on the head's tree and says nothing about the
+// merge (PAVI's decision of 2026-10-06, t178). Only a later merged run that
+// passes, or a new head, clears it. A merged check is never required, so a
+// pending one blocks nothing, and a failing one run against the same main as
+// the head's own check before it is shown and not counted. The latest merged
+// run per check decides. While the head's own check fails, it is the blocker.
+export function mergedBlockers(policy: ProjectPolicy, evidence: Evidence[], head: string | null): string[] {
+  const out: string[] = [];
+  for (const m of mergedChecksAt(policy, evidence, head, null).checks) {
+    if (m.grade !== "observed" || m.passed || !m.mainHead || !m.at) continue;
+    const own = evidence.filter((e) => e.head === head && e.claim === m.claim && !e.notApplicable && countsAtHead(policy, e)).sort((a, b) => a.at.localeCompare(b.at));
+    if (!own.at(-1)?.passed) continue;
+    // The head's own run the merged one followed says which main the head's
+    // check saw. With none before it, the latest run's main head is all the
+    // record holds. A run that names no main head cannot say main moved.
+    const ranAt = m.at, seen = own.filter((e) => e.at <= ranAt).at(-1) ?? own.at(-1)!;
+    if (!seen.mainHead || (seen.at <= ranAt && seen.mainHead === m.mainHead)) continue;
+    out.push(`\`${m.claim}\` failed on the merge with main at ${m.mainHead.slice(0, 8)}, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace`);
+  }
+  return out;
 }
 
 // A check runs from the item's own head, so an item could weaken the check it
@@ -842,6 +904,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
     if (c.grade === "pending") blockers.push(`\`${c.claim}\` not yet observed at this head`);
     else if (!c.passed) blockers.push(`\`${c.claim}\` failed when observed`);
   }
+  blockers.push(...mergedBlockers(policy, evidence, item.head));
   if (view.changedPaths === null) blockers.push("changed paths not yet observed");
   const changed = view.changedPaths ?? [];
   const kind = view.changedPaths === null ? null : changeClass(changed, policy);
@@ -1044,6 +1107,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
     return { title: "Ready to merge", detail, action: "merge", tone: "go", passed };
   }
   if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
+  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The task owner must bring main into the workspace, fix the result and finish again; running the revision's own checks again does not clear it, only a passing merged run or a new revision.", action: "none", tone: "bad", passed };
   // The owner's approval is recorded but is not the independent review, so
   // the page asks for a qualifying reviewer, and offers the override only
   // when the missing review is all that blocks, since it waives nothing else.
