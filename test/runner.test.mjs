@@ -6,7 +6,8 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, runOutcome } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, runOutcome, harnessEnv } from "../cli/runner.mjs";
+import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
@@ -57,6 +58,7 @@ test("parseConfig reports malformed config and invalid entries", () => {
 
 test("offerFrom includes only the server capability shape", () => {
   assert.deepEqual(offerFrom(config, "HOME:studio"), { runner: "home:studio", kind: "home", agents: [{ agent: entry.agent, models: entry.models }] });
+  assert.equal(offerFrom(config, "home:Studio").runner, "home:studio", "the whole name is normalized, as the server stores it");
   for (const name of [undefined, "studio", "cloud:studio", "home:", "home:two:parts", "home:../x"]) assert.throws(() => offerFrom(config, name));
   assert.throws(() => offerFrom({ agents: [] }, "home:studio"));
 });
@@ -114,6 +116,7 @@ function fixture(options = {}) {
   let reads = 0;
   const io = {
     log: (s) => logs.push(s), stopped: () => options.stopped ?? false,
+    env: options.env ?? {}, ownerTokens: () => { calls.push({ ownerTokens: true }); return options.ownerTokens ?? []; },
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
     async cli(argv, cwd) {
       calls.push({ argv, cwd });
@@ -344,12 +347,80 @@ test("timeout kills the process group even when its leader exits before a child 
       spawn(process.execPath, ['-e', ${JSON.stringify(child)}], {stdio: 'inherit'});
       ${UNTIL_TEST_EXITS}`;
     const start = Date.now();
-    const result = await execute([process.execPath, "-e", script], { capture: true, timeoutMs: 1000 });
+    // The timeout runs from the spawn, so it is also the budget for two node
+    // starts before "ready" is printed; a machine running another test suite
+    // stretches those past a second, so the budget is four.
+    const result = await execute([process.execPath, "-e", script], { capture: true, timeoutMs: 4000 });
     assert.equal(result.output, "ready");
     assert.equal(result.timedOut, true);
     assert.equal(result.signal, ignore ? "SIGKILL" : "SIGTERM");
-    assert.ok(Date.now() - start >= 5900);
+    assert.ok(Date.now() - start >= 8900);
   }
+});
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// Waits up to `ms` for the process to be gone, as a SIGKILL takes a moment to land.
+async function gone(pid, ms = 2000) {
+  for (const until = Date.now() + ms; alive(pid) && Date.now() < until;) await new Promise((ok) => setTimeout(ok, 20));
+  return !alive(pid);
+}
+
+test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 30_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-group-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pids = [];
+  t.after(() => { for (const pid of pids) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } });
+  for (const [ending, ignore] of [["exit 0", false], ["exit 1", false], ["exit 0", true], ["deadline", false]]) {
+    const file = join(dir, `${ending}-${ignore}.pid`);
+    // The leader starts a child in its own group, detached from its output,
+    // as code a harness ran might, waits until the child has written its pid
+    // (and set its SIGTERM handler), then ends as `ending` says.
+    const child = `${ignore ? "process.on('SIGTERM', () => {});" : ""} require('node:fs').writeFileSync(${JSON.stringify(file)}, String(process.pid)); ${UNTIL_TEST_EXITS}`;
+    const leader = `const fs = require('node:fs');
+      require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: 'ignore' }).unref();
+      const written = () => { try { return fs.readFileSync(${JSON.stringify(file)}, 'utf8'); } catch { return ''; } };
+      while (!written()) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      ${ending === "deadline" ? UNTIL_TEST_EXITS : `process.exit(${ending.slice(5)})`}`;
+    const start = Date.now();
+    const result = await execute([process.execPath, "-e", leader], { capture: true, timeoutMs: ending === "deadline" ? 1000 : 20_000, graceMs: 1000 });
+    const took = Date.now() - start;
+    const pid = Number(readFileSync(file, "utf8"));
+    pids.push(pid);
+    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
+    assert.equal(result.timedOut, ending === "deadline", label);
+    if (ending !== "deadline") assert.equal(result.code, Number(ending.slice(5)), label);
+    assert.ok(await gone(pid), `the background child is gone once execute returns: ${label}`);
+    // A group that ends at SIGTERM ends the wait at once; one that ignores it waits out the grace period.
+    assert.ok(ignore ? took >= 1000 : took < (ending === "deadline" ? 1000 : 0) + 900, `${label}: ${took} ms`);
+  }
+});
+
+test("a second interrupt kills a harness that ignores SIGTERM before the runner exits", { timeout: 30_000 }, async (t) => {
+  const { dir, workspace, path } = gitWorkspace(t);
+  const pidFile = join(dir, "harness.pid"), script = join(dir, "harness.mjs");
+  writeFileSync(script, `import { writeFileSync } from "node:fs"; process.on("SIGTERM", () => {});
+    writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${UNTIL_TEST_EXITS}`);
+  writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
+  // The runner runs in a process of its own, as `atelier runner` does, so a
+  // real process.exit ends it; the atelier commands it would run are stubbed.
+  const runner = join(dir, "run.mjs");
+  writeFileSync(runner, `import { runRunner, execute } from ${JSON.stringify(new URL("../cli/runner.mjs", import.meta.url).href)};
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: ${JSON.stringify(path)}, once: true }, {
+      workspacePath: () => ${JSON.stringify(workspace)}, queue: async () => [${JSON.stringify(assignment)}],
+      executeChild: (argv, options) => argv[1]?.endsWith("atelier.mjs") ? execute([process.execPath, "-e", ""], options) : execute(argv, options),
+    });`);
+  const child = spawn(process.execPath, [runner], { stdio: "ignore" });
+  const exited = new Promise((ok) => child.on("exit", (code) => ok(code)));
+  t.after(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } });
+  while (!existsSync(pidFile) || !readFileSync(pidFile, "utf8")) await new Promise((ok) => setTimeout(ok, 20));
+  const harness = Number(readFileSync(pidFile, "utf8"));
+  t.after(() => { try { process.kill(harness, "SIGKILL"); } catch { /* gone */ } });
+  child.kill("SIGINT");
+  await new Promise((ok) => setTimeout(ok, 300));
+  assert.ok(alive(harness), "one interrupt leaves the harness its grace period");
+  child.kill("SIGINT");
+  assert.equal(await exited, 130);
+  assert.ok(await gone(harness), "the harness is killed, not left running after the runner exits");
 });
 
 test("timed out tasks release only uncommitted work", async () => {
@@ -832,13 +903,107 @@ test("an opencode run gets a data folder beside the workspace, removed as the ha
   }
 });
 
-test("other harnesses run with the runner's environment and no data folder", async () => {
+test("other harnesses run with no data folder", async () => {
   const claude = { ...entry, agent: "claude-code" };
-  const { io, calls, homes } = fixture();
+  const { io, calls, homes } = fixture({ env: { PATH: "/bin" } });
   const state = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${entry.models[0]}` }, { agents: [claude] }, "home:studio", io);
   assert.equal(state.phase, "submitted");
   assert.deepEqual(homes, [{ ran: undefined }]);
-  assert.equal(calls.find((c) => c.harness).env, undefined);
+  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin" });
+});
+
+// The variables of a runner's environment on the owner's Mac, with dummy values.
+const RUNNER_ENV = {
+  PATH: "/usr/bin:/bin", HOME: "/Users/owner", USER: "owner", LANG: "en_US.UTF-8", TMPDIR: "/tmp/",
+  ATELIER_TOKEN: "atl_DUMMY_OWNER_TOKEN_0000", ATELIER_SERVER: "https://atelier.example",
+  HF_TOKEN: "hf_DUMMY0000", AZURE_SPEECH_KEY: "DUMMY-azure", TYPESAFE_API_KEY: "DUMMY-typesafe",
+  ANTHROPIC_API_KEY: "sk-ant-DUMMY", ZAI_API_KEY: "DUMMY-zai", SSH_AUTH_SOCK: "/tmp/agent.sock", NODE_OPTIONS: "--require /tmp/x.js",
+};
+
+test("harnessEnv gives what a check gets, and the variables the entry names unless one holds the owner's token", () => {
+  assert.deepEqual(harnessEnv(RUNNER_ENV), { env: checkEnv(RUNNER_ENV), withheld: [] });
+  assert.deepEqual(harnessEnv(RUNNER_ENV).env, { PATH: "/usr/bin:/bin", HOME: "/Users/owner", USER: "owner", LANG: "en_US.UTF-8", TMPDIR: "/tmp/" });
+  const base = { ...RUNNER_ENV, COPY: `Bearer ${RUNNER_ENV.ATELIER_TOKEN}`, STORED: "stored-owner-token" };
+  const { env, withheld } = harnessEnv(base, ["ZAI_API_KEY", "TERM", "COPY", "STORED", "ATELIER_TOKEN", "atelier_server"], [RUNNER_ENV.ATELIER_TOKEN, "stored-owner-token"]);
+  assert.deepEqual(env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai" }, "a named variable that is not set is left out");
+  assert.deepEqual(withheld, ["COPY", "STORED"]);
+  for (const name of ["ATELIER_TOKEN", "ATELIER_SERVER", "HF_TOKEN", "AZURE_SPEECH_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK", "NODE_OPTIONS"]) assert.ok(!(name in env), name);
+});
+
+test("the runner config names the variables a harness also gets, never an ATELIER_ one", () => {
+  const parsed = parseConfig({ agents: [{ ...entry, env: ["ZAI_API_KEY", "XDG_CONFIG_HOME"] }] });
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.agents[0].env, ["ZAI_API_KEY", "XDG_CONFIG_HOME"]);
+  assert.equal("env" in parseConfig(config).agents[0], false);
+  for (const [env, why] of [
+    ["ZAI_API_KEY", /env must list distinct environment variable names/], [[7], /env must list/], [["two words"], /env must list/],
+    [["1ST"], /env must list/], [["A=B"], /env must list/], [["ZAI_API_KEY", "ZAI_API_KEY"], /env must list/],
+    [["ATELIER_TOKEN"], /must not name an ATELIER_ variable/], [["atelier_server"], /must not name an ATELIER_ variable/],
+  ]) {
+    const result = parseConfig({ agents: [{ ...entry, env }] });
+    assert.match(result.errors.join("; "), why, JSON.stringify(env));
+    assert.deepEqual(result.agents, []);
+  }
+});
+
+test("runTask hands the harness the filtered environment, and reads the owner's token only for named variables", async () => {
+  const base = { ...RUNNER_ENV, OWNER_COPY: RUNNER_ENV.ATELIER_TOKEN };
+  const named = { ...entry, env: ["ZAI_API_KEY", "OWNER_COPY"] };
+  const { io, calls, logs } = fixture({ env: base, ownerTokens: [RUNNER_ENV.ATELIER_TOKEN] });
+  assert.equal((await runTask(assignment, { agents: [named] }, "home:studio", io)).phase, "submitted");
+  const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
+  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home });
+  assert.ok(logs.includes("OWNER_COPY holds the Atelier owner token, so opencode does not get it; take it out of env in the runner config"));
+  assert.equal(calls.filter((c) => c.ownerTokens).length, 1);
+
+  const plain = fixture({ env: base });
+  await runTask(assignment, config, "home:studio", plain.io);
+  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home });
+  assert.equal(plain.calls.filter((c) => c.ownerTokens).length, 0, "no token is read when no variable is named");
+});
+
+test("a real harness gets neither Atelier's credentials nor the owner's other keys, only what its entry names", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const { dir, workspace, path, args } = gitWorkspace(t);
+  // The owner's stored token, in a file store instead of the Keychain.
+  const store = join(dir, "config");
+  mkdirSync(store);
+  writeFileSync(join(store, "secrets.json"), JSON.stringify({ API_TOKEN: "stored-owner-token-0000" }), { mode: 0o600 });
+  // The test's own PATH, HOME, USER and TMPDIR stay, so git runs as usual,
+  // and NODE_OPTIONS is left out, as it would break the test's own children.
+  const given = Object.fromEntries(Object.entries({ ...RUNNER_ENV, OWNER_COPY: "stored-owner-token-0000", ATELIER_SECRET_STORE: "file", ATELIER_CONFIG_DIR: store })
+    .filter(([name]) => !["PATH", "HOME", "USER", "TMPDIR", "NODE_OPTIONS"].includes(name)));
+  const saved = Object.fromEntries(Object.keys(given).map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  Object.assign(process.env, given);
+  const seen = join(dir, "env.json"), script = join(dir, "harness.mjs");
+  writeFileSync(script, `import { writeFileSync } from "node:fs";
+    import { execFileSync } from "node:child_process";
+    writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env));
+    execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "work"]);`);
+  for (const agent of ["codex", "opencode"]) {
+    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, agent, env: ["ZAI_API_KEY", "OWNER_COPY"], command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
+    const commands = [];
+    await runRunner({ ...args, once: true }, {
+      workspacePath: () => workspace, queue: async () => [{ ...assignment, agent, actor: `${agent}/${entry.models[0]}` }],
+      executeChild: async (argv, options) => {
+        if (!argv[1]?.endsWith("atelier.mjs")) return execute(argv, options);
+        commands.push(argv[2]);
+        return execute([process.execPath, "-e", ""], options);
+      },
+    });
+    assert.deepEqual(commands, ["claim", "finish"], agent);
+    const env = JSON.parse(readFileSync(seen, "utf8"));
+    for (const name of ["ATELIER_TOKEN", "ATELIER_SERVER", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR", "HF_TOKEN", "AZURE_SPEECH_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK", "OWNER_COPY"]) {
+      assert.equal(env[name], undefined, `${agent} does not get ${name}`);
+    }
+    assert.equal(env.ZAI_API_KEY, "DUMMY-zai", agent);
+    assert.equal(env.PATH, process.env.PATH, agent);
+    assert.equal(env.HOME, process.env.HOME, agent);
+    assert.equal(env.LANG, "en_US.UTF-8", agent);
+    assert.equal(!!env.XDG_DATA_HOME, agent === "opencode", agent);
+    assert.ok(!Object.values(env).some((value) => value.includes("stored-owner-token") || value.includes(RUNNER_ENV.ATELIER_TOKEN)), agent);
+  }
 });
 
 test("a data folder that cannot be removed is reported, and the task goes on", async () => {
@@ -895,7 +1060,9 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
       if (mode === "fail") process.exit(1);
       if (mode === "interrupt") process.kill(process.ppid, "SIGINT");
       ${UNTIL_TEST_EXITS}`);
-    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }], ...(mode === "timeout" ? { taskTimeoutMs: 300 } : {}) }));
+    // The task timeout must fire after the harness has started and written
+    // its folder's name, which a loaded machine delays past 300 ms.
+    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }], ...(mode === "timeout" ? { taskTimeoutMs: 3000 } : {}) }));
     const listeners = process.listenerCount("exit"), commands = [];
     await runRunner({ ...args, once: true }, {
       workspacePath: () => workspace, queue: async () => [assignment],
@@ -958,4 +1125,11 @@ test("a run that timed out, stalled or was refused is reported under the runner'
   assert.ok(logs.includes("could not report atelier/t13 as refused: 403 this operation requires the owner token"));
   assert.equal(runOutcome({ phase: "submitted" }), null);
   assert.equal(runOutcome({ phase: "failed", taskFailure: true, claimRefused: true, reason: "harness exited 1" }), null);
+});
+
+test("a named variable the check allowlist already passes is withheld too when it holds the owner's token", () => {
+  const base = { PATH: "/usr/bin:/opt/atl_ownertoken/bin", HOME: "/tmp/h" };
+  const { env, withheld } = harnessEnv(base, ["PATH"], ["atl_ownertoken"]);
+  assert.deepEqual(withheld, ["PATH"]);
+  assert.equal(env.PATH, undefined);
 });

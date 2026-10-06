@@ -1,0 +1,11 @@
+Merge main into t109
+
+- src/index.ts: merged the imports, keeping t109's reliability and served imports alongside main's `lastChanges`; kept both the `served` POST route (t95) and main's `actions` route.
+- src/ledger.ts: merged the imports (reliability/served from t109, plans/actions from main); kept both `RUN_REPORTS` (t109) and `RECORD_EVENTS` plus the plan types/constants (main); in `addReview`, kept main's single `at` timestamp and preserved t109's `via` page/api annotation in the log data; updated `traceDefect` and `annotateServed` to pass `at` to `log` under main's new signature.
+- src/plans/route.ts: kept t109's `tiebreaksFor` and main's `export function recordFor`.
+- src/ui.ts: kept t109's reliability imports and main's `weekdayOf`.
+- src/usage.ts: kept t109/t95's `defect` and `served` commands in the Owner group alongside main's `approve`/`approvals`/`ship`, and added main's new Plans group.
+- test/fixtures/cli/help.txt: regenerated from `helpText()` to match the merged CLI output.
+- test/runner.test.mjs: merged the imports (`runOutcome` from t109, `harnessEnv` and `checkEnv` from main); kept both t109's run-report test and main's `harnessEnv` token-withholding test.
+
+Agent: opencode/deepseek-v4-pro

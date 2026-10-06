@@ -4,6 +4,7 @@
 // event log; nothing is inferred beyond that.
 
 import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, modelOf, stateLabel } from "./rules.ts";
+import { assertLength } from "./text.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
@@ -19,10 +20,12 @@ export interface Brief {
 export const SUMMARY_MAX = 600;
 
 // An agent's summary as stored: plain text, control characters as spaces,
-// trimmed, at most 600 characters, or nothing.
+// trimmed, or nothing. A summary still longer than SUMMARY_MAX is refused
+// with the limit named, not cut short.
 export function cleanSummary(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
-  const s = v.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, SUMMARY_MAX).trim();
+  const s = v.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  assertLength(s, SUMMARY_MAX, "the summary");
   return s || undefined;
 }
 
@@ -61,7 +64,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   // flags and rejections rank highest, then checks, then reviews, then reports.
   // Lines keep their reading order.
   const lines: { rank: number; text: string }[] = [];
-  if (view.checks.length) {
+  if (view.checks.length || view.notApplicable.length) {
     const parts: string[] = [];
     for (const where of ["sandbox", "runner"] as const) {
       const n = passed.filter((c) => (c.where ?? "runner") === where).length;
@@ -72,6 +75,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
       if (n) parts.push(`${n} failed ${WHERE_LABEL[where]}`);
     }
     if (pending.length) parts.push(`${pending.length} waiting`);
+    if (view.notApplicable.length) parts.push(`${view.notApplicable.length} not applicable to this change`);
     lines.push({ rank: 1, text: `Required checks at this revision: ${parts.join(", ")}.` });
   }
   if (reviews.length) {
@@ -110,7 +114,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     lines.splice(drop, 1);
   }
 
-  const recommendation = recommend(detail, { passed: passed.length, total: view.checks.length, failed, pending, rejections, unmeasured: view.changedPaths === null && !!item.head });
+  const recommendation = recommend(detail, { passed: passed.length, total: view.checks.length, notApplicable: view.notApplicable.length, failed, pending, rejections, unmeasured: view.changedPaths === null && !!item.head });
 
   // The sentence follows the recommendation, so the heading never contradicts it.
   const subject = `${item.id} ${rev}: ${title}.`;
@@ -136,6 +140,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
 interface Picture {
   passed: number;
   total: number;
+  notApplicable: number;  // required checks whose paths this change does not touch
   failed: { claim: string }[];
   pending: { claim: string }[];
   rejections: { by: string }[];
@@ -172,7 +177,8 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   if (item.state === "submitted" && gate.ready) {
     return {
       verdict: "accept",
-      reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.` : "The project requires no checks, and nothing blocks it.",
+      reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.`
+        : p.notApplicable ? "No required check applies to this revision's changes, and nothing blocks it." : "The project requires no checks, and nothing blocks it.",
     };
   }
   // The order is the page's: a failed check comes first, then a missing

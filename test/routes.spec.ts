@@ -606,6 +606,8 @@ it("the project page carries the same standing as the route", async () => {
   expect(html).toContain("A queued &lt;task&gt;");
 });
 
+// Over a thousand Durable Object calls: under a loaded machine they take
+// longer than vitest's 5 s default, so this test has its own limit.
 it("the standing route reads each section from its own source, not a window over the whole record", async () => {
   const name = "standing-window", agent = "codex/gpt-6-astra", H0 = "0".repeat(40), head = "a".repeat(40);
   await project(name);
@@ -641,7 +643,7 @@ it("the standing route reads each section from its own source, not a window over
   expect(s.live.find((x) => x.id === "t3")!.since).toBeNull();
   expect(s.partial).toContain("t3: when it was taken is not shown, because its record is longer than the last 300 events read.");
   expect(s.partial.filter((x) => x.startsWith("t1:") || x.startsWith("t2:"))).toEqual([]);
-});
+}, 30_000);
 
 it("sessions record, clean, cap and read newest first, and only the project owner records one", async () => {
   await project("sessions");

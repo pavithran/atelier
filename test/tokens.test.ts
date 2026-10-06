@@ -63,3 +63,11 @@ test("route policy grants workflow operations and defaults to refusing", () => {
   for (const path of [["config"], ["projects"], ["inbox"], ["queue"], ["projects", "p"], [...task], [...task, "brief"], [...task, "diff"], [...task, "sandbox", "run"]]) assert.equal(agentRoute("GET", path), true, path.join("/"));
   assert.equal(agentRoute("POST", [...task, "claim", "extra"]), false);
 });
+
+test("an agent token may post a plan document, and reaches no other plan route", () => {
+  const plan = ["projects", "p", "items", "t1", "plan"];
+  assert.equal(agentRoute("POST", plan), true);
+  for (const sub of ["approve", "revise", "reroute", "retry", "stop", "future"]) assert.equal(agentRoute("POST", [...plan, sub]), false, sub);
+  assert.equal(agentRoute("GET", plan), false);
+  assert.equal(agentRoute("POST", ["projects", "p", "items"], { kind: "plan", goal: "x" }), false);
+});

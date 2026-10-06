@@ -8,11 +8,23 @@ import {
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
 } from "./rules";
 import { cleanSummary } from "./brief";
+import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
+import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
+import { parsePlan, planHash, type Plan } from "./plans/schema.ts";
+import { validatePlan } from "./plans/validate.ts";
+import { routeParts, type PartRoute } from "./plans/route.ts";
+import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
+import {
+  cleanGoal, cleanNote, completion, EMPTY_PLAN, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
+  plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
+} from "./plans/state.ts";
+import type { PlanView } from "./plans/show.ts";
+import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -71,6 +83,8 @@ export interface ProjectInit {
   branch?: string;
   title?: string | null;
   checks?: string[];
+  checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
+  checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -84,6 +98,26 @@ export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 
 // How many run reports the index returns: the most recent, for the reliability record.
 export const RUN_REPORTS = 1000;
+
+// How many of the project's most recent events make the track record a plan
+// is routed on, as the Models page reads a project's record.
+const RECORD_EVENTS = 1000;
+
+// What posting a plan document comes to: a new proposal and its hash, or the
+// errors that refused it, with which of the planner's attempts this is.
+export type PlanPost =
+  | { valid: true; hash: string; parts: number }
+  | { valid: false; errors: string[]; attempt: number; attempts: number };
+
+// A part's routing with the owner's reroute applied: the named actor builds
+// it from now on, and the routed alternates stay behind it.
+function rerouted(route: PartRoute, actor: string | undefined): PartRoute {
+  if (!actor) return route;
+  return { ...route, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: route.alternates.filter((a) => a.actor !== actor) };
+}
+
+// The longest actor a task can be handed to, as harness/model:profile.
+const ACTOR_MAX = 200;
 
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
@@ -101,6 +135,11 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const title = i.title === undefined ? current?.title : i.title ?? undefined;
   const approval = i.approval === undefined ? p?.approval : i.approval ?? undefined;
   const branch = i.branch ?? current?.branch;
+  const checks = i.checks ?? p?.checks ?? [];
+  // An init that names the checks must show each one read-only; one that
+  // does not keeps their classes and may declare the undeclared ones.
+  const checkClasses = settleCheckClasses(checks, i.checkClasses, p?.checkClasses, i.checks !== undefined);
+  const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -110,7 +149,9 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
     policy: {
       ...((i.agents ?? p?.agents) !== undefined ? { agents: i.agents ?? p?.agents } : {}),
       ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),
-      checks: i.checks ?? p?.checks ?? [],
+      checks,
+      ...(checkClasses.length ? { checkClasses } : {}),
+      ...(checkPaths.length ? { checkPaths } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -195,13 +236,25 @@ export class Ledger extends DurableObject<Env> {
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
+    // Plans (docs/orchestrator.md, section 1): an item's kind (null for an
+    // ordinary task, plan or part), a part's plan item, its key in the
+    // approved plan, and the keys of the parts it depends on, as JSON.
+    if (!columns.includes("kind")) this.sql.exec(`ALTER TABLE items ADD COLUMN kind TEXT`);
+    if (!columns.includes("plan")) this.sql.exec(`ALTER TABLE items ADD COLUMN plan TEXT`);
+    if (!columns.includes("part_key")) this.sql.exec(`ALTER TABLE items ADD COLUMN part_key TEXT`);
+    if (!columns.includes("deps")) this.sql.exec(`ALTER TABLE items ADD COLUMN deps TEXT`);
+    // Every valid plan proposal, one row each, in the order posted; no row
+    // is ever changed. `actor` is who posted it.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS plans (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, plan_id TEXT NOT NULL, hash TEXT NOT NULL, json TEXT NOT NULL, actor TEXT NOT NULL, at TEXT NOT NULL
+    )`);
   }
 
   // ── index instance ───────────────────────────────────────────────────────
 
   putAgentToken(token: AgentToken): void {
     this.sql.exec(`INSERT INTO agent_tokens (id, hash, json) VALUES (?, ?, ?)`, token.id, token.hash, JSON.stringify(token));
-    this.log(null, this.owner, "token.issued", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
+    this.log(null, this.owner, "token.issued", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt }, new Date().toISOString());
   }
 
   agentToken(hash: string): AgentToken | null {
@@ -221,9 +274,10 @@ export class Ledger extends DurableObject<Env> {
     if (!row) return false;
     const token = JSON.parse(row.json as string) as AgentToken;
     if (token.revokedAt) return true;
-    token.revokedAt = new Date().toISOString();
+    const at = new Date().toISOString();
+    token.revokedAt = at;
     this.sql.exec(`UPDATE agent_tokens SET json = ? WHERE id = ?`, JSON.stringify(token), id);
-    this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
+    this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt }, at);
     return true;
   }
 
@@ -301,10 +355,15 @@ export class Ledger extends DurableObject<Env> {
     return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
   }
 
+  // Every request that names a project resolves it here, so the names table
+  // is read once, and the project list once, however many are registered.
   resolveProject(name: string): ProjectRef {
-    const key = this.keyOf(name);
-    const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => this.keyOf(n) === key);
-    return { name: registered ?? name, key, names: this.namesOf(key), registered: registered !== undefined, former: registered !== undefined && registered !== name };
+    const keys = new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string]));
+    const keyOf = (n: string) => keys.get(n) ?? n;
+    const key = keyOf(name);
+    const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => keyOf(n) === key);
+    const names = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)];
+    return { name: registered ?? name, key, names, registered: registered !== undefined, former: registered !== undefined && registered !== name };
   }
 
   // The project registered as `from`, or that `from` was a name of, answers
@@ -322,7 +381,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`DELETE FROM projects WHERE name = ?`, source.name);
     this.sql.exec(`INSERT INTO projects (name, json) VALUES (?, ?)`, to, JSON.stringify(record));
     if (to !== source.key) this.sql.exec(`INSERT OR REPLACE INTO names (name, key) VALUES (?, ?)`, to, source.key);
-    this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key });
+    this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key }, new Date().toISOString());
     return { from: source.name, to, key: source.key, names: this.namesOf(source.key) };
   }
 
@@ -384,11 +443,12 @@ export class Ledger extends DurableObject<Env> {
     const active = crossings(report, thresholds, Date.parse(report.at));
     const held = new Set(this.sql.exec(`SELECT key FROM usage_alerts WHERE tool = ? AND runner = ?`, report.tool, report.runner).toArray().map((r) => r.key as string));
     const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+    const at = new Date().toISOString();
     const alerts: string[] = [];
     for (const c of active) {
       if (held.has(c.key)) continue;
       this.sql.exec(`INSERT INTO usage_alerts (key, tool, runner, since) VALUES (?, ?, ?, ?)`, c.key, report.tool, report.runner, report.at);
-      this.log(null, this.owner, "usage.alert", { key: c.key, runner: report.runner, title: c.title });
+      this.log(null, this.owner, "usage.alert", { key: c.key, runner: report.runner, title: c.title }, at);
       alerts.push(c.title);
       if (topic) this.deliver(usageAlertRequest(topic, origin, c.title, c.body));
     }
@@ -396,7 +456,7 @@ export class Ledger extends DurableObject<Env> {
     for (const key of held) {
       if (keys.has(key)) continue;
       this.sql.exec(`DELETE FROM usage_alerts WHERE key = ?`, key);
-      this.log(null, this.owner, "usage.cleared", { key, runner: report.runner });
+      this.log(null, this.owner, "usage.cleared", { key, runner: report.runner }, at);
     }
     return { report, alerts };
   }
@@ -423,14 +483,15 @@ export class Ledger extends DurableObject<Env> {
   // the read and the write.
   initProject(init: ProjectInit, actor: string): ProjectRecord {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
-    const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, new Date().toISOString());
-    this.setProject(record, actor);
+    const at = new Date().toISOString();
+    const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, at);
+    this.setProject(record, actor, at);
     return record;
   }
 
-  setProject(record: ProjectRecord, actor: string): void {
+  setProject(record: ProjectRecord, actor: string, at = new Date().toISOString()): void {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
-    this.log(null, actor, "project.set", { policy: record.policy, ...(record.policy.approval ? { approval: record.policy.approval } : {}) });
+    this.log(null, actor, "project.set", { policy: record.policy, ...(record.policy.approval ? { approval: record.policy.approval } : {}) }, at);
   }
 
   project(): ProjectRecord {
@@ -446,7 +507,7 @@ export class Ledger extends DurableObject<Env> {
     if (current.name === to) return current;
     const record = { ...current, name: to };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
-    this.log(null, actor, "project.renamed", { from: current.name, to });
+    this.log(null, actor, "project.renamed", { from: current.name, to }, new Date().toISOString());
     return record;
   }
 
@@ -459,7 +520,7 @@ export class Ledger extends DurableObject<Env> {
       `INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)`,
       id, title.trim(), JSON.stringify(scope), now, now,
     );
-    this.log(id, actor, "item.created", { title, scope });
+    this.log(id, actor, "item.created", { title, scope }, now);
     return this.item(id);
   }
 
@@ -493,9 +554,12 @@ export class Ledger extends DurableObject<Env> {
   // that one replaces: the caller revokes it, and records the new one with
   // recordToken under this generation.
   claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
+    const at = new Date().toISOString();
     const item = this.item(id);
+    this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
-    assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner);
+    // A plan's planner claims its item to write the plan, under the planner role.
+    assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
@@ -506,11 +570,14 @@ export class Ledger extends DurableObject<Env> {
       }
       // After a handoff the new owner holds no runner yet; the first runner to
       // claim as that owner takes the claim, and any other is refused above.
-      if (!held && asking) this.update(id, { owner: actor, runner: asking });
+      if (!held && asking) {
+        this.update(id, { owner: actor, runner: asking }, at);
+        this.log(id, actor, "item.runner_adopted", { runner: asking }, at, proved);
+      }
       return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
     }
-    this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null });
-    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {}, proved);
+    this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null }, at);
+    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {}, at, proved);
     return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
   }
 
@@ -553,19 +620,29 @@ export class Ledger extends DurableObject<Env> {
   dispatch(id: string, actor: string, input: Record<string, unknown>): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
+    this.assertNotPlanned(item);
     assertDispatchable(item);
     const d = makeDispatch(input, actor, new Date().toISOString());
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note });
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note }, d.at);
     return this.item(id);
   }
 
   undispatch(id: string, actor: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner withdraws a dispatch", 403);
     const item = this.item(id);
-    if (!item.dispatch || item.state !== "open") throw new RuleError("not_dispatched", `${id} is not waiting for a runner`);
-    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, new Date().toISOString(), id);
-    this.log(id, actor, "item.undispatched", {});
+    this.assertNotPlanned(item);
+    if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`);
+    // A claimed or submitted task keeps its dispatch, and waits in the queue
+    // again if it is released; an accepted, merged or abandoned one never does.
+    if (item.state !== "open") {
+      throw new RuleError("not_dispatched", ["claimed", "submitted"].includes(item.state)
+        ? `${id} is ${item.state} by ${item.owner}; its dispatch applies again only if it is released, so withdraw it then`
+        : `${id} is ${item.state}, so its dispatch no longer applies and there is nothing to withdraw`);
+    }
+    const at = new Date().toISOString();
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+    this.log(id, actor, "item.undispatched", {}, at);
     return this.item(id);
   }
 
@@ -579,13 +656,15 @@ export class Ledger extends DurableObject<Env> {
 
   // A failed fork must not leave an owner holding nothing.
   unclaim(id: string, actor: string, reason: string, proved = false): void {
-    this.update(id, { owner: null, state: "open" });
-    this.log(id, actor, "item.claim_failed", { reason }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { owner: null, state: "open" }, at);
+    this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
 
   setFork(id: string, fork: string, base: string | null, actor: string, proved = false): void {
-    this.update(id, { fork, base, head: base });
-    this.log(id, actor, "fork.created", { fork, base }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { fork, base, head: base }, at);
+    this.log(id, actor, "fork.created", { fork, base }, at, proved);
   }
 
   // The worker has already read the fork's head from Artifacts; what is logged
@@ -641,14 +720,15 @@ export class Ledger extends DurableObject<Env> {
       head: observedHead, last_push_at: now,
       state: item.state === "submitted" ? "submitted" : "claimed",
       ...(reopened ? { accepted_head: null } : {}),
-    });
+    }, now);
     this.log(id, actor, "push.observed", {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
       ...(rewritten ? { rebasedFrom: item.head } : {}),
       ...(unverified ? { unverified: true } : {}),
       ...(reopened ? { approvalInvalidated: true } : {}),
-    }, proved);
+    }, now, proved);
+    this.afterPlanChange(id);
     return this.item(id);
   }
 
@@ -672,14 +752,14 @@ export class Ledger extends DurableObject<Env> {
       const last = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'push.unrecorded' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const noted = last ? (JSON.parse(last.data as string) as { head?: string; recorded?: string }) : null;
       if (noted?.head !== observedHead || noted.recorded !== item.head) {
-        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source: "artifacts", reason: holdsRecorded === null ? "ancestry_unverified" : "history_rewritten" });
+        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source: "artifacts", reason: holdsRecorded === null ? "ancestry_unverified" : "history_rewritten" }, new Date().toISOString());
       }
       return item;
     }
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
-      state: item.state === "accepted" ? "submitted" : item.state });
-    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted" });
+      state: item.state === "accepted" ? "submitted" : item.state }, now);
+    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted" }, now);
     return this.item(id);
   }
 
@@ -724,7 +804,7 @@ export class Ledger extends DurableObject<Env> {
 
   recordSandboxRequest(id: string, actor: string, runId: string): void {
     this.item(id);
-    this.log(id, actor, "sandbox.requested", { runId }, true);
+    this.log(id, actor, "sandbox.requested", { runId }, new Date().toISOString(), true);
   }
 
   addEvidence(e: Evidence, origin?: string, proved = false): void {
@@ -733,8 +813,10 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
-    this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, proved);
+    // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
+    this.afterPlanChange(e.itemId);
   }
 
   // `via` says where a review by the project owner was recorded: "page" is a
@@ -743,6 +825,7 @@ export class Ledger extends DurableObject<Env> {
   // record (src/models/reliability.ts) counts the two apart.
   addReview(r: Review, origin?: string, proved = false, via?: "page" | "api"): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
+    assertLength(r.note, NOTE_MAX, "the review note");
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
@@ -754,11 +837,13 @@ export class Ledger extends DurableObject<Env> {
     // The holder under another letter case, profile or registered name is still the holder.
     if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
+    const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
-    if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null });
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(via && r.by === this.owner ? { via } : {}) }, proved);
+    if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     this.notify(r.itemId, origin);
+    this.afterPlanChange(r.itemId);
   }
 
   // The summary is recorded in the event and nowhere else; a later submit
@@ -768,22 +853,30 @@ export class Ledger extends DurableObject<Env> {
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
-    this.update(id, { state: "submitted" });
+    // Cleaned first: a summary over its limit is refused before anything is written.
     const text = cleanSummary(summary);
-    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { state: "submitted" }, at);
+    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
     this.notify(id, origin);
+    this.afterPlanChange(id);
     return this.item(id);
   }
 
   // The checks a handoff, release or abandon makes, asked alone. The caller
   // revokes the holder's write token before it changes the owner, and asks
   // these first, so a change that would be refused revokes nothing. The
-  // change itself checks again.
-  checkHandoff(id: string, from: string, to: string): void { this.handoffAllowed(id, from, to); }
-  checkRelease(id: string, actor: string): void { this.releaseAllowed(id, actor); }
-  checkAbandon(id: string, actor: string): void { this.abandonAllowed(id, actor); }
+  // change itself checks again. The note is checked here too, so a note over
+  // its limit is refused before the token is revoked.
+  checkHandoff(id: string, from: string, to: string, note: string): void { this.handoffAllowed(id, from, to, note); }
+  checkRelease(id: string, actor: string, note: string): void { this.releaseAllowed(id, actor, note); }
+  checkAbandon(id: string, actor: string, note: string): void { this.abandonAllowed(id, actor, note); }
 
-  private handoffAllowed(id: string, from: string, to: string): Item {
+  private handoffAllowed(id: string, from: string, to: string, note: string): Item {
+    assertLength(note, NOTE_MAX, "the handoff note");
+    // The name is stored as the task's owner and in its event, so it is
+    // held to a length no harness/model name reaches.
+    assertLength(to, ACTOR_MAX, "the name of the agent it is handed to");
     const item = this.item(id);
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
@@ -792,17 +885,29 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
-  private releaseAllowed(id: string, actor: string): Item {
+  private releaseAllowed(id: string, actor: string, note: string): Item {
+    assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
     assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
     return item;
   }
 
-  private abandonAllowed(id: string, actor: string): Item {
+  private abandonAllowed(id: string, actor: string, note: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
+    assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    // A plan's parts go with it; stopping the plan closes them in one step.
+    const open = item.kind === "plan" ? this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned") : [];
+    if (open.length) throw new RuleError("plan_parts", `${id} is a plan with parts not merged or abandoned (${open.map((p) => p.id).join(", ")}); stop it with atelier plan stop ${id}, which closes them too`, 409);
+    // A merge under the landing lease may already have put the accepted
+    // revision on the baseline, and only an accepted task can record that
+    // merge. So abandon waits until the lease ends.
+    const landing = this.landing(id);
+    if (landing) {
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot be abandoned. The lease ends when atelier merge ${id} records the merge, or when atelier merge ${id} --cancel withdraws a merge that is not on the baseline; abandon ${id} after a cancel`, 409);
+    }
     return item;
   }
 
@@ -811,18 +916,21 @@ export class Ledger extends DurableObject<Env> {
   // `token`, and the change is made only if that is still the token recorded
   // (see dropToken).
   handoff(id: string, from: string, to: string, note: string, proved = false, token?: string | null): Item {
-    const item = this.handoffAllowed(id, from, to);
+    const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
-    this.update(id, { owner: to, state: "claimed" });
-    this.log(id, from, "item.handoff", { from: item.owner, to, note }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { owner: to, state: "claimed" }, at);
+    this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
     return this.item(id);
   }
 
   release(id: string, actor: string, note: string, proved = false, token?: string | null): Item {
-    const item = this.releaseAllowed(id, actor);
+    const item = this.releaseAllowed(id, actor, note);
     this.dropToken(id, token);
-    this.update(id, { owner: null, state: "open" });
-    this.log(id, actor, "item.released", { from: item.owner, note }, proved);
+    const at = new Date().toISOString();
+    this.update(id, { owner: null, state: "open" }, at);
+    this.log(id, actor, "item.released", { from: item.owner, note }, at, proved);
+    this.afterPlanChange(id);
     return this.item(id);
   }
 
@@ -841,16 +949,22 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
     const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
+    const at = new Date().toISOString();
     const override = overrideReason === undefined ? null
-      : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, new Date().toISOString());
+      : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
     const g = gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     if (override) {
-      this.update(id, { review_override: JSON.stringify(override.override) });
-      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors });
+      this.update(id, { review_override: JSON.stringify(override.override) }, at);
+      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors }, at);
     }
-    this.update(id, { state: "accepted", accepted_head: item.head });
-    this.log(id, actor, "item.accepted", { head: item.head, protected: [...policy.protected], ...(override ? { reviewOverridden: true } : {}) });
+    this.update(id, { state: "accepted", accepted_head: item.head }, at);
+    // The policy the acceptance is made under, for the merge guard's
+    // comparison with the policy at merge time.
+    this.log(id, actor, "item.accepted", {
+      head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
+      ...(override ? { reviewOverridden: true } : {}),
+    }, at);
     return this.item(id);
   }
 
@@ -893,16 +1007,20 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409);
     }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
-    this.update(id, { state: "merged", owner: null });
-    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed });
+    const at = new Date().toISOString();
+    this.update(id, { state: "merged", owner: null }, at);
+    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
+    this.afterPlanChange(id);
     return this.item(id);
   }
 
   abandon(id: string, actor: string, note: string, token?: string | null): Item {
-    this.abandonAllowed(id, actor);
+    this.abandonAllowed(id, actor, note);
     this.dropToken(id, token);
-    this.update(id, { state: "abandoned", owner: null });
-    this.log(id, actor, "item.abandoned", { note });
+    const at = new Date().toISOString();
+    this.update(id, { state: "abandoned", owner: null }, at);
+    this.log(id, actor, "item.abandoned", { note }, at);
+    this.afterPlanChange(id);
     return this.item(id);
   }
 
@@ -917,7 +1035,8 @@ export class Ledger extends DurableObject<Env> {
     if (!item.acceptedHead) {
       throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
     }
-    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) });
+    const at = new Date().toISOString();
+    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) }, at);
     return item;
   }
 
@@ -935,7 +1054,10 @@ export class Ledger extends DurableObject<Env> {
     if (matched.length > SERVED_LIMIT) {
       throw new RuleError("too_many_events", `${matched.length} events match, more than the ${SERVED_LIMIT} one request may annotate; name the tasks or narrow the window`, 400);
     }
-    if (apply) for (const m of pending) this.log(m.itemId, actor, SERVED, { seq: m.seq, recorded: m.actor, served: sel.served, ...(sel.note ? { note: sel.note } : {}) });
+    if (apply) {
+      const at = new Date().toISOString();
+      for (const m of pending) this.log(m.itemId, actor, SERVED, { seq: m.seq, recorded: m.actor, served: sel.served, ...(sel.note ? { note: sel.note } : {}) }, at);
+    }
     return { matched, pending: pending.length, annotated: apply ? pending.length : 0, applied: apply };
   }
 
@@ -953,7 +1075,7 @@ export class Ledger extends DurableObject<Env> {
     let data;
     try { data = cleanSession(value); }
     catch (err) { throw new RuleError("bad_session", (err as Error).message, 400); }
-    this.log(null, actor, "session.wrapped", { ...data });
+    this.log(null, actor, "session.wrapped", { ...data }, new Date().toISOString());
     return this.sessions(1)[0];
   }
 
@@ -961,6 +1083,40 @@ export class Ledger extends DurableObject<Env> {
     this.project();
     return this.sql.exec(`SELECT actor, at, data FROM events WHERE kind = 'session.wrapped' ORDER BY seq DESC LIMIT ?`, Math.max(1, Math.min(20, limit))).toArray()
       .map((r) => ({ actor: r.actor as string, at: r.at as string, data: JSON.parse(r.data as string) }));
+  }
+
+  // ── protected actions (src/actions.ts) ──────────────────────────────────
+  // Approvals bound to one revision of the main line, and the steps a ship
+  // ran. Each is a project-level event: approved, withdrawn, consumed, ran.
+
+  private get actionStore(): ActionStore {
+    return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
+  }
+
+  approveAction(body: Record<string, unknown>, actor: string): ApprovalView {
+    this.project();
+    return approveAction(this.actionStore, actor, body, new Date().toISOString());
+  }
+
+  actionApprovals(): ApprovalView[] {
+    this.project();
+    return listApprovals(this.actionStore, new Date().toISOString());
+  }
+
+  withdrawAction(id: string, actor: string, note: unknown): ApprovalView {
+    return withdrawAction(this.actionStore, actor, id, note, new Date().toISOString());
+  }
+
+  consumeAction(body: Record<string, unknown>, actor: string): ApprovalView {
+    return consumeAction(this.actionStore, actor, body, new Date().toISOString());
+  }
+
+  recordActionRun(body: Record<string, unknown>, actor: string): ActionRun {
+    return recordActionRun(this.actionStore, actor, body);
+  }
+
+  actionRuns(limit = 20): (ActionRun & { at: string; actor: string })[] {
+    return actionRuns(this.sql, limit);
   }
 
   events(id?: string, limit = 200): LedgerEvent[] {
@@ -990,18 +1146,546 @@ export class Ledger extends DurableObject<Env> {
     // Read acceptance separately so later events cannot hide its snapshot.
     const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.accepted' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
     const acceptance = row ? JSON.parse(row.data as string) : null;
-    const acceptanceProtected: string[] | null = acceptance?.head === item.acceptedHead ? acceptance.protected ?? null : null;
-    return { item, policy, acceptanceProtected, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    const current = acceptance?.head === item.acceptedHead ? acceptance : null;
+    const acceptanceProtected: string[] | null = current?.protected ?? null;
+    // The fields the acceptance recorded of the policy it was made under; an
+    // older acceptance recorded the protected paths alone.
+    const acceptancePolicy: Record<string, unknown> | null = current
+      ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
+      : null;
+    return { item, policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string): InboxEntry[] {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
-    return inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner);
+    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name)]
+      .sort((a, b) => b.weight - a.weight);
   }
 
-  private update(id: string, fields: Record<string, string | null>): void {
+  // ── plans ────────────────────────────────────────────────────────────────
+  // A plan is an item of kind plan. Its planner, dispatched as a plan job,
+  // posts a plan document; the owner approves one proposal by its hash; the
+  // plan's parts become items of kind part, which the tick dispatches from
+  // the routing fixed at approval (docs/orchestrator.md, sections 1 to 3).
+  // A plan's record is the meta key plan:tP (PlanRecord, src/plans/state.ts);
+  // each valid proposal is a row of the plans table.
+
+  // The owner states a goal. The plan item is created and dispatched as a
+  // plan job to the planner the owner names, or else to the pool's first
+  // model for research work that may plan (pickPlanner). A runner is offered
+  // a plan job only when it says it runs one (assign, src/dispatch/rules.ts).
+  newPlan(goal: unknown, scope: string[], actor: string, planner: string | null, pool: ModelEntry[]): { item: Item; planner: string; reasons: string[] } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner starts a plan", 403);
+    const text = cleanGoal(goal);
+    const policy = this.project().policy;
+    const active = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned') LIMIT 1`).toArray()[0];
+    if (active) throw new RuleError("plan_active", `${active.id} is this project's active plan, and a project has one at a time; finish it, or stop it with atelier plan stop ${active.id}`, 409);
+    let chosen: string, reasons: string[];
+    if (planner !== null) {
+      chosen = namedActor(planner, policy, "planner", this.owner);
+      reasons = ["Named by the project owner"];
+    } else {
+      const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy);
+      if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model`, 409);
+      chosen = pick.actor;
+      reasons = pick.reasons;
+    }
+    const at = new Date().toISOString();
+    const d = this.planDispatch(chosen, text, actor, at);
+    const id = this.insertItem(planTitle(text), scope, actor, at, { kind: "plan" }, { goal: text });
+    this.savePlanRecord(id, { goal: text, scope, planner: chosen, plannerReasons: reasons, createdAt: at, blocked: null, approval: null, reroutes: {} });
+    this.writeDispatch(id, d);
+    return { item: this.item(id), planner: chosen, reasons };
+  }
+
+  // The holder of the plan item's claim posts its plan document. One that
+  // fails parsing or validation is recorded as plan.invalid; the claim's
+  // release then puts the plan job back in the queue, once (plannerAttempts).
+  // A valid one is kept as a new proposal, and the plan job is done: its
+  // dispatch is cleared, so the release leaves the item out of the queue. A
+  // newer proposal makes every older hash unapprovable. After approval
+  // nothing is posted.
+  async postPlan(id: string, actor: string, value: unknown, proved = false): Promise<PlanPost> {
+    // The hash is this method's one wait, and nothing is read before it, so
+    // the checks and writes after it run with no other request between them.
+    const parsed = parsePlan(value);
+    const errors = parsed.ok ? validatePlan(parsed.plan) : parsed.errors;
+    const hash = parsed.ok && !errors.length ? await planHash(parsed.plan) : null;
+    const at = new Date().toISOString();
+    const item = this.planItem(id);
+    const record = this.planRecord(id);
+    if (record.approval) throw new RuleError("plan_approved", `${id}'s plan was approved at ${record.approval.hash.slice(0, 12)} and does not change; to change the split, stop the plan with atelier plan stop ${id} and start another`, 409);
+    if (item.state !== "claimed") throw new RuleError("not_planning", `${id} is ${item.state}; a plan is posted by the holder of its claim`, 409);
+    assertOwner(item, actor);
+    if (!parsed.ok || hash === null) {
+      this.log(id, actor, "plan.invalid", { errors }, at, proved);
+      return { valid: false, errors, attempt: plannerAttempts(this.events(id)).failed + 1, attempts: PLANNER_ATTEMPTS };
+    }
+    this.sql.exec(`INSERT INTO plans (plan_id, hash, json, actor, at) VALUES (?, ?, ?, ?, ?)`, id, hash, JSON.stringify(parsed.plan), actor, at);
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+    this.log(id, actor, "plan.proposed", { hash, parts: parsed.plan.parts.length }, at, proved);
+    this.setBlocked(id, record, null);
+    return { valid: true, hash, parts: parsed.plan.parts.length };
+  }
+
+  // The owner approves the newest valid proposal by its hash, once. Each
+  // part's routing is computed now and fixed (routeParts), with the limits
+  // and the deadline. A part that no model can build, or that no model of
+  // another family can review, refuses the approval: approving it would only
+  // block the plan. The part items are created in plan order, the tick
+  // dispatches what may start, all in one transaction, and the alarm is set
+  // for the deadline.
+  async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[]): Promise<{ item: Item; parts: Item[] }> {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner approves a plan", 403);
+    const item = this.planItem(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    const record = this.planRecord(id);
+    if (record.approval) throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; a plan is approved once`, 409);
+    if (!/^[a-f0-9]{64}$/.test(hash)) throw new RuleError("bad_hash", `give the full hash atelier plan show ${id} prints`, 400);
+    const newest = this.proposal(id);
+    if (!newest) throw new RuleError("no_proposal", `${id} has no valid proposal yet; wait for the planner, then read it with atelier plan show ${id}`, 409);
+    if (newest.hash !== hash) {
+      throw new RuleError("stale_plan", `${hash.slice(0, 12)} is not ${id}'s newest proposal, which is ${newest.hash}; read it with atelier plan show ${id}, then approve that hash`, 409);
+    }
+    const policy = this.project().policy;
+    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid });
+    const unrouted = routes.filter((r) => r.unrouted !== null);
+    if (unrouted.length) {
+      const why = unrouted.map((r) => `part ${r.key} has no ${r.builder ? "reviewer" : "builder"}: ${r.unrouted}`).join("; ");
+      throw new RuleError("unrouted", `${id} was not approved: ${why}. Add models to the pool${allowPaid ? "" : ", or approve with --allow-paid if a paid model would qualify"}, then approve again`, 409);
+    }
+    const now = new Date();
+    const at = now.toISOString();
+    const limits = limitsFor(newest.plan.parts.length, allowPaid);
+    const deadline = new Date(now.getTime() + limits.hours * 3_600_000).toISOString();
+    this.ctx.storage.transactionSync(() => {
+      // A plan job still queued (a revise the planner has not taken) is withdrawn.
+      if (item.dispatch && item.state === "open" && !item.owner) {
+        this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
+        this.log(id, ORCHESTRATOR, "item.undispatched", { reason: "the plan is approved" }, at);
+      }
+      const parts = newest.plan.parts.map((p) => ({
+        key: p.key,
+        id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn }, { plan: id, key: p.key, dependsOn: p.dependsOn, approval: hash }),
+      }));
+      record.approval = { hash, at, by: actor, allowPaid, limits, deadline, parts, routes };
+      record.blocked = null;
+      this.savePlanRecord(id, record);
+      this.log(id, actor, "plan.approved", { hash, allowPaid, limits, deadline, parts: Object.fromEntries(parts.map((p) => [p.key, p.id])) }, at);
+      this.tick(id, at);
+    });
+    await this.ctx.storage.setAlarm(Date.parse(deadline) + 1000);
+    return { item: this.item(id), parts: this.planParts(id) };
+  }
+
+  // The owner's decisions for a plan (docs/orchestrator.md, sections 3 and 6).
+  // Before approval they concern the planner: revise sends the plan back with
+  // a note, reroute names another planner, retry asks the same one again.
+  // After approval reroute and retry concern a part that is open and held by
+  // nobody: reroute names the actor that builds it from now on, and retry
+  // counts its attempts afresh. Each is logged on the item it concerns, and
+  // attempts are counted from the latest (plannerAttempts, tickEvents).
+  revisePlan(id: string, actor: string, note: unknown): Item {
+    const { record } = this.planningPlan(id, actor, "revise");
+    const text = cleanNote(note);
+    const at = new Date().toISOString();
+    this.log(id, actor, "plan.revised", { note: text }, at);
+    this.askPlanner(id, record, actor, at);
+    return this.item(id);
+  }
+
+  reroutePlan(id: string, actor: string, to: unknown): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner reroutes a plan's work", 403);
+    const item = this.item(id);
+    const policy = this.project().policy;
+    const at = new Date().toISOString();
+    if (item.kind === "plan") {
+      const { record } = this.planningPlan(id, actor, "reroute");
+      const planner = namedActor(to, policy, "planner", this.owner);
+      this.planDispatch(planner, record.goal, actor, at);
+      this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner }, at);
+      record.planner = planner;
+      record.plannerReasons = ["Rerouted by the project owner"];
+      this.askPlanner(id, record, actor, at);
+      return this.item(id);
+    }
+    const { record, key } = this.openPart(item, "reroute");
+    const builder = namedActor(to, policy, "executor", this.owner);
+    const slash = builder.indexOf("/");
+    // Refuses a name no runner could claim under, before anything is written.
+    makeDispatch({ to: "home", agent: builder.slice(0, slash), model: builder.slice(slash + 1) }, ORCHESTRATOR, at);
+    const route = record.approval!.routes.find((r) => r.key === key)!;
+    const from = rerouted(route, record.reroutes[key]).builder?.actor ?? null;
+    record.reroutes[key] = builder;
+    this.savePlanRecord(item.plan!, record);
+    this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
+    this.log(id, actor, "plan.rerouted", { to: builder, from }, at);
+    this.afterPlanChange(id);
+    return this.item(id);
+  }
+
+  retryPlan(id: string, actor: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner retries a plan's work", 403);
+    const item = this.item(id);
+    const at = new Date().toISOString();
+    if (item.kind === "plan") {
+      const { record } = this.planningPlan(id, actor, "retry");
+      this.log(id, actor, "plan.retried", { planner: record.planner }, at);
+      this.askPlanner(id, record, actor, at);
+      return this.item(id);
+    }
+    this.openPart(item, "retry");
+    this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
+    this.log(id, actor, "plan.retried", {}, at);
+    this.afterPlanChange(id);
+    return this.item(id);
+  }
+
+  // What stopping a plan closes: the plan item and every part not merged or
+  // abandoned, each with its workspace and the write token recorded for it.
+  // The route revokes those tokens, then asks for the stop with their ids.
+  stopTargets(id: string, actor: string): { id: string; fork: string | null; tokenId: string | null }[] {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner stops a plan", 403);
+    const item = this.planItem(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    const open = this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned");
+    return [item, ...open].map((i) => ({ id: i.id, fork: i.fork, tokenId: this.tokenId(i.id) }));
+  }
+
+  // The owner stops a plan: its open parts and the plan item are abandoned
+  // together, in one transaction. The tokens the caller revoked must still be
+  // the ones recorded, as for a single abandon (dropToken); without them
+  // (the Ledger's own tests) the records are kept.
+  stopPlan(id: string, actor: string, note: string, tokens?: Record<string, string | null>): Item {
+    const targets = this.stopTargets(id, actor);
+    if (tokens && targets.some((t) => t.tokenId !== (tokens[t.id] ?? null))) {
+      throw new RuleError("token_changed", `a part of ${id} was claimed again while this was asked, and its workspace token changed; try again`, 409);
+    }
+    const at = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      for (const t of [...targets].reverse()) {
+        if (tokens) this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, t.id);
+        this.update(t.id, { state: "abandoned", owner: null }, at);
+        this.log(t.id, actor, "item.abandoned", { note, plan: id }, at);
+      }
+      this.log(id, actor, "plan.stopped", { note, closed: targets.map((t) => t.id) }, at);
+    });
+    return this.item(id);
+  }
+
+  // What `atelier plan show` reads, for a plan or any of its parts: the
+  // plan's phase and record, its newest proposal and, once approved, each
+  // part with its state, routing, attempts and, when submitted or accepted,
+  // its gate. With the pool, a plan not yet approved also shows the routing
+  // an approval would fix now, without paid models. Nothing here is written.
+  planView(id: string, pool: ModelEntry[] | null = null): PlanView {
+    const asked = this.item(id);
+    const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
+    if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404);
+    const record = this.planRecord(item.id);
+    const newest = this.proposal(item.id);
+    const approval = record.approval;
+    const policy = this.project().policy;
+    const parts = this.planParts(item.id).map((p) => this.item(p.id));
+    const all = approval ? this.partEvents(item.id) : [];
+    const attempts = partAttempts(tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!]))));
+    const ids = new Map(parts.map((p) => [p.partKey!, p.id]));
+    return {
+      item,
+      phase: planPhase({ proposed: newest !== null, approved: approval !== null, blocked: record.blocked, state: item.state }),
+      goal: record.goal, scope: record.scope, planner: record.planner, plannerReasons: record.plannerReasons,
+      blocked: record.blocked, completedAt: record.completedAt ?? null,
+      proposal: newest && { hash: newest.hash, by: newest.by, at: newest.at, count: newest.count, answered: this.answered(item.id) },
+      plan: approval ? this.approvedPlan(item.id, approval.hash) : newest?.plan ?? null,
+      approval: approval && {
+        hash: approval.hash, at: approval.at, by: approval.by, allowPaid: approval.allowPaid, limits: approval.limits,
+        deadline: approval.deadline, jobsUsed: jobsUsed(all),
+      },
+      parts: parts.map((p) => {
+        const route = approval?.routes.find((r) => r.key === p.partKey);
+        const judged = p.state === "submitted" || p.state === "accepted"
+          ? gate({ ...p, state: "submitted" }, policy, this.evidenceFor(p.id), this.reviewsFor(p.id), this.owner) : null;
+        return {
+          id: p.id, key: p.partKey!, title: p.title, state: p.state, owner: p.owner, head: p.head, acceptedHead: p.acceptedHead, scope: p.scope,
+          dependsOn: (p.deps ?? []).map((key) => ({ key, id: ids.get(key) ?? null })),
+          dispatch: p.dispatch ?? null,
+          route: route ? rerouted(route, record.reroutes[p.partKey!]) : null,
+          attempts: attempts.get(p.partKey!) ?? [],
+          gate: judged && { ready: judged.ready, blockers: judged.blockers },
+        };
+      }),
+      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
+      // The plan's integration branch (t16) is not built, so there is no
+      // integration head or combined check to show.
+      integration: null,
+    };
+  }
+
+  // Timeouts. The alarm is set for an approved plan's deadline; it runs the
+  // tick of every approved plan that is still open, which blocks one past
+  // its deadline, and is set again for a deadline still to come.
+  async alarm(): Promise<void> {
+    const ids = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
+    let next = Infinity;
+    for (const id of ids) {
+      const approval = this.planRecord(id).approval;
+      if (!approval) continue;
+      this.afterPlanChange(id);
+      const deadline = Date.parse(approval.deadline);
+      if (deadline >= Date.now()) next = Math.min(next, deadline + 1000);
+    }
+    if (next !== Infinity) await this.ctx.storage.setAlarm(next);
+  }
+
+  private planRecord(id: string): PlanRecord {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `plan:${id}`).toArray()[0];
+    if (!row) throw new RuleError("not_a_plan", `${id} is not a plan`, 404);
+    return JSON.parse(row.value as string);
+  }
+
+  private savePlanRecord(id: string, record: PlanRecord): void {
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `plan:${id}`, JSON.stringify(record));
+  }
+
+  private planItem(id: string): Item {
+    const item = this.item(id);
+    if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan${item.kind === "part" ? `; it is a part of ${item.plan}` : ""}`, 400);
+    return item;
+  }
+
+  // A plan's parts, in plan order, which is the order they were created in.
+  private planParts(id: string): Item[] {
+    return this.sql.exec(`SELECT * FROM items WHERE plan = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, id).toArray().map(toItem);
+  }
+
+  private partEvents(id: string): LedgerEvent[] {
+    return this.sql.exec(`SELECT * FROM events WHERE item_id IN (SELECT id FROM items WHERE plan = ?) ORDER BY seq`, id).toArray().map(toEvent);
+  }
+
+  // The newest valid proposal, and how many there are.
+  private proposal(id: string): { hash: string; plan: Plan; by: string; at: string; count: number } | null {
+    const row = this.sql.exec(`SELECT hash, json, actor, at FROM plans WHERE plan_id = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+    if (!row) return null;
+    const count = this.sql.exec(`SELECT COUNT(*) AS n FROM plans WHERE plan_id = ?`, id).one().n as number;
+    return { hash: row.hash as string, plan: JSON.parse(row.json as string), by: row.actor as string, at: row.at as string, count };
+  }
+
+  private approvedPlan(id: string, hash: string): Plan {
+    const row = this.sql.exec(`SELECT json FROM plans WHERE plan_id = ? AND hash = ? ORDER BY seq DESC LIMIT 1`, id, hash).toArray()[0];
+    if (!row) throw new RuleError("no_proposal", `${id}'s approved proposal ${hash.slice(0, 12)} is not in the ledger`, 500);
+    return JSON.parse(row.json as string);
+  }
+
+  // Whether the newest proposal came after the owner last asked the planner
+  // again (revise, reroute or retry), so it answers the owner's latest word.
+  private answered(id: string): boolean {
+    const row = this.sql.exec(`SELECT kind FROM events WHERE item_id = ? AND kind IN ('plan.proposed', 'plan.revised', 'plan.rerouted', 'plan.retried') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+    return row?.kind === "plan.proposed";
+  }
+
+  private planEntries(project: string): InboxEntry[] {
+    const ids = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
+    return planInboxEntries(ids.map((id) => {
+      const newest = this.proposal(id);
+      return { project, plan: this.item(id), record: this.planRecord(id), proposal: newest && { hash: newest.hash, parts: newest.plan.parts.length }, answered: this.answered(id) };
+    }));
+  }
+
+  // A plan not yet approved, open and held by nobody, for a decision about its planner.
+  private planningPlan(id: string, actor: string, verb: "revise" | "reroute" | "retry"): { item: Item; record: PlanRecord } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the project owner may ${verb} a plan`, 403);
+    const item = this.planItem(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    const record = this.planRecord(id);
+    if (record.approval) {
+      throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; ${verb === "revise" ? `a plan is revised only before approval; to change the split, stop it with atelier plan stop ${id} and start another` : `${verb} one of its parts instead: atelier plan ${verb} tN`}`, 409);
+    }
+    if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; ${verb} it once its proposal is posted or its claim is released`, 409);
+    return { item, record };
+  }
+
+  // A part of an approved, open plan, open itself and held by nobody, for a
+  // decision about who builds it.
+  private openPart(item: Item, verb: "reroute" | "retry"): { record: PlanRecord; key: string } {
+    if (item.kind !== "part") throw new RuleError("not_a_plan", `${item.id} is not a plan or a part of one`, 400);
+    const plan = this.item(item.plan!);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
+    if (item.state !== "open" || item.owner) {
+      const release = item.state === "claimed" ? `; ask ${item.owner} to release it, or release it with atelier release ${item.id}` : "";
+      throw new RuleError("part_busy", `${item.id} is ${item.state}${item.owner ? `, held by ${item.owner}` : ""}; a part is ${verb === "reroute" ? "rerouted" : "retried"} only while it is open and held by nobody${release}`, 409);
+    }
+    return { record: this.planRecord(plan.id), key: item.partKey! };
+  }
+
+  // Asks the planner again: the plan job is dispatched to the record's
+  // planner, and a block on the planner is lifted, since its attempts now
+  // count from this request.
+  private askPlanner(id: string, record: PlanRecord, by: string, at: string): void {
+    this.writeDispatch(id, this.planDispatch(record.planner, record.goal, by, at));
+    this.savePlanRecord(id, record);
+    this.setBlocked(id, record, null);
+  }
+
+  // The plan job's dispatch: to a home runner, for the planner's harness and
+  // model, with the goal as its note.
+  private planDispatch(planner: string, goal: string, by: string, at: string): Dispatch {
+    const slash = planner.indexOf("/");
+    return { ...makeDispatch({ to: "home", agent: planner.slice(0, slash), model: planner.slice(slash + 1), note: goal }, by, at), job: "plan" };
+  }
+
+  private writeDispatch(id: string, d: Dispatch, extra: Record<string, unknown> = {}): void {
+    this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
+    this.log(id, d.by, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job } : {}), ...extra }, d.at);
+  }
+
+  // A part is put in the queue for the actor the tick chose, from the routing
+  // fixed at approval: the same Dispatch record the owner's dispatch writes,
+  // by atelier/orchestrator, with the approval's hash and the tick's reason.
+  // It is never a route.
+  private dispatchPart(id: string, to: string, reason: string, hash: string, at: string): void {
+    const slash = to.indexOf("/");
+    this.writeDispatch(id, makeDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, ORCHESTRATOR, at), { approval: hash, reason });
+  }
+
+  private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[] }, data: Record<string, unknown>): string {
+    const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
+    const id = `t${n + 1}`;
+    this.sql.exec(
+      `INSERT INTO items (id, title, scope, state, created_at, updated_at, kind, plan, part_key, deps) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
+      id, title, JSON.stringify(scope), at, at, plan.kind, plan.plan ?? null, plan.partKey ?? null, plan.deps ? JSON.stringify(plan.deps) : null,
+    );
+    this.log(id, actor, "item.created", { title, scope, kind: plan.kind, ...data }, at);
+    return id;
+  }
+
+  // Only the reason a plan is blocked is stored; a change of it is logged.
+  private setBlocked(id: string, record: PlanRecord, reason: string | null): void {
+    if (record.blocked === reason) return;
+    const was = record.blocked;
+    const at = new Date().toISOString();
+    record.blocked = reason;
+    this.savePlanRecord(id, record);
+    if (reason) this.log(id, ORCHESTRATOR, "plan.blocked", { reason }, at);
+    else this.log(id, ORCHESTRATOR, "plan.unblocked", { was }, at);
+  }
+
+  // Runs the tick of the plan an item belongs to, after a change to the item.
+  // The tick's writes are one transaction. A tick that fails is undone and
+  // logged as plan.tick_failed, and the change that ran it stands: a fault in
+  // the orchestrator never refuses an agent's push, review or release.
+  private afterPlanChange(id: string): void {
+    const row = this.sql.exec(`SELECT kind, plan FROM items WHERE id = ?`, id).toArray()[0];
+    const plan = row?.kind === "plan" ? id : row?.kind === "part" ? (row.plan as string) : null;
+    if (!plan) return;
+    const at = new Date().toISOString();
+    try {
+      this.ctx.storage.transactionSync(() => this.tick(plan, at));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("Atelier plan tick failed", plan, message);
+      this.log(plan, ORCHESTRATOR, "plan.tick_failed", { after: id, error: message.slice(0, 500) }, at);
+    }
+  }
+
+  // The tick (docs/orchestrator.md, section 3). Before approval it watches
+  // the planner's attempts. After approval it completes a plan whose parts
+  // have all merged, and otherwise runs planActions over the parts' states,
+  // the routing fixed at approval with the owner's reroutes, and the parts'
+  // events, under the plan's limits; maxJobs is checked here, since
+  // planActions does not count jobs. The block it reports is stored, or
+  // cleared when it no longer holds, and each part is put in the queue or
+  // taken out of it to match: dispatched when chosen, withdrawn while the
+  // plan is blocked, and its stale record cleared after a release.
+  private tick(id: string, at: string): void {
+    const plan = this.item(id);
+    if (plan.state === "merged" || plan.state === "abandoned") return;
+    const record = this.planRecord(id);
+    const approval = record.approval;
+    if (!approval) return this.plannerTick(id, record, at);
+    const parts = this.planParts(id);
+    const done = completion(parts.map((p) => p.state));
+    if (done === "complete") {
+      record.completedAt = at;
+      record.blocked = null;
+      this.savePlanRecord(id, record);
+      this.update(id, { state: "merged", owner: null }, at);
+      this.log(id, ORCHESTRATOR, "plan.completed", { approval: approval.hash, parts: Object.fromEntries(parts.map((p) => [p.id, p.state])) }, at);
+      return;
+    }
+    if (done === "empty") return this.setBlocked(id, record, EMPTY_PLAN);
+    const all = this.partEvents(id);
+    const events = tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!])));
+    const result = planActions({
+      plan: this.approvedPlan(id, approval.hash),
+      parts: parts.map((p) => ({ key: p.partKey!, state: p.state })),
+      routes: approval.routes.map((r) => rerouted(r, record.reroutes[r.key])),
+      events, maxParallel: approval.limits.maxParallel, deadline: approval.deadline, budget: null, now: at,
+    });
+    let blocked = result.blocked, chosen = result.dispatch;
+    if (!blocked && chosen.length) {
+      const room = approval.limits.maxJobs - jobsUsed(all);
+      if (room <= 0) blocked = `the plan has used its ${approval.limits.maxJobs} part dispatches (${RUN_LIMITS.jobsPerPart} per part)`;
+      else chosen = chosen.slice(0, room);
+    }
+    this.setBlocked(id, record, blocked);
+    const waiting = waitingParts(events);
+    const wanted = new Map(blocked ? [] : chosen.map((d) => [d.part, d]));
+    for (const p of parts) {
+      if (p.state !== "open" || p.owner) continue;
+      const want = wanted.get(p.partKey!);
+      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at);
+      else if (p.dispatch && !waiting.has(p.partKey!)) this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
+      else if (p.dispatch && blocked) {
+        this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
+        this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: `the plan is blocked: ${blocked}` }, at);
+      }
+    }
+  }
+
+  // Before approval: once the planner has let the plan go twice without a
+  // valid proposal, the plan job leaves the queue and the plan is blocked.
+  private plannerTick(id: string, record: PlanRecord, at: string): void {
+    if (record.blocked) return;
+    const reason = plannerBlock(plannerAttempts(this.events(id)));
+    if (!reason) return;
+    const item = this.item(id);
+    if (item.dispatch && item.state === "open" && !item.owner) {
+      this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+      this.log(id, ORCHESTRATOR, "item.undispatched", { reason }, at);
+    }
+    this.setBlocked(id, record, reason);
+  }
+
+  // A part is claimed only through its dispatch, so the plan's order and
+  // limits hold; an approved plan's own item is claimed by nobody, since its
+  // parts carry the work. A holder refreshing its claim is never refused here.
+  private assertPlanClaim(item: Item, actor: string): void {
+    if (item.owner === actor) return;
+    if (item.kind === "part" && item.state === "open" && !item.dispatch) {
+      throw new RuleError("not_dispatched", `${item.id} is a part of plan ${item.plan}, which dispatches it once the parts it depends on have merged; it is not dispatched now. See atelier plan show ${item.plan}`, 409);
+    }
+    if (item.kind === "plan" && this.planRecord(item.id).approval) {
+      throw new RuleError("plan_approved", `${item.id} is an approved plan, and its parts carry the work; see atelier plan show ${item.id}`, 409);
+    }
+  }
+
+  // The owner's dispatch and undispatch are for ordinary tasks. A plan's
+  // planner and its parts are dispatched by the plan.
+  private assertNotPlanned(item: Item): void {
+    if (item.kind === "part") {
+      throw new RuleError("plan_dispatch", `${item.id} is a part of plan ${item.plan}, which dispatches it; to change who builds it, run atelier plan reroute ${item.id} --to harness/model`, 409);
+    }
+    if (item.kind === "plan") {
+      throw new RuleError("plan_dispatch", `${item.id} is a plan; its planner is dispatched by atelier plan, and again by atelier plan revise, reroute or retry`, 409);
+    }
+  }
+
+  // One Ledger change takes one timestamp, `at`, and passes it to update and
+  // log alike, so an item's updatedAt and the event that changed it never
+  // differ, and a reader comparing the two sees one moment.
+  private update(id: string, fields: Record<string, string | null>, at: string): void {
     // A change of owner always ends the previous holder's runner, and moves
     // the claim generation on, so no claim the previous holder had in flight
     // can record its token afterwards.
@@ -1009,15 +1693,23 @@ export class Ledger extends DurableObject<Env> {
     if (owning && !("runner" in fields)) fields = { ...fields, runner: null };
     const keys = Object.keys(fields);
     const set = [...keys.map((k) => `${k} = ?`), ...(owning ? ["claim_gen = claim_gen + 1"] : [])].join(", ");
-    this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), new Date().toISOString(), id);
+    this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), at, id);
   }
 
-  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, proved = false): void {
+  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
     this.sql.exec(
       `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?)`,
-      itemId, new Date().toISOString(), actor, kind, JSON.stringify(data), proved ? 1 : null,
+      itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null,
     );
   }
+}
+
+function toEvent(r: Row): LedgerEvent {
+  return {
+    seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
+    ...(r.proved === 1 ? { proved: true as const } : {}),
+    actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
+  };
 }
 
 function toItem(r: Row): Item {
@@ -1038,5 +1730,10 @@ function toItem(r: Row): Item {
     runner: (r.runner as string | null) ?? null,
     // Only an item the owner has overridden carries the field.
     ...(r.review_override ? { reviewOverride: JSON.parse(r.review_override as string) as ReviewOverride } : {}),
+    // Only a plan and its parts carry these.
+    ...(r.kind === "plan" || r.kind === "part" ? { kind: r.kind } : {}),
+    ...(r.plan ? { plan: r.plan as string } : {}),
+    ...(r.part_key ? { partKey: r.part_key as string } : {}),
+    ...(r.deps ? { deps: JSON.parse(r.deps as string) as string[] } : {}),
   };
 }

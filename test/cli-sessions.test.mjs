@@ -679,3 +679,20 @@ test("a line of equals signs alone, as Markdown underlines a heading, is not a c
   assert.equal(r.status, 0, r.stderr);
   assert.match(f.git("ls-tree", "-r", "--name-only", "HEAD"), /guide\.md/);
 });
+
+test("wrap runs no registered check when one is never read-only, and changes nothing; --no-check still wraps", (t) => {
+  const f = fixture(t);
+  const ran = join(f.dir, "ran");
+  // A push to a remote that does not exist, so that even code without the rule changes nothing.
+  const checks = JSON.stringify([`touch '${ran}'`, "git push atelier-test-nowhere HEAD"]);
+  const r = f.runWith({ FAKE_CHECKS: checks }, "wrap", "Refuse", "--next", "x");
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /`git push atelier-test-nowhere HEAD` is not a check: it pushes \(git push atelier-test-nowhere HEAD\)/);
+  assert.match(r.stderr, /wrap runs the registered checks in this checkout, so it stopped before running any\. Replace the check with atelier init --check, or wrap with --no-check\./);
+  assert.equal(existsSync(ran), false, "no check ran");
+  assert.equal(f.git("rev-parse", "HEAD"), f.head);
+  assert.deepEqual(f.requests().filter((q) => q.method !== "GET"), [], "no note, no baseline update");
+  const skipped = f.runWith({ FAKE_CHECKS: checks }, "wrap", "Skip", "--next", "x", "--no-check");
+  assert.equal(skipped.status, 0, skipped.stderr);
+  assert.equal(existsSync(ran), false, "--no-check ran nothing");
+});
