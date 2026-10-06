@@ -312,8 +312,18 @@ async function revoke(env: Env, repo: string | null, tokenId: string | null) {
   }
 }
 
-function asStrings(v: unknown): string[] {
-  return Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean) : [];
+// A list of strings from a request body: a project's checks, protected paths
+// and eligible agents, an item's scope. Absent is the empty list. Otherwise
+// it must be an array whose every entry is a string with something in it; a
+// value of another type, or an empty entry, is refused with a 400 naming the
+// field, never coerced: a `true` in checks would otherwise become the
+// command "true", which /bin/sh passes every time.
+function asStrings(v: unknown, field: string): string[] {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !s.trim())) {
+    throw new RuleError("bad_list", `${field} must be a list of strings with something in each`, 400);
+  }
+  return v.map((s: string) => s.trim());
 }
 
 // ── API ────────────────────────────────────────────────────────────────────
@@ -425,11 +435,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       name: project, repo, reset: body.reset === true,
       ...(branch ? { branch } : {}),
       ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
-      ...(has("checks") ? { checks: asStrings(body.checks) } : {}),
-      ...(has("protected") ? { protected: asStrings(body.protected) } : {}),
+      ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
+      ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
-      ...(has("eligible") ? { eligible: asStrings(body.eligible) } : {}),
+      ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
       ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
@@ -506,7 +516,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
-  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope), actor), 201);
+  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor), 201);
   if (parts.length === 3 && m === "GET") return json(await L.items());
 
   const id = parts[3];
