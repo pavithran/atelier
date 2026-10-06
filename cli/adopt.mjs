@@ -106,28 +106,40 @@ const UNRECONCILED = ["active", "completed-unreconciled", "blocked"];
 // What an agent file says that still sends work through ControlPlane.
 const CALLS = ["pickup-card", "control-plane-paste", "session-receipt", "audit record"];
 
-// A capability's command as shell words, so a quoted path with spaces stays
-// one word. The parser is deliberately small: quotes and backslashes, which is
-// everything a capability's command needs.
-function shellWords(command) {
-  const words = [];
+// A capability's command line as the shell reads it: words, with quotes and
+// backslashes resolved so a quoted path with spaces stays one word, grouped
+// into the commands that `&&`, `||`, `|`, `;`, `&`, parentheses and newlines
+// separate. `>` and `<` stay in their word, so a redirection is a word of its
+// own (`2>`, `>/dev/null`, `2>&1`). The parser is deliberately small: quotes,
+// backslashes and these operators are everything a capability's command needs.
+function shellCommands(command) {
+  const commands = [], words = [];
   let word = "", started = false, quote = null;
+  const endWord = () => { if (started) words.push(word); word = ""; started = false; };
+  const endCommand = () => { endWord(); if (words.length) commands.push(words.splice(0)); };
   for (let i = 0; i < command.length; i++) {
-    const c = command[i];
+    const c = command[i], next = command[i + 1];
     if (quote === "'") { if (c === "'") quote = null; else word += c; continue; }
     if (quote === '"') {
       if (c === '"') quote = null;
-      else if (c === "\\" && i + 1 < command.length && '"\\$`'.includes(command[i + 1])) word += command[++i];
+      else if (c === "\\" && i + 1 < command.length && '"\\$`'.includes(next)) word += command[++i];
       else word += c;
       continue;
     }
     if (c === "'" || c === '"') { quote = c; started = true; continue; }
-    if (c === "\\" && i + 1 < command.length) { word += command[++i]; started = true; continue; }
-    if (/\s/.test(c)) { if (started) { words.push(word); word = ""; started = false; } continue; }
+    if (c === "\\" && i + 1 < command.length) { if (next !== "\n") { word += next; started = true; } i++; continue; }
+    if (c === "\n" || c === ";" || c === "(" || c === ")") { endCommand(); if (c === ";" && next === ";") i++; continue; }
+    if (c === "|") { endCommand(); if (next === "|" || next === "&") i++; continue; }
+    if (c === "&") {
+      // `&>` opens a redirection and `>&` or `<&` continues one: those stay in the word.
+      if (next === ">" || /[<>]$/.test(word)) { word += c; started = true; continue; }
+      endCommand(); if (next === "&") i++; continue;
+    }
+    if (/\s/.test(c)) { endWord(); continue; }
     word += c; started = true;
   }
-  if (started) words.push(word);
-  return words;
+  endCommand();
+  return commands;
 }
 
 // A word naming an interpreter, by itself or with a version (`python3`,
@@ -135,26 +147,61 @@ function shellWords(command) {
 // interpreter.
 const INTERPRETER = /^(?:sh|bash|zsh|dash|ksh|fish|pwsh|powershell|env)$|^(?:python|node|nodejs|deno|bun|ruby|perl|php)\d*(?:\.\d+)*$/;
 
+// A shell given `-c` (alone or among other single-letter options, `-lc`,
+// `-ec`) runs the next word as a command line of its own.
+const SHELL = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
+const COMMAND_OPTION = /^-[^-]*c/;
+
 // A leading `NAME=value` puts a variable in the interpreter's environment; the
 // command is what follows it.
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// A redirection, with the file it names in the same word or the next: an
+// optional descriptor, then the operator.
+const REDIRECTION = /^(?:\d*|&)(?:>>|>\||>&|<&|<<<|<<|<>|>|<)/;
+
+// Reserved words that come before the command they introduce, and those
+// whose words are no command at all (`for p in ...`, `done`).
+const BEFORE_COMMAND = new Set(["if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"]);
+const NO_COMMAND = new Set(["for", "select", "case", "function", "done", "fi", "esac", "}"]);
 
 // What looks like a file in the project: a path, or a name with a file
 // extension. A bare word like `git` is looked up on PATH, not in the project,
 // so it cannot be judged to exist or not.
 const PATHLIKE = /\/|\.[A-Za-z0-9]+$/;
 
-// The file a capability's command runs, or null when it runs none. A leading
-// interpreter or `NAME=value` assignment, and any option, is skipped; the
-// first word left is judged, and only when it looks like a file.
-function commandFile(capability) {
+// A word the shell expands before it runs, a glob, a variable, a command
+// substitution or a home directory: what it becomes is not known here.
+const EXPANDED = /[*?[$`]|^~/;
+
+// The files a capability's command runs: each command in a chain is judged on
+// its own program, and only that. A leading interpreter, `NAME=value`
+// assignment, option, redirection or reserved word is skipped; the first word
+// left is the program, judged when it looks like a file and the shell does
+// not expand it first. Everything after the program is an argument, a glob
+// among them, and is not judged. A shell's `-c` command line is split and
+// judged the same way.
+function commandFiles(capability) {
   const command = typeof capability === "string" ? capability : capability?.command;
-  const argv = Array.isArray(command) ? command.map(String) : typeof command === "string" ? shellWords(command) : [];
-  for (const word of argv) {
-    if (!word || ASSIGNMENT.test(word) || word.startsWith("-") || INTERPRETER.test(basename(word))) continue;
-    return PATHLIKE.test(word) ? word : null;
+  const commands = Array.isArray(command) ? [command.map(String)] : typeof command === "string" ? shellCommands(command) : [];
+  return commands.flatMap(programFile);
+}
+
+function programFile(words) {
+  let interpreter = null;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (!word || ASSIGNMENT.test(word) || BEFORE_COMMAND.has(word)) continue;
+    if (NO_COMMAND.has(word)) return [];
+    if (REDIRECTION.test(word)) { if (!word.replace(REDIRECTION, "")) i++; continue; }
+    if (word.startsWith("-")) {
+      if (interpreter && SHELL.test(interpreter) && COMMAND_OPTION.test(word)) return shellCommands(words[i + 1] ?? "").flatMap(programFile);
+      continue;
+    }
+    if (INTERPRETER.test(basename(word))) { interpreter = basename(word); continue; }
+    return PATHLIKE.test(word) && !EXPANDED.test(word) ? [word] : [];
   }
-  return null;
+  return [];
 }
 
 // The adapter lists its capabilities as an array, or as an object from name to
@@ -178,9 +225,10 @@ export function leftovers(checkout) {
     out.push(`docs/control-plane/work-item.v1.json: plan ${plan ?? "with no plan id recorded"} is ${work.state}, owned by ${owner ?? "nobody recorded"}`);
   }
   for (const capability of capabilities(readJson(join(checkout, "docs", "control-plane", "project-adapter.v1.json")))) {
-    const file = commandFile(capability);
-    if (file && !existsSync(resolve(checkout, file))) {
-      out.push(`docs/control-plane/project-adapter.v1.json: capability "${capability?.name ?? file}" runs ${file}, which does not exist`);
+    for (const file of commandFiles(capability)) {
+      if (!existsSync(resolve(checkout, file))) {
+        out.push(`docs/control-plane/project-adapter.v1.json: capability "${capability?.name ?? file}" runs ${file}, which does not exist`);
+      }
     }
   }
   if (existsSync(join(checkout, "tools", "control-plane"))) {

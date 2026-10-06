@@ -314,9 +314,12 @@ the agent finishing the task must settle: a
 `completed-unreconciled` or `blocked`, with its plan id, state and owner; a
 capability in `docs/control-plane/project-adapter.v1.json` whose command names
 a file the project does not have — the command is read as shell words, so a
-quoted path with spaces stays one word, and a script run through an
+quoted path with spaces stays one word; a script run through an
 interpreter or `env` (`python3 tools/ship.py`, `bash bin/sweep.sh`) is judged
-by the script, not the interpreter; a vendored `tools/control-plane/`
+by the script, not the interpreter; each command in a chain or a pipeline
+(`&&`, `||`, `|`, `;`) is judged on its own program, a shell's `-c` command
+line the same way, and a glob, a redirection or any argument after the
+program is never judged; a vendored `tools/control-plane/`
 directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
 names `pickup-card`, `control-plane-paste`, `session-receipt` or
 `audit record`, with its file and line number. The same list is recorded on
