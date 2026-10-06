@@ -1,0 +1,22 @@
+atelier atelier/t187 "atelier land ID (from the orchestrator's 2026-10-06 scripts land.sh and queue.sh): one landing at a time per project (a lease, so two sessions never race main); merge main into the task's workspace, stop on conflicts naming the files; regenerate generated fixtures when the project declares how; push and run the checks; request the cross-family review through review requests (t182) and wait for it; accept and merge; record each step, its duration and who resolved what in the ledger, so integration cost is measured (t186); refuse when the CLI and the deployed server disagree on routes, saying to deploy"
+accepted head 0388b5967e5d6e3f5468c3ac59e86a73373f2497
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T19:59:59.609Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T20:00:02.708Z
+REVIEW approve — antigravity/gemini-3.1-pro: atelier land under a project lease
+2026-10-06T17:55:08.831Z pavi item.created
+2026-10-06T17:55:41.235Z opencode/glm-5.3 item.claimed
+2026-10-06T17:55:47.220Z opencode/glm-5.3 fork.created
+2026-10-06T19:08:59.955Z opencode/glm-5.3 push.observed
+2026-10-06T19:12:19.846Z opencode/glm-5.3 evidence.observed
+2026-10-06T19:12:24.303Z opencode/glm-5.3 evidence.observed
+2026-10-06T19:12:25.336Z opencode/glm-5.3 item.submitted
+2026-10-06T19:34:00.802Z opencode/glm-5.3 push.observed
+2026-10-06T19:36:34.559Z opencode/glm-5.3 evidence.observed
+2026-10-06T19:36:38.105Z opencode/glm-5.3 evidence.observed
+2026-10-06T19:36:39.780Z opencode/glm-5.3 item.submitted
+2026-10-06T19:57:36.159Z opencode/glm-5.3 push.observed
+2026-10-06T20:00:00.223Z opencode/glm-5.3 evidence.observed
+2026-10-06T20:00:03.199Z opencode/glm-5.3 evidence.observed
+2026-10-06T20:00:04.056Z opencode/glm-5.3 item.submitted
+2026-10-06T20:03:56.352Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T20:03:57.131Z pavi item.accepted
