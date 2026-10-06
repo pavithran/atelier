@@ -11,6 +11,14 @@ export interface AgentToken {
   revokedAt?: string;
 }
 
+// A browser session, as the index Durable Object stores it: the SHA-256 of
+// the random id the cookie carries, and when it ends.
+export interface BrowserSession {
+  hash: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
 export function tokenFromBytes(bytes: Uint8Array): string {
   if (bytes.length < 32) throw new Error("a token needs at least 32 random bytes");
   return "atl_" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");

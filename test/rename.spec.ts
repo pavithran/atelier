@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 
 // A project renamed on the server keeps its Ledger and repositories under the
 // name it was created with, and answers to every name it has had. These specs
@@ -43,9 +44,8 @@ function artifacts(seen: { forks: string[]; created: string[] }) {
   } as unknown as Artifacts;
 }
 
-async function cookie() {
-  const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `atelier=${hex}`;
+function cookie() {
+  return signIn(TOKEN, testEnv);
 }
 
 it("the owner renames a project; both names reach the same Ledger, and an answer through the old one names the new", async () => {

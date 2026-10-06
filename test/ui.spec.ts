@@ -71,6 +71,7 @@ it('the dispatch and withdraw forms carry the revision, as every other form does
 
 // ── flow ──
 import {env} from 'cloudflare:workers';
+import {signIn} from './signin.ts';
 import worker from '../src/index.ts';
 import {renderFlow} from '../src/ui';
 import {buildStory} from '../src/graph';
@@ -110,10 +111,10 @@ it('a cut record says so where the graph rests',()=>{
 it('the flow route is served behind sign-in, under a policy that allows only the fonts',async()=>{
  const TOKEN='flow-test-token';
  const testEnv={...env,ATELIER_TOKEN:TOKEN} as typeof env;
- const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  const out=await worker.fetch(new Request('https://atelier.test/flow',{redirect:'manual'}),testEnv);
  expect(out.status).not.toBe(200);
- const res=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:`atelier=${hex}`}}),testEnv);
+ const res=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:signedIn}}),testEnv);
  expect(res.status).toBe(200);
  expect(await res.text()).toContain('<title>Flow · Atelier</title>');
  const csp=res.headers.get('content-security-policy')!;
@@ -300,20 +301,20 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  expect(html).toContain('family not recognised');
  expect(html).toContain('action="/models/add"');
  const TOKEN='models-page-token';
- const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
- const post=(origin:string,form:Record<string,string>)=>worker.fetch(new Request('https://atelier.test/models/add',{method:'POST',headers:{cookie:`atelier=${hex}`,origin},body:new URLSearchParams(form),redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
+ const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
+ const post=(origin:string,form:Record<string,string>)=>worker.fetch(new Request('https://atelier.test/models/add',{method:'POST',headers:{cookie:signedIn,origin},body:new URLSearchParams(form),redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  expect((await post('https://evil.test',{id:'x',harness:'codex',where:'cloud'})).status).toBe(403);
  expect((await post('https://atelier.test',{id:'deepseek-chat',harness:'opencode',where:'cloud',provider:'deepseek',keychain:'deepseek.API_KEY'})).status).toBe(303);
  const bad=await post('https://atelier.test',{id:'x',harness:'opencode',where:'cloud',provider:'openai-compatible',endpoint:'https://u:p@x.test'});
  expect(bad.status).toBe(400);
  expect(await bad.text()).toContain('must not carry a user name or password');
- const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:`atelier=${hex}`}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
+ const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:signedIn}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  expect(await page.text()).toContain('deepseek-chat');
 });
 it('the front door: visitors see the showcase, the owner sees Decisions only when something waits',async()=>{
  const TOKEN='door-test-token';
- const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
- const go=(path:string,extra:Record<string,string>={},signed=false)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:`atelier=${hex}`}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,...extra} as typeof env);
+ const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
+ const go=(path:string,extra:Record<string,string>={},signed=false)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:signedIn}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,...extra} as typeof env);
  await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject({name:'door',repo:'door',policy:{checks:[],protected:[]},createdAt:time});
  expect((await go('/',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/showcase');
  expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
@@ -371,7 +372,7 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
  const {env}=await import('cloudflare:workers');
  const {default:worker}=await import('../src/index');
  const TOKEN='browse-test-token';
- const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(TOKEN)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+ const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  const record={name:'browsed',repo:'browsed',policy:{checks:[],protected:[]},createdAt:time};
  const L=env.LEDGER.get(env.LEDGER.idFromName('project:browsed'));
  await L.setProject(record,'owner');
@@ -389,7 +390,7 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
  });
  const ARTIFACTS={get:async(name:string)=>{asked.push(name);return repo(name)}} as unknown as Artifacts;
  const bindings={...env,ARTIFACTS,ATELIER_TOKEN:TOKEN} as typeof env;
- const get=(path:string,signed=true)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:`atelier=${hex}`}:{},redirect:'manual'}),bindings);
+ const get=(path:string,signed=true)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:signedIn}:{},redirect:'manual'}),bindings);
  expect((await get('/p/browsed/code',false)).status).toBe(303);
  const base=await get('/p/browsed/code');
  expect(base.status).toBe(200);
