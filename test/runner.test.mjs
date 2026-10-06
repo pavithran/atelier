@@ -779,6 +779,50 @@ test("runner resets tracked edits and untracked files before every harness attem
   assert.equal(logs.filter((s) => s === "workspace reset to HEAD and untracked files removed").length, 2);
 });
 
+// t213: a claim that resets the workspace first saves what an earlier run
+// left uncommitted, tracked edits and new files alike, under
+// refs/atelier/rescue/ID-TIMESTAMP, so a stalled agent's draft is never lost.
+test("the reset before a harness saves uncommitted work under refs/atelier/rescue", async (t) => {
+  const { workspace, git, args } = gitWorkspace(t);
+  const logs = [];
+  let polls = 0, attempts = 0;
+  await runRunner(args, {
+    workspacePath: () => workspace, wait: async () => {},
+    queue: async () => {
+      if (++polls === 3) { process.emit("SIGINT"); return []; }
+      return [assignment];
+    },
+    taskIO: {
+      log: (s) => logs.push(s),
+      harness: async () => {
+        if (++attempts === 1) {
+          writeFileSync(join(workspace, "tracked"), "draft edit");
+          writeFileSync(join(workspace, "draft"), "new file");
+        }
+        return { code: 1 };
+      },
+    },
+    executeChild: async (argv, options) => execute(argv[0] === "git" ? argv : [process.execPath, "-e", ""], options),
+  });
+  assert.equal(attempts, 2);
+  const refs = git("for-each-ref", "--format=%(refname)", "refs/atelier/rescue/").split("\n").filter(Boolean);
+  assert.equal(refs.length, 1, "only the reset after the first attempt had anything to save");
+  assert.match(refs[0], /^refs\/atelier\/rescue\/t13-\d{8}T\d{6}Z$/);
+  assert.equal(git("show", `${refs[0]}:tracked`), "draft edit");
+  assert.equal(git("show", `${refs[0]}:draft`), "new file");
+  assert.ok(logs.includes(`uncommitted work saved as ${refs[0]} before the workspace is reset`));
+  assert.equal(readFileSync(join(workspace, "tracked"), "utf8"), "original");
+  assert.equal(existsSync(join(workspace, "draft")), false);
+});
+
+// t213: a runner that offers reviews needs a command that can write a verdict.
+test("parseConfig refuses review jobs for an agent whose command has no {verdict_file}", () => {
+  const errors = parseConfig({ ...config, jobs: ["review"] }).errors.join(" ");
+  assert.match(errors, /opencode's command has no \{verdict_file\} placeholder/);
+  assert.deepEqual(parseConfig({ agents: [{ ...entry, command: [...entry.command, "{verdict_file}"] }], jobs: ["review"] }).errors, []);
+  assert.deepEqual(parseConfig({ ...config, jobs: ["other"] }).errors, []);
+});
+
 test("server failures in finish retire the task after three failures", async (t) => {
   const { args } = gitWorkspace(t);
   const { io, logs } = fixture();
