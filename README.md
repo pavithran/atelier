@@ -898,7 +898,11 @@ only and goes only into the environment of the child process that makes
 the one balance call; the child prints currencies and amounts, and any key
 a tool echoes back is removed from what the command prints. The report
 carries counts, windows, model names, costs and balances, never a prompt,
-a file name, a session id, a key or a header.
+a file name, a session id, a key or a header. Each window, model and
+provider name a tool's record gives is cleaned before it is printed or
+reported, as the server cleans it: that key, control characters and
+anything shaped like a key are removed, and it is cut to the server's
+length.
 
 The CLI's exit codes let the runner tell a task's own failure from the
 server's: 0 success, 1 a refusal or failure of the command, 2 a required
