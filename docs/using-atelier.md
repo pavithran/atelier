@@ -40,8 +40,9 @@ atelier plan "what should be true when this is done" --scope "src/**" --planner 
 ```
 
 A planner proposes parts, Atelier routes each to a model from the pool, and
-nothing is dispatched until the owner approves. A goal is limited to 500
-characters for now.
+nothing is dispatched until the owner approves. For now the CLI refuses a
+goal longer than 500 characters, because the plan job carries the goal as its
+dispatch note, which is capped there (task t198).
 
 One clear change becomes a task:
 
@@ -100,8 +101,10 @@ atelier land ID --reviewer antigravity/gemini-3.1-pro
 which takes the project's landing lease, merges main into the task,
 regenerates fixtures if the project declares how, pushes, checks, submits,
 waits for the independent review a runner serves, then accepts and merges.
-`--override-review` exists for the case where no model of another family can
-review; it is recorded where everyone can see it.
+`atelier land` never overrides a review. When no model of another family can
+review a change, `atelier accept` and `atelier merge` take
+`--override-review` with the reason; the override is recorded where everyone
+can see it.
 
 ## Let a session act for you
 
@@ -133,7 +136,7 @@ that is how Atelier improves.
 - `atelier gc --project NAME` previews the workspaces of finished tasks that
   are safe to remove; `--apply` removes them.
 - Do not edit inside an agent's workspace while its agent runs. Wait for it,
-  or hand the task off with `atelier handoff`.
+  or hand the task off with `atelier handoff ID --to H/M`.
 - `atelier wrap "summary"` is for work done directly in your own checkout:
   it runs the checks, commits, updates the baseline and leaves a session
   note. Work that goes through tasks and plans does not need it.
