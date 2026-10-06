@@ -1,0 +1,24 @@
+atelier atelier/t130 "Security, low (gpt-6-astra, confirmed by opus-5.5): a failed Artifacts token revocation is swallowed (src/index.ts:267) and handoff or release still succeeds and forgets the token id, leaving the previous holder's token live (src/index.ts:580); revoke before changing the owner and fail the request on a real error"
+accepted head d6c818d8095145a1c675c4279df75058e3a938f6
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T04:14:29.159Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T04:14:31.490Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE (re-review). L.claim refuses a caller who may not claim before the route revokes anything, so the first finding was not a defect; the owner forms now read the workspace after the token id, closing a race the second finding pointed at (three race tests fail on the previous commit); dropToken throws 409 token_changed.
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's re-review.
+2026-10-06T01:59:45.602Z pavi item.created
+2026-10-06T02:00:17.880Z claude-code/opus-5.5 item.claimed
+2026-10-06T02:00:24.373Z claude-code/opus-5.5 fork.created
+2026-10-06T02:41:23.938Z claude-code/opus-5.5 push.observed
+2026-10-06T02:42:47.184Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:42:49.317Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:42:49.990Z claude-code/opus-5.5 item.submitted
+2026-10-06T03:39:04.066Z claude-code/opus-5.5 push.observed
+2026-10-06T03:40:24.204Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:40:26.237Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:40:26.839Z claude-code/opus-5.5 item.submitted
+2026-10-06T04:13:08.171Z claude-code/opus-5.5 push.observed
+2026-10-06T04:14:29.575Z claude-code/opus-5.5 evidence.observed
+2026-10-06T04:14:31.733Z claude-code/opus-5.5 evidence.observed
+2026-10-06T04:14:32.297Z claude-code/opus-5.5 item.submitted
+2026-10-06T04:15:33.736Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T04:15:34.211Z pavi review.approved
+2026-10-06T04:15:34.787Z pavi item.accepted
