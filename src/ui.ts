@@ -30,7 +30,7 @@ import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./puls
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf, modelKey,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -148,6 +148,7 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
   accept: ["Ready to accept", "go"],
   merge: ["Ready to merge", "go"],
   assess: ["Review required", "ask"],
+  blocked: ["Blocked", "ask"],
   scope: ["Scope changed", "ask"],
   stale: ["Needs a handoff", "ask"],
   overlap: ["Overlapping work", "ask"],
@@ -1089,7 +1090,7 @@ const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", revie
 // The brief sits above the diff: what is decided, what the agent said, what the
 // record shows, and what it points to.
 function briefBlock(d: Detail): string {
-  if (!["claimed", "submitted", "accepted"].includes(d.item.state)) return "";
+  if (!["claimed", "submitted", "accepted", "blocked"].includes(d.item.state)) return "";
   const b = briefFor(d, d.events);
   const said = submission(d.events, d.item.id, d.item.head);
   const summary = said
@@ -1110,7 +1111,7 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
   const story = taskStory(p.name, d);
   if (!story) return "";
   const owner = d.ownerActor ?? DEFAULT_OWNER;
-  const b = ["claimed", "submitted", "accepted"].includes(d.item.state) ? briefFor(d, d.events) : null;
+  const b = ["claimed", "submitted", "accepted", "blocked"].includes(d.item.state) ? briefFor(d, d.events) : null;
   const note = b ? { verdict: b.recommendation.verdict, tone: VERDICT_TONE[b.recommendation.verdict] as "go" | "ask" | "bad", text: b.recommendation.reason } : undefined;
   return `<section class="review-section task-thread" id="thread" aria-label="This task's thread">
   <h3>Thread</h3>
@@ -1193,16 +1194,43 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
         </form></details>`
     : "";
 
+  // A blocked task shows who blocked it, why, and the one way on; any task
+  // that is waiting, in progress or in review offers the block form.
+  const blockBox = item.state === "blocked" && item.blocked
+    ? `<div class="notice" role="status"><h3>Blocked by ${e(item.blocked.by)} ${when(item.blocked.at)}</h3>
+        <p>${e(item.blocked.reason)}</p>
+        <p class="meta">It keeps its owner and workspace, is skipped by runners and stuck detection, and cannot be pushed or submitted. Unblocking returns it to ${e(stateLabel[item.blocked.from].toLowerCase())}.</p>
+        <form method="post" action="${action("unblock")}">${revision}<button class="primary">Unblock</button></form></div>`
+    : live || item.state === "open"
+      ? `<details class="request-changes"><summary>Block this task</summary>
+        <form class="stack" method="post" action="${action("block")}">${revision}
+          <label>What is it waiting on?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>
+          <p class="meta">The task keeps its owner and workspace, leaves the runner queue and stuck detection, and cannot be submitted until it is unblocked.</p>
+          <button>Block</button>
+        </form></details>`
+      : "";
+
   const header = `<header class="review-header">
   <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
   <h2>${e(item.title)}</h2>
   <p class="review-description">${e(decision.detail)}</p>
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
-  <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}</div>
+  <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${merge}${reaccept}
   <p class="meta revision">Revision <code>${short(item.head)}</code>${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
+
+  // The owner's framing, set with atelier new or atelier edit: shown only
+  // when any of it is set, above the brief, where an agent or reviewer reads first.
+  const list = (entries: string[]) => `<ul>${entries.map((x) => `<li>${e(x)}</li>`).join("")}</ul>`;
+  const framing = item.nonGoals?.length || item.stopWhen?.length || item.nextGate
+    ? `<section class="review-section framing" id="framing" aria-label="How the task is framed"><h3>Framing</h3><dl>
+    ${item.nonGoals?.length ? `<dt>Non-goals</dt><dd>${list(item.nonGoals)}</dd>` : ""}
+    ${item.stopWhen?.length ? `<dt>Stop when</dt><dd>${list(item.stopWhen)}</dd>` : ""}
+    ${item.nextGate ? `<dt>Next gate</dt><dd>${e(item.nextGate)}</dd>` : ""}
+  </dl></section>`
+    : "";
 
   const scope = gate.outOfScope.length
     ? `<details class="notice"><summary>Scope changed · ${gate.outOfScope.length} file${gate.outOfScope.length === 1 ? "" : "s"}</summary>
@@ -1273,7 +1301,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     : "";
 
   return `${header}
-${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
+${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>

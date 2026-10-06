@@ -5,7 +5,7 @@ import type { CheckDeclaration } from "./checks.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned";
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
   id: string;
@@ -24,12 +24,39 @@ export interface Item {
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
+  // The owner's framing of the task, from ControlPlane's work item: what the
+  // task is not to do, what tells its holder to stop and ask, and the gate it
+  // goes to next. Each is optional; the brief and the task page show them.
+  nonGoals?: string[];
+  stopWhen?: string[];
+  nextGate?: string | null;
+  blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
   // A plan, or a part of one (docs/orchestrator.md). An ordinary task
   // carries none of these four fields.
   kind?: "plan" | "part";
   plan?: string;            // a part's plan item, tP
   partKey?: string;         // a part's key in the approved plan
   deps?: string[];          // the keys of the parts a part depends on
+}
+
+// Why a task is blocked, who blocked it, when, and the state it was in,
+// which `unblock` returns it to. The holder or the project owner records
+// it; while it stands the task is skipped by dispatch and stuck detection,
+// cannot be pushed, submitted, reviewed, handed off or released, and sits
+// in the owner's inbox with the reason.
+export interface Block {
+  reason: string;
+  by: string;
+  at: string;
+  from: ItemState;
+}
+
+// What `atelier new` and `atelier edit` set. A field present replaces the
+// item's value; one absent keeps it. An empty list or a null gate clears.
+export interface ItemFields {
+  nonGoals?: string[];
+  stopWhen?: string[];
+  nextGate?: string | null;
 }
 
 // Whether two items belong to one plan: two parts of it, or a part and the
@@ -355,6 +382,7 @@ export function parseRuleError(err: unknown): { status: number; code: string; de
 
 export function assertClaimable(item: Item, actor: string): void {
   if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
+  assertNotBlocked(item);
   if (item.state === "merged" || item.state === "abandoned" || item.state === "accepted") {
     throw new RuleError("closed", `${item.id} is ${item.state}`);
   }
@@ -455,6 +483,70 @@ export function independentApproval(r: Review, kind: "protected" | "coordinated"
 export function overrideAt(item: Pick<Item, "head" | "reviewOverride">, owner = DEFAULT_OWNER): ReviewOverride | null {
   const o = item.reviewOverride;
   return o && item.head && o.head === item.head && o.by === owner && o.reason.trim() ? o : null;
+}
+
+// A blocked task answers every move with the same refusal: the reason it is
+// blocked, and the command that lets it go on. Claims, pushes, reviews,
+// submission, handoff and release all stop here; abandon does not, so the
+// owner can still close it.
+export function assertNotBlocked(item: Item): void {
+  if (item.state !== "blocked") return;
+  const reason = item.blocked?.reason ?? "no reason recorded";
+  throw new RuleError("blocked", `${item.id} is blocked: ${reason}. Run atelier unblock ${item.id} first`);
+}
+
+// Only a task that is waiting, in progress or in review can be blocked: an
+// accepted one is the owner's to merge or send back, and a closed one is
+// closed. One already blocked keeps its first reason; unblock it to change it.
+export function assertBlockable(item: Item): void {
+  if (item.state === "blocked") {
+    throw new RuleError("already_blocked", `${item.id} is already blocked: ${item.blocked?.reason ?? "no reason recorded"}. Run atelier unblock ${item.id} to lift that, then block it again with the new reason`);
+  }
+  if (item.state !== "open" && item.state !== "claimed" && item.state !== "submitted") {
+    throw new RuleError("closed", `${item.id} is ${item.state}; only an open, claimed or submitted task can be blocked`);
+  }
+}
+
+export const REASON_MAX = 500;
+export const FIELD_MAX = 300;
+export const FIELD_LIST_MAX = 20;
+
+// A line of the owner's text as stored: control characters as spaces,
+// trimmed. Empty means absent.
+const line = (v: unknown): string => (typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "");
+
+// The reason a block records. A missing, blank or over-long reason is
+// refused, not cut or filled in, because it is what the owner reads in the
+// inbox to decide what to do.
+export function blockReason(value: unknown): string {
+  const reason = line(value);
+  if (!reason) throw new RuleError("block_reason", "a block needs a reason: atelier block ID \"what it is waiting on\"", 400);
+  if (reason.length > REASON_MAX) throw new RuleError("block_reason", `a block's reason is at most ${REASON_MAX} characters`, 400);
+  return reason;
+}
+
+// The item fields a request sets, checked at the boundary: each list is
+// strings with something in each, at most FIELD_LIST_MAX of them; the gate is
+// one line or null. A field that is not sent is left out, so the Ledger
+// keeps the item's value for it.
+export function itemFields(input: Record<string, unknown>): ItemFields {
+  const list = (v: unknown, field: string): string[] => {
+    if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !line(s))) throw new RuleError("bad_field", `${field} must be a list of strings with something in each`, 400);
+    if (v.length > FIELD_LIST_MAX) throw new RuleError("bad_field", `${field} holds at most ${FIELD_LIST_MAX} entries`, 400);
+    const entries = v.map(line);
+    if (entries.some((s) => s.length > FIELD_MAX)) throw new RuleError("bad_field", `each ${field} entry is at most ${FIELD_MAX} characters`, 400);
+    return entries;
+  };
+  const out: ItemFields = {};
+  if (input.nonGoals !== undefined) out.nonGoals = list(input.nonGoals, "nonGoals");
+  if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
+  if (input.nextGate !== undefined) {
+    if (input.nextGate !== null && typeof input.nextGate !== "string") throw new RuleError("bad_field", "nextGate must be text or null", 400);
+    const gate = line(input.nextGate);
+    if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters`, 400);
+    out.nextGate = gate || null;
+  }
+  return out;
 }
 
 export const OVERRIDE_REASON_MAX = 500;
@@ -777,7 +869,7 @@ export interface InboxEntry {
   project: string;
   itemId: string;
   title: string;
-  kind: "accept" | "assess" | "merge" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
+  kind: "accept" | "assess" | "merge" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
 }
@@ -815,6 +907,13 @@ export function inboxFor(
     if (item.state === "accepted") {
       const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner);
       out.push({ ...base, kind: "merge", reason: `accepted${overrode(g)}; run \`atelier merge\` in the project checkout`, weight: 90 });
+      continue;
+    }
+    // A blocked task waits on the owner to clear what blocks it, so it ranks
+    // with the decisions, below a missing review and above a scope change.
+    if (item.state === "blocked") {
+      const b = item.blocked;
+      out.push({ ...base, kind: "blocked", reason: `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}; run \`atelier unblock ${item.id}\` when it can go on`, weight: 70 });
       continue;
     }
     if (item.state === "submitted" && !part) {
@@ -891,6 +990,7 @@ export function assertRevision(item: Item, expected: string): void {
 }
 
 export function assertLive(item: Item): void {
+  assertNotBlocked(item);
   if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
 }
 
@@ -901,7 +1001,7 @@ export function latestReviews(reviews: Review[], head: string | null): Review[] 
 }
 
 export const stateLabel: Record<ItemState, string> = {
-  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed",
+  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed", blocked: "Blocked",
 };
 
 // A reason as one sentence of a longer text: ended with a full stop unless
@@ -915,6 +1015,10 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   const failed = view.checks.some((c) => c.grade === "observed" && !c.passed);
   if (item.state === "merged") return { title: "Merged into the project", detail: "The accepted revision is in the project baseline. Publishing and deployment are separate actions.", action: "none", tone: "go", passed };
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
+  if (item.state === "blocked") {
+    const b = item.blocked;
+    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its owner and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
+  }
   if (item.state === "accepted") {
     const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner).overridden;
     const detail = overridden
