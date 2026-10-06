@@ -1,0 +1,16 @@
+atelier atelier/t115 "Decision for PAVI: atelier wrap commits even when the project's registered checks fail (it reports them and the relay says 'session closed with a failing check'); many projects' own wrap protocols treat a failed check as blocking (for example zhongwenshifu docs/wrap-protocol.md:136). Options: refuse to commit on a failing check unless --allow-failing; or keep committing and leave blocking to each protocol. Found by opus-5.5 reviewing the protocol edits, 2026-10-06"
+accepted head 127e9038546ad17e74eea7743c318d7f9602922c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T02:38:43.855Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T02:38:46.690Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. A failing registered check stops wrap before staging, recording or pushing; --allow-failing commits and records the overridden checks in the note, validated on both sides; --no-check is unchanged and refused together with --allow-failing; timeouts and signals count as failures; guide, help and README agree; tests fail on the old code.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T01:00:43.859Z pavi item.created
+2026-10-06T02:18:17.031Z claude-code/fable-5.1 item.claimed
+2026-10-06T02:18:21.462Z claude-code/fable-5.1 fork.created
+2026-10-06T02:37:21.830Z claude-code/fable-5.1 push.observed
+2026-10-06T02:38:44.663Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:38:46.947Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:38:47.721Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:41:34.922Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:41:35.613Z pavi review.approved
+2026-10-06T02:41:36.396Z pavi item.accepted
