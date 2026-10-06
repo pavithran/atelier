@@ -1,0 +1,16 @@
+atelier atelier/t124 "Audit t105, raised to blocking by gemini-3.1-pro: atelier report takes no item id, but inside one item's workspace 'atelier report t7 "…"' records the claim against the workspace's item with 't7' folded into the text (cli/atelier.mjs:1218-1221); accept an explicit id or refuse a leading id-shaped word"
+accepted head 9abaf22f1f9628f3cef637381afbfdca78b8dd8a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T02:35:38.742Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T02:35:41.538Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. The claim lands on --item, the named id or the workspace's item; in a workspace another item's id is refused unless --item or --project says so; an id-shaped first word is taken as the id, never folded into the claim; --item is in the flag table; the tests fail on the old code.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T01:21:08.362Z pavi item.created
+2026-10-06T01:31:19.562Z claude-code/fable-5.1 item.claimed
+2026-10-06T01:31:23.066Z claude-code/fable-5.1 fork.created
+2026-10-06T02:34:18.046Z claude-code/fable-5.1 push.observed
+2026-10-06T02:35:39.496Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:35:41.905Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:35:42.541Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:41:32.592Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:41:33.209Z pavi review.approved
+2026-10-06T02:41:33.949Z pavi item.accepted
