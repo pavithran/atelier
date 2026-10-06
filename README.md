@@ -132,7 +132,10 @@ The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
 every required check observed passing at the current head; the changed paths
 observed; no rejection at that head; and, if a protected path changed, an
 approval at that head from a model different from each recorded contributor's
-model or from the project owner. What a check executes is protected automatically: a script it runs (`./check.sh`,
+model or from the project owner. Models are compared without letter case or a
+`:profile` suffix, and a name the model registry
+([`src/models/registry.ts`](src/models/registry.ts)) lists for a model, such as
+`claude-opus-5-5` for `opus-5.5`, is that model. What a check executes is protected automatically: a script it runs (`./check.sh`,
 `node scripts/verify.mjs`), and `package.json` when it goes through a package
 manager, whose scripts an item could otherwise rewrite. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such

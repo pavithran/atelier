@@ -266,6 +266,18 @@ test("pickReviewer: a reviewer of a contributor's family is refused, and with no
   assert.equal(pick({ pool: [] }).unpicked, "no reviewer of another family than every contributor (zcode/glm-5.3 (zai)): no model in the pool");
 });
 
+test("pickReviewer: a contributor under another letter case, profile or registered name is that pool model, and keeps its family", () => {
+  const held = item({ owner: "Claude-Code/claude-opus-5-5:fast", pushActors: ["Claude-Code/claude-opus-5-5:fast"] });
+  assert.deepEqual(pick({ item: held, pool: [opus] }).passedOver, [
+    { actor: "claude-code/opus-5.5", reasons: ["contributed to this item, and nobody reviews their own work"] },
+  ]);
+  // A profile suffix that names another vendor does not make a Qwen model another family.
+  const qwen = item({ owner: "opencode/qwen3.8-27b-6bit:google-eval", pushActors: ["opencode/qwen3.8-27b-6bit:google-eval"] });
+  assert.deepEqual(pick({ item: qwen, pool: [coder] }).passedOver, [
+    { actor: "opencode/Qwen3-Coder-Next-4bit:studio-code", reasons: ["same family as contributor opencode/qwen3.8-27b-6bit:google-eval (qwen)"] },
+  ]);
+});
+
 test("pickReviewer: no reviewer when a contributor's family is unknown or no contributor is recorded", () => {
   assert.deepEqual(pick({ item: item({ owner: "opencode/mystery-1", pushActors: ["opencode/mystery-1", "atelier/events"] }) }), {
     reviewer: null, passedOver: [], unpicked: "no reviewer can be of another family than opencode/mystery-1, atelier/events, whose family is not recognised from their names",

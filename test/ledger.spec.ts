@@ -120,6 +120,24 @@ it("a protected path is accepted only after an independent approval", async () =
   expect(merged).toMatchObject({ state: "merged", owner: null });
 });
 
+it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
+  const L = await setup("same-model-names");
+  await L.newItem("Touch a protected path", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "same-model-names--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  for (const by of ["Claude-Code/Opus-5.5", "claude-code/opus-5.5:fast", "claude-code/claude-opus-5-5"]) {
+    await refusal(L.addReview(review("t1", by, H1, true)), "self_review", /cannot review their own/);
+  }
+  // Another harness may record a review, but the same model does not count for a protected change.
+  for (const by of ["codex/Opus-5.5", "antigravity/claude-opus-5-5:fast"]) await L.addReview(review("t1", by, H1, true));
+  await refusal(L.accept("t1", "owner"), "not_ready", /protected path/);
+  await L.addReview(review("t1", B, H1, true));
+  expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
+});
+
 it("exactly one owner: claims are serialised, scoped and eligible", async () => {
   const strict: ProjectPolicy = { checks: [], protected: [], eligible: ["claude", "codex"], refuseOverlap: true };
   const L = await setup("sole-owner", strict);

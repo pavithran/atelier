@@ -10,7 +10,7 @@ import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { route, type Candidate } from "../models/routing.ts";
-import { assertEligible, hasRole, parseRuleError, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
 // What the owner knows about a tool's usage limits, keyed by actor
@@ -165,7 +165,9 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   const refusal = claimRefusal(actor, ctx.input.policy);
   const build = refusal ? [...both, refusal] : [...both];
   const review = ctx.governed && !hasRole(actor, ctx.input.policy, "assessor") ? [...both, `${actor} needs an available agent with the assessor role`] : [...both];
-  return { actor, family: familyOf(entry.id), candidate, passed, build, review };
+  // The family as the gate reads it, by modelKey, so a profile suffix never
+  // makes a reviewer look like another family than the builder.
+  return { actor, family: familyOf(modelKey(actor)), candidate, passed, build, review };
 }
 
 function choice(verdict: Verdict, lead: string[], role: string, ctx: Context): Choice {
