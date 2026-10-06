@@ -27,6 +27,7 @@ import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
+import { runLand } from "./land.mjs";
 import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLeft, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { pushHistory } from "./push-steps.mjs";
@@ -215,7 +216,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
@@ -253,6 +254,7 @@ export const FLAGS = {
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
+  land: { reviewer: false, "no-review": true, "dry-run": true },
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
@@ -1634,6 +1636,9 @@ const commands = {
     const r = await call("PUT", P(name), {
       ...policy,
       ...(reset ? { reset: true } : {}),
+      // The command that regenerates the project's fixtures after a task
+      // merges main (atelier land); omitted keeps it, "" clears it.
+      ...(args.regenerate !== undefined ? { regenerate: args.regenerate } : {}),
       approval: args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title }),
@@ -1688,6 +1693,7 @@ const commands = {
     for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
     if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
     console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
+    if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
@@ -2483,6 +2489,51 @@ const commands = {
       else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
       console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
     } finally { unlock(); }
+  },
+
+  // The project owner lands one task whole: the lease on the server, the
+  // merge of main into the task's workspace, the project's fixture
+  // regeneration, the checks, the independent review, then accept and merge
+  // (cli/land.mjs). Steps run as this CLI's own commands where they have one,
+  // and each is recorded on the ledger as a land.* event.
+  async land() {
+    const name = project(), id = itemArg();
+    const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
+    if (!p.path || !existsSync(p.path)) die(`land needs ${name}'s registered checkout; this machine records ${p.path ?? "no folder"}. Run atelier init in that checkout first`);
+    const workspace = workspacePath(name, id);
+    // A request that throws rather than dies, so a landing that already holds
+    // the lease can release it before the command ends.
+    const request = async (method, path, body) => {
+      let res, text;
+      try {
+        res = await fetch(server() + "/api" + path, {
+          method,
+          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "content-type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        text = await res.text();
+      } catch (error) { throw new Error(`server request failed: ${error.message}`); }
+      let data;
+      try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
+      if (!res.ok) throw new Error(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`);
+      return data;
+    };
+    // A git runner that throws rather than dies, for the same reason. With
+    // allowFail it answers with git's own result, as the die-ing runner does.
+    const gitOrThrow = (a, o = {}) => {
+      const r = git(a, { ...o, allowFail: true });
+      if (o.allowFail) return r;
+      if (r.status !== 0) throw new Error(`git ${redactGitArgs(a).join(" ")} failed:\n${(r.stderr || r.stdout || r.error?.message || "").trim()}`);
+      return o.raw ? r.stdout : r.stdout.trim();
+    };
+    try {
+      await runLand({
+        args, name, id, p, request, git: gitOrThrow, die,
+        print: (line) => console.log(line),
+        workspacePath, atelier: fileURLToPath(import.meta.url), env: process.env,
+        redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
+      });
+    } catch (error) { die(error.message); }
   },
 
   // The project owner approves one protected action at one revision of the

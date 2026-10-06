@@ -5,8 +5,8 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\" \"test/**/*.test.mjs\" && vitest run",
     "typecheck": "tsc -p . && tsc -p test",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --var DEPLOYED_MAIN:$(git rev-parse HEAD)",
+    "deploy": "wrangler deploy --var DEPLOYED_MAIN:$(git rev-parse HEAD)",
     "types": "wrangler types"
   },
   "license": "MIT",
