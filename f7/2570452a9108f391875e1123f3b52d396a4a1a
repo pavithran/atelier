@@ -1,0 +1,29 @@
+atelier atelier/t118 "Audit t105, blocking (confirmed by glm-5.3): re-claiming a stale workspace, then atelier update and atelier push --force, drops another holder's pushed commits from the fork: claim only fetches, update rebases onto the baseline rather than origin, push --force leases against the just-fetched head, and recordPush does no ancestry check; rebase onto the fork's head and refuse a push whose new head does not contain the recorded head"
+accepted head 47683da79c2818bef7b261c2aff697a6de04cc35
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T03:37:31.347Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T03:37:33.569Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE No issues found. The implementation correctly addresses the problem without introducing correctness, security, or data-loss bugs. The first-parent chain traversal is properly structured to BFS through branches and batches while strictly abiding by the commit and read budgets. The local CLI perfectly guards against silent data loss by enforcing a `--force-with-lease` against the recorded head and verifying that no unique commits from the recorded head are dropped during `update` rebases.
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T01:21:06.079Z pavi item.created
+2026-10-06T01:30:46.557Z claude-code/fable-5.1 item.claimed
+2026-10-06T01:30:49.455Z claude-code/fable-5.1 fork.created
+2026-10-06T01:56:19.508Z claude-code/fable-5.1 push.observed
+2026-10-06T01:57:38.869Z claude-code/fable-5.1 evidence.observed
+2026-10-06T01:57:40.823Z claude-code/fable-5.1 evidence.observed
+2026-10-06T01:57:41.437Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:06:17.995Z antigravity/gemini-3.1-pro review.rejected
+2026-10-06T02:31:54.323Z claude-code/fable-5.1 push.observed
+2026-10-06T02:33:25.795Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:33:28.278Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:33:28.918Z claude-code/fable-5.1 item.submitted
+2026-10-06T03:22:24.305Z claude-code/fable-5.1 push.observed
+2026-10-06T03:23:48.772Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:23:51.057Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:23:51.662Z claude-code/fable-5.1 item.submitted
+2026-10-06T03:36:10.619Z claude-code/fable-5.1 push.observed
+2026-10-06T03:37:31.679Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:37:33.786Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:37:34.377Z claude-code/fable-5.1 item.submitted
+2026-10-06T04:05:42.287Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T04:05:42.772Z pavi review.approved
+2026-10-06T04:05:43.303Z pavi item.accepted
