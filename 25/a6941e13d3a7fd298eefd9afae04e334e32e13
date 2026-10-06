@@ -1,0 +1,18 @@
+atelier atelier/t50 "Visual: Projects as cards with a two-week mini-graph and tally; History as a timeline of merges coloured by agent family"
+accepted head 4c72db89cc1004c69798935a3429f387c01fafe8
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T14:33:30.500Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T14:33:33.677Z
+REVIEW approve — antigravity/gemini-3.1-pro: Projects cards, History timeline, Studio lanes, family stripes, sign-in backdrop, live pages under a nonce with a scrubber; the refresh holds when a new revision arrives. t51 and t42 land here.
+2026-10-04T17:57:36.182Z pavi item.created
+2026-10-06T12:44:11.566Z claude-code/fable-5.1 item.claimed
+2026-10-06T12:44:14.232Z claude-code/fable-5.1 fork.created
+2026-10-06T14:05:13.142Z claude-code/fable-5.1 item.handoff
+2026-10-06T14:17:43.462Z opencode/glm-5.3 push.observed
+2026-10-06T14:19:13.104Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:19:15.518Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:32:01.179Z opencode/glm-5.3 push.observed
+2026-10-06T14:33:31.553Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:33:34.522Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:33:35.324Z opencode/glm-5.3 item.submitted
+2026-10-06T14:36:09.010Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:36:10.012Z pavi item.accepted
