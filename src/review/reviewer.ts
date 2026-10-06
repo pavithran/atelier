@@ -18,7 +18,7 @@ import type { ModelEntry } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { assertEligible, DEFAULT_OWNER, hasRole, parseRuleError, type Item, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, DEFAULT_OWNER, hasRole, parseRuleError, sameActor, type Item, type ProjectPolicy } from "../rules.ts";
 import { actorFamily, contributorsOf, describeContributors, familyRefusal } from "./independence.ts";
 
 export interface PickInput {
@@ -109,7 +109,9 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   const passed: string[] = [];
   const policy = input.policy;
 
-  if (contributors.some((c) => names.includes(c.toLowerCase()))) failed.push("contributed to this item, and nobody reviews their own work");
+  // A contributor under another letter case, profile or registered name of
+  // this entry's model, in the same harness, is this entry.
+  if (contributors.some((c) => names.some((name) => sameActor(name, c)))) failed.push("contributed to this item, and nobody reviews their own work");
   else {
     const family = familyRefusal(actor, contributors);
     if (family) failed.push(family);

@@ -4,7 +4,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors,
-  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, validActor,
+  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, RuleError, sameActor, validActor,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
 import { cleanSummary } from "./brief";
@@ -600,7 +600,8 @@ export class Ledger extends DurableObject<Env> {
     assertReviewAllowed(item, proved);
     if (item.state !== "accepted") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
-    if (item.owner === r.by) throw new RuleError("self_review", "an owner cannot review their own item", 403);
+    // The holder under another letter case, profile or registered name is still the holder.
+    if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
