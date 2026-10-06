@@ -1,0 +1,31 @@
+atelier atelier/t182 "Orchestrator steps 9 and 10 (t39): automatic cross-family review: review requests in the Ledger when reviewNeeded fires (src/review/), a review-claim route binding one reviewer, review jobs in the queue, findings on reviews, the rework transition after a blocker; then the runner's review job (clone the head read-only, write {diff_file}, harness writes {verdict_file}, validate with parseVerdict, post the review) (docs/orchestrator.md sections 4 and 8)"
+accepted head fd142654a20977fdd3f5f4177a6f5022d71a17af
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T15:50:36.049Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T15:50:38.773Z
+REVIEW approve — antigravity/gemini-3.1-pro: Orchestrator steps 9 and 10: automatic cross-family review requests and the runner's review job.
+2026-10-06T14:44:48.313Z pavi item.created
+2026-10-06T14:45:18.710Z opencode/deepseek-v4-pro item.claimed
+2026-10-06T14:45:24.473Z opencode/deepseek-v4-pro fork.created
+2026-10-06T15:26:26.911Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:28:55.417Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:28:59.802Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:29:00.677Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:34:04.814Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:36:17.662Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:36:20.636Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:36:21.554Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:38:52.723Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:38:56.166Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:38:57.000Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:43:38.754Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:45:25.744Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:45:29.681Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:45:30.539Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:48:27.333Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T15:48:28.020Z pavi item.accepted
+2026-10-06T15:48:54.874Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:50:36.580Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:50:39.178Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:50:39.974Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:52:07.541Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T15:52:08.668Z pavi item.accepted
