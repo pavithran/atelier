@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { formatStatus } from "../cli/status.mjs";
+import { formatStatus, statusJson } from "../cli/status.mjs";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
 const entry = (itemId, kind, over = {}) => ({ project: "demo", itemId, title: `Task ${itemId}`, kind, reason: `because ${kind}`, weight: 1, ...over });
@@ -52,6 +52,64 @@ test("an undelivered merge's entry names the dry run, and the merged task itself
   assert.ok(out.includes("    t1  ship  Task t1"));
   assert.ok(out.includes("      next: atelier ship --dry-run --project demo"));
   assert.ok(!out.includes("In progress"));
+});
+
+test("three live tasks where t1 overlaps t2 and t3 print two pair lines, each pair once, after the owner's waits and under the heading", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [
+      item("t1", "claimed", { owner: "claude-code/opus-5.5" }),
+      item("t2", "claimed", { owner: "codex/gpt-6" }),
+      item("t3", "claimed", { owner: "opencode/glm-5.3" }),
+    ],
+    inbox: [
+      entry("t4", "accept"),
+      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
+      entry("t1", "overlap", { reason: "scope overlaps t3 (opencode/glm-5.3)" }),
+    ],
+  }]).split("\n");
+  assert.ok(out.includes("    t4  accept  Task t4"), "the owner's waits stay where they are");
+  assert.ok(out.includes("      next: atelier accept t4 --project demo"));
+  assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 2, "one line per pair");
+  assert.ok(out.includes("    t1 and t2 name overlapping paths"));
+  assert.ok(out.includes("    t1 and t3 name overlapping paths"));
+  const heading = out.indexOf("  Overlapping scopes");
+  const lastWait = out.indexOf("      next: atelier accept t4 --project demo");
+  assert.ok(heading > lastWait, "the pairs print after every wait that needs the owner");
+  assert.ok(out.includes("    Expect a merge conflict when the second lands; nothing waits on you."));
+});
+
+test("a pair seen from both sides is printed once", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" }), item("t2", "claimed", { owner: "codex/gpt-6" })],
+    inbox: [
+      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
+      entry("t2", "overlap", { reason: "scope overlaps t1 (claude-code/opus-5.5)" }),
+    ],
+  }]).split("\n");
+  assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 1);
+  assert.ok(out.includes("    t1 and t2 name overlapping paths"));
+});
+
+test("--json carries the sorted pairs, each once, beside an unchanged inbox", () => {
+  const read = statusJson([{
+    name: "demo",
+    items: [item("t1", "claimed"), item("t2", "claimed"), item("t3", "claimed")],
+    inbox: [
+      entry("t2", "overlap", { reason: "scope overlaps t1 (unowned)" }),
+      entry("t1", "overlap", { reason: "scope overlaps t3 (unowned)" }),
+      entry("t3", "overlap", { reason: "scope overlaps t1 (unowned)" }),
+      entry("t9", "accept", { project: "other" }),
+    ],
+  }]);
+  assert.deepEqual(read[0].overlaps, [["t1", "t2"], ["t1", "t3"]]);
+  assert.equal(read[0].inbox.length, 3, "the inbox itself is unchanged");
+});
+
+test("a status with no overlaps prints no heading", () => {
+  const out = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "accept")] }]);
+  assert.ok(!out.includes("Overlapping scopes"));
 });
 
 // `atelier status --project demo` against a stand-in server, with the CLI's

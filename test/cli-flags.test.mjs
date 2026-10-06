@@ -320,6 +320,7 @@ test("ls --json and status --json print each item with its times, for Observator
       { id: "t1", title: "Task t1", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
       { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
     ],
+    overlaps: [],
   }]);
 
   // The JSON listing honours --all as the text one does (test/status.test.mjs
