@@ -63,7 +63,9 @@ globalThis.fetch = async (url, options) => {
   // A command that refuses before any request leaves no log.
   const requests = () => existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
   const clean = () => rmSync(join(checkout, "loose.txt"));
-  return { dir, checkout, git, head, baseline, run, runWith, requests, clean };
+  // Every git command the CLI ran, as its argument list; the preload logs them.
+  const gitCalls = () => existsSync(join(dir, "git.jsonl")) ? readFileSync(join(dir, "git.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
+  return { dir, checkout, git, head, baseline, run, runWith, requests, clean, gitCalls };
 }
 function snapshot(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? snapshot(join(dir, e.name)) : [[join(dir, e.name), createHash("sha256").update(readFileSync(join(dir, e.name))).digest("hex")]]);
@@ -311,10 +313,12 @@ test("wrap compares an untracked state file by its modification time, not with g
   rmSync(join(stale.checkout, "STATE.md"));
   writeFileSync(join(stale.checkout, "PROJECT.md"), "Handoff\n");
   utimesSync(join(stale.checkout, "PROJECT.md"), older, older);
+  // Git holds no copy of an untracked file at any commit, so none is asked for.
+  const shown = (f) => f.gitCalls().filter((args) => args[0] === "show").map((args) => args[1]);
   const first = stale.run("wrap", "Untracked", "--no-check");
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /Refresh PROJECT\.md/);
-  assert.doesNotMatch(first.stdout, /Could not compare/);
+  assert.deepEqual(shown(stale), [], "git show was run for the untracked state file");
   const fresh = fixture(t);
   rmSync(join(fresh.checkout, "STATE.md"));
   writeFileSync(join(fresh.checkout, "PROJECT.md"), "Handoff\n");
@@ -322,7 +326,22 @@ test("wrap compares an untracked state file by its modification time, not with g
   const second = fresh.run("wrap", "Untracked", "--no-check");
   assert.equal(second.status, 0, second.stderr);
   assert.doesNotMatch(second.stdout, /Refresh PROJECT\.md/);
-  assert.doesNotMatch(second.stdout, /Could not compare/);
+  assert.deepEqual(shown(fresh), [], "git show was run for the untracked state file");
+});
+
+test("wrap says when a tracked state file has no copy at the previous session's head", (t) => {
+  const f = fixture(t);
+  // docs/STATE.md comes first among the state files, and it was committed
+  // after the previous note's head, so git show at that head finds nothing.
+  rmSync(join(f.checkout, "STATE.md"));
+  mkdirSync(join(f.checkout, "docs"));
+  writeFileSync(join(f.checkout, "docs", "STATE.md"), "Moved here\n");
+  f.git("add", "-A");
+  f.git("commit", "-qm", "Move the state file");
+  const r = f.run("wrap", "Moved", "--no-check");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Could not compare docs\/STATE\.md with the previous session HEAD\.$/m);
+  assert.ok(f.gitCalls().some((args) => args[0] === "show" && args[1] === `${f.head}:docs/STATE.md`), "git show at the previous head was not run");
 });
 
 test("unwrap with an explicit project reads standing even without a local checkout", (t) => {
