@@ -6,7 +6,8 @@
 # calling something a defect. MODEL is an Antigravity model id:
 # gemini-3.1-pro-high (default, family google) or gpt-oss-120b-medium
 # (family openai). Writes OUTBASE.prompt.md, OUTBASE.json and OUTBASE.md, the
-# answer, whose first line is VERDICT: APPROVE or VERDICT: REJECT.
+# answer, in the reply format of src/review/verdict.ts (VERDICT, SUMMARY and
+# FINDING lines).
 # REVIEW_BAR overrides what may block.
 set -eu
 source "${0:A:h}/lib.sh"
@@ -14,6 +15,9 @@ ws=${1:A} out=${2:A} ctx=${3:A} model=${4:-gemini-3.1-pro-high}
 project=$(project_of "$ws")
 main=${MAIN_REPO:-$(checkout_of "$project")}
 bar=${REVIEW_BAR:-"reject only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; anything else is non-blocking. A claim in a commit message that the code does not support is a correctness defect. Decisions the project owner made are not defects."}
+# The reply format is Atelier's own (src/review/verdict.ts), the one the
+# runner asks for, so land.sh can read the answer with the same parser.
+format=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { REPLY_FORMAT } from "./src/review/verdict.ts"; process.stdout.write(REPLY_FORMAT)')
 case $model in
   gemini*) who="gemini-3.1-pro" ;;
   gpt-oss*) who="gpt-oss-120b" ;;
@@ -41,9 +45,9 @@ Before you call anything blocking, verify it: find the code that shows it, or a 
 
 The review bar: $bar
 
-Answer in this form and nothing else:
-VERDICT: APPROVE   (or VERDICT: REJECT)
-Then at most 12 findings, one per line, each starting "blocking:" or "non-blocking:", naming file and line, saying what is wrong, how you verified it, and what would be right.
+Give at most 12 findings. In each, say what is wrong, how you verified it, and what would be right. Blocking findings are the defects the review bar names; every other finding is a follow-up.
+
+$format
 
 HEAD
   echo "## The task"; echo; cat "$ctx"; echo
