@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,12 +7,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
+import { reviewBrief } from "../src/review/brief.ts";
+import { parseVerdict } from "../src/review/verdict.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
   const { agents, errors } = parseConfig(config);
   if (errors.length) throw new Error(errors.join("; "));
-  return { runner: name.toLowerCase(), kind: "home", agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  return { runner: name.toLowerCase(), kind: "home", agents: agents.map(({ agent, models }) => ({ agent, models })), ...(config.jobs?.length ? { jobs: config.jobs } : {}) };
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
@@ -32,9 +34,9 @@ export function briefFor(item, project) {
   ].join("\n");
 }
 
-export function commandFor(entry, { model, briefFile, workspace }) {
-  const values = { model, brief_file: briefFile, workspace };
-  return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace)\}/g, (_, key) => values[key]));
+export function commandFor(entry, { model, briefFile, workspace, diffFile, verdictFile }) {
+  const values = { model, brief_file: briefFile, workspace, diff_file: diffFile, verdict_file: verdictFile };
+  return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace|diff_file|verdict_file)\}/g, (_, key) => values[key]));
 }
 
 // Observations are supplied by the loop; terminal states remain terminal.
@@ -134,6 +136,25 @@ export function writeBrief(workspace, text) {
 
 export const removeBrief = ({ file }) => rmSync(file, { force: true });
 
+// The diff a review job writes for the reviewer, a sibling of the workspace
+// as the brief is, so neither can be committed. The verdict file is where the
+// harness writes its reply; the runner names it in the command and reads it
+// after the harness ends.
+export function writeDiff(workspace, text) {
+  const file = join(dirname(workspace), `.atelier-diff-${randomUUID()}.txt`);
+  writeFileSync(file, text, { mode: 0o600, flag: "wx" });
+  return { file };
+}
+export const removeDiff = ({ file }) => rmSync(file, { force: true });
+
+export function verdictPath(workspace) {
+  return join(dirname(workspace), `.atelier-verdict-${randomUUID()}.txt`);
+}
+
+export function readVerdict(file) {
+  return readFileSync(file, "utf8");
+}
+
 // A harness runs a model and the code the model writes, so it gets what a
 // check gets (checkEnv in check-env.mjs: the variables toolchains need, nothing
 // named ATELIER_* and nothing whose name says it holds a secret) and the
@@ -158,6 +179,14 @@ export function ownerTokens(base = process.env) {
   const tokens = [base.ATELIER_TOKEN?.trim()];
   try { tokens.push(readSecret("API_TOKEN", { env: { ...base, ATELIER_TOKEN: "" } })); } catch { /* A store that cannot be read gives the CLI no token either. */ }
   return tokens.filter(Boolean);
+}
+
+// A review job clones the part's fork read-only with an Artifacts read token,
+// which git sends as an Authorization header through its environment, as the
+// CLI's auth() does, never in an argument.
+function gitAuth(token, base = process.env) {
+  const n = Number.parseInt(base.GIT_CONFIG_COUNT ?? "", 10) || 0;
+  return { ...base, GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "http.extraHeader", [`GIT_CONFIG_VALUE_${n}`]: `Authorization: Bearer ${token}` };
 }
 
 // Every opencode process opens one database in its data folder,
@@ -281,6 +310,78 @@ export async function runTask(assignment, config, name, io) {
 
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 
+// A review job (docs/orchestrator.md, section 4): the runner claims a review
+// request, clones the part's head read-only, writes the diff, gives the
+// reviewer the brief and the diff, reads the verdict and posts it. A harness
+// that writes no valid verdict releases the request, so another reviewer may
+// take it.
+export async function runReview(assignment, config, name, io) {
+  const { project, item, agent, model, actor } = assignment;
+  let brief, diffFile, workspace, verdictFile;
+  const release = async (reason) => {
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    catch (error) { io.log(`review release failed: ${error.message}`); }
+  };
+  try {
+    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    // Claim the request; the server returns the part, the brief's inputs and a
+    // read token for the fork, so the part can be cloned read-only.
+    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    // A review clones into a folder of its own beside the task's workspace,
+    // never into the builder's, and the folder is removed when the job ends.
+    workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
+    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
+    if (io.stopped()) throw new Error("interrupted");
+    const diff = await io.diff(workspace, claimed.item.base, claimed.head);
+    if (!claimed.need) {
+      await release("the review request no longer needs an answer");
+      return { phase: "failed", reason: "the review request no longer needs an answer", taskFailure: true };
+    }
+    const text = reviewBrief({
+      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner,
+    });
+    brief = await io.brief(workspace, text);
+    diffFile = await io.writeDiff(workspace, diff);
+    verdictFile = io.verdictPath(workspace);
+    const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    const result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, env);
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.timedOut) {
+      await release("harness timed out");
+      return { phase: "failed", reason: "harness timed out", taskFailure: true };
+    }
+    if (result.code !== 0) {
+      await release(`harness exited ${result.code}`);
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
+    }
+    // A harness that wrote no verdict file leaves nothing to read; the
+    // request is released like any other unusable verdict.
+    let reply;
+    try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+    const parsed = parseVerdict(reply);
+    if (!parsed.ok) {
+      await release(parsed.error);
+      io.log(`review released: ${parsed.error}`);
+      return { phase: "failed", reason: parsed.error, taskFailure: true };
+    }
+    const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
+    if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    await io.cli(argv);
+    io.log(`reviewed: ${parsed.verdict}`);
+    return { phase: "reviewed", verdict: parsed.verdict };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  } finally {
+    if (brief) await io.removeBrief(brief);
+    if (diffFile) io.removeDiff(diffFile);
+    if (verdictFile) io.removeFile?.(verdictFile);
+    if (workspace) io.removeTree?.(workspace);
+  }
+}
+
 export function failureCount(count, state) {
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
@@ -324,6 +425,8 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   const io = {
+    removeFile: (file) => rmSync(file, { force: true }),
+    removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     workspacePath, log: line, stopped: () => controller.signal.aborted,
     cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, claim: argv[0] === "claim",
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
@@ -339,6 +442,9 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
     harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env }),
     env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
+    clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
+    diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
+    writeDiff, removeDiff, verdictPath, readVerdict,
     ...taskIO,
   };
   try {
@@ -350,7 +456,9 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         if (controller.signal.aborted) break;
         for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
-          state = await runTask(task, config, offer.runner, io);
+          state = task.item.dispatch?.job === "review"
+            ? await runReview(task, config, offer.runner, io)
+            : await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
           const outcome = runOutcome(state);
           if (outcome && reportRun) {
