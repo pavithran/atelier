@@ -2159,7 +2159,9 @@ export class Ledger extends DurableObject<Env> {
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
       requests: this.reviewRequests(id), now: new Date(at), owner: this.owner,
     });
-    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') ORDER BY id LIMIT 1`, id, item.head).toArray()[0];
+    // The newest live request: an older one at this head is one whose claim
+    // lapsed, since a new request is made only when every earlier one has.
+    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
