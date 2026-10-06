@@ -49,12 +49,24 @@ only a list of tasks.
 - **Sign in** stands over the portfolio's activity, dimmed and clipped to
   the viewport, when the owner shows projects publicly; the graph is the
   showcase's, anonymised as the setting says.
-- **Projects** is a card per project: its tally of tasks and the last two
-  weeks of moves, a bar per day stacked by the family of the agent that made
-  them, with the owner's decisions on top.
+- **Home** is the portfolio: a card per project with what needs the owner
+  there, what is running, its two weeks of moves as a bar per day stacked by
+  the family of the agent that made them, and its last merge. Projects with
+  something waiting come first. The portfolio's Flow and its timeline are
+  reached from here, and the Models and Usage pages live under the account
+  menu, out of the work navigation.
+- **A project's area**, under /p/NAME, is the unit the owner works in:
+  Overview (where it stands and what waits on the owner there), Tasks (one
+  list of every task, each row with its state, its holder and when it last
+  moved), Flow (the project's own graph), Plans (each plan as one unit with
+  its parts, their state and why each went to its agent), Code, Log, Ship
+  (protected actions and their history) and Settings (the checks with their
+  classes and path conditions, the protected paths, the eligible agents, the
+  ControlPlane policy). A task's page sits inside the area.
 - **History** is the timeline of merges and closures across projects, by
   day, each marked in the family of the agent that held the task when it
-  ended; a closure is a grey cap, not a dot.
+  ended; a closure is a grey cap, not a dot. It is reached from Home, and a
+  project's own record is its Log tab.
 
 ## Evidence always says where
 
@@ -101,6 +113,7 @@ revisions on screen: when the fetched copy binds its forms to revisions
 other than the ones the page shows, one moved, new or gone, the page keeps
 what it shows, says a new revision arrived with a link to reload, and
 stops refreshing. Badges never wrap. Pages hold their layout without horizontal scrolling at 390 px,
-and the navigation drops its icons below 720 px so all four destinations fit.
+and the navigation drops its icons below 720 px so its three work destinations
+and the account menu fit.
 
 The [orchestrator design](docs/orchestrator.md) describes plans, review and integration, with implementation status.
