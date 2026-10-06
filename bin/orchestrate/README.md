@@ -47,7 +47,8 @@ only its workspace.
 
 Reviews run through Antigravity's CLI, `agy`, signed in to a Google account
 with Gemini access; its models include `gemini-3.1-pro-high` and
-`gpt-oss-120b-medium`.
+`gpt-oss-120b-medium`. A runner serves the same reviews through
+`cli/agy-review.mjs`; `review.sh` remains for a session without a runner.
 
 ## What the agents may and may not do
 
