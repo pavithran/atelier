@@ -580,7 +580,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // The owner gives the project a new name. The index decides and refuses a
   // clash; the project's own record follows. If that second write did not
   // happen, running the rename again, to the name the index already has,
-  // finishes it.
+  // finishes it, and the answer's `from` is the name the request used: the
+  // CLI moves its local entry from that name, and the index already
+  // answers the new one.
   if (parts[2] === "rename" && parts.length === 3 && m === "POST") {
     requireOwner(env, actor);
     const to = projectNameArg(body.to);
@@ -589,7 +591,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!ref.names.includes(to)) assertNewName(to);
     if (project === to) {
       if ((await L.project()).name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
-      return json({ from: project, to, key: ref.key, names: ref.names, project: await L.setName(to, actor) });
+      return json({ from: parts[1], to, key: ref.key, names: ref.names, project: await L.setName(to, actor) });
     }
     // The index knows registered names and former ones, and refuses those
     // again when it writes. A Ledger retained after a removal is known only

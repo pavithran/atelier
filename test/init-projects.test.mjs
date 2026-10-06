@@ -99,6 +99,18 @@ test("CLI rename keeps an entry already under the new name and says what the dro
   assert.match(renamed.stdout, /already had an entry ikon, which is kept; the entry weblog was dropped \(it held: path \/elsewhere, branch old, notesRemote origin\)/);
 }));
 
+// Task t108: a rename the server finishes while answering with the new
+// name as both names (a retry that named the new name) dropped the local
+// entry under that name.
+test("CLI rename leaves the local config alone when the server answers the same name for both", () => fixture(({ command, initial, config }) => {
+  const prepared = command(["init", "--name", "ikon", "--rename-local"]);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const finished = command(["projects", "rename", "ikon", "ikon"]);
+  assert.equal(finished.status, 0, finished.stderr);
+  assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  assert.equal(finished.stdout, "ikon is the project's name on https://atelier.test, and the rename that gave it that name is complete. The local config is unchanged.\n");
+}));
+
 test("CLI rename needs both names and contacts no server without them", () => fixture(({ command, initial, config, calls }) => {
   for (const argv of [["projects", "rename"], ["projects", "rename", "weblog"], ["projects", "rename", "weblog", "ikon", "extra"]]) {
     const r = command(argv);
