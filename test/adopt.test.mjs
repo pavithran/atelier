@@ -297,8 +297,9 @@ test("a settled project has no leftovers", (t) => {
 
 // `outside` is a directory beside the checkout and the workspace, for files a
 // symlink may point at: `files` writes them, `links` turns a checkout path
-// into a symlink to one. `held` writes more files into the checkout itself.
-async function fixture(t, { registered = true, paste = true, agents = AGENTS, files = {}, links = {}, held = {} } = {}) {
+// into a symlink to one. `held` writes more files into the checkout itself,
+// and `policy` is what the fake server records as the project's policy.
+async function fixture(t, { registered = true, paste = true, agents = AGENTS, files = {}, links = {}, held = {}, policy = {} } = {}) {
   const { root, dir } = checkout(t, { paste });
   if (agents === null) rmSync(join(dir, "AGENTS.md"), { force: true });
   else if (agents !== AGENTS) writeFileSync(join(dir, "AGENTS.md"), agents);
@@ -331,7 +332,8 @@ async function fixture(t, { registered = true, paste = true, agents = AGENTS, fi
     let raw = ""; for await (const chunk of req) raw += chunk;
     posts.push({ url: req.url, method: req.method, as: req.headers["x-atelier-actor"], body: raw ? JSON.parse(raw) : null });
     let data = {};
-    if (req.url.endsWith("/items")) data = latest = { ...item, id: `t${++minted}` };
+    if (req.method === "GET" && req.url === "/api/projects/weblog") data = { project: { name: "weblog", policy }, items: [], events: [] };
+    else if (req.url.endsWith("/items")) data = latest = { ...item, id: `t${++minted}` };
     else if (req.url.endsWith("/claim")) data = { item: latest, workspace: { remote: dir, token: "fake", expiresAt: "tomorrow", defaultBranch: "main" } };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
@@ -539,6 +541,23 @@ test("adopt refuses an unregistered project and a dirty checkout", async (t) => 
 });
 
 // ── checks that refuse run before the task exists ──────────────────────────
+
+test("an agent the project's policy does not admit is refused before the task exists", async (t) => {
+  const f = await fixture(t, { policy: { eligible: ["claude"] } });
+  const before = tree(f.dir);
+  const r = await f.run(["adopt", "--project", "weblog"]);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /zcode is not an eligible agent here \(eligible: claude\)/);
+  assert.match(r.stderr, /The move was not started; run it as an eligible agent: atelier adopt --project weblog --as HARNESS\/MODEL/);
+  assert.deepEqual(f.posts.map((p) => [p.method, p.url]), [["GET", "/api/projects/weblog"]], "the policy is read; no task, no claim");
+  assert.ok(!existsSync(f.workspace), "no workspace was made");
+  assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");
+
+  // The project owner is admitted whatever the list says, as at a claim.
+  const owner = await f.run(["adopt", "--project", "weblog", "--as", "owner"]);
+  assert.equal(owner.status, 0, owner.output);
+  assert.equal(f.posts.find((p) => p.url.endsWith("/claim")).as, "owner");
+});
 
 test("an AGENTS.md that cannot be read refuses the move before the task exists", async (t) => {
   const f = await fixture(t, { agents: null });

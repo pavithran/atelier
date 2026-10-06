@@ -282,8 +282,9 @@ so a refusal leaves nothing behind — no task, no claim: the checkout's files
 are readable, the AGENTS.md edit is computable, it stays under the ceiling
 the project's `docs/control-plane/context-budget.v1.json` sets (the one
 `atelier wrap` refuses to commit over; the refusal says how many lines over
-and which file), and no symbolic link stands where the move writes. The move
-writes into the task's workspace and nothing
+and which file), no symbolic link stands where the move writes, and the
+agent is one the project's policy admits (the same rule a claim applies). The
+move writes into the task's workspace and nothing
 outside it: a file it writes that is a symlink is replaced with a regular
 file, never written through, and a symlinked directory above one refuses the
 move (an AGENTS.md that is a symlink is refused too, because the section is

@@ -22,7 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
-import { pathCollisions } from "../src/rules.ts";
+import { assertEligible, pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
@@ -1434,6 +1434,12 @@ const commands = {
     try { adoption({ project: name, checkout: p.path, workspace: p.path, guide: guideText() }); }
     catch (error) { die(error.message); }
     const as = await actor(OWNER);
+    // The project's policy says who may claim here. It is asked before the
+    // task exists, as the claim would ask it, so an agent it does not admit
+    // leaves no unclaimed task behind.
+    const { project: record } = await call("GET", P(name), undefined, as);
+    try { assertEligible(as, record?.policy ?? {}, OWNER); }
+    catch (error) { die(`${error.message}. The move was not started; run it as an eligible agent: atelier adopt --project ${name} --as HARNESS/MODEL`); }
     const item = await call("POST", `${P(name)}/items`, { title: `Move ${name} from ControlPlane to Atelier`, scope: SCOPE }, as);
     const { dir } = await claimWorkspace(name, item.id, as);
     let plan;
