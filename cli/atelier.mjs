@@ -272,11 +272,31 @@ const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";
 const OWNER_NAME = cfg.ownerName ?? "the project owner";
 
 // The server in use: the one `login` is checking, else ATELIER_SERVER, else
-// the one config.json names.
+// the one config.json names. Every request goes through here, so an address
+// the token must not travel to ends the command before any request is made.
 function server() {
   const s = loginServer ?? process.env.ATELIER_SERVER ?? cfg.server;
   if (!s) die("no server: run `atelier login --server https://…`");
-  return trimSlash(s);
+  const url = trimSlash(s);
+  const refusal = insecureServer(url);
+  if (refusal) die(refusal);
+  return url;
+}
+
+// Hosts a request reaches without leaving this machine.
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+// Why a server address is refused, or undefined when it may be used. Each
+// request carries the owner token as a bearer header, so the server is
+// reached over https: over plain http the token would be readable on every
+// network between this machine and the server. Plain http is accepted for a
+// server on this machine alone, where the request never leaves it.
+export function insecureServer(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return `${url} is not a URL; name the server as https://HOST`; }
+  if (parsed.protocol === "https:") return undefined;
+  if (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname)) return undefined;
+  return `${url} is not https: the owner token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
 }
 
 function wsConfig(key, cwd = process.cwd()) {
@@ -1107,6 +1127,9 @@ const commands = {
     }
     if (!args.server || args.server === true) die("usage: atelier login --server https://atelier.example.com   or   atelier login --store");
     const target = trimSlash(args.server);
+    // Refused before a token is asked for or sent anywhere.
+    const insecure = insecureServer(target);
+    if (insecure) die(insecure);
     // The stored token and the server config.json names are a pair: the token
     // was stored when that server accepted it, and apiToken sends it there
     // alone. ATELIER_TOKEN is the user's own pair with the server in use,
