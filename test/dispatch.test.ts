@@ -60,6 +60,11 @@ test("a dispatched task is claimed only by a matching runner under the requested
   assert.doesNotThrow(() => assertDispatchedClaim({ ...dispatched, state: "claimed" } as never, "codex/gpt-6", null));
 });
 
+test("a dispatch note over its limit is refused, never cut", () => {
+  assert.equal(makeDispatch({ note: "n".repeat(500) }, "pavi", T).note, "n".repeat(500));
+  assert.throws(() => makeDispatch({ note: "n".repeat(501) }, "pavi", T), /the dispatch note is 501 characters; the limit is 500\. Shorten it and send it again/);
+});
+
 test("a dispatch describes itself plainly", () => {
   assert.equal(describe(makeDispatch({ to: "home", agent: "opencode", model: "glm-5.3-flash" }, "pavi", T)), "a home runner, opencode with glm-5.3-flash");
   assert.equal(describe(makeDispatch({}, "pavi", T)), "any runner, its choice of agent");
@@ -79,4 +84,7 @@ test("AI Studio profile names, with a colon, can be dispatched and claimed; uncl
 test("runner names are exactly kind:name, normalized, with no further colon", () => {
   assert.throws(() => parseRunner("home:a:b"), /not a runner/);
   assert.deepEqual(parseRunner("HOME:studio"), { runner: "home:studio", kind: "home" });
+  // The whole name, so one runner is never two by the case of its name.
+  assert.deepEqual(parseRunner("HOME:Studio"), { runner: "home:studio", kind: "home" });
+  assert.deepEqual(parseRunner("Cloud:Atelier-1"), { runner: "cloud:atelier-1", kind: "cloud" });
 });

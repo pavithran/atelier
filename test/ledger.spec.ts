@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import { briefFor } from "../src/brief.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import { Ledger, type LedgerEvent } from "../src/ledger.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy, type Review } from "../src/rules.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
@@ -389,7 +390,7 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
 
   await L.undispatch(item.id, "owner");
   expect(await L.waiting()).toEqual([]);
-  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", /not waiting for a runner/);
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", /^t\d+ is not queued for a runner, so there is no dispatch to withdraw$/);
   // Withdrawn, it is an ordinary open task again.
   const { item: byHand } = await L.claim(item.id, A);
   expect(byHand.owner).toBe(A);
@@ -429,16 +430,49 @@ it("a claim belongs to the runner that made it; the same agent name from another
   const { item: adopted } = await L.claim(item.id, "opencode/qwen3-coder-next", laptop);
   expect(adopted.runner).toBe("home:laptop");
   await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
+  // The task's history says which runner took the claim; a refresh from it records nothing more.
+  await L.claim(item.id, "opencode/qwen3-coder-next", laptop);
+  const events = ((await L.events(item.id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.runner_adopted");
+  expect(events.map((e) => [e.actor, e.data])).toEqual([["opencode/qwen3-coder-next", { runner: "home:laptop" }]]);
 });
 
-it("a submit records the summary in its event, cleaned and capped, and only the latest submit at a head speaks", async () => {
+it("a claim held under a mixed-case runner name is refreshed by the same runner in lower case", async () => {
+  const L = await setup("runner-case");
+  const item = await L.newItem("Edit", ["a/**"], "owner");
+  // A hold recorded before runner names were normalized keeps its case.
+  const actor = "opencode/glm-5.3-flash";
+  const { item: held } = await L.claim(item.id, actor, { runner: "home:Studio", kind: "home" });
+  expect(held.runner).toBe("home:Studio");
+  // The same runner, named as its header is normalized now, still refreshes the claim.
+  expect((await L.claim(item.id, actor, { runner: "home:studio", kind: "home" })).item.runner).toBe("home:Studio");
+  // Any other runner is refused as before.
+  await refusal(L.claim(item.id, actor, { runner: "home:laptop", kind: "home" }), "owned", /held by opencode\/glm-5\.3-flash on home:Studio, not home:laptop/);
+});
+
+it("a dispatch is withdrawn only from an open task, and a refusal says why and what to do", async () => {
+  const L = await setup("undispatch-refusals");
+  const item = await L.newItem("Edit", ["a/**"], "owner");
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is not queued for a runner, so there is no dispatch to withdraw$`));
+  await L.dispatch(item.id, "owner", { to: "home" });
+  await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched",
+    new RegExp(`^${item.id} is claimed by opencode/glm-5.3-flash; its dispatch applies again only if it is released, so withdraw it then$`));
+  await L.abandon(item.id, "owner", "not needed");
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is abandoned, so its dispatch no longer applies and there is nothing to withdraw$`));
+});
+
+it("a submit records the summary in its event, cleaned, refuses one over its limit, and only the latest submit at a head speaks", async () => {
   const L = await setup("summary");
   await L.newItem("Summarise", ["src/**"], "owner");
   await L.claim("t1", A);
   await L.setFork("t1", "summary--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(900)}  `);
   const submitted = async () => ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
+  // Over 600 characters once cleaned, the summary is refused and nothing is submitted.
+  await refusal(L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(900)}  `), "too_long", /the summary is 918 characters; the limit is 600/);
+  expect(await submitted()).toEqual([]);
+  expect((await L.item("t1")).state).toBe("claimed");
+  await L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(582)}  `);
   const [first] = await submitted();
   const text = first.data.summary as string;
   expect(text).toHaveLength(600);
@@ -550,6 +584,129 @@ it("a merge holds a landing lease: no push over the revision being merged, and t
   expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
 });
 
+// Audit t105, finding F8 (task t139): abandon was allowed under the landing
+// lease, and a merge already on the baseline could then never be recorded.
+it("abandon is refused while a merge holds the landing lease, so a published merge can still be recorded", async () => {
+  const L = await setup("abandon-landing");
+  await L.newItem("Land me", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "abandon-landing--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["README.md"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner", H1);
+  await L.beginLanding("t1", "owner", H1);
+  // The check the route makes before it revokes the holder's token refuses too, so nothing is revoked.
+  await refusal(L.checkAbandon("t1", "owner", ""), "landing", /being merged at aaaaaaaa and holds the landing lease.*atelier merge t1 records the merge.*atelier merge t1 --cancel/);
+  await refusal(L.abandon("t1", "owner", "changed my mind mid-merge"), "landing", /landing lease/);
+  expect(await L.item("t1")).toMatchObject({ state: "accepted", owner: A, acceptedHead: H1 });
+  expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });
+  // Once a landing is cancelled, the task can be abandoned.
+  await L.newItem("Cancel, then abandon", [], "owner");
+  await L.claim("t2", A);
+  await L.setFork("t2", "abandon-landing--t2", H0, A);
+  await L.recordPush("t2", A, H1, H1);
+  await L.addEvidence(observed("t2", H1, ["README.md"]));
+  await L.submit("t2", A);
+  await L.accept("t2", "owner", H1);
+  await L.beginLanding("t2", "owner", H1);
+  await refusal(L.abandon("t2", "owner", "not now"), "landing", /landing lease/);
+  await L.cancelLanding("t2", "owner");
+  expect(await L.abandon("t2", "owner", "not now")).toMatchObject({ state: "abandoned", owner: null });
+});
+
+// Task t151: update() and log() each read the clock, so an event could be
+// stamped a millisecond after the updatedAt of the change that made it, and
+// the standing route's test failed now and then on that. Here every read of
+// the clock moves it on a millisecond, so two reads within one change
+// always differ, and the test fails whenever a change reads it twice.
+it("one Ledger change takes one timestamp: the item's times and the change's events agree", async () => {
+  const stub = env.LEDGER.get(env.LEDGER.idFromName("project:one-clock"));
+  await runInDurableObject(stub, async (_instance, state) => {
+    const RealDate = Date;
+    let tick = RealDate.parse("2026-10-06T09:00:00.000Z");
+    class TickingDate extends RealDate {
+      constructor(...args: [] | [string | number | Date]) {
+        if (args.length === 0) super(tick++);
+        else super(args[0]);
+      }
+      static now() { return tick++; }
+    }
+    globalThis.Date = TickingDate as DateConstructor;
+    try {
+      const L = new Ledger(state, env);
+      const C = "gemini-cli/gemini-3.1-pro";
+      // The newest `n` events of an item are stamped with the item's updatedAt.
+      const stamped = (id: string, n = 1) => {
+        const item = L.item(id);
+        const recent = L.events(id, n);
+        expect(recent.map((e) => [e.kind, e.at])).toEqual(recent.map((e) => [e.kind, item.updatedAt]));
+        return item;
+      };
+      const record = L.initProject({ name: "one-clock", repo: "one-clock", reset: false, checks: ["npm test"], protected: ["AGENTS.md"] }, "owner");
+      expect(L.events(undefined, 1)[0]).toMatchObject({ kind: "project.set", at: record.createdAt });
+
+      expect(L.newItem("One clock", [], "owner")).toMatchObject({ createdAt: stamped("t1").updatedAt });
+      L.claim("t1", A); stamped("t1");
+      L.setFork("t1", "one-clock--t1", H0, A); stamped("t1");
+      L.recordPush("t1", A, H1, H1);
+      expect(stamped("t1").lastPushAt).toBe(L.item("t1").updatedAt);
+      L.submit("t1", A, "First go"); stamped("t1");
+      L.handoff("t1", "owner", B, "Over to you"); stamped("t1");
+      L.recordPush("t1", B, H2, H2);
+      expect(stamped("t1").lastPushAt).toBe(L.item("t1").updatedAt);
+      L.addEvidence(observed("t1", H2, ["README.md"]));
+      L.submit("t1", B); stamped("t1");
+      L.accept("t1", "owner", H2); stamped("t1");
+      // A review of accepted work sends it back to submitted, in one change.
+      L.addReview(review("t1", C, H2, true, "Looked again"));
+      expect(stamped("t1").state).toBe("submitted");
+      L.accept("t1", "owner", H2);
+      L.beginLanding("t1", "owner", H2);
+      L.merged("t1", "owner", "c".repeat(40), true, H2); stamped("t1");
+
+      L.newItem("Back and forth", [], "owner");
+      L.claim("t2", A);
+      L.release("t2", A, "Not for me"); stamped("t2");
+      L.dispatch("t2", "owner", { to: "home" });
+      expect(stamped("t2").dispatch?.at).toBe(L.item("t2").updatedAt);
+      L.undispatch("t2", "owner"); stamped("t2");
+      L.abandon("t2", "owner", "No longer wanted"); stamped("t2");
+
+      L.newItem("Seen by the queue", [], "owner");
+      L.claim("t3", A);
+      L.setFork("t3", "one-clock--t3", H0, A);
+      L.observePush("t3", H1, H0);
+      expect(stamped("t3").lastPushAt).toBe(L.item("t3").updatedAt);
+      L.unclaim("t3", A, "the fork failed"); stamped("t3");
+
+      // An override and the acceptance it allows are one change: both events, and the override, carry its time.
+      L.newItem("Protected", [], "owner");
+      L.claim("t4", A);
+      L.setFork("t4", "one-clock--t4", H0, A);
+      L.recordPush("t4", A, H1, H1);
+      L.addEvidence(observed("t4", H1, ["AGENTS.md"]));
+      L.submit("t4", A);
+      L.accept("t4", "owner", H1, "No reviewer of another family is available");
+      expect(stamped("t4", 2).reviewOverride?.at).toBe(L.item("t4").updatedAt);
+
+      // On the index: a revoked token and its event, and every alert one usage report raises.
+      L.putAgentToken({ id: "tok1", hash: "h".repeat(64), actor: A, createdAt: new Date().toISOString(), expiresAt: new Date(tick + 86_400_000).toISOString() });
+      L.revokeAgentToken("tok1");
+      const revoked = L.agentTokens().find((t) => t.id === "tok1");
+      expect(L.events(undefined, 1)[0]).toMatchObject({ kind: "token.revoked", at: revoked?.revokedAt });
+      L.putUsage({ tool: "codex", runner: "home:studio", at: new Date().toISOString(), windows: [
+        { name: "weekly", usedPercent: 95, resetsAt: null, at: null }, { name: "5-hour", usedPercent: 99, resetsAt: null, at: null },
+      ], models: [], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: null, balanceFloor: null }, "https://atelier.test");
+      const alerts = L.events(undefined, 2);
+      expect(alerts.map((e) => e.kind)).toEqual(["usage.alert", "usage.alert"]);
+      expect(alerts[0].at).toBe(alerts[1].at);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
+});
+
 it("registration atomically refuses another project with the same baseline", async () => {
   const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   const record = { name: "repo-first", repo: "shared-baseline", policy, createdAt: new Date().toISOString() };
@@ -562,8 +719,8 @@ it("registration atomically refuses another project with the same baseline", asy
 it("removal policy permits inactive states and force overrides live work", async () => {
   const { assertProjectRemovable } = await import("../src/ledger.ts");
   for (const state of ["open", "merged", "abandoned"] as const) expect(() => assertProjectRemovable([{ state }], false)).not.toThrow();
-  for (const state of ["claimed", "submitted", "accepted"] as const) {
-    expect(() => assertProjectRemovable([{ state }], false)).toThrow(/claimed, submitted or accepted/);
+  for (const state of ["claimed", "submitted", "accepted", "blocked"] as const) {
+    expect(() => assertProjectRemovable([{ state }], false)).toThrow(/claimed, submitted, accepted or blocked/);
     expect(() => assertProjectRemovable([{ state }], true)).not.toThrow();
   }
 });
@@ -620,6 +777,8 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.submit("t1", A);
   await L.accept("t1", "owner", H1);
   expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
+  // The acceptance records the whole policy it was made under, for the merge guard.
+  expect((await L.detail("t1") as unknown as { acceptancePolicy: unknown }).acceptancePolicy).toEqual({ protected: policy.protected, eligible: [], refuseOverlap: false, checks: policy.checks });
   const changed = { ...policy, protected: [...policy.protected, "src/**"] };
   await L.setProject({ ...(await L.project()), policy: changed }, "owner");
   for (let i = 0; i < 2; i++) {
@@ -644,4 +803,87 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.addReview(review("t1", "owner", H1, false));
   expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
   await refusal(L.accept("t1", "owner", H1), "not_ready", /reject|changes/i);
+});
+
+it("a blocked task keeps its owner and fork, refuses every move but abandon, and returns to its state when unblocked", async () => {
+  const L = await setup("blocked");
+  const t1 = (await L.newItem("Wire the keys", ["src/**"], "owner")).id;
+  await L.claim(t1, A);
+  await L.setFork(t1, "blocked--t1", H0, A);
+  await L.recordPush(t1, A, H1, null);
+  await refusal(L.block(t1, B, "not mine"), "not_owner", /does not own t1/);
+  await refusal(L.block(t1, A, "   "), "block_reason", /a block needs a reason/);
+  const blocked = await L.block(t1, A, " waiting on the API key\u0007");
+  expect(blocked).toMatchObject({ state: "blocked", owner: A, fork: "blocked--t1", head: H1, blocked: { reason: "waiting on the API key", by: A, from: "claimed" } });
+  expect((await L.owners()).map((o) => [o.item, o.state, o.owner])).toEqual([[t1, "blocked", A]]);
+
+  // Every move answers with the reason and the way on; abandon alone still works, below.
+  const moves: [() => Promise<unknown>, string, RegExp][] = [
+    [() => L.recordPush(t1, A, H2, null), "blocked", /^t1 is blocked: waiting on the API key\. Run atelier unblock t1 first$/],
+    [() => L.submit(t1, A), "blocked", /Run atelier unblock t1 first/],
+    [() => L.addReview(review(t1, B, H1, true)), "blocked", /Run atelier unblock t1 first/],
+    [() => L.handoff(t1, A, B, "take it"), "blocked", /Run atelier unblock t1 first/],
+    [() => L.release(t1, A, "giving up"), "blocked", /Run atelier unblock t1 first/],
+    [() => L.claim(t1, A), "blocked", /Run atelier unblock t1 first/],
+    [() => L.claim(t1, B), "blocked", /Run atelier unblock t1 first/],
+    [() => L.dispatch(t1, "owner", {}), "not_open", /owned by claude-code/],
+    [() => L.block(t1, "owner", "again"), "already_blocked", /already blocked: waiting on the API key/],
+    [() => L.unblock(t1, B), "not_owner", /does not own t1/],
+  ];
+  for (const [move, code, detail] of moves) await refusal(move(), code, detail);
+  expect((await L.item(t1)).head).toBe(H1);
+
+  const inbox = await L.inbox(new Date().toISOString());
+  expect(inbox.map((x) => [x.itemId, x.kind])).toEqual([[t1, "blocked"]]);
+  expect(inbox[0].reason).toBe("blocked by claude-code/opus-5.5: waiting on the API key; run `atelier unblock t1` when it can go on");
+
+  const back = await L.unblock(t1, "owner");
+  expect(back).toMatchObject({ state: "claimed", owner: A, head: H1 });
+  expect(back.blocked).toBeUndefined();
+  await refusal(L.unblock(t1, "owner"), "not_blocked", /t1 is claimed, not blocked/);
+  const events = (await L.events(t1)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "item.blocked")?.data).toEqual({ reason: "waiting on the API key", from: "claimed" });
+  expect(events.find((e) => e.kind === "item.unblocked")?.data).toEqual({ reason: "waiting on the API key", to: "claimed" });
+
+  // An open task the owner blocks leaves the runner queue, and is back in it once unblocked.
+  const t2 = (await L.newItem("Later", ["docs/**"], "owner")).id;
+  await L.dispatch(t2, "owner", { to: "home" });
+  await refusal(L.block(t2, A, "not mine"), "not_owner", /owner: nobody/);
+  expect((await L.block(t2, "owner", "waiting on t1")).blocked).toMatchObject({ by: "owner", from: "open" });
+  expect(await L.waiting()).toEqual([]);
+  await refusal(L.claim(t2, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" }), "blocked", /waiting on t1/);
+  expect((await L.unblock(t2, "owner")).state).toBe("open");
+  expect((await L.waiting()).map((i) => i.id)).toEqual([t2]);
+
+  // A task blocked in review returns to review; closing a blocked task ends the block with it.
+  await L.submit(t1, A);
+  await L.block(t1, "owner", "the owner is away");
+  expect((await L.unblock(t1, A)).state).toBe("submitted");
+  await L.block(t1, A, "needs a decision");
+  const closed = await L.abandon(t1, "owner", "superseded");
+  expect(closed).toMatchObject({ state: "abandoned", owner: null });
+  expect(closed.blocked).toBeUndefined();
+  await refusal(L.block(t1, "owner", "again"), "closed", /only an open, claimed or submitted task can be blocked/);
+});
+
+it("the framing is stored with the item, carried by its brief, and edited only by the owner, one field at a time", async () => {
+  const L = await setup("fields");
+  const item = await L.newItem("Add the page", ["src/ui.ts"], "owner", { nonGoals: ["no new routes"], stopWhen: ["a check fails twice"], nextGate: "design review" });
+  expect(item).toMatchObject({ nonGoals: ["no new routes"], stopWhen: ["a check fails twice"], nextGate: "design review" });
+  expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
+
+  await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the project owner edits/);
+  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --non-goal, --stop-when or --next-gate/);
+  // A field given replaces; one left out is kept; an empty list or a null gate clears.
+  const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
+  expect(edited).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: ["a check fails twice"], nextGate: null });
+  expect((await L.editItem(item.id, "owner", { stopWhen: [] })).stopWhen).toEqual([]);
+  expect(briefFor(await L.detail(item.id) as never)).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: [], nextGate: null });
+
+  const events = (await L.events(item.id)) as unknown as LedgerEvent[];
+  expect(events.filter((e) => e.kind === "item.edited").map((e) => e.data)).toEqual([{ stopWhen: [] }, { nonGoals: ["no new routes", "no CSS changes"], nextGate: null }]);
+  expect(events.find((e) => e.kind === "item.created")?.data).toMatchObject({ title: "Add the page", nonGoals: ["no new routes"], nextGate: "design review" });
+
+  await L.abandon(item.id, "owner", "done elsewhere");
+  await refusal(L.editItem(item.id, "owner", { nextGate: "x" }), "closed", /its fields stay as they were/);
 });

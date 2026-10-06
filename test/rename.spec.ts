@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
@@ -227,4 +228,72 @@ it("a later init through either name keeps the baseline and the key, and a remov
   expect(seen.created).toEqual(["init-old", "init-old"]);
   expect(((await (await call("GET", "/projects/init-new/items", "owner")).json()) as { title: string }[]).map((i) => i.title)).toEqual(["Kept item"]);
   expect(((await (await call("GET", "/projects", "owner")).json()) as { name: string }[]).find((p) => p.name === "init-new")).toMatchObject({ key: "init-old", formerly: ["init-old"] });
+});
+
+// Task t108: a rename whose index write succeeded and whose record write
+// failed, run again under the old name, answered from=<new name>, so the
+// CLI found no local entry under that name to move and kept the old one.
+it("a rename run again after only the index took it finishes it, and answers with the name the request used", async () => {
+  await project("half-old");
+  await L("half-old").newItem("Still here", [], "owner");
+  // The index's write: the project's own record still has the old name.
+  await I().renameProject("half-old", "half-new");
+  expect((await L("half-old").project()).name).toBe("half-old");
+  const res = await rename("half-old", "half-new");
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ from: "half-old", to: "half-new", key: "half-old", names: ["half-old", "half-new"], project: { name: "half-new", repo: "half-old" } });
+  expect((await L("half-old").project()).name).toBe("half-new");
+  // Once finished, the same request is refused as a rename to the name it has.
+  const again = await rename("half-old", "half-new");
+  expect(again.status).toBe(400);
+  expect(((await again.json()) as { error: string }).error).toBe("same_name");
+});
+
+// Task t108: resolveProject ran one names query per registered project on
+// every request that named a project.
+it("resolving a name reads the names table once, however many projects are registered", async () => {
+  for (let n = 0; n < 30; n++) await project(`many-${n}`);
+  expect((await rename("many-7", "many-seven")).status).toBe(200);
+  await runInDurableObject(I(), async (instance) => {
+    const held = instance as unknown as { sql: SqlStorage };
+    const sql = held.sql;
+    const reads: string[] = [];
+    held.sql = { exec: (query: string, ...bindings: unknown[]) => { if (/\bnames\b/.test(query)) reads.push(query); return sql.exec(query, ...bindings); } } as unknown as SqlStorage;
+    try {
+      const resolve = (name: string) => { reads.length = 0; const ref = instance.resolveProject(name); return { ref, reads: reads.length }; };
+      expect(resolve("nobody-at-all")).toEqual({ ref: { name: "nobody-at-all", key: "nobody-at-all", names: ["nobody-at-all"], registered: false, former: false }, reads: 1 });
+      expect(resolve("many-7")).toEqual({ ref: { name: "many-seven", key: "many-7", names: ["many-7", "many-seven"], registered: true, former: true }, reads: 1 });
+      expect(resolve("many-seven")).toEqual({ ref: { name: "many-seven", key: "many-7", names: ["many-7", "many-seven"], registered: true, former: false }, reads: 1 });
+      expect(resolve("many-29")).toEqual({ ref: { name: "many-29", key: "many-29", names: ["many-29"], registered: true, former: false }, reads: 1 });
+    } finally {
+      held.sql = sql;
+    }
+  });
+});
+
+// Task t167: projects() read the names table twice per project (the key and
+// the former names of each listed record), so a list of N projects ran 2N
+// queries on it.
+it("listing the projects reads the names table once, however many are registered", async () => {
+  for (let n = 0; n < 30; n++) await project(`many-list-${n}`);
+  expect((await rename("many-list-7", "many-list-seven")).status).toBe(200);
+  await runInDurableObject(I(), async (instance) => {
+    const held = instance as unknown as { sql: SqlStorage };
+    const sql = held.sql;
+    const reads: string[] = [];
+    held.sql = { exec: (query: string, ...bindings: unknown[]) => { if (/\bnames\b/.test(query)) reads.push(query); return sql.exec(query, ...bindings); } } as unknown as SqlStorage;
+    try {
+      const listed = instance.projects() as { name: string; key?: string; formerly?: string[] }[];
+      expect(reads.length).toBe(1);
+      expect(listed.filter((p) => p.name.startsWith("many-list-"))).toHaveLength(30);
+      const renamed = listed.find((p) => p.name === "many-list-seven")!;
+      expect(renamed.key).toBe("many-list-7");
+      expect(renamed.formerly).toEqual(["many-list-7"]);
+      const plain = listed.find((p) => p.name === "many-list-0")!;
+      expect(plain.key).toBeUndefined();
+      expect(plain.formerly).toBeUndefined();
+    } finally {
+      held.sql = sql;
+    }
+  });
 });

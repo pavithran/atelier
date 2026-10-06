@@ -56,6 +56,22 @@ test("a key echoed into a name or a note is removed, and control characters beco
   assert.equal(r.notes[0], "refused: bad key [key removed]");
 });
 
+// Task t157 (security pass 2, finding 6): a key-shaped tool or runner name
+// passed the name patterns, was stored, and went out in the alert's title
+// to ntfy.sh. Such a report is refused, and the answer does not repeat the name.
+test("a tool or runner name that looks like a key is refused, whole report and all", () => {
+  const body = { windows: [{ name: "weekly", usedPercent: 95 }] };
+  for (const tool of ["sk-audit1234567890", "AKIA1234567890ABCD", "ghp_abcdefgh12345678", "abc123def456ghi789jkl012"]) {
+    assert.throws(() => cleanReport(tool, body, AT, "home:studio"), (e: Error) => /bad_usage\|the tool name looks like a key/.test(e.message) && !e.message.includes(tool), tool);
+  }
+  for (const runner of ["home:sk-audit1234567890", "cloud:abc123def456ghi789jkl012"]) {
+    assert.throws(() => cleanReport("codex", body, AT, runner), (e: Error) => /bad_usage\|the runner name looks like a key/.test(e.message) && !e.message.includes(runner.slice(5)), runner);
+  }
+  // Plain names, digits and all, are kept.
+  assert.equal(cleanReport("gemini-cli", body, AT, "home:studio-2").tool, "gemini-cli");
+  assert.equal(cleanReport("deepseek", body, AT, "cloud:atelier").runner, "cloud:atelier");
+});
+
 test("thresholds come from the settings, with defaults, and off turns one off", () => {
   assert.deepEqual(thresholdsFrom({}), DEFAULT_THRESHOLDS);
   assert.deepEqual(DEFAULT_THRESHOLDS, { weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 });

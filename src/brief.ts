@@ -3,7 +3,8 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, modelOf, stateLabel } from "./rules.ts";
+import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, mergedBlockers, modelOf, stateLabel } from "./rules.ts";
+import { assertLength } from "./text.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
@@ -12,6 +13,11 @@ export type Verdict = "accept" | "merge" | "review" | "wait" | "send back" | "de
 export interface Brief {
   decided: string;
   summary: string | null;
+  // The owner's framing, as the item records it: an agent reading the brief
+  // sees what the task is not to do, when to stop and ask, and the next gate.
+  nonGoals: string[];
+  stopWhen: string[];
+  nextGate: string | null;
   evidence: string[];
   recommendation: { verdict: Verdict; reason: string };
 }
@@ -19,10 +25,12 @@ export interface Brief {
 export const SUMMARY_MAX = 600;
 
 // An agent's summary as stored: plain text, control characters as spaces,
-// trimmed, at most 600 characters, or nothing.
+// trimmed, or nothing. A summary still longer than SUMMARY_MAX is refused
+// with the limit named, not cut short.
 export function cleanSummary(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
-  const s = v.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, SUMMARY_MAX).trim();
+  const s = v.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  assertLength(s, SUMMARY_MAX, "the summary");
   return s || undefined;
 }
 
@@ -54,6 +62,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   const failed = view.checks.filter((c) => c.grade === "observed" && !c.passed);
   const pending = view.checks.filter((c) => c.grade === "pending");
   const passed = view.checks.filter((c) => c.grade === "observed" && c.passed);
+  // A failing check on the merge with main that blocks, read as the gate
+  // reads it, without the step it asks for.
+  const onMerge = mergedBlockers(policy, detail.evidence, item.head).map((b) => b.split(";")[0]);
   const rev = item.head ? `at ${item.head.slice(0, 8)}` : "with nothing pushed";
   const title = item.title.trim().replace(/[.!?]+$/, "");
 
@@ -61,7 +72,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   // flags and rejections rank highest, then checks, then reviews, then reports.
   // Lines keep their reading order.
   const lines: { rank: number; text: string }[] = [];
-  if (view.checks.length) {
+  if (view.checks.length || view.notApplicable.length) {
     const parts: string[] = [];
     for (const where of ["sandbox", "runner"] as const) {
       const n = passed.filter((c) => (c.where ?? "runner") === where).length;
@@ -72,8 +83,10 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
       if (n) parts.push(`${n} failed ${WHERE_LABEL[where]}`);
     }
     if (pending.length) parts.push(`${pending.length} waiting`);
+    if (view.notApplicable.length) parts.push(`${view.notApplicable.length} not applicable to this change`);
     lines.push({ rank: 1, text: `Required checks at this revision: ${parts.join(", ")}.` });
   }
+  if (onMerge.length) lines.push({ rank: 0, text: `On the merge with main: ${onMerge.join("; ")}.` });
   if (reviews.length) {
     lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${reviewer(detail, r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.` });
   }
@@ -110,7 +123,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     lines.splice(drop, 1);
   }
 
-  const recommendation = recommend(detail, { passed: passed.length, total: view.checks.length, failed, pending, rejections, unmeasured: view.changedPaths === null && !!item.head });
+  const recommendation = recommend(detail, { passed: passed.length, total: view.checks.length, notApplicable: view.notApplicable.length, failed, onMerge, pending, rejections, unmeasured: view.changedPaths === null && !!item.head });
 
   // The sentence follows the recommendation, so the heading never contradicts it.
   const subject = `${item.id} ${rev}: ${title}.`;
@@ -128,6 +141,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   return {
     decided,
     summary: submitted?.summary ?? null,
+    nonGoals: item.nonGoals ?? [],
+    stopWhen: item.stopWhen ?? [],
+    nextGate: item.nextGate ?? null,
     evidence: lines.map((l) => l.text),
     recommendation,
   };
@@ -136,7 +152,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
 interface Picture {
   passed: number;
   total: number;
+  notApplicable: number;  // required checks whose paths this change does not touch
   failed: { claim: string }[];
+  onMerge: string[];      // checks failing on the merge with main that block, as the gate words them
   pending: { claim: string }[];
   rejections: { by: string }[];
   unmeasured: boolean;
@@ -150,7 +168,8 @@ function overrideOf(d: Detail) {
 }
 
 // accept when the gate is ready; merge when accepted; send back when a review
-// at this head rejects or a required check failed; review when only an
+// at this head rejects or a required check failed, at the head or on its
+// merge with main where that blocks; review when only an
 // independent approval of a protected change is missing; wait while checks are
 // pending; decide otherwise. A closed task gets none: it is closed, so nothing
 // is waiting on the owner.
@@ -172,14 +191,15 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   if (item.state === "submitted" && gate.ready) {
     return {
       verdict: "accept",
-      reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.` : "The project requires no checks, and nothing blocks it.",
+      reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.`
+        : p.notApplicable ? "No required check applies to this revision's changes, and nothing blocks it." : "The project requires no checks, and nothing blocks it.",
     };
   }
   // The order is the page's: a failed check comes first, then a missing
   // independent approval, which a qualifying reviewer gives or the owner
   // overrides, then a rejection.
   const asked = p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`);
-  const failedChecks = p.failed.map((c) => `\`${c.claim}\` failed at this revision`);
+  const failedChecks = [...p.failed.map((c) => `\`${c.claim}\` failed at this revision`), ...p.onMerge];
   if (failedChecks.length) return { verdict: "send back", reason: `${upper([...asked, ...failedChecks].join(" and "))}.` };
   if (item.state === "submitted" && gate.needsAssessor) {
     const also = [
@@ -194,6 +214,13 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     };
   }
   if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };
+  // A blocked task waits on the owner, not on the agent: the reason says what
+  // must be cleared, and the task keeps its owner and workspace until then.
+  if (item.state === "blocked") {
+    const b = item.blocked;
+    const reason = (b?.reason ?? "no reason recorded").replace(/[.\s]*$/, "");
+    return { verdict: "decide", reason: `${b?.by ?? "Nobody"} blocked it: ${clip(reason, 200)}. Clear that, then run atelier unblock ${item.id}; or close it with atelier abandon ${item.id}.` };
+  }
   if (item.state !== "submitted") {
     return { verdict: "wait", reason: `The task is ${state} and has not been submitted for a decision.` };
   }

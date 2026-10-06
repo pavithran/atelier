@@ -61,6 +61,9 @@ export function inScope(token: Pick<AgentToken, "projects"> | undefined, names: 
 }
 
 // Only the agent's workflow is allowed. Unknown routes stay owner-only.
+// POST items/tN/plan is the planner posting its plan document; the Ledger
+// takes it only from the holder of the plan item's claim. Every other plan
+// route is the owner's.
 export function agentRoute(method: string, parts: string[], body: Record<string, unknown> = {}): boolean {
   const [root, project, section, id, verb] = parts;
   if (parts.length === 1) return method === "GET" && ["config", "inbox", "projects", "queue"].includes(root) || root === "queue" && method === "POST";
@@ -74,5 +77,5 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   }
   if (section !== "items" || !id) return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff"].includes(verb) || parts.length === 6 && verb === "sandbox";
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "push", "evidence", "sandbox", "review", "review-claim", "review-release", "submit", "handoff", "release", "plan", "block", "unblock"].includes(verb);
 }

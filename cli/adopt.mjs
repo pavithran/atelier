@@ -3,8 +3,8 @@
 // The move is an ordinary Atelier task. adopt creates it, claims it, and
 // writes into its workspace the files that make the project work through
 // Atelier: bin/control-plane forwards each ControlPlane command to the Atelier
-// command it became, bin/control-plane-paste points handoffs at
-// `atelier handoff`, and AGENTS.md carries the text `atelier guide` prints.
+// command it became, bin/control-plane-paste says that no command renders a
+// paste any more, and AGENTS.md carries the text `atelier guide` prints.
 // What the move cannot settle by itself is read from the project's checkout
 // and reported on the task: state ControlPlane still holds, capabilities that
 // name files the project no longer has, a vendored copy of ControlPlane's
@@ -20,6 +20,8 @@
 
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+
+import { contextBudget, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 // What the new task may touch: the files the move writes and the files the
 // leftovers live in, which the agent finishing the task settles.
@@ -89,10 +91,26 @@ export function insertSection(markdown, text) {
   return `${before ? `${before}\n\n` : ""}${block}\n${after ? `\n${after}` : ""}`;
 }
 
-// bin/control-plane-paste, when the project has one, becomes a two-line script:
-// a handoff carries a session's work on in Atelier, so there is nothing to paste.
-export function pasteScript() {
-  return `#!/bin/sh\necho 'Handoffs go through: atelier handoff ID --to HARNESS/MODEL --note "why"' >&2\n`;
+// bin/control-plane-paste, when the project has one, becomes a script that
+// answers a paste request the way the relay rule in the guide does: no
+// command renders a paste any more, the agent writes the relay envelope
+// itself (one fenced block with a language tag, a copy saved under
+// ~/Documents/ai-project-data/<project>/), and `atelier handoff` transfers a
+// task's ownership, which is never part of a paste request. It exits 2, the
+// code the entry point gives a command that moved into Atelier. POSIX sh; the
+// text is a quoted heredoc, so the project's name is written as it is.
+export function pasteScript(project) {
+  return `#!/bin/sh
+cat >&2 <<'EOF'
+control-plane-paste: no command renders a paste any more; this project works through Atelier.
+Write the relay envelope yourself, as the relay rule in AGENTS.md says: one complete fenced
+block with a language tag (bash for a command the owner runs, text for prose, a brief or an
+envelope), and save a copy under ~/Documents/ai-project-data/${project}/, never the portfolio root.
+\`atelier handoff\` transfers ownership of a task to another agent. It is not a relay and is
+never part of a paste request.
+EOF
+exit 2
+`;
 }
 
 function readJson(path) {
@@ -106,28 +124,40 @@ const UNRECONCILED = ["active", "completed-unreconciled", "blocked"];
 // What an agent file says that still sends work through ControlPlane.
 const CALLS = ["pickup-card", "control-plane-paste", "session-receipt", "audit record"];
 
-// A capability's command as shell words, so a quoted path with spaces stays
-// one word. The parser is deliberately small: quotes and backslashes, which is
-// everything a capability's command needs.
-function shellWords(command) {
-  const words = [];
+// A capability's command line as the shell reads it: words, with quotes and
+// backslashes resolved so a quoted path with spaces stays one word, grouped
+// into the commands that `&&`, `||`, `|`, `;`, `&`, parentheses and newlines
+// separate. `>` and `<` stay in their word, so a redirection is a word of its
+// own (`2>`, `>/dev/null`, `2>&1`). The parser is deliberately small: quotes,
+// backslashes and these operators are everything a capability's command needs.
+function shellCommands(command) {
+  const commands = [], words = [];
   let word = "", started = false, quote = null;
+  const endWord = () => { if (started) words.push(word); word = ""; started = false; };
+  const endCommand = () => { endWord(); if (words.length) commands.push(words.splice(0)); };
   for (let i = 0; i < command.length; i++) {
-    const c = command[i];
+    const c = command[i], next = command[i + 1];
     if (quote === "'") { if (c === "'") quote = null; else word += c; continue; }
     if (quote === '"') {
       if (c === '"') quote = null;
-      else if (c === "\\" && i + 1 < command.length && '"\\$`'.includes(command[i + 1])) word += command[++i];
+      else if (c === "\\" && i + 1 < command.length && '"\\$`'.includes(next)) word += command[++i];
       else word += c;
       continue;
     }
     if (c === "'" || c === '"') { quote = c; started = true; continue; }
-    if (c === "\\" && i + 1 < command.length) { word += command[++i]; started = true; continue; }
-    if (/\s/.test(c)) { if (started) { words.push(word); word = ""; started = false; } continue; }
+    if (c === "\\" && i + 1 < command.length) { if (next !== "\n") { word += next; started = true; } i++; continue; }
+    if (c === "\n" || c === ";" || c === "(" || c === ")") { endCommand(); if (c === ";" && next === ";") i++; continue; }
+    if (c === "|") { endCommand(); if (next === "|" || next === "&") i++; continue; }
+    if (c === "&") {
+      // `&>` opens a redirection and `>&` or `<&` continues one: those stay in the word.
+      if (next === ">" || /[<>]$/.test(word)) { word += c; started = true; continue; }
+      endCommand(); if (next === "&") i++; continue;
+    }
+    if (/\s/.test(c)) { endWord(); continue; }
     word += c; started = true;
   }
-  if (started) words.push(word);
-  return words;
+  endCommand();
+  return commands;
 }
 
 // A word naming an interpreter, by itself or with a version (`python3`,
@@ -135,26 +165,61 @@ function shellWords(command) {
 // interpreter.
 const INTERPRETER = /^(?:sh|bash|zsh|dash|ksh|fish|pwsh|powershell|env)$|^(?:python|node|nodejs|deno|bun|ruby|perl|php)\d*(?:\.\d+)*$/;
 
+// A shell given `-c` (alone or among other single-letter options, `-lc`,
+// `-ec`) runs the next word as a command line of its own.
+const SHELL = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
+const COMMAND_OPTION = /^-[^-]*c/;
+
 // A leading `NAME=value` puts a variable in the interpreter's environment; the
 // command is what follows it.
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// A redirection, with the file it names in the same word or the next: an
+// optional descriptor, then the operator.
+const REDIRECTION = /^(?:\d*|&)(?:>>|>\||>&|<&|<<<|<<|<>|>|<)/;
+
+// Reserved words that come before the command they introduce, and those
+// whose words are no command at all (`for p in ...`, `done`).
+const BEFORE_COMMAND = new Set(["if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"]);
+const NO_COMMAND = new Set(["for", "select", "case", "function", "done", "fi", "esac", "}"]);
 
 // What looks like a file in the project: a path, or a name with a file
 // extension. A bare word like `git` is looked up on PATH, not in the project,
 // so it cannot be judged to exist or not.
 const PATHLIKE = /\/|\.[A-Za-z0-9]+$/;
 
-// The file a capability's command runs, or null when it runs none. A leading
-// interpreter or `NAME=value` assignment, and any option, is skipped; the
-// first word left is judged, and only when it looks like a file.
-function commandFile(capability) {
+// A word the shell expands before it runs, a glob, a variable, a command
+// substitution or a home directory: what it becomes is not known here.
+const EXPANDED = /[*?[$`]|^~/;
+
+// The files a capability's command runs: each command in a chain is judged on
+// its own program, and only that. A leading interpreter, `NAME=value`
+// assignment, option, redirection or reserved word is skipped; the first word
+// left is the program, judged when it looks like a file and the shell does
+// not expand it first. Everything after the program is an argument, a glob
+// among them, and is not judged. A shell's `-c` command line is split and
+// judged the same way.
+function commandFiles(capability) {
   const command = typeof capability === "string" ? capability : capability?.command;
-  const argv = Array.isArray(command) ? command.map(String) : typeof command === "string" ? shellWords(command) : [];
-  for (const word of argv) {
-    if (!word || ASSIGNMENT.test(word) || word.startsWith("-") || INTERPRETER.test(basename(word))) continue;
-    return PATHLIKE.test(word) ? word : null;
+  const commands = Array.isArray(command) ? [command.map(String)] : typeof command === "string" ? shellCommands(command) : [];
+  return commands.flatMap(programFile);
+}
+
+function programFile(words) {
+  let interpreter = null;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (!word || ASSIGNMENT.test(word) || BEFORE_COMMAND.has(word)) continue;
+    if (NO_COMMAND.has(word)) return [];
+    if (REDIRECTION.test(word)) { if (!word.replace(REDIRECTION, "")) i++; continue; }
+    if (word.startsWith("-")) {
+      if (interpreter && SHELL.test(interpreter) && COMMAND_OPTION.test(word)) return shellCommands(words[i + 1] ?? "").flatMap(programFile);
+      continue;
+    }
+    if (INTERPRETER.test(basename(word))) { interpreter = basename(word); continue; }
+    return PATHLIKE.test(word) && !EXPANDED.test(word) ? [word] : [];
   }
-  return null;
+  return [];
 }
 
 // The adapter lists its capabilities as an array, or as an object from name to
@@ -178,9 +243,10 @@ export function leftovers(checkout) {
     out.push(`docs/control-plane/work-item.v1.json: plan ${plan ?? "with no plan id recorded"} is ${work.state}, owned by ${owner ?? "nobody recorded"}`);
   }
   for (const capability of capabilities(readJson(join(checkout, "docs", "control-plane", "project-adapter.v1.json")))) {
-    const file = commandFile(capability);
-    if (file && !existsSync(resolve(checkout, file))) {
-      out.push(`docs/control-plane/project-adapter.v1.json: capability "${capability?.name ?? file}" runs ${file}, which does not exist`);
+    for (const file of commandFiles(capability)) {
+      if (!existsSync(resolve(checkout, file))) {
+        out.push(`docs/control-plane/project-adapter.v1.json: capability "${capability?.name ?? file}" runs ${file}, which does not exist`);
+      }
     }
   }
   if (existsSync(join(checkout, "tools", "control-plane"))) {
@@ -216,6 +282,33 @@ export function linkedPart(root, path) {
   return null;
 }
 
+// The lines a file holds, counted as wrap counts a context surface: a final
+// newline ends the last line and starts none.
+const lineCount = (text) => (text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0);
+
+// Why the files the move writes cannot be written under the project's
+// context ceiling, or null. The policy is docs/control-plane/context-budget.v1.json
+// in the directory the move is applied to; `atelier wrap` refuses a surface
+// over its ceiling, so a move that wrote past one would leave the project
+// unable to wrap. A missing policy sets no ceiling; one that cannot be read
+// refuses the move, because nothing can be measured against it.
+export function ceilingRefusal(workspace, files) {
+  let text;
+  try { text = readFileSync(join(workspace, CONTEXT_BUDGET_PATH), "utf8"); } catch { return null; }
+  let policy;
+  try { policy = contextBudget(JSON.parse(text)); }
+  catch (error) { return `${CONTEXT_BUDGET_PATH} is not a valid context budget policy (${error.message}); fix it in the checkout, commit, then run atelier adopt again`; }
+  for (const file of files) {
+    const surface = policy.surfaces.find((s) => s.path === file.path && s.ceiling_lines !== undefined);
+    if (!surface) continue;
+    const lines = lineCount(file.text);
+    if (lines > surface.ceiling_lines) {
+      return `${file.path} would be ${lines} lines after the move, ${lines - surface.ceiling_lines} over its ceiling of ${surface.ceiling_lines} in ${CONTEXT_BUDGET_PATH}, and atelier wrap refuses a file over its ceiling. Shorten ${file.path} in the checkout (move history to docs/history/), commit, then run atelier adopt again.`;
+    }
+  }
+  return null;
+}
+
 // Everything the move writes and everything it reports, computed from the
 // checkout and from the directory the move is applied to. Called with the
 // checkout before the task exists — the workspace is a clone of it, so the
@@ -242,13 +335,17 @@ export function adoption({ project, checkout, workspace, guide, template = readF
   catch (error) { throw new Error(`AGENTS.md cannot be read: ${error.message}`); }
   const files = [
     { path: "bin/control-plane", text: fillTemplate(template, project), mode: 0o755 },
-    ...(paste ? [{ path: "bin/control-plane-paste", text: pasteScript(), mode: 0o755 }] : []),
+    ...(paste ? [{ path: "bin/control-plane-paste", text: pasteScript(project), mode: 0o755 }] : []),
     { path: "AGENTS.md", text: insertSection(held, section(guide)), mode: null },
   ];
+  // Measured after the section is in: the project's own ceiling decides
+  // whether the move can be written at all.
+  const ceiling = ceilingRefusal(workspace, files);
+  if (ceiling) throw new Error(ceiling);
   const message = `Move ${project} from ControlPlane to Atelier\n\n`
     + "bin/control-plane now prints the Atelier command it runs and forwards to it,\n"
-    + "never to ControlPlane's central checkout; bin/control-plane-paste points\n"
-    + "handoffs at atelier handoff; AGENTS.md carries the Atelier guide.\n";
+    + "never to ControlPlane's central checkout; bin/control-plane-paste says that\n"
+    + "no command renders a paste any more; AGENTS.md carries the Atelier guide.\n";
   return { files, leftovers: leftovers(checkout), message };
 }
 
