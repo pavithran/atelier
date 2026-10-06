@@ -1736,10 +1736,14 @@ const commands = {
     console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
   },
 
+  // The server clears the owner and revokes the holder's write token, as a
+  // handoff or a release does. The holder is read first: the answer carries
+  // the item with its owner already cleared, and an open item has none.
   async abandon() {
     const name = project(), id = itemArg();
+    const { item: before } = await call("GET", I(name, id), undefined, OWNER);
     await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
-    console.log(`${id} abandoned.`);
+    console.log(before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`);
   },
 
   async done() {
