@@ -329,3 +329,26 @@ test("the owner's override of a missing review is a decision, told with its reas
   const pub = buildStory("demo", [item("t1", "accepted")], events, OWNER, false, "Demo", { redact: true, ownerLabel: "PAVI" });
   assert.ok(pub.moments.some((m) => m.text === "PAVI overrode the independent review of t1"));
 });
+
+test("every mark carries its position and its event, and each segment its span, for the live script", () => {
+  const s = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  const html = drawStory(s, OWNER);
+  assert.match(html, /<svg class="graph" [^>]*data-span="[\d.]+"/);
+  const beads = html.match(/<g class="g-bead pop [^"]*"[^>]*>/g) ?? [];
+  assert.ok(beads.length >= 6);
+  for (const b of beads) {
+    assert.match(b, /data-pos="[\d.]+"/, b);
+    assert.match(b, /data-ev="t[12] [a-z]+ 2026-10-04T10:\d\d:00\.000Z"/, b);
+  }
+  // Positions rise with the events: the beads of t1 are listed in event order.
+  const t1 = [...html.matchAll(/data-pos="([\d.]+)" data-ev="t1 /g)].map((m) => Number(m[1]));
+  assert.deepEqual(t1, [...t1].sort((a, b) => a - b));
+  assert.match(html, /data-pos="[\d.]+" data-say="t1 taken by opus-5.5" data-ev="t1 start"/);
+  assert.match(html, /data-pos="[\d.]+" data-say="t1 merged into main as cccccccc" data-ev="t1 merged"/);
+  assert.match(html, /data-pos="[\d.]+" data-say="t2: in progress" data-ev="t2 head"/);
+  const segs = html.match(/class="g-thread g-lane draw"[^>]*data-from="[\d.]+" data-to="[\d.]+"/g) ?? [];
+  assert.ok(segs.length >= 3, "each hold is a segment with its span");
+  // What agents wrote never reaches an attribute unescaped.
+  const quoted = buildStory("demo", [{ id: "t1", title: 'A "quoted" <b>task</b>', state: "claimed" } as never], [night()[14]], OWNER);
+  assert.doesNotMatch(drawStory(quoted, OWNER), /<b>task<\/b>/);
+});

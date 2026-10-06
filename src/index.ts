@@ -18,6 +18,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./gr
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 
 export { CheckRunner, Egress, Ledger };
 import { renderHow } from "./how.ts";
@@ -231,7 +232,9 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentT
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
-const html = (body: string, status = 200) =>
+// A page that carries the live script was rendered with the request's nonce;
+// the policy names the same nonce, and no other script runs (src/live.ts).
+const html = (body: string, status = 200, nonce?: string) =>
   new Response(body, {
     status,
     headers: {
@@ -240,9 +243,12 @@ const html = (body: string, status = 200) =>
       "cache-control": "no-store",
       "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; form-action 'self'; base-uri 'none'",
+      "content-security-policy": csp(nonce),
     },
   });
+
+// How often a live page refreshes itself, in seconds.
+const LIVE_REFRESH = 15;
 
 // A project's Ledger is the Durable Object named after its key: the name it
 // was created with, which a rename keeps. Routes that take a project name
@@ -1015,6 +1021,9 @@ async function verifyRevision(env: Env, key: string, id: string, expected: strin
 
 async function ui(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req } = c;
+  // One nonce per request, for the pages that carry the live script.
+  const nonce = newNonce();
+  const live = { nonce, refresh: LIVE_REFRESH };
   if (parts[0] === "models" && (parts.length === 1 || (parts.length === 2 && req.method === "POST"))) return await modelsPage(c, parts[1]);
   if (parts[0] === "usage" && parts.length === 1 && req.method === "GET") {
     const I = index(env);
@@ -1140,7 +1149,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
           .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
       const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
       const imported = await importedAll(env, floorViews.map((v) => v.project), cutoffs);
-      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent));
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent, live), 200, nonce);
     }
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects, owner));
     const lists = await Promise.all(views.map(async v => {
@@ -1175,7 +1184,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     }));
     const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
     const latest = busiest && !selected ? await story(busiest) : null;
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details));
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, nonce);
   }
   if (parts[0] === "p" && parts.length >= 2) {
     const ref = await resolveProject(env, parts[1]);
@@ -1190,7 +1199,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 3) {
       const p = await L.project();
       const item = await L.item(parts[2]);
-      return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork)));
+      return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork), live), 200, nonce);
     }
   }
   return html("Not found.", 404);
@@ -1233,6 +1242,10 @@ export default {
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
       if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
+      // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
+      if (url.pathname === "/live.js" && req.method === "GET") {
+        return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });
+      }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
       if (url.pathname === "/how" && req.method === "GET") { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
       if (url.pathname === "/login") {
