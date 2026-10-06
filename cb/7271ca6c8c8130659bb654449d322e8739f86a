@@ -1,0 +1,14 @@
+atelier atelier/t175 "atelier gc removes no task workspace in practice (dry run on 2026-10-06: 0 removed). gcWorkspaceReason (src/rules.ts:674-684) keeps every item not merged, so abandoned items' workspaces stay forever (t105, t125, t171 now); and it keeps any workspace holding ignored files, which every workspace that ran its checks has (node_modules, worker-configuration.d.ts), so 34 of 35 merged workspaces with no changed or untracked files are kept. Remove an abandoned item's workspace when its HEAD is the last head Atelier recorded and nothing is changed or untracked; let files git ignores not count as unpublished work"
+accepted head 3bc6aebe4dbcfd1f2563b835c769b303bf07531a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T14:25:55.407Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T14:25:58.729Z
+REVIEW approve — antigravity/gemini-3.1-pro: Test-only: the policy test checks the refused merge's own git calls.
+2026-10-06T14:06:55.405Z pavi item.created
+2026-10-06T14:22:23.394Z claude-code/opus-5.5 item.claimed
+2026-10-06T14:22:28.877Z claude-code/opus-5.5 fork.created
+2026-10-06T14:24:07.181Z claude-code/opus-5.5 push.observed
+2026-10-06T14:25:55.866Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:25:59.005Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:25:59.860Z claude-code/opus-5.5 item.submitted
+2026-10-06T14:26:16.127Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:26:17.066Z pavi item.accepted
