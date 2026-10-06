@@ -20,6 +20,9 @@ case $model in
   *) who=$model ;;
 esac
 cd "$ws"
+mkdir -p "${out:h}"
+# The answer files may sit in the workspace's .scratch/; keep it out of Git.
+grep -qx ".scratch/" .git/info/exclude 2>/dev/null || echo ".scratch/" >> .git/info/exclude
 git fetch -q "$main" main
 base=$(git merge-base HEAD FETCH_HEAD)
 clone=$(mktemp -d "${TMPDIR:-/tmp}/atelier-review-$project-$(git config --local atelier.item).XXXXXX")
