@@ -1,0 +1,14 @@
+atelier atelier/t167 "Follow-ups from the 2026-10-06 bundles, server side: projects() and listed() read the names table twice per project (src/ledger.ts around 275, 297); a commit trailer name with only a digit or slash counts as an agent in imported history (src/import/history.ts:62); owner-only text (dispatch note, approval) is silently cut at 500 characters instead of refused (src/dispatch/rules.ts:71, src/index.ts:552); the actor pattern has no length limit (src/rules.ts:126); a claim held under a mixed-case runner name is compared exactly (src/ledger.ts:482); a blocked held task is left off Held now and the studio floor (src/ui.ts LIVE_STATES, src/floor.ts LIVE) and undispatch refuses a blocked dispatched task; test/routes.spec.ts standing-route test needs its own timeout"
+accepted head c3855293d108d2ec766ac835ff4ef6d5d91855e7
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T15:44:45.849Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T15:44:48.563Z
+REVIEW approve — antigravity/gemini-3.1-pro: Server follow-ups from the 2026-10-06 bundles.
+2026-10-06T13:28:13.675Z pavi item.created
+2026-10-06T14:41:56.689Z opencode/glm-5.3 item.claimed
+2026-10-06T14:42:03.334Z opencode/glm-5.3 fork.created
+2026-10-06T15:43:03.483Z opencode/glm-5.3 push.observed
+2026-10-06T15:44:46.286Z opencode/glm-5.3 evidence.observed
+2026-10-06T15:44:48.896Z opencode/glm-5.3 evidence.observed
+2026-10-06T15:44:49.802Z opencode/glm-5.3 item.submitted
+2026-10-06T15:46:24.024Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T15:46:24.762Z pavi item.accepted
