@@ -247,6 +247,32 @@ replaced with `[redacted]`, as `atelier check` redacts check output.
 The project page lists the approvals with their status and the latest steps
 run; `GET /api/projects/P/actions` returns both.
 
+While a merged revision's declared protected actions have not run, the
+owner's inbox carries a reminder. The kinds the order needs unconditionally
+(install, deploy and the kinds runs name; push needs one only with `--push`)
+are recorded with the project's policy at `atelier init` and `atelier sync`,
+and for each merged item the entry stands from its `item.merged` event until
+an `action.ran` event of that kind follows it in the ledger, at any revision:
+a ship at a later head delivers an older merge, so its runs retire the older
+reminders too. `atelier status` names `atelier ship --dry-run` as the entry's
+next command.
+
+## What ship runs is protected
+
+`docs/atelier/**` is guarded in every project, and the files the composed
+order's commands execute are guarded exactly as the files a check executes
+are: `atelier init` and `atelier sync` read the order from the checkout and
+record its commands in the project's policy, and the gate derives the same
+files from them it derives from a check's line (`checkFiles` in
+`src/rules.ts`): a script run directly, the recipe files `make` and `just`
+read, the manifest a package manager runs scripts from, the local binary
+`npx` and its kin would run. A change to the ship file, to a script it runs
+or to such a manifest therefore needs an independent review in every
+project, with no `--protect` entry. The acceptance records the commands with
+the policy it was made under, so a merge refuses an accepted change that
+touches a script a newer order runs, as it refuses one a newly protected
+path catches.
+
 ## What ship does not do
 
 - It never forces a push, and never creates, chooses or repairs a remote or
@@ -261,10 +287,6 @@ run; `GET /api/projects/P/actions` returns both.
   line.
 - It does not run `paid-run` or `photos-writeback` actions on its own, only
   steps that name those kinds.
-- It does not put a reminder in the inbox when a merged revision has a
-  protected action declared and not yet run.
-- It does not protect the ship files themselves. `docs/atelier/ship.json`
-  and the scripts its commands run are code the owner runs with the owner's
-  environment; protect them with `atelier init --protect docs/atelier/**`,
-  and protect the scripts the same way, so a change to them needs an
-  independent review.
+- It does not deliver a merged revision by itself: the owner runs it, and the
+  inbox's reminder (above) stands until a run of each declared kind is
+  recorded.
