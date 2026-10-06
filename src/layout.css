@@ -74,6 +74,7 @@ svg { flex-shrink: 0; }
 .rail-foot { margin-top: auto; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: var(--space-md); font-size: 14px; padding: var(--space-xxl) var(--space-sm) 0; }
 .avatar { border-radius: var(--radius-pill); background: var(--selection); width: 36px; height: 36px; display: grid; place-items: center; }
 .rail-foot p { grid-column: 1 / -1; color: var(--text-muted); margin: 4px 0; font-size: 13px; }
+.rail-foot .signout { grid-column: 1 / -1; margin-top: var(--space-sm); }
 main { margin-left: var(--rail-w); padding: 48px 32px 72px; min-height: 100dvh; max-width: 1920px; }
 
 /* ── type ──────────────────────────────────────────────────────────────── */

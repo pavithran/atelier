@@ -1,5 +1,5 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
-import { type AgentToken } from "./tokens.ts";
+import { type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -154,6 +154,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
@@ -218,6 +219,30 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE agent_tokens SET json = ? WHERE id = ?`, JSON.stringify(token), id);
     this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt });
     return true;
+  }
+
+  // Browser sessions. Signing in stores the SHA-256 of a random session id
+  // with when it ends; the id itself travels only in the cookie, so a copy of
+  // this storage holds no usable session. A session past its expiry is as
+  // good as absent, and is dropped the next time it is read or another
+  // session starts. Logout deletes the row, which ends the session at once.
+  startSession(session: BrowserSession): void {
+    this.sql.exec(`DELETE FROM sessions WHERE expires_at <= ?`, new Date().toISOString());
+    this.sql.exec(`INSERT INTO sessions (hash, created_at, expires_at) VALUES (?, ?, ?)`, session.hash, session.createdAt, session.expiresAt);
+  }
+
+  session(hash: string): BrowserSession | null {
+    const row = this.sql.exec(`SELECT created_at, expires_at FROM sessions WHERE hash = ?`, hash).toArray()[0];
+    if (!row) return null;
+    if ((row.expires_at as string) <= new Date().toISOString()) {
+      this.sql.exec(`DELETE FROM sessions WHERE hash = ?`, hash);
+      return null;
+    }
+    return { hash, createdAt: row.created_at as string, expiresAt: row.expires_at as string };
+  }
+
+  endSession(hash: string): boolean {
+    return this.sql.exec(`DELETE FROM sessions WHERE hash = ?`, hash).rowsWritten > 0;
   }
 
   // Two inits finishing out of order must not leave the older copy listed.

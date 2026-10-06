@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 
 // A handoff, release or abandon must not leave the old holder a working
 // write token it is no longer meant to have. These tests drive the Worker's
@@ -83,12 +84,14 @@ async function setup(name: string, items: number) {
 
 const errorOf = async (res: Response) => ((await res.clone().json()) as { error?: string }).error;
 
-// Posts the owner's form for one item, signed in with the owner's cookie,
-// against the given Artifacts and, if given, Ledger namespace.
+// Posts the owner's form for one item, against the given Artifacts and, if
+// given, Ledger namespace. The first form signs in through /login with the
+// same bindings, and every form sends that session's cookie.
 function ownerForm(name: string, artifacts: Artifacts, ledger: typeof env.LEDGER = env.LEDGER) {
   const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts, LEDGER: ledger } as typeof env;
+  let session: Promise<string> | undefined;
   return async (id: string, verb: string, fields: string) => {
-    const cookie = `atelier=${[...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+    const cookie = await (session ??= signIn(TOKEN, bindings));
     return worker.fetch(new Request(`https://atelier.test/ui/${name}/${id}/${verb}`, {
       method: "POST", headers: { cookie, origin: "https://atelier.test", "content-type": "application/x-www-form-urlencoded" }, body: fields,
     }), bindings);

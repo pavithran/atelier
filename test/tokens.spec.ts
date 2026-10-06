@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { parseRuleError } from "../src/rules.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 import { sha256, tokenOptions } from "../src/tokens.ts";
 import type { Ledger, LedgerEvent } from "../src/ledger.ts";
 
@@ -133,8 +134,7 @@ it("binds the actor, rejects impersonation and records proof only for agent requ
   const events = await L(name).events("t1") as unknown as { actor: string; proved?: true; data: { claim?: string } }[];
   expect(events.filter((e) => e.data.claim === "Read the source").every((e) => e.actor === ACTOR && e.proved === true)).toBe(true);
   expect(events.find((e) => e.data.claim === "Owner tool")?.proved).toBeUndefined();
-  const cookie = await sha256(OWNER_TOKEN);
-  const page = await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie: `atelier=${cookie}` } }), testEnv);
+  const page = await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie: await signIn(OWNER_TOKEN, testEnv) } }), testEnv);
   expect(await page.text()).toContain(`${ACTOR} · token proved`);
   expect((await call("POST", `/projects/${name}/items/t1/submit`, issued.token, undefined, { summary: "Finished" })).status).toBe(200);
   expect((await call("POST", `/projects/${name}/items/t1/release`, issued.token, undefined, {})).status).toBe(200);
