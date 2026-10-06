@@ -137,8 +137,6 @@ test("a flag that needs a value refuses a bare one before any request", (t) => {
     [["handoff", "t1", "--to", "--note", "why"], "to"],
     [["ls", "--project"], "project"],
     [["show", "t1", "--as", "--project", "demo"], "as"],
-    [["init", "--check"], "check"],
-    [["new", "Title", "--scope", "--project", "demo"], "scope"],
     [["dispatch", "t1", "--to", "--project", "demo"], "to"],
   ]) {
     f.clear();
@@ -154,6 +152,16 @@ test("a flag that needs a value refuses a bare one before any request", (t) => {
   const summary = f.run(f.workspace, ["submit", "--summary"]);
   assert.equal(summary.status, 1);
   assert.match(summary.stderr, /--summary needs text: atelier submit ID --summary "TEXT"/);
+  // --check, --protect and --scope keep the wording their empty values get (test/list-flags.test.mjs).
+  for (const [argv, message] of [
+    [["init", "--check"], /--check needs text: atelier init --check "TEXT", once per entry/],
+    [["init", "--protect", "--check", "npm test"], /--protect needs text: atelier init --protect "TEXT", once per entry/],
+    [["new", "Title", "--scope", "--project", "demo"], /--scope needs text: atelier new --scope "TEXT", once per entry/],
+  ]) {
+    const r = f.run(f.checkout, argv);
+    assert.equal(r.status, 1, argv.join(" "));
+    assert.match(r.stderr, message, argv.join(" "));
+  }
   assert.deepEqual(f.requests(), []);
 });
 
