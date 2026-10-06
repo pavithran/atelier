@@ -1055,10 +1055,22 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       try { return {project, items: await ledgerOf(env, project).items()}; }
       catch { return {project, items: [], unavailable: true}; }
     }));
-    if (parts[0] === "projects") return html(renderProjects(views, ownerName(env)));
-    if (parts[0] === "history") return html(renderHistory(views, ownerName(env)));
-    // The floor reads each project's recent events; a project that cannot be read is left off it.
     const now = new Date();
+    // Projects and History read each project's recent record: the cards count
+    // the last two weeks of moves from it, and the timeline finds who held
+    // each task when it merged. A project whose record cannot be read is
+    // listed as unavailable.
+    if (parts[0] === "projects" || parts[0] === "history") {
+      const read: ProjectView[] = await Promise.all(views.map(async (v) => {
+        if (v.unavailable) return v;
+        try {
+          const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+          return { ...v, events, cut: events.length >= STORY_EVENTS };
+        } catch { return { ...v, unavailable: true }; }
+      }));
+      return html(parts[0] === "projects" ? renderProjects(read, ownerName(env), now, ownerActor(env)) : renderHistory(read, ownerName(env), ownerActor(env)));
+    }
+    // The floor reads each project's recent events; a project that cannot be read is left off it.
     const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
       try { return { ...v, events: (await ledgerOf(env, v.project).events(undefined, 400)) as unknown as LedgerEvent[] }; }

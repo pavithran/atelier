@@ -16,9 +16,10 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
-import { clockTime, dayOf, shortStamp, stamp, zoneLabel } from "./time";
+import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
 import {
   DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -123,7 +124,9 @@ export interface Detail {
   events: LedgerEvent[];
 }
 export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean }
-export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean }
+// `events` is the project's recent record, newest first, when the page reads
+// it (Projects and History); `cut` says it was read up to a limit.
+export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean; events?: LedgerEvent[]; cut?: boolean }
 
 const KIND: Record<InboxEntry["kind"], [string, string]> = {
   accept: ["Ready to accept", "go"],
@@ -354,7 +357,11 @@ const noTasks = (s: Story) => !s.threads.length && !s.tally.planned && !s.partia
 // years only when the two ends fall in different years.
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 function dayLabel(at: string | number, year: boolean): string {
-  const [y, m, d] = dayOf(at).split("-").map(Number);
+  return keyLabel(dayOf(at), year);
+}
+// The same label from a day already in the owner's zone, "2026-10-05".
+function keyLabel(key: string, year: boolean): string {
+  const [y, m, d] = key.split("-").map(Number);
   return `${d} ${MONTHS[m - 1]}${year ? ` ${y}` : ""}`;
 }
 export function spanLabel(from: number, to: number): string {
@@ -680,18 +687,75 @@ export function renderStudio(floor: Floor, ownerName: string | null = null, now 
 }
 
 // ── projects and history ───────────────────────────────────────────────────
+// Projects are cards: each with its tally and the last two weeks of moves, a
+// bar per day stacked by the family of the agent that made them. History is
+// the timeline of merges and closures across projects, each marked in the
+// family of the agent that held the task when it ended. Both are counted by
+// pulse.ts from the Ledger's events; nothing is estimated.
 
-export function renderProjects(views: ProjectView[], ownerName: string | null = null): string {
-  const list = views.map(({ project, items, unavailable }) => {
+const r1 = (n: number) => Math.round(n * 10) / 10;
+
+// The families present, in the fixed order, with the zone the page's times are in.
+function familyLegend(vendors: Vendor[], who = "You", extra = ""): string {
+  const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v))
+    .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
+  return `<ul class="legend-line" aria-label="Colours">${items.join("")}${extra}<li class="meta">times in ${e(zoneLabel())}</li></ul>`;
+}
+
+const PULSE_W = 20, PULSE_BAR = 14, PULSE_H = 86, PULSE_TOP = 6, PULSE_BASE = 68;
+
+// Two weeks of moves, one bar per day, each stacked by family with the
+// owner's decisions on top; a day with nothing is a tick on the baseline.
+// Every bar says in its title what it counts, and the drawing says its total.
+function pulseGraph(p: Pulse): string {
+  const W = PULSE_W * p.days.length;
+  const peak = Math.max(1, ...p.days.map((d) => d.moves + d.decisions));
+  const scale = (n: number) => (n / peak) * (PULSE_BASE - PULSE_TOP);
+  const bars = p.days.map((d, i) => {
+    const x = i * PULSE_W + (PULSE_W - PULSE_BAR) / 2;
+    if (!d.moves && !d.decisions) return `<rect class="none" x="${x}" y="${PULSE_BASE - 2}" width="${PULSE_BAR}" height="2" rx="1"><title>${e(keyLabel(d.day, false))}: nothing recorded</title></rect>`;
+    const parts: [Vendor, string, number][] = VENDOR_NAMES.filter(([v]) => v !== "owner" && d.byVendor[v]).map(([v, label]) => [v, label, d.byVendor[v]!]);
+    if (d.decisions) parts.push(["owner", "you", d.decisions]);
+    let y = PULSE_BASE;
+    const stack = parts.map(([v, , n]) => {
+      const h = Math.max(2, scale(n));
+      y -= h;
+      return `<rect x="${x}" y="${r1(y)}" width="${PULSE_BAR}" height="${r1(h)}" style="fill:var(--m-${v})"/>`;
+    }).join("");
+    const said = parts.map(([v, label, n]) => (v === "owner" ? `${plural(n, "decision")} by you` : `${n} ${label}`)).join(", ");
+    return `<g><title>${e(`${keyLabel(d.day, false)}: ${plural(d.moves, "move")} (${said})`)}</title>${stack}</g>`;
+  }).join("");
+  const busiest = p.days.reduce((a, b) => (b.moves + b.decisions > a.moves + a.decisions ? b : a));
+  const label = p.moves || p.decisions
+    ? `Moves per day over the last two weeks: ${p.moves} by agents and ${plural(p.decisions, "decision")} by you, most on ${keyLabel(busiest.day, false)}`
+    : "No moves in the last two weeks";
+  return `<svg class="pulse-graph" viewBox="0 0 ${W} ${PULSE_H}" role="img" aria-label="${e(label)}">
+    <line class="baseline" x1="0" x2="${W}" y1="${PULSE_BASE + 0.5}" y2="${PULSE_BASE + 0.5}"/>${bars}
+    <text x="4" y="${PULSE_H - 3}">${e(keyLabel(p.days[0].day, false))}</text><text x="${W - 4}" y="${PULSE_H - 3}" text-anchor="end">${e(keyLabel(p.days[p.days.length - 1].day, false))}</text>
+  </svg>`;
+}
+
+export function renderProjects(views: ProjectView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER): string {
+  const vendors = new Set<Vendor>();
+  const cards = views.map(({ project, items, unavailable, events, cut }) => {
     const count = (states: string[]) => items.filter((i) => states.includes(i.state)).length;
-    const summary = unavailable
-      ? "Temporarily unavailable. Open to retry."
-      : `${count(["claimed", "submitted", "accepted"])} active · ${count(["open"])} ready to start · ${count(["merged"])} merged`;
-    return `<li><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2><p>${summary}</p>${icon("arrow")}</a></li>`;
+    const p = buildPulse(events ?? [], owner, now, !!cut);
+    for (const v of Object.keys(p.byVendor) as Vendor[]) vendors.add(v);
+    if (p.decisions) vendors.add("owner");
+    const tally = `<p class="card-tally"><span><b>${count(["claimed", "submitted", "accepted"])}</b>active</span><span><b>${count(["open"])}</b>ready to start</span><span><b>${count(["merged"])}</b>merged</span></p>`;
+    const last = p.lastAt ? ` · last activity ${e(ago(p.lastAt, now))}` : "";
+    const line = p.moves || p.decisions
+      ? `${plural(p.moves, "move")} by ${plural(p.agents.length, "agent")} and ${plural(p.decisions, "decision")} in two weeks${p.cut ? ", from the most recent part of the record" : ""}${last}.`
+      : `No moves in the last two weeks${last}.`;
+    const body = unavailable
+      ? '<p class="meta">Temporarily unavailable. Open to retry.</p>'
+      : `${tally}${pulseGraph(p)}<p class="meta">${line}</p>`;
+    return `<li class="project-card${unavailable ? " unavailable" : ""}"><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2>${body}</a></li>`;
   }).join("");
   return page("Projects", `<div class="page-width">
-  <header><h1>Projects</h1><p class="lead">Work in motion, with a clear owner for every task.</p></header>
-  <ul class="project-list">${list}</ul>
+  <header><h1>Projects</h1><p class="lead">Work in motion, with a clear owner for every task. Each card counts the last ${PULSE_DAYS} days of moves, a bar per day, in the colour of the family that made them.</p></header>
+  ${views.length ? familyLegend([...vendors]) : ""}
+  <ul class="project-cards">${cards}</ul>
   ${!views.length ? '<div class="empty"><h2>Start with one project.</h2><p>Run <code>atelier init</code> in its local checkout. It will appear here.</p></div>' : ""}
 </div>`, "Projects", ownerName);
 }
@@ -865,18 +929,29 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
 </div>`, "Projects", ownerName);
 }
 
-export function renderHistory(views: ProjectView[], ownerName: string | null = null): string {
-  const completed = views
-    .flatMap(({ project, items }) => items.filter((i) => i.state === "merged" || i.state === "abandoned").map((item) => ({ project, item })))
-    .sort((a, b) => b.item.updatedAt.localeCompare(a.item.updatedAt));
-  const rows = completed.map(({ project, item }) => `<li><a href="${href("p", project.name, item.id)}">
-    <span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.id)}</span></span>
-    ${tag(stateLabel[item.state], item.state === "merged" ? "go" : "")}<time class="meta">${when(item.updatedAt)}</time>${icon("arrow")}</a></li>`).join("");
+export function renderHistory(views: ProjectView[], ownerName: string | null = null, owner = DEFAULT_OWNER): string {
+  const entries = buildTimeline(views.map((v) => ({ project: v.project, items: v.items, events: v.events ?? [] })), owner);
+  const merged = entries.filter((x) => x.ending === "merged").length, closed = entries.length - merged;
+  const projects = new Set(entries.map((x) => x.project.name)).size;
+  const vendors = [...new Set(entries.map((x) => x.vendor).filter((v): v is Vendor => v !== null))];
+  const days = byDay(entries).map(({ day, entries: list }) => `<li class="timeline-day"><h2>${e(`${weekdayOf(list[0].at)} ${keyLabel(day, true)}`)}</h2><ol>${list.map((x) => {
+    const model = x.holder ? splitActor(x.holder).model || x.holder : null;
+    const mark = x.vendor
+      ? `<i class="family-mark" style="--c:var(--m-${x.vendor})" title="${e(`${x.ending} while held by ${x.holder}`)}"></i>`
+      : '<i class="family-mark unknown" title="who held it is not in the record read"></i>';
+    const detail = [titleOf(x.project), x.item.id, model ?? "holder not in the record read", x.ending === "merged" ? (x.commit ? `merged as ${x.commit.slice(0, 8)}` : "merged") : "closed without merging"];
+    return `<li class="merge-row ${x.ending}"><a href="${href("p", x.project.name, x.item.id)}">${mark}<time datetime="${e(x.at)}">${e(clock(x.at))}</time><span><strong>${e(x.item.title)}</strong><span class="meta">${detail.map(e).join(" · ")}</span></span>${tag(x.ending === "merged" ? "Merged" : "Closed", x.ending === "merged" ? "go" : "")}</a></li>`;
+  }).join("")}</ol></li>`).join("");
+  const lead = entries.length
+    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each mark is the family of the agent that held the task when it ended.`
+    : "Finished work, with its evidence intact.";
+  const capKey = closed ? '<li><i class="cap-key"></i>closed without merging</li>' : "";
   return page("History", `<div class="page-width">
-  <header><h1>History</h1><p class="lead">Finished work, with its evidence intact.</p></header>
+  <header><h1>History</h1><p class="lead">${lead}</p></header>
   ${views.some((v) => v.unavailable) ? '<p class="error">Some project history is unavailable. Refresh to retry.</p>' : ""}
-  <ul class="task-list">${rows}</ul>
-  ${!completed.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
+  ${entries.length ? familyLegend(vendors, "You", capKey) : ""}
+  <ol class="merge-timeline">${days}</ol>
+  ${!entries.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
 </div>`, "History", ownerName);
 }
 

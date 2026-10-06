@@ -50,6 +50,11 @@ export function dayOf(at: Date | string | number): string {
   return `${p.y}-${p.m}-${p.d}`;
 }
 
+// "Sunday": the day of the week in the owner's zone.
+export function weekdayOf(at: Date | string | number): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "long" }).format(at instanceof Date ? at : new Date(at));
+}
+
 // "EDT": the abbreviation in force at one moment.
 export function zoneName(at: Date | string | number = Date.now()): string {
   return parts(at).tz;

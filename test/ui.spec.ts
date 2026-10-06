@@ -806,3 +806,68 @@ it('the standing page shows the newest session with escaped reported text', asyn
  expect(html).not.toContain('<script>session');
  expect(html).toContain('Reported: npm test: failed');
 });
+
+// ── projects as cards, history as a timeline ──
+it('Projects draws a card per project with its tally, a two-week graph by family, and escapes the title',async()=>{
+ const {renderProjects}=await import('../src/ui');
+ const now=new Date('2026-10-06T14:30:00Z');
+ const at=(h:number)=>new Date(now.getTime()-h*3600_000).toISOString();
+ const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
+ const items=[{...detail().item,id:'t1',state:'claimed' as const},{...detail().item,id:'t2',state:'open' as const},{...detail().item,id:'t3',state:'merged' as const}];
+ const events=[
+  {seq:1,itemId:'t1',at:at(30),actor:'codex/gpt-6',kind:'item.claimed',data:{}},
+  {seq:2,itemId:'t1',at:at(29),actor:'codex/gpt-6',kind:'push.observed',data:{head}},
+  {seq:3,itemId:'t1',at:at(28),actor:'atelier/sandbox',kind:'evidence.observed',data:{claim:'npm test',passed:true,where:'sandbox'}},
+  {seq:4,itemId:'t3',at:at(2),actor:'claude-code/opus-5.5',kind:'item.claimed',data:{}},
+  {seq:5,itemId:'t3',at:at(1),actor:'pavi',kind:'item.accepted',data:{head}},
+ ].reverse();
+ const html=renderProjects([{project:titled,items,events},{project:{...project,name:'gone'},items:[],unavailable:true}],'PAVI',now,'pavi');
+ expect(html.match(/<li class="project-card/g)).toHaveLength(2);
+ expect(html).toContain('<h2>&lt;Atelier&gt;</h2>');expect(html).toContain('href="/p/cloudflare-git"');
+ expect(html).toContain('<b>1</b>active');expect(html).toContain('<b>1</b>ready to start');expect(html).toContain('<b>1</b>merged');
+ expect(html.match(/<svg class="pulse-graph"/g)).toHaveLength(1);
+ expect(html).toContain('style="fill:var(--m-openai)"');expect(html).toContain('style="fill:var(--m-anthropic)"');expect(html).toContain('style="fill:var(--m-owner)"');
+ expect(html).toContain('4 moves by 2 agents and 1 decision in two weeks · last activity 1 h ago.');
+ expect(html).toContain('most on 5 Oct');
+ expect(html).toContain('Temporarily unavailable. Open to retry.');
+ expect(html).toContain('class="legend-line"');
+ const cut=renderProjects([{project:titled,items,events,cut:true}],'PAVI',now,'pavi');
+ expect(cut).toContain('from the most recent part of the record');
+ const quiet=renderProjects([{project:titled,items:[]}],'PAVI',now,'pavi');
+ expect(quiet).toContain('No moves in the last two weeks.');expect(quiet).toContain('aria-label="No moves in the last two weeks"');
+});
+it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
+ const {renderHistory}=await import('../src/ui');
+ const at=(d:number,h:number)=>`2026-10-0${d}T${String(h).padStart(2,'0')}:00:00.000Z`;
+ const base={...detail().item,owner:null,acceptedHead:head};
+ const items=[
+  {...base,id:'t1',title:'Merged <b>one</b>',state:'merged' as const,updatedAt:at(5,10)},
+  {...base,id:'t2',title:'Merged two',state:'merged' as const,updatedAt:at(4,9)},
+  {...base,id:'t3',title:'Dropped',state:'abandoned' as const,updatedAt:at(4,8)},
+  {...base,id:'t4',title:'Still working',state:'claimed' as const,owner:'codex/gpt-6'},
+ ];
+ const events=[
+  {seq:1,itemId:'t1',at:at(5,8),actor:'codex/gpt-5.5',kind:'item.claimed',data:{}},
+  {seq:2,itemId:'t1',at:at(5,9),actor:'pavi',kind:'item.handoff',data:{from:'codex/gpt-5.5',to:'claude-code/opus-5.5'}},
+  {seq:3,itemId:'t1',at:at(5,10),actor:'pavi',kind:'item.merged',data:{mergeCommit:'c'.repeat(40),head}},
+  {seq:4,itemId:'t2',at:at(4,7),actor:'zcode/glm-5.3',kind:'item.claimed',data:{}},
+  {seq:5,itemId:'t2',at:at(4,9),actor:'pavi',kind:'item.merged',data:{mergeCommit:'d'.repeat(40),head}},
+  {seq:6,itemId:'t3',at:at(4,8),actor:'pavi',kind:'item.abandoned',data:{note:'no'}},
+ ].reverse();
+ const html=renderHistory([{project:{...project,title:'Example <i>x</i>'},items,events}],'PAVI','pavi');
+ expect(html).toContain('2 tasks merged and 1 closed across 1 project');
+ expect(html).toContain('class="merge-timeline"');
+ expect(html.match(/class="timeline-day"/g)).toHaveLength(2);
+ expect(html).toContain('<h2>Monday 5 Oct 2026</h2>');expect(html).toContain('<h2>Sunday 4 Oct 2026</h2>');
+ expect(html.indexOf('href="/p/example/t1"')).toBeLessThan(html.indexOf('href="/p/example/t2"'));
+ expect(html).toContain('Merged &lt;b&gt;one&lt;/b&gt;');expect(html).not.toContain('<b>one</b>');
+ expect(html).toContain('Example &lt;i&gt;x&lt;/i&gt; · t1 · opus-5.5 · merged as cccccccc');
+ expect(html).toContain('style="--c:var(--m-anthropic)" title="merged while held by claude-code/opus-5.5"');
+ expect(html).toContain('style="--c:var(--m-zai)"');
+ expect(html).toContain('class="merge-row closed"');expect(html).toContain('class="family-mark unknown"');
+ expect(html).toContain('closed without merging');expect(html).toContain('<span class="tag ">Closed</span>');
+ expect(html).toContain('href="/p/example/t1"');expect(html).not.toContain('href="/p/example/t4"');
+ expect(html).toContain('<time datetime="2026-10-05T10:00:00.000Z">10:00 UTC</time>');
+ expect(html).toContain('class="cap-key"');
+ expect(renderHistory([{project,items:[]}],'PAVI','pavi')).not.toContain('class="legend-line"');
+});

@@ -32,7 +32,12 @@ only a list of tasks.
   change of band, and the current holder's band is tinted with the signal
   colour and runs to the "now" line. Every recorded event is a mark on the
   lane. The page refreshes every fifteen seconds without script.
-- **Projects** and **History** list work in motion and work finished.
+- **Projects** is a card per project: its tally of tasks and the last two
+  weeks of moves, a bar per day stacked by the family of the agent that made
+  them, with the owner's decisions on top.
+- **History** is the timeline of merges and closures across projects, by
+  day, each marked in the family of the agent that held the task when it
+  ended; a closure is a grey cap, not a dot.
 
 ## Evidence always says where
 
