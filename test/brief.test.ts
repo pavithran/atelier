@@ -333,3 +333,20 @@ test("the project owner's rejection stays visible under role policy", () => {
   assert.equal(b.recommendation.verdict, "send back");
   assert.match(b.evidence.join(), /project owner asked for changes/);
 });
+
+test("send back: the required checks fail on the merge with main, which moved after the revision's own checks passed", () => {
+  const M0 = "c".repeat(40), M1 = "d".repeat(40);
+  const own = pass({ mainHead: M0 });
+  const onMerge = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, where: "runner", at: "2026-10-03T13:00:00.000Z" });
+  const b = briefFor(detail({ evidence: [own, onMerge] }), []);
+  assert.equal(b.recommendation.verdict, "send back");
+  assert.equal(b.recommendation.reason, "`npm test` failed on the merge with main at dddddddd, which moved after this revision's own checks passed.");
+  assert.deepEqual(b.evidence, [
+    "Required checks at this revision: 1 passed in a Cloudflare container.",
+    "On the merge with main: `npm test` failed on the merge with main at dddddddd, which moved after this revision's own checks passed.",
+  ]);
+  // Against the main the revision's own check saw, the merged failure is shown by the page and does not change the brief.
+  const same = briefFor(detail({ evidence: [own, { ...onMerge, mainHead: M0 }] }), []);
+  assert.equal(same.recommendation.verdict, "accept");
+  assert.deepEqual(same.evidence, ["Required checks at this revision: 1 passed in a Cloudflare container."]);
+});

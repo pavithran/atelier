@@ -198,28 +198,66 @@ const EXPANDED = /[*?[$`]|^~/;
 // left is the program, judged when it looks like a file and the shell does
 // not expand it first. Everything after the program is an argument, a glob
 // among them, and is not judged. A shell's `-c` command line is split and
-// judged the same way.
+// judged the same way. A `cd DIR` moves the working directory the programs
+// after it are judged from, as the shell moves theirs, so `cd tools &&
+// ./ship.sh` runs tools/ship.sh. A `cd` this cannot follow, through a
+// variable, a glob or an option, or with no directory at all, leaves where it
+// goes unknown: a program after it judged from the checkout's root would be
+// named as a file that is not there, so none after it is judged.
 function commandFiles(capability) {
   const command = typeof capability === "string" ? capability : capability?.command;
   const commands = Array.isArray(command) ? [command.map(String)] : typeof command === "string" ? shellCommands(command) : [];
-  return commands.flatMap(programFile);
+  return chainFiles(commands, "");
 }
 
-function programFile(words) {
+// The judged files of one command, resolved from `dir`, the working directory
+// it runs in, with the scan for its program starting at `from`. An absolute
+// program stays absolute, so it is judged outside the checkout, as it is.
+function programFile(words, dir = "", from = 0) {
   let interpreter = null;
-  for (let i = 0; i < words.length; i++) {
+  for (let i = from; i < words.length; i++) {
     const word = words[i];
     if (!word || ASSIGNMENT.test(word) || BEFORE_COMMAND.has(word)) continue;
     if (NO_COMMAND.has(word)) return [];
     if (REDIRECTION.test(word)) { if (!word.replace(REDIRECTION, "")) i++; continue; }
     if (word.startsWith("-")) {
-      if (interpreter && SHELL.test(interpreter) && COMMAND_OPTION.test(word)) return shellCommands(words[i + 1] ?? "").flatMap(programFile);
+      if (interpreter && SHELL.test(interpreter) && COMMAND_OPTION.test(word)) return chainFiles(shellCommands(words[i + 1] ?? ""), dir);
       continue;
     }
     if (INTERPRETER.test(basename(word))) { interpreter = basename(word); continue; }
-    return PATHLIKE.test(word) && !EXPANDED.test(word) ? [word] : [];
+    if (!(PATHLIKE.test(word) && !EXPANDED.test(word))) return [];
+    return [word.startsWith("/") ? word : join(dir, word)];
   }
   return [];
+}
+
+// The judged files of the commands of one chain, from the working directory
+// `dir`, which a `cd` among them moves for the commands after it (see
+// commandFiles).
+function chainFiles(commands, dir) {
+  const files = [];
+  for (const words of commands) {
+    const at = commandWord(words);
+    if (at !== -1 && words[at] === "cd") {
+      const target = words[at + 1];
+      dir = target && !target.startsWith("-") && !EXPANDED.test(target) && dir !== undefined ? (target.startsWith("/") ? target : join(dir, target)) : undefined;
+      continue;
+    }
+    if (dir !== undefined && at !== -1) files.push(...programFile(words, dir, at));
+  }
+  return files;
+}
+
+// The index of the first word that could be the program, past `NAME=value`
+// assignments and the reserved words that come before a command, or -1 when
+// there is none.
+function commandWord(words) {
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (!word || ASSIGNMENT.test(word) || BEFORE_COMMAND.has(word)) continue;
+    return i;
+  }
+  return -1;
 }
 
 // The adapter lists its capabilities as an array, or as an object from name to

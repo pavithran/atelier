@@ -15,6 +15,8 @@ item with exactly one owner. Never edit the project checkout directly.
    `atelier report "…"` records a Reported claim, never an Observed pass.
 6. If you can't finish, `atelier handoff ID --to HARNESS/MODEL --note "…"`
    or `atelier release ID`. Your write token is revoked either way.
+   Waiting on something only the owner can settle: `atelier block ID "what"`.
+   The owner sees the reason in the inbox and runs `atelier unblock ID`.
 7. Reviewing someone else's item: `atelier diff ID`, then
    `atelier review ID --approve|--reject --note "…"`. Changes to protected
    paths need approval from a model of another family than every agent
@@ -25,7 +27,7 @@ For each session the project owner runs in the registered checkout:
 
 1. Start a session with `atelier unwrap --project NAME`; relay its short paragraph.
 2. End with `atelier wrap "summary" --next "what is next"` in the registered checkout. It runs the registered checks, commits, and always updates Atelier's own copy of the project, the baseline. A failing check stops it before anything is committed: fix the check, or add `--allow-failing` to commit anyway and record in the note which checks failed. It never pushes the project's own remotes unless `--push` is given; add `--push` only with the owner's approval for that session. It never deploys or publishes a release.
-3. Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project cloudflare-git. File a lesson worth keeping the same way with a title starting "Lesson: ". Use repeatable `--found TEXT` on wrap to file tasks in this project.
+3. Before the session closes, file a defect in Atelier or project tooling as a task in its project: atelier new "…" --project NAME. For Atelier use --project atelier. File a lesson worth keeping the same way with a title starting "Lesson: ". Use repeatable `--found TEXT` on wrap to file tasks in this project.
 
 A protected action (a deploy, a device install, a paid model run or a Photos
 writeback) runs only with the project owner's approval for one exact revision

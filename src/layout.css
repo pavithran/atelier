@@ -596,6 +596,11 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .merge-preview .tag { margin-right: 6px; }
 .merge-conflicts { margin: 6px 0 4px; padding-left: 20px; }
 .merge-conflicts li { margin: 2px 0; overflow-wrap: anywhere; }
+/* the checks run on the would-be merge, beside the preview */
+.merge-checks { margin: 0 0 12px; }
+.merge-checks > p { margin: 0 0 4px; }
+.merge-check-rows { margin: 0; padding: 0; list-style: none; }
+.merge-check-rows li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0; overflow-wrap: anywhere; }
 
 /* ── before and with Atelier, on the showcase ─────────────────────────────── */
 .compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; margin: 4px 0 26px; }

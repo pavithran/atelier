@@ -60,7 +60,10 @@ test("refresh sends only ControlPlane fields and leaves project settings intact"
   assert.deepEqual(calls.map((c) => c.method), ["GET", "PUT"]);
   assert.equal(calls[1].path, "/projects/example");
   assert.equal(calls[1].actor, "owner");
-  assert.deepEqual(Object.keys(calls[1].body).sort(), ["agents", "eligible", "execution", "protected", "refuseOverlap"]);
+  // The ship order the checkout declares travels with the policy, empty when
+  // the project has no ship file, so a removed one is recorded as removed.
+  assert.deepEqual(Object.keys(calls[1].body).sort(), ["agents", "eligible", "execution", "protected", "refuseOverlap", "shipKinds", "shipRuns"]);
+  assert.deepEqual(calls[1].body.shipRuns, []);
   assert.deepEqual(stored, { ...original, policy: { ...before, ...calls[1].body } });
   assert.deepEqual(result.before, before);
   assert.deepEqual(result.policy, stored.policy);
@@ -105,6 +108,18 @@ test("merge warns and refuses newly protected touched paths unless overridden", 
   assert.deepEqual(mergePolicyDecision(before, before, ["AGENTS.md"]), { warning: null, refusal: null });
 });
 
+test("a script the ship order runs is newly protected when the order changed since acceptance", () => {
+  // The acceptance recorded no ship order; the checkout now deploys through
+  // bin/deploy.sh, so an accepted item touching that script is refused as
+  // newly protected, exactly as a newly protected ControlPlane path is.
+  const after = { ...before, shipRuns: ["bin/deploy.sh"] };
+  const decision = mergePolicyDecision(before, after, ["bin/deploy.sh"]);
+  assert.match(decision.warning, /ship commands: \[\] -> \["bin\/deploy\.sh"\]/);
+  assert.match(decision.refusal, /newly protected paths: bin\/deploy\.sh/);
+  assert.equal(mergePolicyDecision(before, after, ["src/a.ts"]).refusal, null);
+  assert.equal(mergePolicyDecision(after, after, ["bin/deploy.sh"]).refusal, null, "the order the acceptance was made under refuses nothing new");
+});
+
 test("merge matches newly protected paths whatever their letter case or Unicode form", () => {
   const after = { ...before, protected: ["AGENTS.md", "src/**", "CLAUDE.md"] };
   for (const path of ["SRC/secret.ts", "claude.md", "Src/Secret.ts"]) {
@@ -132,7 +147,8 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
   // A check required now that was not observed passing at the accepted revision.
   const lint = { ...before, checks: ["npm test", "npm run lint"] };
   d = mergePolicyDecision(before, lint, ["src/a.ts"], false, context);
-  assert.match(d.warning, /checks: \["npm test"\] -> \["npm run lint","npm test"\]/);
+  assert.match(d.warning, /^Warning: the required checks changed since acceptance: checks: \["npm test"\] -> \["npm run lint","npm test"\]$/);
+  assert.ok(!d.warning.includes("ControlPlane"), "checks are not ControlPlane's to set, so the warning does not name it");
   assert.match(d.refusal, /checks required now were not observed passing at the accepted revision: `npm run lint`\. Review/);
   assert.equal(mergePolicyDecision(before, lint, ["src/a.ts"], false, { ...context, passed: ["npm test", "npm run lint"] }).refusal, null);
   // Checks are compared only when both sides carry them: the policy read from the files does not.
@@ -144,6 +160,7 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
   // Every reason at once, and the override.
   const after = { ...lint, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true };
   d = mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], false, context);
+  assert.match(d.warning, /^Warning: ControlPlane policy changed since acceptance: .+; the required checks changed since acceptance: checks: /);
   assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; its contributors are no longer eligible here: [^;]+; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
   assert.equal(mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], true, context).refusal, null);
 });
@@ -374,8 +391,9 @@ for (const content of ["{", "", "{}", "null"]) {
     const file = /docs\/control-plane\/agent-policy\.v1\.json: \S/;
     for (let i = 0; i < 2; i++) {
       const sync = command(["sync"]);
-      assert.equal(sync.status, 0, sync.stderr);
+      assert.equal(sync.status, 1, sync.stderr);
       assert.match(sync.stdout, /Warning: ControlPlane policy could not be read: docs\/control-plane\/agent-policy\.v1\.json: .*The stored policy was not refreshed\./);
+      assert.match(sync.stderr, /^atelier: ControlPlane policy could not be read: docs\/control-plane\/agent-policy\.v1\.json: .*\. Fix the file, then run atelier sync again\.$/m);
       // A merge never skips the comparison: it stops until the file is fixed.
       const gitBefore = gitCalls().length;
       const merge = command(["merge", "t1"]);

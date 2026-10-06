@@ -71,7 +71,7 @@ globalThis.fetch = async (url, options = {}) => {
   let data = {};
   const verb = /^\\/api\\/projects\\/demo\\/(?:items\\/t3\\/)?(.*)$/.exec(path)?.[1];
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
-  else if (verb === "baseline-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
+  else if (verb === "baseline-token" || verb === "base-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
   else if (verb === "claim") data = { item: item(), workspace: { remote: FORK, token: "fake-fork-token", defaultBranch: "main", expiresAt: "later" }, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
   else if (verb === "push") data = { ...item(), head: forkHead() };
   else data = { item: item(), policy: { checks: [], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };
@@ -128,6 +128,21 @@ test("update puts this workspace's own commits on the fork's head before the bas
   assert.deepEqual(f.forkDropped(f.h2), [], "B's work is gone from the fork's branch");
   assert.deepEqual(f.forkSubjects(), ["A: local, unpushed", "B: H2", "A: H1", "Main moved", "Base"]);
   assert.equal(f.forkMain(), f.git(f.workspace, "rev-parse", "HEAD"));
+});
+
+test("update stopped on a conflict names the same push as a finished update", (t) => {
+  const f = fixture(t);
+  // The baseline and this workspace change base.txt differently.
+  const seed = join(f.dir, "seed");
+  f.commit(seed, "base.txt", "Main: base changed");
+  f.git(seed, "push", "-q", "origin", "main");
+  f.commit(f.workspace, "base.txt", "A: base changed");
+  const r = f.run(["update"]);
+  assert.notEqual(r.status, 0, "update went ahead through a conflict");
+  assert.match(r.stderr, /^atelier: rebase stopped on a conflict\. Resolve it, then git rebase --continue\. Push with: atelier push --force$/m);
+  assert.ok(existsSync(join(f.workspace, ".git", "rebase-merge")), "the rebase is left for the agent to finish");
+  assert.match(f.git(f.workspace, "ls-files", "-u"), /base\.txt/);
+  assert.deepEqual(f.pushes(), []);
 });
 
 test("push --force refuses to drop commits Atelier recorded, whatever the lease would allow", (t) => {

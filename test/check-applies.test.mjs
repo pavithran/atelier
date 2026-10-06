@@ -42,7 +42,7 @@ async function fixture(t, policy, answer = () => undefined) {
     const body = raw ? JSON.parse(raw) : undefined;
     let data = answer(req.url, body) ?? { item, gate: { ready: false, blockers: [] }, policy: project };
     if (req.url.endsWith("/read-token")) data = { remote, token: "read", head, defaultBranch: "main" };
-    if (req.url.endsWith("/baseline-token")) data = { remote, token: "base", head, defaultBranch: "main" };
+    if (req.url.endsWith("/baseline-token") || req.url.endsWith("/base-token")) data = { remote, token: "base", head, defaultBranch: "main" };
     if (req.url.endsWith("/evidence")) { posts.push(body); data = { evidence: [{ head, claim: body.claim, changedPaths: ["docs/a.md"] }] }; }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));

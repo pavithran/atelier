@@ -75,6 +75,19 @@ test("an address without angle brackets is no name, and is never drawn", () => {
   assert.ok(!drawImported(h, "pavi", "Demo").includes("@"));
 });
 
+// Task t167: a trailer name with no letter at all, only a digit or a slash
+// among its marks, was counted as an agent and drew a lane of its own.
+test("a name with no letter is no agent, whatever its digits and slashes", () => {
+  for (const trailer of ["2", "4.2", "1/2", "5/5.5", "/", "🤖9"]) {
+    assert.deepEqual(agentsIn(`x\n\nCo-Authored-By: ${trailer}`), [], trailer);
+  }
+  // A digit or a slash in a name with letters still reads as a model.
+  assert.deepEqual(agentsIn("x\n\nAgent: zcode/glm-5.3"), ["zcode/glm-5.3"]);
+  const h = buildImported([c("a", 1, "one\n\nCo-Authored-By: 2"), c("b", 2, "two\n\nCo-Authored-By: Claude Opus 5.5 <x>")], null, true);
+  assert.equal(h.attributed, 1);
+  assert.deepEqual(h.lanes.map((l) => [l.label, l.count]), [["opus-5.5", 1], [NO_AGENT, 1]]);
+});
+
 test("the cutoff is the first task created, however long the event record", () => {
   assert.equal(firstTaskAt([]), null);
   assert.equal(firstTaskAt([{ createdAt: "2026-10-02T00:00:00Z" }, { createdAt: "2026-09-30T12:00:00Z" }]), Date.parse("2026-09-30T12:00:00Z") / 1000);

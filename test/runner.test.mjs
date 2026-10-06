@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, harnessEnv } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, runOutcome, harnessEnv } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 
@@ -57,7 +57,10 @@ test("parseConfig reports malformed config and invalid entries", () => {
 });
 
 test("offerFrom includes only the server capability shape", () => {
-  assert.deepEqual(offerFrom(config, "HOME:studio"), { runner: "home:studio", kind: "home", agents: [{ agent: entry.agent, models: entry.models }] });
+  assert.deepEqual(offerFrom(config, "HOME:studio"), {
+    runner: "home:studio", kind: "home", jobs: ["build", "plan"],
+    agents: [{ agent: entry.agent, models: entry.models }],
+  });
   assert.equal(offerFrom(config, "home:Studio").runner, "home:studio", "the whole name is normalized, as the server stores it");
   for (const name of [undefined, "studio", "cloud:studio", "home:", "home:two:parts", "home:../x"]) assert.throws(() => offerFrom(config, name));
   assert.throws(() => offerFrom({ agents: [] }, "home:studio"));
@@ -195,6 +198,24 @@ test("runTask reports release failure and skips empty or interrupted work", asyn
   const stopped = fixture({ stopped: true });
   assert.equal((await runTask(assignment, config, "home:studio", stopped.io)).phase, "failed");
   assert.deepEqual(stopped.calls, []);
+});
+
+test("a release note over the server's cap is cut to its end, whatever failed", async () => {
+  const reason = `prefix ${"x".repeat(3000)} tail`;
+  const released = fixture({ head: "before" });
+  released.io.brief = async () => { throw new Error(reason); };
+  await runTask(assignment, config, "home:studio", released.io);
+  const note = released.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
+  assert.equal(note.length, 2000, "the server takes at most 2000 characters (NOTE_MAX)");
+  assert.ok(note.endsWith(" tail"));
+
+  const unclaimed = fixture();
+  const { cli } = unclaimed.io;
+  unclaimed.io.cli = async (argv, cwd) => { unclaimed.calls.push({ argv, cwd }); if (argv[0] === "claim") throw new Error(reason); };
+  await runTask(assignment, config, "home:studio", unclaimed.io);
+  const afterClaimFailure = unclaimed.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
+  assert.equal(afterClaimFailure.length, 2000);
+  assert.ok(afterClaimFailure.endsWith(" tail"));
 });
 
 test("runTask refuses assignments outside its offer or with unsafe paths", async () => {
@@ -1083,6 +1104,48 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
     assert.deepEqual(commands, mode === "commit" ? ["claim", "finish"] : ["claim", "release"], mode);
     assert.equal(process.listenerCount("exit"), listeners);
   }
+});
+
+// t109: a run the ledger never sees the end of goes to the server's run
+// reports, for the model's reliability record: a harness past its time
+// limit, one that ended without a commit, one that exited with an error.
+test("a run that timed out, stalled or was refused is reported under the runner's name; other endings are not", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-run-report-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const cases = [
+    [{ head: "before", timedOut: true }, "timed-out", "harness timed out"],
+    [{ head: "after", timedOut: true }, "timed-out", "harness timed out"],
+    [{ head: "before" }, "stalled", "harness made no new commit"],
+    [{ head: "before", code: 1 }, "refused", "harness exited 1"],
+    [{}, null],
+    [{ failCommand: "finish" }, null],
+    [{ failCommand: "claim" }, null],
+    [{ throwHarness: true, head: "before" }, null],
+  ];
+  for (const [options, outcome, detail] of cases) {
+    const { io, logs } = fixture(options);
+    const reports = [];
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+      workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+      async reportRun(body, runner, signal) { reports.push({ body, runner, signalled: signal instanceof AbortSignal }); },
+    });
+    const expected = outcome ? [{ body: { actor: assignment.actor, role: "build", outcome, project: "atelier", item: "t13", detail }, runner: "home:studio", signalled: true }] : [];
+    assert.deepEqual(reports, expected, JSON.stringify(options));
+    assert.equal(logs.includes(`reported atelier/t13 as ${outcome}`), !!outcome, JSON.stringify(options));
+  }
+  // A report the server refuses is logged, and the runner goes on.
+  const { io, logs } = fixture({ head: "before", code: 1 });
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+    async reportRun() { throw new Error("403 this operation requires the owner token"); },
+  });
+  assert.ok(logs.includes("could not report atelier/t13 as refused: 403 this operation requires the owner token"));
+  assert.equal(runOutcome({ phase: "submitted" }), null);
+  assert.equal(runOutcome({ phase: "failed", taskFailure: true, claimRefused: true, reason: "harness exited 1" }), null);
 });
 
 test("a named variable the check allowlist already passes is withheld too when it holds the owner's token", () => {

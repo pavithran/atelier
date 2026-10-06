@@ -280,13 +280,15 @@ export async function runUsage(args, given = {}) {
 
   const { reports: gathered, skipped, via } = await gatherUsage(io, config, scrub);
   // Cleaned once, so what is printed and what is reported are the same values.
+  // The skipped lines too: what a tool or an error returned reaches neither the
+  // terminal nor Atelier as it was found, which withoutKeys alone would not do.
   const reports = gathered.map((r) => ({ tool: r.tool, body: cleanBody(r.body, safe) }));
   const now = io.now();
   const out = [`Usage on ${opts.name}, as of ${stamp(now)}.`];
   if (configNote) out.push(configNote);
   if (via) out.push(`Local databases are read only, through ${via}.`);
   for (const r of reports) out.push("", ...describeReport(r.tool, r.body, now));
-  if (skipped.length) out.push("", "Not reported:", ...skipped.map((s) => `  ${s}`));
+  if (skipped.length) out.push("", "Not reported:", ...skipped.map((s) => `  ${safe(s, 300)}`));
   out.push("", "Not read here: Claude's plan limits (the Claude app shows them) and Gemini's spend (Google serves no balance).");
 
   const failed = [], alerts = [];
