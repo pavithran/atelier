@@ -1,0 +1,151 @@
+import { env } from "cloudflare:workers";
+import { expect, it } from "vitest";
+import worker from "../src/index.ts";
+import type { LedgerEvent } from "../src/ledger.ts";
+import { parseRuleError } from "../src/rules.ts";
+
+// A push whose head no longer holds the head the Ledger recorded has
+// rewritten the fork's history: the commits recorded before are off the
+// branch. The Worker reads the fork's history to tell; the Ledger refuses
+// such a push unless it declares the rebase `atelier update` made, by naming
+// the recorded head, and records that rewrite with the head it replaced. A
+// push seen through the queue that does the same leaves the head where it
+// was and notes the fact. This is the server side of the t105 audit's
+// gl-force-push.sh; test/update-force-push.test.mjs is the CLI side.
+
+const H0 = "0".repeat(40), H1 = "1".repeat(40), H2 = "2".repeat(40), H3 = "3".repeat(40);
+const M = "e".repeat(40), X = "f".repeat(40), Y = "d".repeat(40);
+const A = "claude-code/opus-5.5";
+const TOKEN = "lineage-token";
+const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
+
+async function setup(name: string) {
+  const record = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  await L.newItem("Keep every push", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  return L;
+}
+
+async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promise<void> {
+  const err = await p.then(() => new Error(`expected a ${code} refusal`), (e: unknown) => e as Error);
+  const parsed = parseRuleError(err);
+  expect(parsed?.code).toBe(code);
+  expect(parsed?.detail).toMatch(detail);
+}
+
+// The generated stub types type events() as never (see test/ledger.spec.ts); the values arrive whole.
+const events = async (L: Awaited<ReturnType<typeof setup>>) => (await L.events("t1")) as unknown as LedgerEvent[];
+
+// A fork whose branch stands at head(), holding the commits `graph`
+// describes, each hash mapped to its parents in Git order. log lists the
+// first-parent chain from a ref, as Artifacts does; readCommit reads one
+// commit. The counts say which the Worker needed.
+function artifacts(head: () => string, graph: Record<string, string[]>) {
+  const reads = { log: 0, commits: 0 };
+  const chain = (from: string) => {
+    const out: { hash: string; parents: string[] }[] = [];
+    for (let h: string | undefined = from; h && graph[h]; h = graph[h][0]) out.push({ hash: h, parents: graph[h] });
+    return out;
+  };
+  const binding = {
+    get: async () => ({
+      info: async () => ({ defaultBranch: "main" }),
+      log: async ({ ref, limit }: { ref?: string; limit?: number } = {}) => { reads.log++; return chain(ref ?? head()).slice(0, limit ?? 50); },
+      readCommit: async (h: string) => { reads.commits++; return graph[h] ? { hash: h, parents: graph[h] } : null; },
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts;
+  return { reads, binding };
+}
+
+const push = (name: string, body: unknown, bindings: typeof env) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/push`, {
+  method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": A, "content-type": "application/json" }, body: JSON.stringify(body),
+}), bindings);
+
+it("the Ledger refuses a head that does not hold the recorded one unless the push declares the rebase from it", async () => {
+  const L = await setup("lineage-ledger");
+  await L.recordPush("t1", A, H1, H1);
+  await refusal(L.recordPush("t1", A, H2, H2, false, { holdsRecorded: false, rebasedFrom: null }), "history_rewritten", /t1's workspace is at 22222222, which does not hold 11111111, the head Atelier recorded/);
+  await refusal(L.recordPush("t1", A, H2, H2, false, { holdsRecorded: false, rebasedFrom: H0 }), "history_rewritten", /does not hold 11111111/);
+  expect((await L.item("t1")).head).toBe(H1);
+  expect((await events(L)).some((e) => e.kind === "push.observed" && e.data.head === H2)).toBe(false);
+  // The declaration names the recorded head: the rewrite is recorded with it.
+  expect(await L.recordPush("t1", A, H2, H2, false, { holdsRecorded: false, rebasedFrom: H1 })).toMatchObject({ head: H2, state: "claimed" });
+  expect((await events(L)).find((e) => e.kind === "push.observed")?.data).toMatchObject({ head: H2, rebasedFrom: H1 });
+  // A head that holds the recorded one needs no declaration, and one it carries anyway marks no rewrite.
+  expect(await L.recordPush("t1", A, H3, H3, false, { holdsRecorded: true, rebasedFrom: H2 })).toMatchObject({ head: H3 });
+  expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
+});
+
+it("a push seen on the fork that does not hold the recorded head leaves the head and is noted", async () => {
+  const L = await setup("lineage-observe");
+  await L.recordPush("t1", A, H1, H1);
+  expect(await L.observePush("t1", H2, H1, false)).toMatchObject({ head: H1, state: "claimed" });
+  expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: H2, recorded: H1, source: "artifacts", reason: "history_rewritten" });
+  expect((await events(L)).some((e) => e.kind === "push.observed" && e.data.head === H2)).toBe(false);
+  // The same sighting delivered again is noted once; another head is noted on its own.
+  await L.observePush("t1", H2, H1, false);
+  expect((await events(L)).filter((e) => e.kind === "push.unrecorded")).toHaveLength(1);
+  await L.observePush("t1", H3, H1, false);
+  expect((await events(L)).filter((e) => e.kind === "push.unrecorded").map((e) => e.data.head)).toEqual([H3, H2]);
+  expect(await L.observePush("t1", H2, H1, true)).toMatchObject({ head: H2 });
+});
+
+it("the push route reads the fork's history: a fast-forward passes, a rewrite needs the declaration, a merge's second parent counts", async () => {
+  const name = "lineage-route";
+  const L = await setup(name);
+  // H1 and H2 on H0 in a line; H3 on H0 alone, as a rebase leaves it; M a
+  // merge whose first parent X is on H0 and whose second parent Y is on H3.
+  const graph: Record<string, string[]> = { [H0]: [], [H1]: [H0], [H2]: [H1], [H3]: [H0], [X]: [H0], [Y]: [H3], [M]: [X, Y] };
+  let head = H1;
+  const { reads, binding } = artifacts(() => head, graph);
+  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  expect((await push(name, { head: H1 }, bindings)).status).toBe(200);
+  head = H2;
+  expect((await push(name, { head: H2 }, bindings)).status).toBe(200);
+  expect((await L.item("t1")).head).toBe(H2);
+  expect(reads.commits).toBe(0);
+  // H3 does not hold H2: refused, and refused again when the declaration names another head.
+  head = H3;
+  const refused = await push(name, { head: H3 }, bindings);
+  expect(refused.status).toBe(409);
+  expect(((await refused.json()) as { error: string }).error).toBe("history_rewritten");
+  expect((await push(name, { head: H3, rebasedFrom: H1 }, bindings)).status).toBe(409);
+  expect((await push(name, { head: H3, rebasedFrom: "not a hash" }, bindings)).status).toBe(409);
+  expect((await L.item("t1")).head).toBe(H2);
+  const declared = await push(name, { head: H3, rebasedFrom: H2 }, bindings);
+  expect(declared.status).toBe(200);
+  expect((await L.item("t1")).head).toBe(H3);
+  expect((await events(L)).find((e) => e.kind === "push.observed")?.data).toMatchObject({ head: H3, rebasedFrom: H2 });
+  // The merge's first-parent chain lacks H3; the walk through its second parent reads Y and finds it.
+  head = M;
+  expect((await push(name, { head: M }, bindings)).status).toBe(200);
+  expect((await L.item("t1")).head).toBe(M);
+  expect(reads.commits).toBe(1);
+  expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
+});
+
+it("a push event whose head does not hold the recorded one leaves the head and notes it until the CLI declares the rebase", async () => {
+  const name = "lineage-queue";
+  const L = await setup(name);
+  await L.recordPush("t1", A, H1, H1);
+  const graph: Record<string, string[]> = { [H0]: [], [H1]: [H0], [H3]: [H0] };
+  const { binding } = artifacts(() => H3, graph);
+  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref: "refs/heads/main", after: H3 } };
+  let acks = 0, retries = 0;
+  const send = () => worker.queue({ messages: [{ body: notice, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: binding });
+  await send();
+  expect([acks, retries]).toEqual([1, 0]);
+  expect((await L.item("t1")).head).toBe(H1);
+  expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: H3, recorded: H1 });
+  // The CLI's own call, declaring the head it rebased from, records the push; the event seen again changes nothing.
+  expect((await push(name, { head: H3, rebasedFrom: H1 }, { ...testEnv, ARTIFACTS: binding } as typeof env)).status).toBe(200);
+  expect((await L.item("t1")).head).toBe(H3);
+  await send();
+  expect([acks, retries]).toEqual([2, 0]);
+  expect((await events(L)).filter((e) => e.kind === "push.unrecorded")).toHaveLength(1);
+});

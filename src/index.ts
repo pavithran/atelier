@@ -268,6 +268,45 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
   throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
 }
 
+// Whether the commit `from` holds `target` in its history. The first-parent
+// chain Artifacts lists answers the usual case in one read, since a recorded
+// head sits a few commits back on it; past a merge on that chain, the other
+// parents are read one commit at a time, with a cap. A history too deep to
+// search within the cap counts as not holding the target, which the push
+// route treats as a rewrite the caller must declare (recordPush in ledger.ts).
+const HISTORY_READS = 500;
+async function holdsCommit(env: Env, repo: string, from: string, target: string): Promise<boolean> {
+  if (from === target) return true;
+  using r = await env.ARTIFACTS.get(repo);
+  const chain = await r.log({ ref: from, limit: 1000 });
+  if (chain.some((c) => c.hash === target)) return true;
+  const seen = new Set(chain.map((c) => c.hash));
+  const pending = chain.flatMap((c) => (c.parents ?? []).slice(1));
+  let reads = 0;
+  while (pending.length && reads < HISTORY_READS) {
+    const hash = pending.shift()!;
+    if (hash === target) return true;
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    reads++;
+    const commit = await r.readCommit(hash);
+    for (const parent of commit?.parents ?? []) {
+      if (parent === target) return true;
+      if (!seen.has(parent)) pending.push(parent);
+    }
+  }
+  return false;
+}
+
+// What the Worker found in the fork's history for a push: whether the head
+// it sees holds the head the Ledger recorded, and the head the caller says
+// `atelier update` rebased from, when it says so.
+async function pushLineage(env: Env, fork: string, observed: string, recorded: string | null, declared: unknown) {
+  const holdsRecorded = !recorded || observed === recorded || await holdsCommit(env, fork, observed, recorded);
+  const rebasedFrom = typeof declared === "string" && /^[a-f0-9]{40,64}$/.test(declared) ? declared : null;
+  return { holdsRecorded, rebasedFrom };
+}
+
 // The branch Atelier reads in a project's baseline and in every fork of it:
 // the one init registered. headOf reads a repository's HEAD, and a fork
 // copies the baseline's HEAD, which init created naming that branch. A
@@ -581,7 +620,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      return json(await L.recordPush(id, actor, observed, body.head ?? null, !!c.token));
+      return json(await L.recordPush(id, actor, observed, body.head ?? null, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
     }
     case "evidence": {
       const item = await L.item(id);
@@ -1030,7 +1069,14 @@ export default {
             // Only a push to the project's branch moves the head headOf reads.
             if (notice.ref !== `refs/heads/${await projectBranch(env, project)}`) break;
             const current = await headOf(env,notice.repo);
-            if (current) { const recorded = await L.observePush(item.id,current,item.head); if (!["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation"); }
+            if (current) {
+              // A head that does not hold the recorded one is not taken as
+              // progress (observePush); the compare-and-set retry is for a
+              // head that should have moved and did not.
+              const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
+              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded);
+              if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
+            }
             break;
           }
         }
