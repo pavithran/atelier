@@ -1,0 +1,15 @@
+atelier atelier/t114 "adopt can push AGENTS.md over its context ceiling: re-running it on photograph on 2026-10-05 took AGENTS.md from 258 to 270 lines against a 260 ceiling, and atelier wrap refuses to run over a ceiling; adopt should measure the ceiling after inserting its section and say so (or keep the section shorter) instead of leaving the project unable to wrap"
+accepted head c2ea151361f9f3f9b187a6c6538a48324976b9fc
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T13:24:34.783Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T13:24:39.583Z
+REVIEW approve — claude-code/opus-5.5: Each fix verified against the old code: the ceiling counted as wrap counts and refused before the task exists; pipelines judged per program; eligibility checked with the server's rule before the task; a recorded approval kept unless --reset or --history-since; the paste stub matches the relay rule. Non-blocking: a relative program after cd in the same chain is judged from the root; >| split as a pipe; the second ceiling check runs after the task exists; recordedApproval ignores --as.
+2026-10-06T01:00:14.295Z pavi item.created
+2026-10-06T12:38:19.833Z opencode/glm-5.3 item.claimed
+2026-10-06T12:38:22.592Z opencode/glm-5.3 fork.created
+2026-10-06T12:58:49.428Z opencode/glm-5.3 item.handoff
+2026-10-06T13:21:52.617Z claude-code/fable-5.1 push.observed
+2026-10-06T13:24:35.483Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:24:39.924Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:24:41.118Z claude-code/fable-5.1 item.submitted
+2026-10-06T13:34:50.636Z claude-code/opus-5.5 review.approved
+2026-10-06T13:34:57.601Z pavi item.accepted
