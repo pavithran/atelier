@@ -144,7 +144,8 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
     const holder = holders.get(item);
     if (kind === "item.claimed") {
       holders.set(item, { recorded: event.actor, serving: actor });
-      get(actor, project);
+      // The owner taking a task is not a model's work, so it opens no row.
+      if (isAgent(actor, owner)) get(actor, project);
       continue;
     }
     if (kind === "item.handoff") {

@@ -243,3 +243,9 @@ test("route() breaks ties by the reliability it is given and leaves scores alone
   const scored = route({ kind: "feature" }, [profile("a"), profile("b")], new Map([["codex/a", { itemsClaimed: 1, checkPasses: 1, checkFailures: 0, reviewsApproved: 0, reviewsRejected: 0, handoffsAway: 0, merges: 0 }]]), constraints, tiebreaks);
   assert.deepEqual(scored.map((c) => [c.actor, c.score]), [["codex/a", 100], ["codex/b", 0]]);
 });
+
+test("the owner taking a task opens no model row", () => {
+  const events = history(["t1", OWNER, "item.claimed"], ["t1", OWNER, "item.released"]);
+  const rel = buildReliability([{ project: "a", events }], [], OWNER);
+  assert.equal([...rel.keys()].some((k) => k.includes(OWNER)), false);
+});
