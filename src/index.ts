@@ -1,7 +1,7 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, measureWorkspace, type ItemDiff } from "./diff";
-import { previewAgainstMain } from "./preview/merge";
+import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
+import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
@@ -23,6 +23,8 @@ import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { planBrief } from "./plans/show.ts";
+import { baseRepoOf, rollbackFor, verifyIntegration, type LogCommit } from "./plans/integrate.ts";
+import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { renderActions } from "./actions-page.ts";
@@ -446,6 +448,37 @@ async function mint(env: Env, repo: string, scope: "read" | "write", branch: str
   return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
 }
 
+// The repository an item forks from and is measured against (docs/orchestrator.md,
+// section 5): a part's is its plan's fork, the integration branch, and any
+// other item's is the baseline.
+async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: string | null; plan?: string | null }, baselineRepo: string): Promise<string> {
+  const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
+  return baseRepoOf(item, baselineRepo, planFork);
+}
+
+// A predicted conflict between a part and its plan's branch, before the
+// integrator is sent to merge it (docs/orchestrator.md, section 5). Null when
+// no conflict is predicted or the branch cannot be read, so a failure to read
+// only costs a runner trip, never a blocked integration.
+async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; fork: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
+  const key = plan.dispatch?.part, head = plan.dispatch?.head;
+  if (!key || !plan.fork || !head) return null;
+  const { part } = await L.integrationTarget(plan.id, key);
+  if (!part.fork || !part.head || !part.base) return null;
+  try {
+    using planRepo = await env.ARTIFACTS.get(plan.fork);
+    using partRepo = await env.ARTIFACTS.get(part.fork);
+    const [planTop, baseCommit, partCommit] = await Promise.all([
+      planRepo.log({ limit: 1 }), planRepo.readCommit(part.base), partRepo.readCommit(part.head),
+    ]);
+    if (!planTop[0] || !baseCommit || !partCommit) return null;
+    const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop[0].treeHash, partCommit.treeHash);
+    return m.clean ? null : m.conflicts.map((c) => `${c.path}: ${c.reason}`).join("; ");
+  } catch {
+    return null;
+  }
+}
+
 // What Artifacts says of a token it no longer honours: the token, or the
 // repository it was for, is not found, or the token has expired or was
 // already revoked.
@@ -761,7 +794,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
-    return json(await itemDiff(env.ARTIFACTS, (await L.project()).repo, item.fork));
+    return json(await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, (await L.project()).repo), item.fork));
   }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
@@ -770,6 +803,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   switch (verb) {
     case "claim": {
+      // An integrate job's claim is preceded by a mergeability pre-check: a
+      // predicted conflict sends the part back to its builder without a runner
+      // trip (docs/orchestrator.md, section 5).
+      const before = await L.item(id);
+      if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
+        const conflict = await predictConflict(env, L, before);
+        if (conflict) {
+          await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict);
+          throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
+        }
+      }
       const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
       const p = await L.project();
       let fork = item.fork;
@@ -777,7 +821,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // Forks are named after the key, like the baseline, whatever the project is called now.
         fork = repoName(ref.key, id);
         try {
-          using base = await env.ARTIFACTS.get(p.repo);
+          // A part forks from its plan's fork at its current head, not from the
+          // baseline (docs/orchestrator.md, section 5).
+          using base = await env.ARTIFACTS.get(await baseRepo(env, L, item, p.repo));
           await base.fork(fork, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
           await L.setFork(id, fork, await headOf(env, fork), actor, !!c.token);
         } catch (err) {
@@ -816,6 +862,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const t = await mint(env, item.fork, "read", await projectBranch(env, await L.project()));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
+    }
+    case "base-token": {
+      // A read token for the repository an item is measured against: the
+      // plan's fork for a part, the baseline otherwise. The part's holder
+      // reads it to run checks and diffs against the integration branch.
+      if (body.scope === "write") throw new RuleError("read_only", "a base token is read-only", 403);
+      const item = await L.item(id);
+      const p = await L.project();
+      const repo = await baseRepo(env, L, item, p.repo);
+      const t = await mint(env, repo, "read", await projectBranch(env, p));
+      return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch });
     }
     case "push": {
       // The head the workspace says it pushed is recorded beside the one
@@ -875,7 +932,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // which must be a commit on main's line, and measures no paths.
       if (check && item.fork) {
         const p = await L.project();
-        const measured = await measureWorkspace(env.ARTIFACTS, p.repo, item.fork);
+        const measured = await measureWorkspace(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
         if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
         e.changedPaths = merged ? null : measured.changedPaths;
         if (measured.main) e.mainHead = measured.main;
@@ -916,7 +973,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // run started under one of the project's names is read under any other.
       const runId = `${ref.key}:${id}:${item.head.slice(0, 12)}:${Date.now()}`;
       const request: RunRequest = {
-        runId, project: ref.key, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
+        runId, project: ref.key, itemId: id, baselineRepo: await baseRepo(env, L, item, p.repo), fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
         ...(body.merged === true ? { merged: true } : {}),
       };
@@ -965,6 +1022,37 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-release": {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
       return json({ released: true });
+    }
+    case "integrated": {
+      // The integrator reports a merge of one part. The Worker verifies the
+      // commit against the plan branch's log, as the merged route verifies a
+      // merge onto main (docs/orchestrator.md, section 5): it sits on the
+      // branch's first-parent line and its parents include the part's head.
+      const partKey = String(body.part ?? "");
+      const mergeCommit = String(body.mergeCommit ?? "");
+      const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
+      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409);
+      if (!part.head) throw new RuleError("no_head", `part ${partKey} has no verified head`, 409);
+      using repo = await env.ARTIFACTS.get(plan.fork);
+      const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
+      const reasons = verifyIntegration({ log, integrationHead: integrationHead ?? plan.base ?? "", partHead: part.head, mergeCommit });
+      if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409);
+      return json(await L.integratePart(id, actor, partKey, mergeCommit, true));
+    }
+    case "integration-failed": {
+      // The integrator reports a failed merge. The Worker checks the branch was
+      // restored to its integration head before the part is sent back, so a
+      // failure never leaves another part's commits discarded.
+      const partKey = String(body.part ?? "");
+      const reason = String(body.reason ?? "");
+      const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
+      if (plan.fork && part.head) {
+        using repo = await env.ARTIFACTS.get(plan.fork);
+        const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
+        const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", part.head);
+        if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
+      }
+      return json(await L.integrationFailed(id, actor, partKey, reason));
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.

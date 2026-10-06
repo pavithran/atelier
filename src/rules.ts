@@ -5,7 +5,9 @@ import type { CheckDeclaration } from "./checks.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned" | "blocked";
+// `integrated` is a part's state only (docs/orchestrator.md, section 5): its
+// head has been merged onto the plan's branch with the plan's checks passing.
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
   id: string;
@@ -1107,7 +1109,7 @@ export function latestReviews(reviews: Review[], head: string | null): Review[] 
 }
 
 export const stateLabel: Record<ItemState, string> = {
-  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", merged: "Merged", abandoned: "Closed", blocked: "Blocked",
+  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", integrated: "Integrated", merged: "Merged", abandoned: "Closed", blocked: "Blocked",
 };
 
 // A reason as one sentence of a longer text: ended with a full stop unless
