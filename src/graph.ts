@@ -11,6 +11,7 @@ import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
 import { shortStamp, stamp } from "./time.ts";
+import { withoutAddresses } from "./text.ts";
 
 export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
 
@@ -87,7 +88,7 @@ export interface Story {
 
 // Bookkeeping takes a quarter step on the axis so the work gets the width, and
 // is not an agent's move: a session note records where a session ended, not work.
-export const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "item.released", "session.wrapped"]);
+export const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "item.released", "item.runner_adopted", "session.wrapped"]);
 export const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched", "review.overridden"]);
 
 export function emptyTally(): Tally {
@@ -113,7 +114,8 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd
 
 // For a public page: what an agent or the owner wrote (review notes, reports,
 // check commands, closing notes) is left out, and the owner is named rather
-// than addressed. Titles, models, kinds and times stay.
+// than addressed. Titles, models, kinds and times stay, titles without any
+// email address in them.
 export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: string; family?: string }
 
 export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
@@ -193,7 +195,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       case "item.claimed":
         t.claims++;
         if (!th) {
-          th = { id, title: item?.title ?? id, state: item?.state ?? "claimed", start: pos, end: null, ending: null, holds: [], beads: [] };
+          th = { id, title: R ? withoutAddresses(item?.title ?? id) : item?.title ?? id, state: item?.state ?? "claimed", start: pos, end: null, ending: null, holds: [], beads: [] };
           threads.set(id, th);
         }
         if (th.holds.at(-1)?.who !== ev.actor) th.holds.push({ who: ev.actor, pos });
@@ -262,7 +264,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     for (const ev of evs) if (posOf.get(ev.seq)! <= target) best = ev;
     return { pos: best ? posOf.get(best.seq)! : 0, at: best?.at ?? "" };
   });
-  return { project, title, partial, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
+  return { project, title: R ? withoutAddresses(title) : title, partial, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
 }
 
 // ── drawing ────────────────────────────────────────────────────────────────

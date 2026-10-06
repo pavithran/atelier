@@ -40,6 +40,17 @@ it('the owner\'s override is shown with its reason, apart from the reviews, and 
  const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
  expect(renderItem(project,moved,'PAVI',diff)).not.toContain('Review overridden');
 });
+it('an accepted revision offers its re-acceptance under the current policy, which a merge refused after a policy change asks for',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();d.item.state='accepted';d.item.acceptedHead=head;d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ const html=renderItem(project,d,'PAVI',diff);
+ expect(html).toContain('Accept this revision again');expect(html).toContain('action="/ui/example/t1/accept"');expect(html).toContain(`name="head" value="${head}"`);
+ expect(html).toContain('atelier merge t1');
+ // Not without the changes at the recorded revision, and not for a revision that is not the accepted one or not yet accepted.
+ expect(renderItem(project,d,'PAVI',null)).not.toContain('Accept this revision again');
+ d.item.head='c'.repeat(40);expect(renderItem(project,d,'PAVI',{...diff,head:'c'.repeat(40)})).not.toContain('Accept this revision again');
+ expect(renderItem(project,detail(),'PAVI',diff)).not.toContain('Accept this revision again');
+});
 it('empty decisions, history, project creation and unavailable projects remain actionable',()=>{
  expect(renderInbox([],[])).toContain('Bring your first project');
  expect(renderInbox([], [project], 'PAVI', undefined, [{project,items:[],unavailable:true}])).toContain('list may be incomplete');
