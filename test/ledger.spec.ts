@@ -620,6 +620,8 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.submit("t1", A);
   await L.accept("t1", "owner", H1);
   expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
+  // The acceptance records the whole policy it was made under, for the merge guard.
+  expect((await L.detail("t1") as unknown as { acceptancePolicy: unknown }).acceptancePolicy).toEqual({ protected: policy.protected, eligible: [], refuseOverlap: false, checks: policy.checks });
   const changed = { ...policy, protected: [...policy.protected, "src/**"] };
   await L.setProject({ ...(await L.project()), policy: changed }, "owner");
   for (let i = 0; i < 2; i++) {

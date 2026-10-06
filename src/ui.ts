@@ -979,6 +979,17 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
       <pre tabindex="0">${e(`atelier merge ${item.id} --project ${shell(p.name)} --head ${item.acceptedHead}`)}</pre>
       <p class="meta">This merges the approved revision and records the result. It does not deploy.</p></div>`
     : "";
+  // An accepted revision can be accepted again: the acceptance records the
+  // policy it was made under, and a merge refused because that policy changed
+  // since asks for a new one, made under the policy as it is now. The gate
+  // runs again before anything is recorded.
+  const reaccept = evidenceVisible && item.state === "accepted" && item.head === item.acceptedHead
+    ? `<details class="request-changes"><summary>Accept again under the current policy</summary>
+      <form class="stack" method="post" action="${action("accept")}">${revision}
+        <p class="meta">For a merge refused because the project's protected paths, eligible agents, overlap rule or checks changed since this acceptance: checks the gate again under the policy as it is now and records a new acceptance of this revision.</p>
+        <button>Accept this revision again</button>
+      </form></details>`
+    : "";
 
   // An open task can be sent to a runner; a queued one shows who it waits for.
   const dispatchBox = item.state === "open" && !item.owner
@@ -1003,7 +1014,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}</div>
-  ${merge}
+  ${merge}${reaccept}
   <p class="meta revision">Revision <code>${short(item.head)}</code>${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
 

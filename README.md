@@ -254,15 +254,26 @@ merged.
   the stored protected paths, eligible agents and overlap rule. The refresh
   preserves paths recorded locally by `init --protect`. Approval, checks and
   other project settings are kept. For a baseline with full history, `sync`
-  only refreshes this policy. Malformed or empty policy files produce a
-  warning and skip the refresh. Merge then uses the acceptance policy.
-- Acceptance records the project's protected paths on the server. Every
-  merge attempt compares the current ControlPlane paths with that snapshot.
-  If the accepted revision touches a newly protected path, review the task
-  and accept again, or pass `--policy-changed-ok` after reviewing the change.
-  Older acceptances without a snapshot are treated as having no recorded
-  protected paths. Re-acceptance checks the current gate and records a new
-  snapshot. `merge --cancel` does not read or refresh ControlPlane policy.
+  only refreshes this policy. A malformed or empty policy file makes `sync`
+  warn and skip the refresh, and stops `init` and `merge` until it is fixed:
+  a merge never skips the comparison below.
+- Acceptance records the project's protected paths, eligible agents, overlap
+  rule and required checks on the server. Every merge attempt compares the
+  policy as it is now with that snapshot and warns of any difference. It
+  refuses, until the task is accepted again or `--policy-changed-ok` is
+  passed after reviewing the change, when the accepted revision touches a
+  newly protected path, a contributor is no longer eligible, a check required
+  now was not observed passing at the accepted revision, or overlapping
+  claims are now refused and the task's scope overlaps a live one. The paths
+  compared are the accepted revision's own: those since the newest baseline
+  commit it holds, so a workspace brought up to date with `atelier update`
+  is not charged with the baseline's changes. An acceptance made before the
+  snapshot recorded every field is compared on the protected paths it
+  recorded (none, for the oldest) and on the other fields as the server held
+  them before the refresh. The task page offers the re-acceptance, which
+  checks the current gate and records a new snapshot; so does
+  `atelier accept ID`. `merge --cancel` does not read or refresh ControlPlane
+  policy.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
