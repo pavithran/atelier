@@ -104,8 +104,18 @@ globalThis.fetch = async (url, options = {}) => {
   });
   const requests = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : []);
   const clear = () => rmSync(log, { force: true });
-  return { checkout, workspace, run, requests, clear };
+  return { dir, checkout, workspace, run, requests, clear };
 }
+
+test("when git itself cannot run, the error says why instead of showing an empty detail", (t) => {
+  const f = fixture(t);
+  const empty = join(f.dir, "no-bin");
+  mkdirSync(empty);
+  const r = f.run(f.checkout, ["init"], { PATH: empty });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: git rev-parse --show-toplevel could not run: git was not found on PATH$/m);
+  assert.deepEqual(f.requests(), []);
+});
 
 test("review --approve t2 in t1's workspace reviews t2, never the workspace's item", (t) => {
   const f = fixture(t);
