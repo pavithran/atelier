@@ -2094,6 +2094,9 @@ const commands = {
     if (sub === "rename") {
       if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
       const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
+      // The server answers the new name for both when the request named it
+      // to finish a rename: no entry moves, and the one under it stays.
+      if (r.from === r.to) return console.log(`${r.to} is the project's name on ${server()}, and the rename that gave it that name is complete. The local config is unchanged.`);
       // The server says which name the project was registered under; the
       // local entry moves from that name. An entry already under the new
       // name is kept, and the old one dropped, saying what it held.
