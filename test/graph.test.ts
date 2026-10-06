@@ -53,6 +53,12 @@ test("each agent's family has a colour; the owner has their own", () => {
   assert.ok(isLocalRun("opencode/gemini-3.1-pro-mlx-4bit"), "a local build is home work even in a cloud-only family");
   assert.equal(vendorOf("someharness/deepseek-v4-pro", OWNER), "deepseek");
   assert.equal(vendorOf("someharness/qwen3.9-coder", OWNER), "qwen");
+  // The newer families are recognised the same way, and an OpenRouter id keeps its vendor's family.
+  assert.equal(vendorOf("someharness/kimi-k2", OWNER), "moonshot");
+  assert.equal(vendorOf("someharness/grok-4", OWNER), "xai");
+  assert.equal(vendorOf("someharness/mimo-7b", OWNER), "xiaomi");
+  assert.equal(vendorOf("someharness/seed-1.6", OWNER), "bytedance");
+  assert.equal(vendorOf("someharness/command-a", OWNER), "cohere");
 });
 
 test("a story has a thread per claimed task, with who held it and how it ended", () => {
