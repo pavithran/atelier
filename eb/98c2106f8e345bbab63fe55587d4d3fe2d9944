@@ -1,0 +1,31 @@
+atelier atelier/t216 "Public claims match the code (audit 2026-10-06 #10, #11): the showcase's Checked step says checks run in a fresh clone on the machine that asks, or in a Cloudflare container with --sandbox; the layers diagram says the container reaches npm read-only and that agents normally reach Cloudflare through the CLI, limited by their token; /how's rules say a local Observed result is posted by the machine that ran it, list every route an agent token opens, and name the submitted state in the gate; /showcase is not cached past a minute"
+accepted head 1b7511faff897be8e4af9ccc994fb456d265df3c
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-06T23:34:47.088Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-06T23:34:50.457Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-06T23:41:59.551Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-06T23:42:04.381Z
+REVIEW approve — antigravity/gemini-3.1-pro: I verified that the documentation claims in the UI and How pages now accurately reflect the code's behavior regarding check execution, container restrictions, token routes, and caching headers. I verified that the documentation claims in the UI and How pages now accurately reflect the code's behavior regarding check execution, container restrictions, token routes, and caching headers.
+2026-10-06T23:15:10.834Z pavi item.created
+2026-10-06T23:16:01.858Z claude-code/sonnet-5.5 item.claimed
+2026-10-06T23:16:05.736Z claude-code/sonnet-5.5 fork.created
+2026-10-06T23:30:02.839Z pavi land.lease
+2026-10-06T23:30:06.459Z pavi land.merge
+2026-10-06T23:30:18.202Z pavi land.regenerate
+2026-10-06T23:30:20.993Z claude-code/sonnet-5.5 push.observed
+2026-10-06T23:30:21.159Z pavi land.push
+2026-10-06T23:34:47.597Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T23:34:50.687Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T23:34:51.313Z pavi land.check
+2026-10-06T23:38:47.385Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T23:38:48.457Z pavi land.lease
+2026-10-06T23:38:50.599Z pavi land.merge
+2026-10-06T23:39:00.125Z pavi land.regenerate
+2026-10-06T23:39:01.736Z pavi land.push
+2026-10-06T23:42:00.503Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T23:42:04.670Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T23:42:05.492Z pavi land.check
+2026-10-06T23:42:06.066Z claude-code/sonnet-5.5 item.submitted
+2026-10-06T23:42:06.366Z pavi land.submit
+2026-10-06T23:42:06.658Z pavi land.review
+2026-10-06T23:42:07.353Z pavi item.accepted
+2026-10-06T23:42:07.514Z pavi land.accept
