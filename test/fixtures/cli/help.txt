@@ -1,14 +1,14 @@
 atelier — one owner per item, observed evidence, the project owner decides.
 
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
-Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
+Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
            notes-remote [REMOTE | --off]
-Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] (with a project: where it stands, as text) · open
-Agents     start ID [--as H/M] · done "summary"
-           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report [ID] "…" [--item ID] · submit [--summary T]
-           handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-Owner      accept ID [--override-review REASON] · merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok] · abandon ID
-Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
+Items      new "title" [--scope GLOB]... · ls [--all] · show ID [--json] · owners [--json] · inbox [--json] · status [--project P] (with a project: where it stands, as text) · open
+Agents     start ID [--as H/M] [--runner home:NAME] · done "summary" [--sandbox]
+           claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push [--force] · update · check [--sandbox | -- CMD] · report [ID] "what you verified and how" [--item ID] [--project P] · submit [--summary T]
+           handoff ID --to H/M [--note TEXT] · release ID [--note TEXT] · diff ID · review ID --approve|--reject [--note TEXT] [--head SHA]
+Owner      accept ID [--head SHA] [--override-review REASON] · merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON]] [--policy-changed-ok] · merge ID --cancel [--discard-local] · abandon ID [--note TEXT]
+Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)

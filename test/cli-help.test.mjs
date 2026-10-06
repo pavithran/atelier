@@ -46,7 +46,7 @@ test("models frobnicate prints the usage and exits 1 without contacting the serv
 test("projects frobnicate prints its usage and exits 1 without contacting the server", () => {
   const r = run(["projects", "frobnicate"]);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /usage: atelier projects remove NAME/);
+  assert.match(r.stderr, /usage: atelier projects rename OLD NEW\n       atelier projects remove NAME \[--force\]/);
   assert.doesNotMatch(r.stderr, /no server|fetch failed|ECONNREFUSED|ENOTFOUND/);
 });
 test("session commands are listed and the guide teaches both boundaries", () => {
