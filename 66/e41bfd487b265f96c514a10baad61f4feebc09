@@ -1,0 +1,26 @@
+atelier atelier/t109 "Measure each model's reliability across projects (PAVI asked, 2026-10-05): extend the track record from per-project event counts to, per model (not harness) across every project: work approved at first review, review rounds to merge, rejections and their causes, reviewer verdicts later contradicted (an approval followed by a defect traced to that change, a review that never reached a verdict), and runs that stalled, timed out or were refused outside the ledger (runner reports); owner approvals recorded by the orchestrator kept apart from PAVI's own; show it on the Models page and in the usage report (t92), and feed it to routing (src/plans/route.ts)"
+accepted head 88ca3bd20bc69da9b61ce9e05c9f96b94b092b8f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T15:23:43.986Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T15:23:48.046Z
+REVIEW approve — antigravity/gemini-3.1-pro: Each model's reliability across projects and served-model annotations (t95), merged with main; the owner never appears as a model.
+2026-10-06T00:19:17.914Z pavi item.created
+2026-10-06T12:59:17.951Z claude-code/opus-5.5 item.claimed
+2026-10-06T12:59:20.481Z claude-code/opus-5.5 fork.created
+2026-10-06T14:48:18.191Z claude-code/opus-5.5 item.handoff
+2026-10-06T15:01:56.284Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:04:00.957Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:04:04.360Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:04:05.151Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:10:05.846Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:10:09.489Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:10:10.355Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:14:59.277Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:17:39.375Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:17:42.622Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:17:43.478Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:21:08.780Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:23:44.716Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:23:48.707Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:23:50.469Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:26:43.669Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T15:26:45.559Z pavi item.accepted
