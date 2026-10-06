@@ -1,0 +1,25 @@
+atelier atelier/t154 "Security pass 2 (gpt-6-astra, confirmed by opus-5.5; report work/atelier/t105/.scratch/verify/security2.md): low: home-runner harnesses inherit the runner's whole environment (HF_TOKEN, AZURE_SPEECH_KEY, TYPESAFE_API_KEY and others); filter it with the allowlist checks use, plus each harness's own keys"
+accepted head 29f9c34891cd74fdc8cb3d818dc3757210cb2be7
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T14:16:32.600Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T14:16:37.234Z
+REVIEW approve — antigravity/gemini-3.1-pro: Harness environment from the check allowlist plus named variables, a token-holding variable removed even when the allowlist passes it; process groups ended on every exit; usage cleaned client side; runner names, adoption and undispatch refusals.
+2026-10-06T04:28:41.313Z pavi item.created
+2026-10-06T12:37:49.039Z claude-code/opus-5.5 item.claimed
+2026-10-06T12:37:51.986Z claude-code/opus-5.5 fork.created
+2026-10-06T13:18:56.324Z claude-code/opus-5.5 push.observed
+2026-10-06T13:21:27.141Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:21:30.578Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:21:32.070Z claude-code/opus-5.5 item.submitted
+2026-10-06T13:48:14.121Z claude-code/fable-5.1 review.approved
+2026-10-06T13:48:14.868Z pavi review.overridden
+2026-10-06T13:48:14.868Z pavi item.accepted
+2026-10-06T13:59:14.296Z claude-code/opus-5.5 push.observed
+2026-10-06T14:01:25.927Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:01:28.843Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:01:29.844Z claude-code/opus-5.5 item.submitted
+2026-10-06T14:14:58.424Z claude-code/opus-5.5 push.observed
+2026-10-06T14:16:33.213Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:16:38.010Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:16:39.090Z claude-code/opus-5.5 item.submitted
+2026-10-06T14:17:00.353Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:17:01.251Z pavi item.accepted
