@@ -1,0 +1,16 @@
+atelier atelier/t104 "Orchestrator step 4 (t15): the plan tick, dispatch half: src/plans/phase.ts with pure planPhase() (planning, proposed, building, blocked, ready, accepted, merged, abandoned) and planActions() (dispatch a part when its dependencies have landed, the plan is not blocked, fewer than maxParallel parts are live and the budget has room; attempts counted from the event log; alternates after two releases or a failed finish; blocked at three attempts, no alternates, deadline or budget), with scenario tests for dependencies, the parallel limit, retries and blocking; see docs/orchestrator.md sections 1, 3 and 8"
+accepted head 46cad2236cc5facb5a029a3f0a713e750f552bc9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T00:14:35.489Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T00:14:38.805Z
+REVIEW approve — opencode/glm-5.3: APPROVE. planPhase derives all eight states; dispatch only on merged dependencies; the parallel limit holds within a tick; two attempts per actor and three per part match section 3 and 7 in every mixed sequence; blocking reasons carry no dispatch; pure. Six mutations each caught. Follow-ups: item.undispatched leaves a part holding a slot forever; nextActor assumes routed order (reroute will break it); deadline compared as strings; a part missing from parts is skipped silently; tests for an open-dispatch slot, mixed sequences and a cycle.
+REVIEW approve — pavi: Owner approval after GLM-5.3's review.
+2026-10-05T23:38:27.498Z pavi item.created
+2026-10-05T23:38:45.461Z opencode/deepseek-v4-pro item.claimed
+2026-10-05T23:38:48.402Z opencode/deepseek-v4-pro fork.created
+2026-10-06T00:13:20.482Z opencode/deepseek-v4-pro push.observed
+2026-10-06T00:14:35.679Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T00:14:38.877Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T00:14:39.741Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T01:16:33.092Z opencode/glm-5.3 review.approved
+2026-10-06T01:16:33.771Z pavi review.approved
+2026-10-06T01:16:34.384Z pavi item.accepted
