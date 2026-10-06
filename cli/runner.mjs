@@ -227,7 +227,13 @@ export function removeDataHome({ dir, onExit }) {
   rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
 }
 
-async function checked(argv, options, executeChild = execute) {
+// The CLI commands whose printed JSON the runner reads back: their standard
+// output is captured and returned; every other command's goes to the
+// runner's own output, as the owner watching it expects.
+const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "base-token"]);
+export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
+
+export async function checked(argv, options, executeChild = execute) {
   const result = await executeChild(argv, options);
   if (result.timedOut) throw new Error(`${options.step} timed out; claim preserved for owner inspection`);
   if (options.signal?.aborted) throw new Error("interrupted");
@@ -644,7 +650,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     removeFile: (file) => rmSync(file, { force: true }),
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     workspacePath, log: line, stopped: () => controller.signal.aborted,
-    cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, claim: argv[0] === "claim",
+    cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...(argv[0] === "release" && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
