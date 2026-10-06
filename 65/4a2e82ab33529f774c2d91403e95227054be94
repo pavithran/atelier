@@ -1,0 +1,15 @@
+atelier atelier/t160 "Orchestrator step 6 (t15): plan routes and CLI: atelier plan, plan show, plan approve --hash, plan revise, plan reroute, plan retry, plan stop; the plan post for the plan item's holder; owner-only gates; built on t159 (docs/orchestrator.md sections 6 to 8)"
+accepted head e209342963e81552e6dfa7d02284d2a13f98d060
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T14:40:40.752Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T14:40:44.626Z
+REVIEW approve — antigravity/gemini-3.1-pro: Orchestrator steps 5 and 6: plans in the Ledger, approval bound to the newest hash, owner-only decisions, dispatch within limits; plan routes and atelier plan. t159 lands here.
+2026-10-06T12:39:16.447Z pavi item.created
+2026-10-06T12:39:16.867Z claude-code/opus-5.5 item.claimed
+2026-10-06T12:39:20.242Z claude-code/opus-5.5 fork.created
+2026-10-06T14:14:26.305Z claude-code/opus-5.5 item.handoff
+2026-10-06T14:38:47.543Z opencode/glm-5.3 push.observed
+2026-10-06T14:40:41.727Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:40:45.213Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:40:46.133Z opencode/glm-5.3 item.submitted
+2026-10-06T14:44:15.598Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:44:16.347Z pavi item.accepted
