@@ -589,3 +589,16 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .standing-list li > .meta { grid-column: 2 / -1; overflow-wrap: anywhere; }
 .standing-policy { margin: var(--space-xl) 0 0; overflow-wrap: anywhere; }
 @media (max-width: 720px) { .standing-list li { grid-template-columns: 3em minmax(0, 1fr); } .standing-list li > .tag { grid-column: 2; justify-self: start; } }
+
+/* ── usage: where each tool stands ─────────────────────────────────────────── */
+.usage-table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 0 0 var(--space-md); }
+.usage-table th, .usage-table td { text-align: left; vertical-align: top; padding: 10px 14px 10px 2px; border-bottom: 1px solid var(--line); min-width: 0; }
+.usage-table thead th { font: 500 12px/1.3 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); }
+.usage-table tbody th { font-weight: 600; overflow-wrap: anywhere; }
+.usage-table tbody th .meta { display: block; margin-top: 2px; }
+.usage-table td.num { font-variant-numeric: tabular-nums; }
+.usage-table td .meta { display: block; margin-top: 2px; }
+.usage-table .tag { margin-left: 8px; vertical-align: middle; }
+.usage-table .total th, .usage-table .total td { background: var(--sheet); }
+.usage-notes { list-style: none; margin: 0 0 var(--space-xl); padding: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .usage-table { display: block; overflow-x: auto; } }

@@ -8,8 +8,9 @@ import {
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "./rules";
 import { cleanSummary } from "./brief";
-import { notificationRequest } from "./notify.ts";
+import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
+import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -145,6 +146,8 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
+      CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -309,6 +312,48 @@ export class Ledger extends DurableObject<Env> {
     const record = { ...entry, status };
     this.sql.exec(`UPDATE models SET json = ? WHERE id = ?`, JSON.stringify(record), id);
     return record;
+  }
+
+  // ── usage ────────────────────────────────────────────────────────────────
+  // Each tool's usage, limits and balances as a home runner last reported
+  // them, on the index instance beside the model pool: one report per tool
+  // and runner, replaced by the next from the same runner.
+
+  usage(): UsageReport[] {
+    return this.sql.exec(`SELECT json FROM usage ORDER BY tool, runner`).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  // The alerts in force: each crossing that has been alerted and not yet cleared.
+  usageAlerts(): { key: string; since: string }[] {
+    return this.sql.exec(`SELECT key, since FROM usage_alerts ORDER BY since, key`).toArray().map((r) => ({ key: r.key as string, since: r.since as string }));
+  }
+
+  // Stores the report, then alerts once per crossing: a figure past its
+  // threshold is recorded under its key the first time a report shows it,
+  // and that key is dropped when a later report from the same runner shows
+  // it back under, so the next crossing alerts again. The alert goes through
+  // the notification topic when there is one; the crossing is recorded
+  // either way, and the keys alerted now come back to the caller.
+  putUsage(report: UsageReport, thresholds: Thresholds, origin: string): { report: UsageReport; alerts: string[] } {
+    this.sql.exec(`INSERT OR REPLACE INTO usage (tool, runner, json) VALUES (?, ?, ?)`, report.tool, report.runner, JSON.stringify(report));
+    const active = crossings(report, thresholds, Date.parse(report.at));
+    const held = new Set(this.sql.exec(`SELECT key FROM usage_alerts WHERE tool = ? AND runner = ?`, report.tool, report.runner).toArray().map((r) => r.key as string));
+    const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+    const alerts: string[] = [];
+    for (const c of active) {
+      if (held.has(c.key)) continue;
+      this.sql.exec(`INSERT INTO usage_alerts (key, tool, runner, since) VALUES (?, ?, ?, ?)`, c.key, report.tool, report.runner, report.at);
+      this.log(null, this.owner, "usage.alert", { key: c.key, runner: report.runner, title: c.title });
+      alerts.push(c.title);
+      if (topic) this.deliver(usageAlertRequest(topic, origin, c.title, c.body));
+    }
+    const keys = new Set(active.map((c) => c.key));
+    for (const key of held) {
+      if (keys.has(key)) continue;
+      this.sql.exec(`DELETE FROM usage_alerts WHERE key = ?`, key);
+      this.log(null, this.owner, "usage.cleared", { key, runner: report.runner });
+    }
+    return { report, alerts };
   }
 
   // ── project instance ─────────────────────────────────────────────────────
@@ -510,18 +555,24 @@ export class Ledger extends DurableObject<Env> {
       // Reserve before network I/O. A failed attempt is not retried at this head.
       const claimed = this.sql.exec(`INSERT OR IGNORE INTO notifications (item_id, head) VALUES (?, ?) RETURNING item_id`, id, item.head).toArray();
       if (!claimed.length) return;
-      this.ctx.waitUntil((async () => {
-        try {
-          const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
-          if (!response.ok) console.error("Atelier notification failed", response.status);
-          await response.body?.cancel();
-        } catch {
-          console.error("Atelier notification failed");
-        }
-      })());
+      this.deliver(request);
     } catch {
       console.error("Atelier notification could not be scheduled");
     }
+  }
+
+  // Delivery runs in the background: a failure is logged without the
+  // response body or the topic, and nothing is retried.
+  private deliver(request: Request): void {
+    this.ctx.waitUntil((async () => {
+      try {
+        const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+        if (!response.ok) console.error("Atelier notification failed", response.status);
+        await response.body?.cancel();
+      } catch {
+        console.error("Atelier notification failed");
+      }
+    })());
   }
 
   recordSandboxRequest(id: string, actor: string, runId: string): void {
