@@ -224,7 +224,9 @@ const FLAGS = {
   report: { item: false },
   submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
   diff: {},
-  review: { approve: true, reject: true, note: false, head: false },
+  review: { approve: true, reject: true, note: false, head: false, findings: false },
+  "review-claim": { runner: false },
+  "review-release": { note: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
@@ -1847,8 +1849,25 @@ const commands = {
     if (!args.approve && !args.reject) die("usage: atelier review t3 --approve|--reject --note '…' --as harness/model");
     const name = project(), id = itemArg(), as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
-    await call("POST", `${I(name, id)}/review`, { approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head }, as);
+    let findings;
+    if (args.findings !== undefined) {
+      if (typeof args.findings !== "string" || !args.findings.trim()) die("--findings needs a JSON list of findings");
+      try { findings = JSON.parse(args.findings); } catch { die("--findings is not valid JSON"); }
+    }
+    await call("POST", `${I(name, id)}/review`, { approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head, ...(findings !== undefined ? { findings } : {}) }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
+  },
+
+  async "review-claim"() {
+    const name = project(), id = itemArg(), as = await actor();
+    const r = await call("POST", `${I(name, id)}/review-claim`, {}, as, args.runner ? { "x-atelier-runner": args.runner } : {});
+    console.log(JSON.stringify(r));
+  },
+
+  async "review-release"() {
+    const name = project(), id = itemArg(), as = await actor();
+    await call("POST", `${I(name, id)}/review-release`, { note: args.note ?? "" }, as);
+    console.log(`${id}'s review request released.`);
   },
 
   async handoff() {
