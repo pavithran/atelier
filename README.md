@@ -753,10 +753,15 @@ model, and refuses a claim with no runner at all until the owner withdraws
 the dispatch. A runner that gives up releases the task, and it waits in the
 queue again. `atelier queue` lists everything waiting. If a project cannot be read, the
 response names it in the `X-Atelier-Incomplete` header and `atelier queue` says so.
+`atelier undispatch` withdraws a dispatch while the task is open; a claimed
+or submitted task keeps its dispatch, which applies again if it is released.
 
 A runner's name is declared independently of its actor token; what a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
-else, while it waits.
+else, while it waits. Names are matched and stored in lower case, so
+`home:Studio` and `home:studio` are one runner. A claim belongs to the runner
+that made it; after a handoff, the first runner to claim as the new owner
+takes it, and the task's history records which runner that was.
 
 ## Home runner
 

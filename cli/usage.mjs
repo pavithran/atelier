@@ -248,7 +248,7 @@ export function usageOptions(args, host = hostname()) {
   let name = args.name;
   if (name === undefined) name = `home:${host.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64) || "runner"}`;
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
-  return { name: `home:${name.slice(5)}`, dryRun: args["dry-run"] === true, configPath: args.config };
+  return { name: name.toLowerCase(), dryRun: args["dry-run"] === true, configPath: args.config };
 }
 
 function defaultIo() {

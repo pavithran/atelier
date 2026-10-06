@@ -297,6 +297,15 @@ test("a local run's beads carry their actor's colour for the outline", () => {
   for (const b of beads) assert.match(b, /--c:var\(--m-zai\)/);
 });
 
+test("a runner taking a handed-off claim is bookkeeping: no agent's move and a quarter step", () => {
+  const base = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  const adopted = night();
+  adopted.unshift({ seq: 100, itemId: "t2", at: "2026-10-04T11:00:00.000Z", actor: "codex/gpt-6", kind: "item.runner_adopted", data: { runner: "home:studio" } } as never);
+  const story = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], adopted, OWNER);
+  assert.equal(story.tally.agentMoves, base.tally.agentMoves);
+  assert.equal(story.span, base.span + 0.25);
+});
+
 test("a session note is bookkeeping: no agent's move, a quarter step on the axis, and nothing on a thread", () => {
   const base = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
   // The Ledger records a session with no task, as the owner and, once agent tokens are allowed to, as an agent.
