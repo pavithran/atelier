@@ -1420,11 +1420,13 @@ anything.
 
 The steps in between:
 
-1. The server must run a main commit this CLI can see. `GET /api/version`
+1. The server must be at this CLI's route level or newer. `GET /api/version`
    reports the commit the server was deployed from (`npm run deploy` records
-   it), and a landing whose CLI is newer than the server refuses before it
-   starts, saying to deploy, since the server may lack the routes the
-   landing needs.
+   it) and its route level, and a landing whose server is older refuses
+   before it starts, naming both levels and saying to deploy, since the
+   server may lack the routes the landing needs. The route level
+   (`src/route-level.ts`) rises by one only when a change makes the CLI
+   start calling a route the server did not have.
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
