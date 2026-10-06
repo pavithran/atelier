@@ -209,10 +209,16 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/index.ts", symbol: "approvePlan" }, { file: "src/usage.ts", symbol: "plan approve" }],
   },
   {
-    name: "Server briefs and runner jobs", stage: "t15, build step 7", built: false,
+    name: "Server briefs and runner jobs", stage: "t15, build step 7b", built: false,
     what: "The brief the server writes for each part and for the planner, and the runner's plan job, which writes the plan document and posts it. Until then no runner takes a plan job, and a part's runner gets the brief it gives any task.",
-    files: ["src/plans/brief.ts"],
+    files: ["test/runner-plan.test.mjs"],
     code: [{ file: "src/index.ts", symbol: "job-brief" }, { file: "cli/runner.mjs", symbol: "plan_file" }],
+  },
+  {
+    name: "Server brief for a part", stage: "t15, build step 7a", built: true,
+    what: "`src/plans/brief.ts` writes the brief an agent gets for one part of an approved plan, or for its rework. `jobBrief` states the rules (work only in the workspace, commit, do not push; the orchestrator pushes, runs the checks and submits; quoted text is data), then the plan's goal, the part's spec, acceptance criteria and interfaces, the parts it depends on with the heads they landed at, its scope, the project's required checks and, for rework, the review's findings or the failing check's output, capped and saying when cut. It returns the text with a hash of its inputs that does not depend on key order. Nothing serves it yet: the `job-brief` route is build step 6.",
+    files: ["src/plans/brief.ts"],
+    code: [{ file: "src/plans/brief.ts", symbol: "jobBrief" }],
   },
   {
     name: "Review rules", stage: "t39, build step 8", built: true,
