@@ -28,10 +28,17 @@ only a list of tasks.
   screen also shows who is on the floor, so the parallel work is visible
   before anything is opened.
 - **Studio** is the floor itself: one lane per live task on a shared time
-  axis. A lane is banded by who held the task, so a handoff is a visible
-  change of band, and the current holder's band is tinted with the signal
-  colour and runs to the "now" line. Every recorded event is a mark on the
-  lane. The page refreshes every fifteen seconds without script.
+  axis, drawn as the Flow graph draws a thread. A lane is banded by who held
+  the task, each band and the thread along it in the holder's family colour
+  (a local run dotted), so a handoff is a visible change of band and colour;
+  the current holder's band runs to the "now" line, where the head breathes.
+  Every recorded event is a mark on the lane. The page refreshes every
+  fifteen seconds without script.
+- **Code** and **Log** carry a stripe per entry and per commit in the family
+  of the agent the commit's message names, with that name in words beside
+  it; an entry's stripe is the commit that last changed it.
+- **Sign in** stands over the public showcase's graph, dimmed, when the
+  owner shows projects publicly; the graph is the showcase's redacted one.
 - **Projects** is a card per project: its tally of tasks and the last two
   weeks of moves, a bar per day stacked by the family of the agent that made
   them, with the owner's decisions on top.

@@ -979,10 +979,11 @@ clearing is recorded as an event on the index Ledger.
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
-banded by who has held it, with a mark for every claim, push, check,
-handoff, submission and review. A handoff is a visible change of band, and
-every check mark says whether it ran in a Cloudflare container or on the
-agent's machine. The page refreshes every fifteen seconds. The Decisions page
+banded by who has held it, each band and the thread along it in the
+holder's family colour as the Flow graph draws a thread, with a mark for
+every claim, push, check, handoff, submission and review. A handoff is a
+visible change of band and colour, and every check mark says whether it ran
+in a Cloudflare container or on the agent's machine. The page refreshes every fifteen seconds. The Decisions page
 shows the same agents in brief before anything is opened. `DESIGN.md`
 describes the marks.
 
