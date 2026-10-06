@@ -12,6 +12,8 @@ const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const PLACEHOLDERS = ["model", "brief_file", "workspace"];
 // The name of a Keychain entry, as the model pool records one.
 const KEYCHAIN_ENTRY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+// A provider whose balance the usage report asks for (cli/usage.mjs).
+const PROVIDER = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
 
 export function parseConfig(json) {
   const agents = [], errors = [];
@@ -39,6 +41,21 @@ export function parseConfig(json) {
       }
     }
   }
+  // Optional: for each provider whose pay-per-use balance `runner --usage`
+  // asks for, the name of the Keychain entry that holds its key. As with
+  // keychain, the key itself is refused.
+  let balances;
+  if (value.balances !== undefined) {
+    if (!value.balances || typeof value.balances !== "object" || Array.isArray(value.balances)) errors.push("balances must map a provider to the name of its Keychain entry");
+    else {
+      balances = {};
+      for (const [provider, name] of Object.entries(value.balances)) {
+        if (!PROVIDER.test(provider) || redactKeys(provider) !== provider) errors.push("balances has a key that is not a provider name");
+        else if (typeof name !== "string" || !KEYCHAIN_ENTRY.test(name) || redactKeys(name) !== name) errors.push(`balances.${provider} must be the name of a Keychain entry, never the key itself`);
+        else balances[provider.toLowerCase()] = name;
+      }
+    }
+  }
   const seen = new Set();
   for (const [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
@@ -62,7 +79,7 @@ export function parseConfig(json) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command] });
   }
-  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}) };
+  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}) };
 }
 
 export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {
