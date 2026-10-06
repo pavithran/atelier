@@ -107,6 +107,17 @@ globalThis.fetch = async (url, options = {}) => {
   return { dir, checkout, workspace, run, requests, clear };
 }
 
+test("init refuses to run in a task workspace, names its project and task, and registers nothing", (t) => {
+  const f = fixture(t);
+  const config = () => readFileSync(join(f.dir, "config.json"), "utf8");
+  const before = config();
+  const r = f.run(f.workspace, ["init"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: this folder is demo\/t1's task workspace, not a project checkout; nothing was registered\. Run atelier init in demo's checkout: cd ".*checkout" && atelier init$/m);
+  assert.deepEqual(f.requests(), [], "a request was sent");
+  assert.equal(config(), before, "config.json changed");
+});
+
 test("when git itself cannot run, the error says why instead of showing an empty detail", (t) => {
   const f = fixture(t);
   const empty = join(f.dir, "no-bin");
