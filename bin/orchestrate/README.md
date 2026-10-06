@@ -15,7 +15,8 @@ for `land.sh` and `queue.sh` (default `atelier`).
 | `run-agent.sh WHICH WORKSPACE OUTFILE PROMPT` | Runs an opencode agent (`glm`, `deepseek` or `openrouter:VENDOR/MODEL`) in a task's workspace, with its own data folder and empty standard input. |
 | `review.sh WORKSPACE OUTBASE CONTEXT [MODEL]` | Has an Antigravity model review the task's commits in a throwaway clone where it may run commands, and writes its answer to `OUTBASE.md`. |
 | `queue.sh TASK CONTEXT NOTE` | Takes this machine's landing lock for the project, merges main into the task, and hands it to `land.sh` when the merge is clean and type-checks. |
-| `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits, reviews, and on approval records the review, accepts and merges, then type-checks main. |
+| `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits and reviews; records the verdict with its findings either way, and on approval accepts and merges, then type-checks main. |
+| `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON; `land.sh` records them. |
 | `regen-fixtures.sh` | Rewrites the CLI's help fixtures from the CLI in the current directory. |
 
 `atelier land` (task t187) does what `queue.sh` and `land.sh` do inside
