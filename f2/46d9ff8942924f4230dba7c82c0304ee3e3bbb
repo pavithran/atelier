@@ -1,0 +1,21 @@
+atelier atelier/t61 "init pushes a large history in steps (about 700 commits each) when one push is refused, and says how far it got"
+accepted head f1c2d0d572a1ac75f9a2978af9e7cee6d4bc3644
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-06T13:47:56.306Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-06T13:47:59.706Z
+REVIEW approve — claude-code/opus-5.5: The hook bypass is fixed: the reproduction stops at step 1 with the hook's output and nothing on the baseline; 10 of 20 tests fail on the old code. Non-blocking: the hook runs once per step; a later-step refusal leaves earlier steps; second-parent positions; broad exceed and quota patterns.
+REVIEW OVERRIDDEN — pavi: PAVI, 2026-10-06: "temporarily override the family constraint and do it all with opus, fable and sonnet"; built by sonnet-5.5, reviewed and approved by opus-5.5 after one rejection that was fixed.
+2026-10-04T20:23:31.449Z pavi item.created
+2026-10-06T12:59:32.200Z claude-code/sonnet-5.5 item.claimed
+2026-10-06T12:59:35.525Z claude-code/sonnet-5.5 fork.created
+2026-10-06T13:21:52.263Z claude-code/sonnet-5.5 push.observed
+2026-10-06T13:24:42.481Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T13:24:46.176Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T13:24:47.091Z claude-code/sonnet-5.5 item.submitted
+2026-10-06T13:30:03.092Z claude-code/opus-5.5 review.rejected
+2026-10-06T13:45:43.791Z claude-code/sonnet-5.5 push.observed
+2026-10-06T13:47:57.390Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T13:48:00.675Z claude-code/sonnet-5.5 evidence.observed
+2026-10-06T13:48:01.522Z claude-code/sonnet-5.5 item.submitted
+2026-10-06T13:55:06.537Z claude-code/opus-5.5 review.approved
+2026-10-06T13:55:07.575Z pavi review.overridden
+2026-10-06T13:55:07.575Z pavi item.accepted
