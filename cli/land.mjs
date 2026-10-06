@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { checkEnv } from "./check-env.mjs";
 import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -18,10 +19,19 @@ import { ROUTE_LEVEL } from "../src/route-level.ts";
 // from main are recorded on the ledger as land.* events (t186 reads them for
 // the integration cost), and the server must be at this CLI's route level or
 // newer, or the landing refuses before it starts, saying to deploy.
+//
+// The lease never strands the project (t214): a landing renews it every
+// LEASE_RENEW_MS while it runs, the server treats a lease not renewed for
+// LANDING_LEASE_EXPIRY_MS (src/landing-lease.ts) as free, SIGINT and SIGTERM
+// release it before the command ends, and `atelier land ID --release-lease`
+// frees it by hand, saying which task held it since when.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
-const REVIEW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_REVIEW_TIMEOUT ?? 30 * 60_000);
+// The review wait outlasts a build on the runner (its task timeout is 45
+// minutes), since a review queues behind every older build.
+const REVIEW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_REVIEW_TIMEOUT ?? 60 * 60_000);
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
+const LEASE_RENEW_MS = Number(process.env.ATELIER_LAND_RENEW_MS ?? 60_000);
 
 const short = (sha) => (sha ? sha.slice(0, 8) : "—");
 
@@ -35,7 +45,9 @@ export async function runLand(io) {
   const { args, name, id, p, request, git, die, print } = io;
   const dryRun = args["dry-run"] === true;
   const noReview = args["no-review"] === true;
+  const releaseLease = args["release-lease"] === true;
   const reviewer = args.reviewer;
+  if (releaseLease && (dryRun || noReview || reviewer !== undefined)) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
   if (reviewer !== undefined && (typeof reviewer !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(reviewer))) {
     die(`--reviewer needs harness/model, such as codex/gpt-6-astra: atelier land ${id} --reviewer H/M`);
   }
@@ -44,6 +56,21 @@ export async function runLand(io) {
   const itemPath = `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}`;
   const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
   const dir = io.workspacePath(name, id);
+  const since = (lease) => `${String(lease.at).slice(0, 16).replace("T", " ")} UTC`;
+
+  // --release-lease: the lease is freed before the version check, since a
+  // server older than this CLI still answers the cancel, and a stranded
+  // lease is what the owner most needs to free. A lease held for another
+  // task is named, with the command that frees it, rather than freed from
+  // under that task.
+  if (releaseLease) {
+    const { lease } = await request("GET", leasePath);
+    if (!lease) { print(`No landing lease is held in ${name}; nothing to release.`); return; }
+    if (lease.item !== id) die(`the landing lease in ${name} is held for ${lease.item}, not ${id}: ${lease.holder} has been landing ${lease.item} since ${since(lease)}. Free it with atelier land ${lease.item} --release-lease`);
+    await request("POST", leasePath, { cancel: true });
+    print(`Released the landing lease of ${name}: ${lease.holder} held it for ${id} since ${since(lease)}. Another task may land.`);
+    return;
+  }
 
   // The server's route level against this CLI's: a server older than the
   // routes this command calls would fail them one by one, so the landing
@@ -65,17 +92,25 @@ export async function runLand(io) {
   // landing with who holds it and since when.
   const { lease } = await request("GET", leasePath);
   if (lease && lease.item !== id) {
-    die(`a landing is already in progress: ${lease.holder} has been landing ${lease.item} since ${String(lease.at).slice(0, 16).replace("T", " ")} UTC. One landing runs at a time in ${name}; wait for it, or run atelier land ${lease.item} again to finish or release that landing`);
+    // A lease that lapsed blocks nothing: the server lets this landing take
+    // it over and names it (below).
+    if (!landingLeaseLapsed(lease, Date.now())) die(`a landing is already in progress: ${lease.holder} has been landing ${lease.item} since ${since(lease)}. One landing runs at a time in ${name}; wait for it, run atelier land ${lease.item} again to finish or release that landing, or free the lease with atelier land ${lease.item} --release-lease`);
   }
 
+  // The refusals that stop a landing before it takes the lease, each
+  // offering the next step. When this task's own lease is still held, from
+  // a landing that was killed, each refusal also says how to free it, so no
+  // state of the task leaves the lease out of reach (t214).
+  const heldNote = lease && lease.item === id ? ` The landing lease of ${name} is still held for ${id} since ${since(lease)}, from an earlier landing; atelier land ${id} --release-lease frees it.` : "";
+  const refuse = (message) => die(message + heldNote);
   const d0 = await request("GET", itemPath);
-  if (["merged", "abandoned"].includes(d0.item.state)) die(`${id} is ${d0.item.state}; there is nothing to land`);
-  if (d0.item.state === "accepted") die(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}`);
-  if (!existsSync(join(dir, ".git"))) die(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one`);
+  if (["merged", "abandoned"].includes(d0.item.state)) refuse(`${id} is ${d0.item.state}; there is nothing to land.`);
+  if (d0.item.state === "accepted") refuse(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
+  if (!existsSync(join(dir, ".git"))) refuse(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one.`);
   const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
-  if (held.project !== name || held.item !== id) die(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace`);
-  if (existsSync(join(dir, ".git", "MERGE_HEAD"))) die(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again`);
-  if (git(["status", "--porcelain"], { cwd: dir })) die(`${id}'s workspace has uncommitted changes; commit or set them aside before landing`);
+  if (held.project !== name || held.item !== id) refuse(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace.`);
+  if (existsSync(join(dir, ".git", "MERGE_HEAD"))) refuse(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again.`);
+  if (git(["status", "--porcelain"], { cwd: dir })) refuse(`${id}'s workspace has uncommitted changes; commit or set them aside before landing.`);
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
   if (dryRun) {
@@ -88,12 +123,12 @@ export async function runLand(io) {
     print(`  6. submit ${id} with a summary of the merge`);
     print(noReview
       ? "  7. skip the review (--no-review): leave the task submitted for you to settle by hand"
-      : `  7. ${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs and wait for"} the verdict at the pushed head`);
+      : `  7. ${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs and wait for"} the verdict at the pushed head, for up to ${Math.round(REVIEW_TIMEOUT_MS / 60000)} minutes`);
     if (!noReview) {
       print(`  8. accept ${id} at the pushed head`);
       print(`  9. merge ${id} in ${p.path} and publish the merge to the baseline`);
     }
-    print(`${noReview ? "  8" : " 10"}. record each step, its duration and the commits from main as land.* events; release the lease`);
+    print(`${noReview ? "  8" : " 10"}. record each step, its duration and the commits from main as land.* events; release the lease (renewed every ${Math.round(LEASE_RENEW_MS / 1000)}s meanwhile, and released on SIGINT or SIGTERM)`);
     print("Nothing was changed.");
     return;
   }
@@ -104,21 +139,43 @@ export async function runLand(io) {
     try { await request("POST", `${itemPath}/land`, { step, ms: Math.max(0, Math.round(ms)), ...data }); }
     catch (error) { print(`Warning: the landing's ${step} step could not be recorded: ${error.message}`); }
   };
-  let leased = false;
+  // The heartbeat renews the lease while the landing runs; the timer never
+  // keeps the process alive on its own (unref), and a renewal the server
+  // refuses says the lease is no longer this landing's, which is reported
+  // once rather than retried.
+  let leased = false, heartbeat = null;
   const release = async () => {
+    if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     if (!leased) return;
+    leased = false;
     try { await request("POST", leasePath, { cancel: true }); }
-    catch (error) { print(`Warning: the landing lease could not be released; a later landing of ${id} takes it over: ${error.message}`); }
+    catch (error) { print(`Warning: the landing lease could not be released; a later landing of ${id} takes it over, and it lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes: ${error.message}`); }
   };
+  // A signal releases the lease, then ends the command with the signal's
+  // conventional status, so a landing stopped by Ctrl-C or kill leaves no
+  // lease behind. A Ctrl-C reaches the step's child process through the
+  // process group as well.
+  const onSignal = (signal) => {
+    print(`${signal} received; releasing the landing lease of ${name}…`);
+    release().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  };
+  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, onSignal);
   try {
     let t0 = Date.now();
     try {
-      const { item } = await request("POST", leasePath, { item: id });
+      const { item, expired } = await request("POST", leasePath, { item: id });
       leased = true;
+      if (expired) print(`Took over the landing lease of ${name} from ${expired.holder}, which had been landing ${expired.item} since ${since(expired)} and stopped renewing it ${Math.round((Date.now() - Date.parse(expired.renewedAt ?? expired.at)) / 60000)} minutes ago; that landing is treated as ended.`);
       print(`Landing lease taken for ${id} (${item.state}); one landing at a time in ${name}.`);
     } catch (error) {
       throw new StepError(error.message.replace(/^landing_lease: /, "") || `the landing lease could not be taken: ${error.message}`);
     }
+    heartbeat = setInterval(() => {
+      request("POST", leasePath, { item: id, renew: true }).catch((error) => {
+        print(`Warning: the landing lease could not be renewed: ${error.message}`);
+      });
+    }, LEASE_RENEW_MS);
+    heartbeat.unref();
     await record("lease", Date.now() - t0);
 
     // Merge main into the workspace, no-ff, so the task carries main's
@@ -208,6 +265,25 @@ export async function runLand(io) {
       } else {
         const head = ask.head, since = ask.at;
         print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${ask.reason}. Waiting for the verdict…`);
+        // While no runner has claimed the request, the landing says what the
+        // runners are busy with and what waits ahead in the queue, once and
+        // again when that changes, so a long wait is explained rather than
+        // silent (a review queues behind every older build on a runner).
+        let busyLine = null;
+        const explainWait = async (d) => {
+          const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
+          if (claimed) return;
+          let line;
+          try {
+            const [items, queued] = await Promise.all([request("GET", `/projects/${encodeURIComponent(name)}/items`), request("GET", "/queue")]);
+            const busy = (Array.isArray(items) ? items : []).filter((i) => i.runner && i.state === "claimed" && i.id !== id)
+              .map((i) => `${i.runner} is busy with ${i.id} (${i.dispatch?.job ?? "build"}, ${i.owner}) since ${String(i.updatedAt).slice(0, 16).replace("T", " ")} UTC`);
+            const ahead = (Array.isArray(queued) ? queued : []).filter((q) => !(q.project === name && q.item?.id === id) && (q.item?.dispatch?.at ?? "") < since)
+              .map((q) => `${q.project}/${q.item.id} (${q.item.dispatch?.job ?? "build"})`);
+            line = `The review request is not claimed yet. ${busy.length ? busy.join("; ") : "No runner is busy with a job of this project"}; ${ahead.length ? `${ahead.length} job${ahead.length === 1 ? "" : "s"} queued ahead of it: ${ahead.join(", ")}` : "nothing is queued ahead of it"}.`;
+          } catch (error) { line = `The review request is not claimed yet (the queue could not be read: ${error.message}).`; }
+          if (line !== busyLine) { busyLine = line; print(line); }
+        };
         for (let waited = 0; ; waited += POLL_MS) {
           const d = await request("GET", itemPath);
           const verdict = (d.reviews ?? []).filter((v) => v.head === head && Date.parse(v.at) >= Date.parse(since)).at(-1);
@@ -221,6 +297,7 @@ export async function runLand(io) {
             break;
           }
           if (d.item.head !== head) throw new StepError(`${id}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
+          await explainWait(d);
           if (waited >= REVIEW_TIMEOUT_MS) {
             await record("review", Date.now() - t0, { verdict: "timeout", reviewer: ask.reviewer ?? undefined });
             throw new StepError(`no verdict${ask.reviewer ? ` from ${ask.reviewer}` : ""} within ${Math.round(REVIEW_TIMEOUT_MS / 60000)} minutes; the review request stays open and ${id} stays submitted. Review by hand (atelier review ${id} --approve --as ${ask.reviewer ?? "H/M"} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again to wait once more`);
@@ -241,5 +318,6 @@ export async function runLand(io) {
     die(error.message);
   }
   await release();
+  for (const signal of ["SIGINT", "SIGTERM"]) process.off(signal, onSignal);
   print(`The landing lease for ${name} is released; another task may land.`);
 }

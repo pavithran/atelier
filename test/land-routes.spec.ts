@@ -3,13 +3,15 @@ import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
 import type { Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
 // The server side of atelier land (t187): the project's landing lease on the
 // Ledger (one landing at a time, refused with who holds it and since when, a
-// closed task's lease no longer guards anything), the review request for an
+// closed task's lease no longer guards anything, a lease the holder stops
+// renewing lapses and is taken over, t214), the review request for an
 // ordinary task outside a plan (routed to a named reviewer or picked from the
 // pool, claimable, answered by a verdict), the land.* events that record
 // each step's duration for the integration record (t186), and GET /api/version
@@ -78,6 +80,64 @@ it("the project's landing lease holds one landing, names who holds it and since 
   await L.beginProjectLanding(a, "owner");
   await refusal(L.beginProjectLanding(a, "someone"), "not_project_owner", /only the project owner lands/);
   await refusal(L.beginProjectLanding("t99", "owner"), "no_item", /no item t99/);
+});
+
+it("a lease lapses when not renewed for the expiry: the holder renews it, the next landing takes a lapsed one over and is told whose, and a cancel says which task held it", async () => {
+  const L = await setup("land-lease-expiry");
+  const a = (await L.newItem("First", [], "owner")).id;
+  const b = (await L.newItem("Second", [], "owner")).id;
+  const taken = await L.beginProjectLanding(a, "owner");
+  expect(taken.expired).toBeNull();
+  const held = (await L.readProjectLanding())!;
+  expect(held.renewedAt).toBe(held.at);
+  // The renewal moves renewedAt on and nothing else; only the holder's task renews.
+  const renewed = await L.renewProjectLanding(a, "owner");
+  expect(renewed).toMatchObject({ item: a, holder: "owner", at: held.at });
+  expect(Date.parse(renewed.renewedAt!)).toBeGreaterThanOrEqual(Date.parse(held.at));
+  await refusal(L.renewProjectLanding(b, "owner"), "no_lease", new RegExp(`held for ${a}, not ${b}`));
+  await refusal(L.renewProjectLanding(a, "someone"), "not_project_owner", /only the project owner lands/);
+  // Renewed within the expiry, the lease still refuses another landing.
+  const stale = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS + 60_000).toISOString();
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-lease'`, JSON.stringify({ item: a, holder: "owner", at: held.at, renewedAt: stale }));
+  });
+  await refusal(L.beginProjectLanding(b, "owner"), "landing_lease", new RegExp(`has been landing ${a} since .*atelier land ${a} --release-lease`));
+  // Not renewed for the expiry, it lapses: the next landing takes it over
+  // and is told whose lease lapsed.
+  const lapsed = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS).toISOString();
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-lease'`, JSON.stringify({ item: a, holder: "owner", at: held.at, renewedAt: lapsed }));
+  });
+  const over = await L.beginProjectLanding(b, "owner");
+  expect(over.expired).toMatchObject({ item: a, holder: "owner", at: held.at, renewedAt: lapsed });
+  expect((await L.readProjectLanding())!).toMatchObject({ item: b });
+  // A lapsed lease can no longer be renewed by the task that lost it.
+  await refusal(L.renewProjectLanding(a, "owner"), "no_lease", new RegExp(`held for ${b}, not ${a}`));
+  // The cancel answers which task held the lease since when; a second one, nothing.
+  const cancelled = await L.cancelProjectLanding("owner");
+  expect(cancelled.held).toBe(true);
+  expect(cancelled.lease).toMatchObject({ item: b, holder: "owner" });
+  expect(await L.cancelProjectLanding("owner")).toEqual({ held: false, lease: null });
+  await refusal(L.renewProjectLanding(b, "owner"), "no_lease", /no landing lease is held/);
+});
+
+it("the landing-lease route takes, renews and cancels the lease for the owner", async () => {
+  const project = "land-lease-route";
+  const L = await setup(project);
+  const a = (await L.newItem("First", [], "owner")).id;
+  const token = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
+  const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
+    method: "POST", headers: { authorization: "Bearer land-routes-token", "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+  }), token);
+  const took = await post({ item: a });
+  expect(took.status).toBe(200);
+  expect(await took.json()).toMatchObject({ item: { id: a }, expired: null });
+  const renewed = await post({ item: a, renew: true });
+  expect(renewed.status).toBe(200);
+  expect(await renewed.json()).toMatchObject({ lease: { item: a, holder: "owner" } });
+  const cancelled = await post({ cancel: true });
+  expect(await cancelled.json()).toMatchObject({ held: true, lease: { item: a } });
+  expect(await L.readProjectLanding()).toBeNull();
 });
 
 it("a submitted task with a protected change gets a review request, named or picked, that a verdict answers", async () => {
