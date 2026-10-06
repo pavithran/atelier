@@ -1,0 +1,20 @@
+atelier atelier/t135 "The landing lock lives in the iCloud checkout's .git, and iCloud renamed its owner record 'pid' to 'pid 2' (a conflict copy), so the next merge refused with 'a landing lock has no owner record' though its process was long gone (2026-10-06, after a merge that stopped on conflicts); treat a lock whose only file is an iCloud copy of pid as that pid, or keep landing state outside iCloud (for example under Caches)"
+accepted head 53b65c70e7165b8192cceabdfc8219c55a9b13fd
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T03:18:55.473Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T03:18:57.849Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE (re-review). An old .git journal is moved exactly into the cache before merge, sync and merge --cancel read it; both locations present is refused; an old lock with a live owner (pid or an iCloud copy) blocks and a dead one is removed; wrap refuses while an old journal exists without changing anything.
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's re-review.
+2026-10-06T02:15:15.541Z pavi item.created
+2026-10-06T02:43:51.941Z claude-code/fable-5.1 item.claimed
+2026-10-06T02:43:56.444Z claude-code/fable-5.1 fork.created
+2026-10-06T02:57:40.933Z claude-code/fable-5.1 push.observed
+2026-10-06T02:59:04.420Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:59:06.805Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:59:07.734Z claude-code/fable-5.1 item.submitted
+2026-10-06T03:17:36.383Z claude-code/fable-5.1 push.observed
+2026-10-06T03:18:55.920Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:18:57.982Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:18:58.575Z claude-code/fable-5.1 item.submitted
+2026-10-06T03:19:46.542Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T03:19:47.028Z pavi review.approved
+2026-10-06T03:19:47.557Z pavi item.accepted
