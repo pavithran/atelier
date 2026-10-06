@@ -33,7 +33,7 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatStatus, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 export { checkEnv } from "./check-env.mjs";
@@ -1074,6 +1074,97 @@ async function checkoutStatusLine(name, as) {
     contains: !fresh && has(baselineHead) && is(baselineHead, head),
     ahead: !!paired && head !== paired && is(paired, head),
   });
+}
+
+// ── this machine ────────────────────────────────────────────────────────────
+
+// The task ids with a workspace on this machine: the folders workspacePath
+// makes under the CLI's cache. An empty list means no task of the project is
+// being worked on here, and the local section is left out entirely.
+function localWorkspaceIds(name) {
+  try {
+    return readdirSync(join(CACHE, "work", name), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch { /* no such folder: no workspace here */ return []; }
+}
+
+// One workspace's facts, as git reports them in the workspace: paths with
+// uncommitted changes (`.scratch/` aside, the session's scratch space),
+// commits not pushed to the fork, a merge in progress and its conflicted
+// files, and a COMMIT_MSG.txt an agent left waiting. `from` holds where
+// pushed history is measured from, best first: the head the server last
+// observed, then the fork point for a task nothing was pushed for. A folder
+// that is not a Git repository is reported as unreadable, never a crash.
+function localWorkspace(dir, id, from) {
+  const unreadable = (why) => ({ id, uncommitted: null, unpushed: null, merging: null, conflicts: null, commitMessage: null, error: why });
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd: dir, allowFail: true });
+  if (gitDir.error || gitDir.status !== 0) return unreadable("not a Git repository");
+  const status = git(["--no-optional-locks", "status", "--porcelain"], { cwd: dir, allowFail: true });
+  if (status.error || status.status !== 0) return unreadable("its Git state could not be read");
+  const uncommitted = status.stdout.split("\n").filter(Boolean)
+    .map((line) => line.slice(3)).map((path) => path.includes(" -> ") ? path.slice(path.indexOf(" -> ") + 4) : path)
+    .filter((path) => path !== ".scratch" && !path.startsWith(".scratch/")).length;
+  const merging = existsSync(join(gitDir.stdout.trim(), "MERGE_HEAD"));
+  const conflicts = merging ? git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir, allowFail: true }).stdout.split("\n").filter(Boolean) : [];
+  const start = from.find((sha) => hasCommit(sha, dir));
+  const counted = start ? git(["rev-list", "--count", `${start}..HEAD`], { cwd: dir, allowFail: true }) : null;
+  const n = counted && !counted.error && counted.status === 0 ? Number(counted.stdout.trim()) : NaN;
+  const unpushed = Number.isFinite(n) ? n : null;
+  return { id, uncommitted, unpushed, merging, conflicts, commitMessage: existsSync(join(dir, "COMMIT_MSG.txt")) };
+}
+
+// Whether a landing is running on this machine for the project: the lock
+// file bin/orchestrate/queue.sh holds through the kernel's file lock (flock
+// on Linux, lockf on macOS) while it lands. The file stays after a landing,
+// so existence says nothing; it is probed without blocking in a child process
+// that takes the lock and exits at once, and a probe that could not run, or
+// neither prober existing, counts as held rather than free. A missing file
+// means no landing.
+function landingRunning(name) {
+  const file = join(CACHE, `landing-${name}.lock`);
+  if (!existsSync(file)) return false;
+  for (const [tool, argv] of [["flock", ["-n", file, "true"]], ["lockf", ["-t", "0", file, "true"]]]) {
+    const r = spawnSync(tool, argv, { encoding: "utf8" });
+    if (r.error?.code === "ENOENT") continue;
+    return !!r.error || r.status !== 0;
+  }
+  return true;
+}
+
+// The server's landing lease for the project (atelier land, t187): who holds
+// it, for which task, since when. Asked with a plain request rather than
+// `call`, because a session whose token cannot read it, such as an agent
+// token, still gets the rest of the section; the lease is then reported as
+// unreadable. The holder is a person's or agent's name, so it is flattened.
+async function landingLease(name, as) {
+  await resolveTokenActor();
+  let res, data;
+  try {
+    res = await fetch(`${server()}/api${P(name)}/landing-lease`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? as } });
+    data = await res.json().catch(() => ({}));
+  } catch (error) { die(`server request failed: ${error.message}`, 4); }
+  if (!res.ok) return { unreadable: `${data.error ?? res.status}` };
+  const lease = data.lease;
+  if (!lease || typeof lease !== "object") return null;
+  return { item: flat(lease.item ?? "?"), holder: flat(lease.holder ?? "nobody"), since: lease.at ? at(lease.at) : "when is not shown" };
+}
+
+// What this machine holds for the project, for the On this Mac section: one
+// entry per task of the project with a workspace under the CLI's cache, in
+// the server's order, plus whether a landing is running here. The heads and
+// fork points come from the server's own task list, so nothing is minted and
+// no workspace is written to. null when no task of the project has a
+// workspace here, and the command prints what it did before.
+async function localStanding(name, as) {
+  const here = new Set(localWorkspaceIds(name));
+  if (!here.size) return null;
+  const { items } = await call("GET", P(name), undefined, as);
+  // A merged or abandoned task's workspace is a leftover, not work in
+  // progress: it is counted, not listed, so the live tasks stand out.
+  const closed = (i) => i.state === "merged" || i.state === "abandoned";
+  const tasks = items.filter((i) => here.has(i.id) && !closed(i))
+    .map((i) => localWorkspace(workspacePath(name, i.id), i.id, [i.head, i.base].filter(Boolean)));
+  const leftover = items.filter((i) => here.has(i.id) && closed(i)).length;
+  return { project: name, tasks, leftover, landing: { lock: landingRunning(name), lease: await landingLease(name, as) } };
 }
 
 // One line per remote of the local checkout: where the registered branch
@@ -2888,8 +2979,9 @@ const commands = {
       const as = await actor(OWNER);
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       const checkout = await checkoutStatus(name, as);
-      if (args.json) return console.log(JSON.stringify({ project: standing, checkout }, null, 2));
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout);
+      const local = await localStanding(name, as);
+      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
+      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);

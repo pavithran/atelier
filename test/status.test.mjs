@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { formatStatus } from "../cli/status.mjs";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
@@ -47,4 +52,184 @@ test("an undelivered merge's entry names the dry run, and the merged task itself
   assert.ok(out.includes("    t1  ship  Task t1"));
   assert.ok(out.includes("      next: atelier ship --dry-run --project demo"));
   assert.ok(!out.includes("In progress"));
+});
+
+// `atelier status --project demo` against a stand-in server, with the CLI's
+// cache pointed at a temp folder, so the On this Mac section reads real git
+// in real workspaces. No checkout is registered, so the run reads the
+// standing, the project's tasks and the landing lease and nothing else.
+const cli = resolve("cli/atelier.mjs");
+const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@x.test", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@x.test" };
+const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
+const gitAny = (cwd, ...args) => spawnSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV });
+
+// A workspace of one file per commit, as claim's clone would sit: on main,
+// clean, with its commits in the order given.
+function workspace(path, commits) {
+  mkdirSync(path, { recursive: true });
+  git(path, "init", "-q", "-b", "main");
+  for (const [name, text] of commits) {
+    writeFileSync(join(path, name), text);
+    git(path, "add", ".");
+    git(path, "commit", "-q", "-m", name);
+  }
+  return path;
+}
+
+const STANDING = {
+  project: { name: "demo", title: "Demo project", repo: "demo" },
+  generatedAt: "2026-10-06T10:46:12.000Z",
+  live: [], waiting: [], queued: [], merged: [], handoffs: [], controlPlane: null, checks: [], partial: [],
+};
+
+async function runLocal(t, setup, argv) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-on-this-mac-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cache = join(dir, "cache");
+  mkdirSync(cache);
+  const state = setup({ dir, cache, work: join(cache, "work", "demo") }) ?? {};
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    let status = 200, body;
+    if (req.url === "/api/projects/demo/standing") body = STANDING;
+    else if (req.url === "/api/projects/demo") body = { project: STANDING.project, items: state.items ?? [], events: [] };
+    else if (req.url === "/api/projects/demo/landing-lease") {
+      if (state.noLeaseRoute) { status = 404; body = { error: "not_found", detail: "no such route" }; }
+      else body = { lease: state.lease ?? null };
+    } else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => server.close());
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: {} }));
+  const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
+    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: cache, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
+  });
+  let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
+  const code = await new Promise((done) => child.on("close", done));
+  return { code, output, seen, cache };
+}
+
+// One workspace per way a session can leave it, plus a task with no
+// workspace here, which the section must leave out.
+function leaveWorkspaces(work) {
+  const uncommitted = workspace(join(work, "t1"), [["a.txt", "one\n"]]);
+  writeFileSync(join(uncommitted, "a.txt"), "one and a bit\n");
+  mkdirSync(join(uncommitted, ".scratch"), { recursive: true });
+  writeFileSync(join(uncommitted, ".scratch", "probe.txt"), "");
+  const unpushed = workspace(join(work, "t2"), [["a.txt", "one\n"], ["b.txt", "two\n"]]);
+  const merging = workspace(join(work, "t3"), [["a.txt", "one\n"]]);
+  git(merging, "checkout", "-q", "-b", "other");
+  writeFileSync(join(merging, "a.txt"), "the other side\n");
+  git(merging, "add", "."); git(merging, "commit", "-q", "-m", "other side");
+  git(merging, "checkout", "-q", "main");
+  writeFileSync(join(merging, "a.txt"), "this side\n");
+  git(merging, "add", "."); git(merging, "commit", "-q", "-m", "this side");
+  gitAny(merging, "merge", "--no-ff", "-m", "merge", "other");
+  const message = workspace(join(work, "t4"), [["a.txt", "one\n"]]);
+  writeFileSync(join(message, "COMMIT_MSG.txt"), "t4: the change\n");
+  workspace(join(work, "t5"), [["a.txt", "one\n"]]);
+  workspace(join(work, "t6"), [["a.txt", "one\n"]]);
+  workspace(join(work, "t8"), [["a.txt", "one\n"]]);
+  return {
+    t1: git(uncommitted, "rev-parse", "HEAD"),
+    t2: [git(unpushed, "rev-parse", "HEAD~1"), null],
+    t3: git(merging, "rev-parse", "HEAD"),
+    t4: git(message, "rev-parse", "HEAD"),
+    t5: git(join(work, "t5"), "rev-parse", "HEAD"),
+  };
+}
+
+const itemsOf = (heads) => [
+  { id: "t1", head: heads.t1, base: null },
+  // t2 has no head the server observed, so its unpushed commits are counted
+  // from the fork point.
+  { id: "t2", head: heads.t2[1], base: heads.t2[0] },
+  { id: "t3", head: heads.t3, base: null },
+  { id: "t4", head: heads.t4, base: null },
+  { id: "t5", head: heads.t5, base: null },
+  { id: "t9", head: null, base: null },
+  // Closed tasks' workspaces are leftovers: counted, never listed.
+  { id: "t6", head: null, base: null, state: "merged" },
+  { id: "t8", head: null, base: null, state: "abandoned" },
+];
+
+test("On this Mac gives each workspace one line, and a task with no workspace here is left out", async (t) => {
+  const r = await runLocal(t, ({ work }) => ({ items: itemsOf(leaveWorkspaces(work)) }));
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("\nOn this Mac:\n"), r.output);
+  assert.ok(r.output.includes("  t1  1 path with uncommitted changes\n"), r.output);
+  assert.ok(r.output.includes("  t2  1 commit not pushed to its fork\n"), r.output);
+  assert.ok(r.output.includes("  t3  1 path with uncommitted changes; a merge is in progress, in conflict: a.txt\n"), r.output);
+  assert.ok(r.output.includes("  t4  1 path with uncommitted changes; COMMIT_MSG.txt waiting to be committed\n"), r.output);
+  assert.ok(r.output.includes("  t5  clean, pushed\n"), r.output);
+  assert.ok(!r.output.includes("t9"), "a task with no workspace here is left out");
+  assert.ok(!/  t[68]  /.test(r.output), "a merged or abandoned task's workspace is not listed");
+  assert.ok(r.output.includes("  2 workspaces of merged or abandoned tasks left here; atelier gc --project demo previews removing them\n"), r.output);
+  assert.ok(r.output.includes("  Landing: no landing is running on this Mac; the server's landing lease is held by no one.\n"), r.output);
+});
+
+test("the same facts are in --json, and no local section at all when no task has a workspace here", async (t) => {
+  const r = await runLocal(t, ({ work }) => ({ items: itemsOf(leaveWorkspaces(work)) }), ["status", "--project", "demo", "--json"]);
+  assert.equal(r.code, 0, r.output);
+  const read = JSON.parse(r.output);
+  const byId = Object.fromEntries(read.local.tasks.map((x) => [x.id, x]));
+  assert.deepEqual(byId.t1, { id: "t1", uncommitted: 1, unpushed: 0, merging: false, conflicts: [], commitMessage: false });
+  assert.deepEqual(byId.t2, { id: "t2", uncommitted: 0, unpushed: 1, merging: false, conflicts: [], commitMessage: false });
+  assert.deepEqual(byId.t3, { id: "t3", uncommitted: 1, unpushed: 0, merging: true, conflicts: ["a.txt"], commitMessage: false });
+  assert.deepEqual(byId.t4, { id: "t4", uncommitted: 1, unpushed: 0, merging: false, conflicts: [], commitMessage: true });
+  assert.deepEqual(byId.t5, { id: "t5", uncommitted: 0, unpushed: 0, merging: false, conflicts: [], commitMessage: false });
+  assert.equal(byId.t9, undefined, "a task with no workspace here is left out of local");
+  assert.deepEqual(read.local.landing, { lock: false, lease: null });
+  const empty = await runLocal(t, () => ({}), ["status", "--project", "demo", "--json"]);
+  assert.equal(empty.code, 0, empty.output);
+  assert.equal("local" in JSON.parse(empty.output), false, "no local field when no task has a workspace here");
+  assert.deepEqual(empty.seen, ["GET /api/projects/demo/standing"], "nothing else is read when there is nothing local");
+});
+
+// The kernel lock queue.sh holds while it lands: flock on Linux, lockf on macOS.
+const LOCK = () => process.platform === "darwin"
+  ? { holder: (file, rest) => ["lockf", [file, ...rest]], probe: (file) => ["lockf", ["-t", "0", file, "true"]] }
+  : { holder: (file, rest) => ["flock", [file, ...rest]], probe: (file) => ["flock", ["-n", file, "true"]] };
+
+test("a held landing lock is reported as a landing running, with the server's lease; a missing one as none", async (t) => {
+  const lease = { item: "t2", holder: "pavi", at: "2026-10-06T09:00:00.000Z" };
+  const r = await runLocal(t, ({ cache, work }) => {
+    const heads = leaveWorkspaces(work);
+    const lock = join(cache, "landing-demo.lock");
+    writeFileSync(lock, "");
+    const [tool, argv] = LOCK().holder(lock, ["sleep", "30"]);
+    const child = spawn(tool, argv, { stdio: "ignore" });
+    t.after(() => { child.kill(); });
+    // Wait until the kernel lock is visibly held before the CLI looks.
+    const [pt, pa] = LOCK().probe(lock);
+    for (let i = 0; i < 100 && spawnSync(pt, pa).status === 0; i++) spawnSync(pt, pa);
+    return { items: itemsOf(heads), lease };
+  });
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("  Landing: a landing is running on this Mac; the server's landing lease is held by pavi for t2 since 2026-10-06 09:00 UTC.\n"), r.output);
+});
+
+test("a lock file no landing holds, as queue.sh leaves it, means no landing is running", async (t) => {
+  const r = await runLocal(t, ({ cache, work }) => {
+    const heads = leaveWorkspaces(work);
+    writeFileSync(join(cache, "landing-demo.lock"), "");
+    return { items: itemsOf(heads) };
+  });
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("  Landing: no landing is running on this Mac; the server's landing lease is held by no one.\n"), r.output);
+});
+
+test("a workspace that is not a Git folder is reported as unreadable, and a lease the server will not serve says so", async (t) => {
+  const r = await runLocal(t, ({ work }) => {
+    mkdirSync(join(work, "t7"), { recursive: true });
+    writeFileSync(join(work, "t7", "not-a-repo.txt"), "no .git here\n");
+    const heads = leaveWorkspaces(work);
+    return { items: [...itemsOf(heads), { id: "t7", head: null, base: null }], noLeaseRoute: true };
+  });
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("  t7  its workspace cannot be read: not a Git repository\n"), r.output);
+  assert.ok(r.output.includes("the server's landing lease could not be read"), r.output);
 });
