@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -112,6 +113,23 @@ it("a submitted task with a protected change gets a review request, named or pic
   const after = await L.requestReview(id, "owner", null, POOL);
   expect(after).toMatchObject({ needed: false });
   expect(after.reason).toMatch(/the gate already counts an independent approval/);
+});
+
+it("after a review claim lapses and a new reviewer is asked, a retry naming that reviewer finds the new request", async () => {
+  const L = await setup("land-lapse");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "c".repeat(40);
+  await submittedTask(L, id, head);
+  const GEMINI = "antigravity/gemini-3.1-pro";
+  await L.requestReview(id, "owner", GPT, POOL);
+  await L.claimReview(id, GPT, RUNNER);
+  // The claim lapses: it was taken two days ago.
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE review_requests SET claimedAt = ? WHERE item = ?`, new Date(Date.now() - 2 * 86_400_000).toISOString(), id);
+  });
+  expect(await L.requestReview(id, "owner", GEMINI, POOL)).toMatchObject({ requested: true, reviewer: GEMINI });
+  expect(await L.requestReview(id, "owner", GEMINI, POOL)).toMatchObject({ requested: false, reviewer: GEMINI, head });
+  await refusal(L.requestReview(id, "owner", GPT, POOL), "review_requested", /already requested from antigravity\/gemini-3.1-pro/);
 });
 
 it("the landing's steps are recorded as land.* events with their duration, and anything else is refused", async () => {
