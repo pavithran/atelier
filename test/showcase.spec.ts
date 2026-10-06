@@ -180,6 +180,30 @@ it("the comparison uses the shown project with the largest imported history when
   expect(html.split('class="compare-card with"')[1].split("</a>")[0]).toContain(">Samey<");
 });
 
+it("the comparison prefers a project with a substantial history of its own over a busier one whose history is thin", async () => {
+  const at = (d: number, m = 0) => new Date(Date.UTC(2026, 9, d, 12, m)).toISOString();
+  const story = (name: string, label: string, ids: string[]) => buildStory(name, ids.map((id) => ({ id, title: "Work", state: "claimed" })) as never,
+    ids.flatMap((id, i) => [
+      { seq: 2 * i + 1, at: at(5, 2 * i), actor: "pavi", kind: "item.created", itemId: id, data: {} },
+      { seq: 2 * i + 2, at: at(5, 2 * i + 1), actor: "codex/gpt-6-astra", kind: "item.claimed", itemId: id, data: {} },
+    ]).reverse() as never, "pavi", false, label, { redact: true, ownerLabel: "PAVI" });
+  const busy = story("busy", "Busy", ["t1", "t2", "t3"]);
+  const deep = story("deep", "Deep", ["t1"]);
+  const photo = buildStory("photograph", [], [], "pavi", false, "Photograph", { redact: true, ownerLabel: "PAVI" });
+  const commits = (total: number) => Array.from({ length: total }, (_, i) => ({ hash: `h${i}`, committedAt: i + 1, message: "x" }));
+  const imported = new Map([
+    ["busy", buildImported(commits(9), null, true)],
+    ["deep", buildImported(commits(400), null, true)],
+    ["photograph", buildImported(commits(3000), null, true)],
+  ]);
+  const card = (name: string, s: typeof busy): ShownProject => ({ project: { name, repo: name, policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story: s });
+  const html = renderShowcase([busy, deep, photo], busy.tally, "pavi", "PAVI", false, imported, [card("busy", busy), card("deep", deep), card("photograph", photo)]);
+  const before = html.split('class="compare-card before"')[1].split("</a>")[0];
+  expect(before).toContain(">Deep<");
+  expect(before).toContain("<b>400</b> commits");
+  expect(html.split('class="compare-card with"')[1].split("</a>")[0]).toContain(">Deep<");
+});
+
 it("the How page's command reference arrives collapsed, each group closed until opened", async () => {
   const body = await (await worker.fetch(new Request("https://atelier.test/how"), testEnv)).text();
   expect(body.match(/<details class="how-group"/g)).toHaveLength(HELP_GROUPS.length);
