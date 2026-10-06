@@ -139,14 +139,16 @@ export function wrapRelay(note: SessionNote): string {
 }
 
 // What wrap names when it refuses because work in the checkout is unfinished.
-// Each key is a file or directory in the Git directory that marks it.
+// Each key is a file or directory in the Git directory that marks it, except
+// `landing`: the journal the CLI keeps for the checkout under its cache
+// (cli/landing.mjs), which the CLI looks up itself.
 export const WRAP_MARKERS: Record<string, string> = {
   MERGE_HEAD: "a merge",
   CHERRY_PICK_HEAD: "a cherry-pick",
   REVERT_HEAD: "a revert",
   "rebase-merge": "a rebase",
   "rebase-apply": "a rebase",
-  "atelier-landing.json": "a landing",
+  landing: "a landing",
   // A multi-commit cherry-pick or revert paused on a conflict, which may
   // leave no CHERRY_PICK_HEAD or REVERT_HEAD once the conflict is staged.
   sequencer: "a cherry-pick or revert sequence",
