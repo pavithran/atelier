@@ -1176,14 +1176,21 @@ const commands = {
     if (!ws.head) die("nothing pushed yet");
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     const { dir, changed } = cleanClone(ws.remote, ws.token, ws.head, base, name);
-    let failed = 0;
+    let failed = 0, recorded;
     try {
       for (const cmd of cmds) {
         const r = await runCheck(cmd, dir);
-        await call("POST", `${I(name, id)}/evidence`, {
+        // The Worker measures the changed paths from Artifacts and ignores this
+        // list, which is sent only so a deployment without that measurement
+        // still records one. The list printed below is the one the Worker
+        // recorded, which is the one the gate reads; this clone's is shown only
+        // when the reply carries none.
+        const d = await call("POST", `${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
         }, as);
+        const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
+        if (row) recorded = row.changedPaths;
         console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}`);
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
@@ -1191,7 +1198,8 @@ const commands = {
       rmSync(dir, { recursive: true, force: true });
       rmSync(markerPath(dir), { force: true });
     }
-    console.log(changed ? `changed: ${changed.join(", ") || "nothing"}` : "changed: not measured (the comparison with the baseline failed); the gate waits for a check that measures it");
+    const paths = recorded === undefined ? changed : recorded;
+    console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
     if (failed) {
       if (doneStep) die("required checks failed", 2);
       process.exit(2);

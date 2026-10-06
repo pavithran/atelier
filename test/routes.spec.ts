@@ -18,8 +18,8 @@ function call(method: string, path: string, actor: string, body?: unknown, heade
   }), testEnv);
 }
 
-async function project(name: string) {
-  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
+async function project(name: string, protect: string[] = []) {
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: protect }, createdAt: new Date().toISOString() };
   await env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`)).setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
 }
@@ -321,7 +321,7 @@ it("removal counts an open item queued for a runner as live work", async () => {
   expect((await call("DELETE", `/projects/${plain}`, "owner")).status).toBe(200);
 });
 
-it("posted checks preserve missing measurements as null", async () => {
+it("a check posted for an item with no workspace records no paths, whatever the caller sends", async () => {
   const name = "missing-paths";
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
@@ -333,9 +333,86 @@ it("posted checks preserve missing measurements as null", async () => {
       kind: "check", claim: "npm test", head: "a".repeat(40), passed: true, changedPaths,
     });
     expect(res.status).toBe(200);
-    const detail = await (await call("GET", `/projects/${name}/items/t1`, "owner")).json() as { evidence: { changedPaths: unknown }[] };
-    expect(detail.evidence.at(-1)?.changedPaths).toEqual(Array.isArray(changedPaths) ? changedPaths : null);
+    const detail = await (await call("GET", `/projects/${name}/items/t1`, "owner")).json() as { evidence: { changedPaths: unknown }[]; gate: { blockers: string[] } };
+    expect(detail.evidence.at(-1)?.changedPaths).toBeNull();
+    expect(detail.gate.blockers).toContain("changed paths not yet observed");
   }
+});
+
+// Artifacts holding a baseline and one fork as Git objects: first-parent logs,
+// newest first, and flat trees, which is what the evidence route reads to
+// measure the paths a workspace changes.
+function gitStore(logs: Record<string, { hash: string; parents: string[]; treeHash: string }[]>, trees: Record<string, Record<string, string>>): Artifacts {
+  const entries = (h: string) => trees[h] ? Object.entries(trees[h]).map(([name, hash]) => ({ name, mode: "100644", hash, type: "blob" })) : null;
+  return {
+    get: async (name: string) => {
+      const log = logs[name] ?? [];
+      return {
+        log: async (opts: { limit?: number } = {}) => log.slice(0, opts.limit ?? 50),
+        readCommit: async (h: string) => log.find((c) => c.hash === h) ?? null,
+        readTree: async (h: string) => entries(h),
+        readBlob: async () => null,
+        info: async () => ({ remote: "https://git.test/r.git", defaultBranch: "main" }),
+        [Symbol.dispose]() {},
+      };
+    },
+  } as unknown as Artifacts;
+}
+
+it("the item's own agent cannot name the paths its check changed: the Worker measures them, so a protected change needs its independent review", async () => {
+  const name = "measured-paths", A = "claude-code/opus-5.5", B = "codex/gpt-6-astra";
+  const H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name, ["AGENTS.md"]);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Rewrite the agent instructions", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  // The fork's one commit edits AGENTS.md; README.md is untouched.
+  const ARTIFACTS = gitStore({
+    [name]: [{ hash: H0, parents: [], treeHash: T0 }],
+    [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],
+  }, {
+    [T0]: { "AGENTS.md": "b".repeat(40), "README.md": "c".repeat(40) },
+    [T1]: { "AGENTS.md": "d".repeat(40), "README.md": "c".repeat(40) },
+  });
+  const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
+    worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS } as typeof env);
+  const owner = as(TOKEN, "owner");
+  const issue = async (actor: string) => (await (await call("POST", "/tokens", "owner", { actor, projects: [name] })).json() as { token: string }).token;
+  const agent = as(await issue(A), null), reviewer = as(await issue(B), null);
+  const latest = async () => (await (await owner("GET", "/items/t1")).json() as { evidence: Record<string, unknown>[] }).evidence.at(-1);
+
+  // Whatever list the agent sends, or none, the row carries the measured one.
+  for (const changedPaths of [["README.md"], [], undefined, "README.md"]) {
+    const res = await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, changedPaths });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await latest()).toMatchObject({ grade: "observed", where: "runner", by: A, passed: true, changedPaths: ["AGENTS.md"] });
+  }
+  // A check for a head the fork is not at is refused, as before.
+  const stale = await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H0, changedPaths: [] });
+  expect(stale.status).toBe(409);
+  expect(await stale.json()).toMatchObject({ error: "stale_head" });
+
+  expect((await agent("POST", "/items/t1/submit", {})).status).toBe(200);
+  const detail = await (await owner("GET", "/items/t1")).json() as { gate: { ready: boolean; needsAssessor: boolean; blockers: string[] } };
+  expect(detail.gate).toMatchObject({ ready: false, needsAssessor: true });
+  expect(detail.gate.blockers.join(" ")).toMatch(/protected path/);
+  const early = await owner("POST", "/items/t1/accept", { head: H1 });
+  expect(early.status).toBe(409);
+  expect(await early.json()).toMatchObject({ error: "not_ready" });
+  // The agent cannot supply the review itself; another model can.
+  const own = await agent("POST", "/items/t1/review", { head: H1, approve: true, note: "mine" });
+  expect(own.status).toBe(403);
+  expect(await own.json()).toMatchObject({ error: "self_review" });
+  expect((await reviewer("POST", "/items/t1/review", { head: H1, approve: true, note: "read the instructions" })).status).toBe(200);
+  const accepted = await owner("POST", "/items/t1/accept", { head: H1 });
+  expect(accepted.status, await accepted.clone().text()).toBe(200);
+  expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1 });
 });
 
 it("the standing route is readable by any signed-in actor, and by no one else", async () => {
