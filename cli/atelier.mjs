@@ -222,6 +222,24 @@ function itemArg(i = 1) {
   return id;
 }
 
+// push, update and finish act on the repository in the current directory:
+// they push its HEAD to its origin, rebase it, or both. Only the item's own
+// workspace clone, the one claimWorkspace made, may be that repository. The
+// clone's .git/config names the project, the item and the actor the claim
+// wrote, and all three must match what the command runs for, so a command
+// run in the owner's checkout (whose origin is the owner's own remote), in
+// another task's workspace or under another actor's name stops here, before
+// git is asked to do anything, and the message says where it belongs.
+function requireWorkspace(cmd, name, id, as) {
+  const held = { project: wsConfig("project"), item: wsConfig("item"), actor: wsConfig("actor") };
+  if (held.project === name && held.item === id && held.actor === as) return;
+  if (held.project !== name || held.item !== id) {
+    const here = held.item ? `this directory is ${held.project}/${held.item}'s workspace` : "this directory is not a task workspace";
+    die(`${cmd} must run in ${id}'s claimed workspace; ${here}. Run: cd ${JSON.stringify(workspacePath(name, id))} && atelier ${cmd} (after atelier claim ${id} --project ${name} if that workspace does not exist yet)`);
+  }
+  die(`${cmd} must run as the actor that claimed ${id} in this workspace, ${held.actor ?? "which is not recorded here"}, not ${as}; if ${id} is yours now, run atelier claim ${id} --as ${as} first`);
+}
+
 async function resolveTokenActor() {
   if (tokenActor || !apiToken().startsWith("atl_")) return;
   const config = await call("GET", "/config");
@@ -1135,6 +1153,7 @@ const commands = {
 
   async push() {
     const name = project(), id = itemArg(), as = await actor();
+    requireWorkspace("push", name, id, as);
     // A push to any branch but the one the fork's HEAD names lands where
     // Atelier never reads, so it is refused before anything is sent. When
     // origin does not name its branch, the push goes ahead and the
@@ -1156,6 +1175,7 @@ const commands = {
   // Agents: bring the workspace up to date with what has merged since the fork.
   async update() {
     const name = project(), id = itemArg(), as = await actor();
+    requireWorkspace("update", name, id, as);
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     git([...auth(t.token), "fetch", "--quiet", t.remote, t.defaultBranch]);
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
@@ -1303,7 +1323,7 @@ const commands = {
   async finish() {
     summaryArg("finish");
     const name = project(), id = itemArg(), as = await actor();
-    if (wsConfig("project") !== name || wsConfig("item") !== id) die("finish must run in this task's claimed workspace");
+    requireWorkspace("finish", name, id, as);
     const d = await call("GET", I(name,id), undefined, as);
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
     if (git(["status","--porcelain"])) die("commit your changes before finishing");
