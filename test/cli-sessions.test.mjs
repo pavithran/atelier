@@ -88,6 +88,49 @@ test("unwrap uses only GET and leaves all checkout and Git files unchanged, the 
   assert.match(result.stdout, /Say in a short paragraph/);
 });
 
+test("unwrap names where it looked when the project has no state file", (t) => {
+  const f = fixture(t);
+  rmSync(join(f.checkout, "STATE.md"));
+  const r = f.run("unwrap");
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes("State file: none (looked for docs/STATE.md, STATE.md and PROJECT.md)."));
+  assert.doesNotMatch(r.stdout, /STATE\.md:\n/, "no excerpt is printed");
+  assert.ok(f.requests().every((q) => q.method === "GET"));
+});
+
+test("unwrap reads an untracked PROJECT.md as the state file", (t) => {
+  const f = fixture(t);
+  rmSync(join(f.checkout, "STATE.md"));
+  writeFileSync(join(f.checkout, "PROJECT.md"), "Project handoff\n");
+  const r = f.run("unwrap");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /PROJECT\.md:\nProject handoff/);
+  assert.doesNotMatch(r.stdout, /Could not compare/);
+});
+
+test("unwrap compares the registered branch with each remote's tracking ref, as last fetched or pushed", (t) => {
+  const f = fixture(t), branch = f.git("branch", "--show-current");
+  remote(f, "github");
+  f.git("push", "github", branch); // the push records the tracking ref
+  for (const name of ["One", "Two"]) {
+    writeFileSync(join(f.checkout, `${name.toLowerCase()}.txt`), `${name}\n`);
+    f.git("add", `${name.toLowerCase()}.txt`);
+    f.git("commit", "-qm", name);
+  }
+  let before = snapshot(f.checkout);
+  const ahead = f.run("unwrap");
+  assert.equal(ahead.status, 0, ahead.stderr);
+  assert.ok(ahead.stdout.includes(`Remote github: ${branch} is 2 commits ahead of github/${branch} (as last fetched or pushed); not published.`));
+  assert.deepEqual(snapshot(f.checkout), before, "no checkout or Git file changed, the index included");
+  assert.ok(f.requests().every((q) => q.method === "GET"), "nothing was fetched through the server");
+  remote(f, "mirror");
+  before = snapshot(f.checkout);
+  const unfetched = f.run("unwrap");
+  assert.equal(unfetched.status, 0, unfetched.stderr);
+  assert.ok(unfetched.stdout.includes(`Remote mirror: no mirror/${branch} recorded; fetch to compare.`));
+  assert.deepEqual(snapshot(f.checkout), before, "no checkout or Git file changed, the index included");
+});
+
 test("wrap commits with summary, next and trailer, records failed checks and updates baseline", (t) => {
   const f = fixture(t);
   const result = f.run("wrap", "Finished", "--next", "Fix check");
@@ -158,6 +201,27 @@ test("wrap --no-check still checks whitespace and records the skip", (t) => {
   assert.equal(data.checks.length, 1);
   assert.equal(data.checks[0].passed, false);
   assert.doesNotMatch(result.stdout, /Refresh STATE.md/);
+});
+
+test("wrap compares an untracked state file by its modification time, not with git show", (t) => {
+  // The previous note is dated 2026-10-04T12:00:00Z.
+  const older = new Date("2026-10-03T00:00:00.000Z"), newer = new Date("2026-10-05T00:00:00.000Z");
+  const stale = fixture(t);
+  rmSync(join(stale.checkout, "STATE.md"));
+  writeFileSync(join(stale.checkout, "PROJECT.md"), "Handoff\n");
+  utimesSync(join(stale.checkout, "PROJECT.md"), older, older);
+  const first = stale.run("wrap", "Untracked", "--no-check");
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /Refresh PROJECT\.md/);
+  assert.doesNotMatch(first.stdout, /Could not compare/);
+  const fresh = fixture(t);
+  rmSync(join(fresh.checkout, "STATE.md"));
+  writeFileSync(join(fresh.checkout, "PROJECT.md"), "Handoff\n");
+  utimesSync(join(fresh.checkout, "PROJECT.md"), newer, newer);
+  const second = fresh.run("wrap", "Untracked", "--no-check");
+  assert.equal(second.status, 0, second.stderr);
+  assert.doesNotMatch(second.stdout, /Refresh PROJECT\.md/);
+  assert.doesNotMatch(second.stdout, /Could not compare/);
 });
 
 test("unwrap with an explicit project reads standing even without a local checkout", (t) => {
