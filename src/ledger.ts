@@ -175,6 +175,10 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
     if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
+    // The claim generation: one more on every claim and every change of
+    // owner. A write token is recorded only under the generation its claim
+    // reserved (see recordToken).
+    if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
   }
 
   // ── index instance ───────────────────────────────────────────────────────
@@ -429,7 +433,11 @@ export class Ledger extends DurableObject<Env> {
     return (row?.token_id as string | null) ?? null;
   }
 
-  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false): { item: Item; needsFork: boolean } {
+  // A claim that is allowed also reserves the next claim generation for the
+  // write token its caller goes on to mint, and says which recorded token
+  // that one replaces: the caller revokes it, and records the new one with
+  // recordToken under this generation.
+  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
     const item = this.item(id);
     assertDispatchedClaim(item, actor, runner);
     assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner);
@@ -444,11 +452,44 @@ export class Ledger extends DurableObject<Env> {
       // After a handoff the new owner holds no runner yet; the first runner to
       // claim as that owner takes the claim, and any other is refused above.
       if (!held && asking) this.update(id, { owner: actor, runner: asking });
-      return { item: this.item(id), needsFork: !item.fork };
+      return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
     }
     this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null });
     this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {}, proved);
-    return { item: this.item(id), needsFork: !item.fork };
+    return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
+  }
+
+  private reserve(id: string): { generation: number; replaces: string | null } {
+    const row = this.sql.exec(`UPDATE items SET claim_gen = claim_gen + 1 WHERE id = ? RETURNING claim_gen, token_id`, id).one();
+    return { generation: row.claim_gen as number, replaces: (row.token_id as string | null) ?? null };
+  }
+
+  // Minting a token waits on Artifacts, and meanwhile the item can be handed
+  // off, released, abandoned or claimed again. So the token a claim minted is
+  // recorded only while that claim still stands: the claimer owns the item,
+  // no later claim or change of owner has taken a newer generation, and the
+  // recorded token is still the one the claim replaces. Of two rotations in
+  // flight, only the later reservation can record. Otherwise nothing is
+  // written, and the caller revokes the token it minted instead of returning it.
+  recordToken(id: string, actor: string, generation: number, replaces: string | null, tokenId: string): boolean {
+    const row = this.sql.exec(`SELECT owner, claim_gen, token_id FROM items WHERE id = ?`, id).toArray()[0];
+    if (!row || row.owner !== actor || row.claim_gen !== generation || ((row.token_id as string | null) ?? null) !== replaces) return false;
+    this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
+    return true;
+  }
+
+  // A change of owner takes the write token with it. The caller has read the
+  // recorded token's id, and revokes it once the change is made; the change
+  // is made only if that is still the token recorded, so a claim that
+  // recorded a newer one in between is refused here, never left live and
+  // unrecorded. Without `expected` the record is kept, for the next claim
+  // to rotate.
+  private dropToken(id: string, expected: string | null | undefined): void {
+    if (expected === undefined) return;
+    if (this.tokenId(id) !== expected) {
+      throw new RuleError("token_changed", `${id} was claimed again while this was asked, and its workspace token changed; try again`, 409);
+    }
+    this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, id);
   }
 
   // The project owner puts an open task in the queue for a kind of runner.
@@ -489,10 +530,6 @@ export class Ledger extends DurableObject<Env> {
   setFork(id: string, fork: string, base: string | null, actor: string, proved = false): void {
     this.update(id, { fork, base, head: base });
     this.log(id, actor, "fork.created", { fork, base }, proved);
-  }
-
-  setToken(id: string, tokenId: string | null): void {
-    this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
   }
 
   // The worker has already read the fork's head from Artifacts; what is logged
@@ -626,22 +663,25 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Ownership moves; the work does not fork. The new owner inherits the same
-  // workspace repo, and the old owner's write token is revoked by the caller.
-  handoff(id: string, from: string, to: string, note: string, proved = false): Item {
+  // workspace repo, and the old owner's write token, `token`, is revoked by
+  // the caller (see dropToken).
+  handoff(id: string, from: string, to: string, note: string, proved = false, token?: string | null): Item {
     const item = this.item(id);
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    this.dropToken(id, token);
     this.update(id, { owner: to, state: "claimed" });
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, proved);
     return this.item(id);
   }
 
-  release(id: string, actor: string, note: string, proved = false): Item {
+  release(id: string, actor: string, note: string, proved = false, token?: string | null): Item {
     const item = this.item(id);
     assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
+    this.dropToken(id, token);
     this.update(id, { owner: null, state: "open" });
     this.log(id, actor, "item.released", { from: item.owner, note }, proved);
     return this.item(id);
@@ -719,10 +759,11 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  abandon(id: string, actor: string, note: string): Item {
+  abandon(id: string, actor: string, note: string, token?: string | null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    this.dropToken(id, token);
     this.update(id, { state: "abandoned", owner: null });
     this.log(id, actor, "item.abandoned", { note });
     return this.item(id);
@@ -791,10 +832,13 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private update(id: string, fields: Record<string, string | null>): void {
-    // A change of owner always ends the previous holder's runner.
-    if ("owner" in fields && !("runner" in fields)) fields = { ...fields, runner: null };
+    // A change of owner always ends the previous holder's runner, and moves
+    // the claim generation on, so no claim the previous holder had in flight
+    // can record its token afterwards.
+    const owning = "owner" in fields;
+    if (owning && !("runner" in fields)) fields = { ...fields, runner: null };
     const keys = Object.keys(fields);
-    const set = keys.map((k) => `${k} = ?`).join(", ");
+    const set = [...keys.map((k) => `${k} = ?`), ...(owning ? ["claim_gen = claim_gen + 1"] : [])].join(", ");
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), new Date().toISOString(), id);
   }
 

@@ -541,7 +541,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   switch (verb) {
     case "claim": {
-      const { item, needsFork } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
+      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
       const p = await L.project();
       let fork = item.fork;
       if (needsFork) {
@@ -559,10 +559,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Re-claiming rotates the token: one live write token per item, ever.
       // The workspace and the baseline are both given the project's branch:
       // the fork's HEAD names it, and headOf reads HEAD.
-      await revoke(env, fork, await L.tokenId(id));
+      await revoke(env, fork, replaces);
       const branch = await projectBranch(env, p);
       const w = await mint(env, fork!, "write", branch);
-      await L.setToken(id, w.tokenId);
+      // The Ledger records the token only if this claim still stands (see
+      // recordToken). If it does not, the token is revoked and never
+      // returned, so its plaintext reaches no one.
+      if (!await L.recordToken(id, actor, generation, replaces, w.tokenId)) {
+        await revoke(env, fork, w.tokenId);
+        throw new RuleError("claim_superseded", `${id} changed owner or was claimed again while this claim's token was made; no token was issued`, 409);
+      }
       const b = await mint(env, p.repo, "read", branch);
       return json({
         item: await L.item(id),
@@ -651,21 +657,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
       if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
       return json(await L.submit(id, actor, summary, c.url.origin, !!c.token));
+    // A change of owner passes the Ledger the token id read here: the Ledger
+    // clears it only if it is still the one recorded (see dropToken), and it
+    // is revoked here in the fork the changed item names.
     case "handoff": {
       const to = String(body.to ?? "");
-      const before = await L.item(id);
       const oldToken = await L.tokenId(id);
-      const item = await L.handoff(id, actor, to, String(body.note ?? ""), !!c.token);
-      await revoke(env, before.fork, oldToken);
-      await L.setToken(id, null);
+      const item = await L.handoff(id, actor, to, String(body.note ?? ""), !!c.token, oldToken);
+      await revoke(env, item.fork, oldToken);
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
     case "release": {
-      const before = await L.item(id);
       const oldToken = await L.tokenId(id);
-      const item = await L.release(id, actor, String(body.note ?? ""), !!c.token);
-      await revoke(env, before.fork, oldToken);
-      await L.setToken(id, null);
+      const item = await L.release(id, actor, String(body.note ?? ""), !!c.token, oldToken);
+      await revoke(env, item.fork, oldToken);
       return json(item);
     }
     case "accept":
@@ -703,11 +708,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "abandon": {
       requireOwner(env, actor);
-      const before = await L.item(id);
       const oldToken = await L.tokenId(id);
-      const item = await L.abandon(id, actor, String(body.note ?? ""));
-      await revoke(env, before.fork, oldToken);
-      await L.setToken(id, null);
+      const item = await L.abandon(id, actor, String(body.note ?? ""), oldToken);
+      await revoke(env, item.fork, oldToken);
       return json(item);
     }
   }
@@ -884,23 +887,23 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
     if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    // A change of owner takes the write token with it, as on the API routes:
+    // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
+    let moved: { fork: string | null } | null = null;
     if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
     else if (verb === "undispatch") await L.undispatch(id, owner);
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
     // independent review, its reason in the note.
     else if (verb === "override") await L.accept(id, owner, expected, note);
-    else if (verb === "abandon") await L.abandon(id, owner, note);
-    else if (verb === "release") await L.release(id, owner, note);
-    else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note);
+    else if (verb === "abandon") moved = await L.abandon(id, owner, note, oldToken);
+    else if (verb === "release") moved = await L.release(id, owner, note, false, oldToken);
+    else if (verb === "handoff") moved = await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
       await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin);
     } else return html(renderError("Unknown action."), 400);
-    if (verb === "abandon" || verb === "release" || verb === "handoff") {
-      await revoke(env, before.fork, oldToken);
-      await L.setToken(id, null);
-    }
+    if (moved) await revoke(env, moved.fork, oldToken);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
