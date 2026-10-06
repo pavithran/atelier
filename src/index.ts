@@ -18,6 +18,8 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { actionForm, actionsApi } from "./actions-api.ts";
+import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
 import { renderHow } from "./how.ts";
@@ -622,6 +624,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const p = await L.project();
     return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
   }
+  // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
+  if (parts[2] === "actions") {
+    const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
+    return json(r.data, r.status);
+  }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor), 201);
   if (parts.length === 3 && m === "GET") return json(await L.items());
@@ -980,6 +987,14 @@ async function inbox(env: Env, token?: AgentToken) {
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
 
+// Whether a revision is on a project's main line as Atelier holds it: the
+// baseline's head or a commit in its history (see holdsCommit). Null when the
+// search stopped at its budget before it could tell.
+async function onMainLine(env: Env, repo: string, commit: string): Promise<boolean | null> {
+  const head = await headOf(env, repo);
+  return head ? (await holdsCommit(env, repo, head, commit)).holds : false;
+}
+
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
@@ -1011,6 +1026,11 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     if (id === "new" && !verb) {
       const item = await L.newItem(String(form.get("title") ?? "").slice(0,300), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner);
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
+    }
+    // The project page's protected-action forms: approve at the head it showed, or withdraw.
+    if (id === "actions") {
+      await actionForm(L, verb, form, owner, async (commit) => onMainLine(env, (await L.project()).repo, commit));
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}#actions`, c.url).toString(), 303);
     }
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
@@ -1146,7 +1166,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const L = ledger(env, ref.key);
     if (parts.length === 2) {
       const standing = await standingOf(env, ref.key);
-      return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env), standing));
+      const p = await L.project();
+      // The approval form binds to the baseline's head as read now; the page
+      // still draws when Artifacts cannot be read, without the form.
+      const head = await headOf(env, p.repo).catch(() => null);
+      const actions = renderActions(p.name, await L.actionApprovals(), await L.actionRuns(10), head);
+      return html(renderProject(p, await L.items(), await L.events(undefined, 40), ownerName(env), standing, actions));
     }
     const res = await browse(env, c.url, ref, parts.slice(2));
     if (res) return res;

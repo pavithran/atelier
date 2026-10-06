@@ -11,6 +11,7 @@ import { cleanSummary } from "./brief";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
+import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -903,6 +904,40 @@ export class Ledger extends DurableObject<Env> {
     this.project();
     return this.sql.exec(`SELECT actor, at, data FROM events WHERE kind = 'session.wrapped' ORDER BY seq DESC LIMIT ?`, Math.max(1, Math.min(20, limit))).toArray()
       .map((r) => ({ actor: r.actor as string, at: r.at as string, data: JSON.parse(r.data as string) }));
+  }
+
+  // ── protected actions (src/actions.ts) ──────────────────────────────────
+  // Approvals bound to one revision of the main line, and the steps a ship
+  // ran. Each is a project-level event: approved, withdrawn, consumed, ran.
+
+  private get actionStore(): ActionStore {
+    return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data) };
+  }
+
+  approveAction(body: Record<string, unknown>, actor: string): ApprovalView {
+    this.project();
+    return approveAction(this.actionStore, actor, body, new Date().toISOString());
+  }
+
+  actionApprovals(): ApprovalView[] {
+    this.project();
+    return listApprovals(this.actionStore, new Date().toISOString());
+  }
+
+  withdrawAction(id: string, actor: string, note: unknown): ApprovalView {
+    return withdrawAction(this.actionStore, actor, id, note, new Date().toISOString());
+  }
+
+  consumeAction(body: Record<string, unknown>, actor: string): ApprovalView {
+    return consumeAction(this.actionStore, actor, body, new Date().toISOString());
+  }
+
+  recordActionRun(body: Record<string, unknown>, actor: string): ActionRun {
+    return recordActionRun(this.actionStore, actor, body);
+  }
+
+  actionRuns(limit = 20): (ActionRun & { at: string; actor: string })[] {
+    return actionRuns(this.sql, limit);
   }
 
   events(id?: string, limit = 200): LedgerEvent[] {
