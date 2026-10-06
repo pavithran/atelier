@@ -1,4 +1,4 @@
-atelier — one owner per item, observed evidence, the project owner decides.
+atelier — one owner per task, observed evidence, the project owner decides.
 
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
@@ -9,8 +9,8 @@ Agents     start ID [--as H/M] [--runner home:NAME] · done "summary" [--sandbox
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push [--force] · update · check [--sandbox] [--merged] [-- CMD] · report [ID] "what you verified and how" [--item ID] [--project P] · submit [--summary T]
            handoff ID --to H/M [--note TEXT] · release ID [--note TEXT] · block [ID] "what it is waiting on" · unblock [ID] · diff ID · review ID --approve|--reject [--note TEXT] [--head SHA] [--findings JSON] · review-claim ID [--runner home:NAME] · review-release ID [--note T]
            read-token ID · base-token ID · integrated ID --part KEY --merge-commit SHA · integration-failed ID --part KEY --reason TEXT
-Owner      accept ID [--head SHA] [--override-review REASON] · merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON]] [--policy-changed-ok] · merge ID --cancel [--discard-local] · abandon ID [--note TEXT] · defect ID --note TEXT [--found-in ID]
-           served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply] · approve ACTION --head SHA [--note T] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
+Owner      accept ID [--head SHA] [--override-review REASON] · merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON]] [--policy-changed-ok] · merge ID --cancel [--discard-local] · abandon ID [--note TEXT] · defect ID --note TEXT [--found-in ID] · finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT]
+           run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT] · served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply] · approve ACTION --head SHA [--note T] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
            ship [--dry-run] [--push]
 Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json]
            plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT
@@ -18,7 +18,8 @@ Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json
            plan post ID FILE
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
-Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local
+Projects   projects rename OLD NEW · projects remove NAME [--force] · showcase set NAME [--named|--anonymous] · showcase remove NAME · init --name NAME --rename-local
+           
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
 Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH] [--integrate]
            runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
