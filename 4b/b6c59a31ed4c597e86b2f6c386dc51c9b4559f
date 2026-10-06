@@ -1,0 +1,14 @@
+atelier atelier/t195 "bin/orchestrate records every review verdict with its findings: review.sh asks for the runner's reply format (REPLY_FORMAT), and land.sh parses the answer with parseVerdict and records rejections as well as approvals through atelier review --findings, so script-run reviews reach the reliability record and atelier finding can judge them (rejections were never recorded on 2026-10-06)"
+accepted head d2195d8b822179b912c324ad92f478365d5d6c04
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T20:35:43.370Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T20:35:48.361Z
+REVIEW approve — antigravity/gemini-3.1-pro: Every script-run review recorded with its findings
+2026-10-06T20:32:49.246Z pavi item.created
+2026-10-06T20:32:53.068Z claude-code/opus-5.5 item.claimed
+2026-10-06T20:32:57.377Z claude-code/opus-5.5 fork.created
+2026-10-06T20:33:58.706Z claude-code/opus-5.5 push.observed
+2026-10-06T20:35:44.337Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:35:49.070Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:35:50.114Z claude-code/opus-5.5 item.submitted
+2026-10-06T20:41:19.650Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T20:41:20.471Z pavi item.accepted
