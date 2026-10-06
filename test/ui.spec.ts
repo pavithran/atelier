@@ -863,6 +863,63 @@ it('the standing page shows the newest session with escaped reported text', asyn
  expect(html).toContain('Reported: npm test: failed');
 });
 
+it('the checks on the would-be merge stand beside the preview, bound to the main head they merged with, and never as the revision\'s own check',async()=>{
+ const {renderMainPreview}=await import('../src/ui');
+ const {mergedChecksAt}=await import('../src/rules');
+ const M0='c'.repeat(40),M1='d'.repeat(40);
+ const preview=(mainHead:string,ahead=2)=>({head:mainHead,ahead,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:1,theirs:1}});
+ const merged=(over:Partial<Detail['evidence'][number]>={})=>({itemId:'t1',claim:'npm test',grade:'observed' as const,head,passed:true,by:'codex/gpt-6',at:time,changedPaths:null,merged:true,mainHead:M1,...over});
+ // Beside the preview: a current run, a stale one, and the offer when none was run.
+ const current=renderMainPreview(preview(M1),mergedChecksAt(project.policy,[merged()],head,M1));
+ expect(current).toContain('Checks on the merge with main, at this revision');
+ expect(current).toContain(`with main at <code>${M1.slice(0,8)}</code>`);
+ expect(current).toContain('<span class="tag go">Passed</span><code>npm test</code>');
+ expect(current).not.toContain('Stale');
+ const stale=renderMainPreview(preview(M0),mergedChecksAt(project.policy,[merged({passed:false})],head,M0));
+ expect(stale).toContain('<span class="tag bad">Failed</span><code>npm test</code>');
+ expect(stale).toContain('<span class="tag ask">Stale</span>');
+ expect(stale).toContain(`main is now at <code>${M0.slice(0,8)}</code>; run <code>atelier check --merged</code> again`);
+ const offer=renderMainPreview(preview(M1),mergedChecksAt(project.policy,[],head,M1));
+ expect(offer).toContain('Checks on the merge: not run. <code>atelier check --merged</code>');
+ expect(renderMainPreview(preview(M1,0),mergedChecksAt(project.policy,[],head,M1))).not.toContain('Checks on the merge');
+ expect(renderMainPreview(preview(M1))).not.toContain('Checks on the merge');
+ // On the item page the merged run is listed beside the preview, and the revision's own check still waits.
+ const d=detail();d.evidence=[merged()];d.gate={ready:false,needsAssessor:false,blockers:['`npm test` not yet observed at this head'],outOfScope:[]};
+ const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[{path:'src/a.ts',status:'modified',added:1,removed:0,hunks:[]}],truncated:false,main:preview(M1)});
+ expect(html).toContain('Checks on the merge with main, at this revision');
+ expect(html).toContain('<span class="tag ask">Waiting</span><code>npm test</code>');
+ expect(html).toContain('The task owner must run this required check.');
+ expect(html).not.toContain('Accept revision');
+ // Without a preview there is nothing to mark stale against, so the merged run is not shown beside it.
+ expect(renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false})).not.toContain('Checks on the merge');
+});
+it('a blocked task shows who blocked it and why, offers unblock and close only, and a live task offers the block form',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();d.item.state='blocked';d.item.blocked={reason:'waiting on <keys>',by:'codex/gpt-6',at:time,from:'submitted'};d.gate={ready:false,needsAssessor:false,blockers:['state is blocked, not submitted'],outOfScope:[]};
+ const html=renderItem(project,d,'PAVI',diff);
+ expect(html).toContain('Blocked by codex/gpt-6');expect(html).toContain('waiting on &lt;keys&gt;');expect(html).not.toContain('waiting on <keys>');
+ expect(html).toContain('action="/ui/example/t1/unblock"');expect(html).toContain('returns it to in review');expect(html).toContain('example · t1 · Blocked');
+ expect(html).toContain('Decide t1 at');expect(html).toContain('Clear that, then run atelier unblock t1');
+ expect(html).not.toContain('Approve revision');expect(html).not.toContain('Request changes');expect(html).not.toContain('Release task');expect(html).not.toContain('Block this task');
+ expect(html).toContain('Close task without merging');
+ const live=renderItem(project,detail(),'PAVI',diff);
+ expect(live).toContain('Block this task');expect(live).toContain('action="/ui/example/t1/block"');expect(live).toContain('<textarea name="note" required rows="2" maxlength="500">');
+ const open=detail();open.item.state='open';open.item.owner=null;open.item.head=null;
+ expect(renderItem(project,open,'PAVI',null)).toContain('Block this task');
+ const merged=detail();merged.item.state='merged';
+ expect(renderItem(project,merged,'PAVI',null)).not.toContain('Block this task');
+});
+it('the framing is shown when any of it is set, escaped, and left out when none is',()=>{
+ const d=detail();d.item.nonGoals=['no <b>CSS</b>','no routes'];d.item.stopWhen=['a check fails twice'];d.item.nextGate='design <review>';
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('aria-label="How the task is framed"');
+ expect(html).toContain('<dt>Non-goals</dt><dd><ul><li>no &lt;b&gt;CSS&lt;/b&gt;</li><li>no routes</li></ul></dd>');
+ expect(html).toContain('<dt>Stop when</dt><dd><ul><li>a check fails twice</li></ul></dd>');expect(html).toContain('<dt>Next gate</dt><dd>design &lt;review&gt;</dd>');
+ expect(html.indexOf('How the task is framed')).toBeLessThan(html.indexOf('id="changes"'));
+ const gateOnly=detail();gateOnly.item.nextGate='demo';
+ const one=renderItem(project,gateOnly,'PAVI',null);expect(one).toContain('<dt>Next gate</dt>');expect(one).not.toContain('<dt>Non-goals</dt>');
+  expect(renderItem(project,detail(),'PAVI',null)).not.toContain('How the task is framed');
+});
 // ── projects as cards, history as a timeline ──
 it('Projects draws a card per project with its tally, a two-week graph by family, and escapes the title',async()=>{
  const {renderProjects}=await import('../src/ui');
@@ -1014,5 +1071,5 @@ it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing foc
  expect(await plain.text()).not.toContain('class="login-backdrop"');
  const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
  expect(wrong.status).toBe(401);
- expect(await wrong.text()).toContain('class="login-backdrop"');
+  expect(await wrong.text()).toContain('class="login-backdrop"');
 });

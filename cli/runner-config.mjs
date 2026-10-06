@@ -9,7 +9,10 @@ export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
-const PLACEHOLDERS = ["model", "brief_file", "workspace", "diff_file", "verdict_file"];
+// {plan_file} is the plan job's alone (docs/orchestrator.md, section 2): the
+// file the harness writes the plan document to. A command without it still
+// builds; the runner refuses to give it a plan job.
+const PLACEHOLDERS = ["model", "brief_file", "workspace", "plan_file", "diff_file", "verdict_file"];
 // The name of a Keychain entry, as the model pool records one.
 const KEYCHAIN_ENTRY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // A provider whose balance the usage report asks for (cli/usage.mjs).
@@ -82,7 +85,7 @@ export function parseConfig(json) {
     } else {
       const template = entry.command.join("\n");
       const placeholders = [...template.matchAll(/\{([^{}]*)\}/g)].map((m) => m[1]);
-      if (placeholders.some((p) => !PLACEHOLDERS.includes(p)) || /[{}]/.test(template.replace(/\{(model|brief_file|workspace|diff_file|verdict_file)\}/g, ""))) bad("unknown command placeholder");
+      if (placeholders.some((p) => !PLACEHOLDERS.includes(p)) || /[{}]/.test(template.replace(/\{(model|brief_file|workspace|plan_file|diff_file|verdict_file)\}/g, ""))) bad("unknown command placeholder");
       if (!placeholders.includes("model") || !placeholders.includes("brief_file")) bad("command must include {model} and {brief_file}");
       if (/[{}]/.test(entry.command[0])) bad("the executable must not contain placeholders");
     }

@@ -7,7 +7,7 @@ import type { CheckDeclaration } from "./checks.ts";
 
 // `integrated` is a part's state only (docs/orchestrator.md, section 5): its
 // head has been merged onto the plan's branch with the plan's checks passing.
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned";
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
   id: string;
@@ -26,12 +26,39 @@ export interface Item {
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
+  // The owner's framing of the task, from ControlPlane's work item: what the
+  // task is not to do, what tells its holder to stop and ask, and the gate it
+  // goes to next. Each is optional; the brief and the task page show them.
+  nonGoals?: string[];
+  stopWhen?: string[];
+  nextGate?: string | null;
+  blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
   // A plan, or a part of one (docs/orchestrator.md). An ordinary task
   // carries none of these four fields.
   kind?: "plan" | "part";
   plan?: string;            // a part's plan item, tP
   partKey?: string;         // a part's key in the approved plan
   deps?: string[];          // the keys of the parts a part depends on
+}
+
+// Why a task is blocked, who blocked it, when, and the state it was in,
+// which `unblock` returns it to. The holder or the project owner records
+// it; while it stands the task is skipped by dispatch and stuck detection,
+// cannot be pushed, submitted, reviewed, handed off or released, and sits
+// in the owner's inbox with the reason.
+export interface Block {
+  reason: string;
+  by: string;
+  at: string;
+  from: ItemState;
+}
+
+// What `atelier new` and `atelier edit` set. A field present replaces the
+// item's value; one absent keeps it. An empty list or a null gate clears.
+export interface ItemFields {
+  nonGoals?: string[];
+  stopWhen?: string[];
+  nextGate?: string | null;
 }
 
 // Whether two items belong to one plan: two parts of it, or a part and the
@@ -75,6 +102,13 @@ export interface Evidence {
   // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
   // Worker's own code can record "sandbox"; anything posted to the API is "runner".
   where?: "sandbox" | "runner";
+  // Main's head when an observed check was recorded, read by the Worker from
+  // Artifacts. A merged check ran on the merge of `head` with that commit
+  // rather than on `head` alone, so it is bound to both revisions: it is
+  // stale once main moves on, and it never satisfies a required check at the
+  // head, which the head's own run does.
+  mainHead?: string;
+  merged?: boolean;
   // An observed record that the check does not apply at this head: its paths
   // match none of the changed paths Atelier measured. It carries no result.
   notApplicable?: boolean;
@@ -162,10 +196,15 @@ export function parseExecution(value: unknown): ExecutionPolicy {
 // OWNER_ACTOR; "owner" is the default.
 export const DEFAULT_OWNER = "owner";
 
+// The longest actor a task can be handed to, as harness/model. The actor
+// pattern holds the same limit, so an over-long name is invalid wherever an
+// actor is checked, and a handoff names the limit in its refusal.
+export const ACTOR_MAX = 200;
+
 // harness/model. A model may carry a ":profile" suffix, as the AI Studio's
 // oMLX profile ids do; the harness may not, so a runner name (kind:name) and
 // an actor never read alike.
-const ACTOR = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._:-]*)?$/i;
+const ACTOR = new RegExp(`^(?=.{1,${ACTOR_MAX}}$)[a-z0-9][a-z0-9._-]*(\\/[a-z0-9][a-z0-9._:-]*)?$`, "i");
 
 export function validActor(actor: string): boolean {
   return ACTOR.test(actor);
@@ -369,6 +408,7 @@ export function parseRuleError(err: unknown): { status: number; code: string; de
 
 export function assertClaimable(item: Item, actor: string): void {
   if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
+  assertNotBlocked(item);
   if (item.state === "merged" || item.state === "abandoned" || item.state === "accepted") {
     throw new RuleError("closed", `${item.id} is ${item.state}`);
   }
@@ -471,6 +511,70 @@ export function overrideAt(item: Pick<Item, "head" | "reviewOverride">, owner = 
   return o && item.head && o.head === item.head && o.by === owner && o.reason.trim() ? o : null;
 }
 
+// A blocked task answers every move with the same refusal: the reason it is
+// blocked, and the command that lets it go on. Claims, pushes, reviews,
+// submission, handoff and release all stop here; abandon does not, so the
+// owner can still close it.
+export function assertNotBlocked(item: Item): void {
+  if (item.state !== "blocked") return;
+  const reason = item.blocked?.reason ?? "no reason recorded";
+  throw new RuleError("blocked", `${item.id} is blocked: ${reason}. Run atelier unblock ${item.id} first`);
+}
+
+// Only a task that is waiting, in progress or in review can be blocked: an
+// accepted one is the owner's to merge or send back, and a closed one is
+// closed. One already blocked keeps its first reason; unblock it to change it.
+export function assertBlockable(item: Item): void {
+  if (item.state === "blocked") {
+    throw new RuleError("already_blocked", `${item.id} is already blocked: ${item.blocked?.reason ?? "no reason recorded"}. Run atelier unblock ${item.id} to lift that, then block it again with the new reason`);
+  }
+  if (item.state !== "open" && item.state !== "claimed" && item.state !== "submitted") {
+    throw new RuleError("closed", `${item.id} is ${item.state}; only an open, claimed or submitted task can be blocked`);
+  }
+}
+
+export const REASON_MAX = 500;
+export const FIELD_MAX = 300;
+export const FIELD_LIST_MAX = 20;
+
+// A line of the owner's text as stored: control characters as spaces,
+// trimmed. Empty means absent.
+const line = (v: unknown): string => (typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "");
+
+// The reason a block records. A missing, blank or over-long reason is
+// refused, not cut or filled in, because it is what the owner reads in the
+// inbox to decide what to do.
+export function blockReason(value: unknown): string {
+  const reason = line(value);
+  if (!reason) throw new RuleError("block_reason", "a block needs a reason: atelier block ID \"what it is waiting on\"", 400);
+  if (reason.length > REASON_MAX) throw new RuleError("block_reason", `a block's reason is at most ${REASON_MAX} characters`, 400);
+  return reason;
+}
+
+// The item fields a request sets, checked at the boundary: each list is
+// strings with something in each, at most FIELD_LIST_MAX of them; the gate is
+// one line or null. A field that is not sent is left out, so the Ledger
+// keeps the item's value for it.
+export function itemFields(input: Record<string, unknown>): ItemFields {
+  const list = (v: unknown, field: string): string[] => {
+    if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !line(s))) throw new RuleError("bad_field", `${field} must be a list of strings with something in each`, 400);
+    if (v.length > FIELD_LIST_MAX) throw new RuleError("bad_field", `${field} holds at most ${FIELD_LIST_MAX} entries`, 400);
+    const entries = v.map(line);
+    if (entries.some((s) => s.length > FIELD_MAX)) throw new RuleError("bad_field", `each ${field} entry is at most ${FIELD_MAX} characters`, 400);
+    return entries;
+  };
+  const out: ItemFields = {};
+  if (input.nonGoals !== undefined) out.nonGoals = list(input.nonGoals, "nonGoals");
+  if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
+  if (input.nextGate !== undefined) {
+    if (input.nextGate !== null && typeof input.nextGate !== "string") throw new RuleError("bad_field", "nextGate must be text or null", 400);
+    const gate = line(input.nextGate);
+    if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters`, 400);
+    out.nextGate = gate || null;
+  }
+  return out;
+}
+
 export const OVERRIDE_REASON_MAX = 500;
 
 // The reason an override records: text, control characters as spaces,
@@ -544,16 +648,20 @@ export function checkApplies(policy: Pick<ProjectPolicy, "checkPaths">, command:
 // listed as not applicable and never blocks. Reports are listed but never
 // satisfy a check.
 export interface EvidenceView {
-  checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner" }[];
+  checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner"; mainHead?: string }[];
   notApplicable: string[];
   reports: Evidence[];
   changedPaths: string[] | null;  // null until an observed check has measured them
 }
 
+// Whether an observed result counts as a check at the head: a merged check
+// does not, since it ran on another tree, and under sandboxOnly a check run
+// on someone's machine is still shown but does not count.
+const countsAtHead = (policy: ProjectPolicy, e: Evidence) => e.grade === "observed" && !e.merged && (!policy.sandboxOnly || e.where === "sandbox");
+
 export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null): EvidenceView {
   const atHead = head ? evidence.filter((e) => e.head === head) : [];
-  // Under sandboxOnly, a check run on someone's machine is still shown but does not count.
-  const counts = (e: Evidence) => e.grade === "observed" && (!policy.sandboxOnly || e.where === "sandbox");
+  const counts = (e: Evidence) => countsAtHead(policy, e);
   const latest = (claim: string) =>
     atHead.filter((e) => counts(e) && !e.notApplicable && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
   const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
@@ -563,7 +671,7 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
   const checks = policy.checks.filter(applies).map((claim) => {
     const e = latest(claim);
     return e
-      ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner" }
+      ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", ...(e.mainHead ? { mainHead: e.mainHead } : {}) }
       : { claim, grade: "pending" as Grade, passed: null };
   });
   return {
@@ -572,6 +680,57 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
     reports: atHead.filter((e) => e.grade === "reported"),
     changedPaths,
   };
+}
+
+// The checks on the would-be merge at one head: for each required check, the
+// latest merged run at this head that counts, with the main head it merged
+// with. A run is stale once main has moved past that commit; a check with no
+// merged run is pending. Only the head's own moves retire a run outright,
+// since a merged run is bound to the head it names. A check that does not
+// apply to the change (checkApplies) is left out, as it is from the head's
+// own checks: a merged run of it is not needed either.
+export interface MergedCheckView {
+  checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner"; mainHead?: string; stale: boolean; at?: string; by?: string }[];
+  run: boolean;   // whether any merged check has been run at this head
+}
+
+export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, mainNow: string | null): MergedCheckView {
+  const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox")) : [];
+  const changed = evidenceAt(policy, evidence, head).changedPaths;
+  const checks = policy.checks.filter((claim) => checkApplies(policy, claim, changed) !== false).map((claim) => {
+    const e = runs.filter((e) => e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    return e
+      ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", mainHead: e.mainHead, stale: !!mainNow && e.mainHead !== mainNow, at: e.at, by: e.by }
+      : { claim, grade: "pending" as Grade, passed: null, stale: false };
+  });
+  return { checks, run: runs.length > 0 };
+}
+
+// A failing merged check blocks acceptance only where the head's own passing
+// run no longer speaks for the merge: main had moved on from the head that
+// run recorded by the time the merged check ran, so the merged run names
+// another main head. The comparison is with the head's own run the merged
+// run followed, and a head's own run made after it does not clear the
+// failure: that run passes on the head's tree and says nothing about the
+// merge (PAVI's decision of 2026-10-06, t178). Only a later merged run that
+// passes, or a new head, clears it. A merged check is never required, so a
+// pending one blocks nothing, and a failing one run against the same main as
+// the head's own check before it is shown and not counted. The latest merged
+// run per check decides. While the head's own check fails, it is the blocker.
+export function mergedBlockers(policy: ProjectPolicy, evidence: Evidence[], head: string | null): string[] {
+  const out: string[] = [];
+  for (const m of mergedChecksAt(policy, evidence, head, null).checks) {
+    if (m.grade !== "observed" || m.passed || !m.mainHead || !m.at) continue;
+    const own = evidence.filter((e) => e.head === head && e.claim === m.claim && !e.notApplicable && countsAtHead(policy, e)).sort((a, b) => a.at.localeCompare(b.at));
+    if (!own.at(-1)?.passed) continue;
+    // The head's own run the merged one followed says which main the head's
+    // check saw. With none before it, the latest run's main head is all the
+    // record holds. A run that names no main head cannot say main moved.
+    const ranAt = m.at, seen = own.filter((e) => e.at <= ranAt).at(-1) ?? own.at(-1)!;
+    if (!seen.mainHead || (seen.at <= ranAt && seen.mainHead === m.mainHead)) continue;
+    out.push(`\`${m.claim}\` failed on the merge with main at ${m.mainHead.slice(0, 8)}, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace`);
+  }
+  return out;
 }
 
 // A check runs from the item's own head, so an item could weaken the check it
@@ -747,6 +906,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
     if (c.grade === "pending") blockers.push(`\`${c.claim}\` not yet observed at this head`);
     else if (!c.passed) blockers.push(`\`${c.claim}\` failed when observed`);
   }
+  blockers.push(...mergedBlockers(policy, evidence, item.head));
   if (view.changedPaths === null) blockers.push("changed paths not yet observed");
   const changed = view.changedPaths ?? [];
   const kind = view.changedPaths === null ? null : changeClass(changed, policy);
@@ -791,7 +951,7 @@ export interface InboxEntry {
   project: string;
   itemId: string;
   title: string;
-  kind: "accept" | "assess" | "merge" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
+  kind: "accept" | "assess" | "merge" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
 }
@@ -829,6 +989,13 @@ export function inboxFor(
     if (item.state === "accepted") {
       const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner);
       out.push({ ...base, kind: "merge", reason: `accepted${overrode(g)}; run \`atelier merge\` in the project checkout`, weight: 90 });
+      continue;
+    }
+    // A blocked task waits on the owner to clear what blocks it, so it ranks
+    // with the decisions, below a missing review and above a scope change.
+    if (item.state === "blocked") {
+      const b = item.blocked;
+      out.push({ ...base, kind: "blocked", reason: `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}; run \`atelier unblock ${item.id}\` when it can go on`, weight: 70 });
       continue;
     }
     if (item.state === "submitted" && !part) {
@@ -905,6 +1072,7 @@ export function assertRevision(item: Item, expected: string): void {
 }
 
 export function assertLive(item: Item): void {
+  assertNotBlocked(item);
   if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
 }
 
@@ -915,7 +1083,7 @@ export function latestReviews(reviews: Review[], head: string | null): Review[] 
 }
 
 export const stateLabel: Record<ItemState, string> = {
-  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", integrated: "Integrated", merged: "Merged", abandoned: "Closed",
+  open: "Ready to start", claimed: "Working", submitted: "In review", accepted: "Ready to merge", integrated: "Integrated", merged: "Merged", abandoned: "Closed", blocked: "Blocked",
 };
 
 // A reason as one sentence of a longer text: ended with a full stop unless
@@ -929,6 +1097,10 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   const failed = view.checks.some((c) => c.grade === "observed" && !c.passed);
   if (item.state === "merged") return { title: "Merged into the project", detail: "The accepted revision is in the project baseline. Publishing and deployment are separate actions.", action: "none", tone: "go", passed };
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
+  if (item.state === "blocked") {
+    const b = item.blocked;
+    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its owner and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
+  }
   if (item.state === "accepted") {
     const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner).overridden;
     const detail = overridden
@@ -937,6 +1109,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
     return { title: "Ready to merge", detail, action: "merge", tone: "go", passed };
   }
   if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
+  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The task owner must bring main into the workspace, fix the result and finish again; running the revision's own checks again does not clear it, only a passing merged run or a new revision.", action: "none", tone: "bad", passed };
   // The owner's approval is recorded but is not the independent review, so
   // the page asks for a qualifying reviewer, and offers the override only
   // when the missing review is all that blocks, since it waives nothing else.
