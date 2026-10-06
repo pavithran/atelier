@@ -1,0 +1,17 @@
+atelier atelier/t168 "Ship follow-ups (t161): docs/atelier/** and the scripts ship runs join the gate's protected set like check scripts; an inbox entry for a merged revision whose declared protected action has not run; README section on ship and approvals; the Keychain item atelier.API_TOKEN is created without -T so any owner process reads it silently (cli/credentials.mjs:84-88); harness confinement beyond a process group (a separate user, sandbox-exec or a launchd job per task) designed in docs"
+accepted head 0e36beb47b4cb3d01d29754eed06bf10a526dd05
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T16:54:49.124Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T16:54:52.218Z
+REVIEW approve — antigravity/gemini-3.1-pro: Ship follow-ups: ship files protected, an inbox entry for an unrun protected action, the Keychain item for the CLI only, harness confinement designed.
+2026-10-06T13:28:20.712Z pavi item.created
+2026-10-06T16:14:16.585Z opencode/glm-5.3 item.claimed
+2026-10-06T16:14:21.297Z opencode/glm-5.3 fork.created
+2026-10-06T16:42:08.449Z opencode/glm-5.3 push.observed
+2026-10-06T16:44:23.947Z opencode/glm-5.3 evidence.observed
+2026-10-06T16:44:29.000Z opencode/glm-5.3 evidence.observed
+2026-10-06T16:51:48.282Z opencode/glm-5.3 push.observed
+2026-10-06T16:54:49.778Z opencode/glm-5.3 evidence.observed
+2026-10-06T16:54:52.572Z opencode/glm-5.3 evidence.observed
+2026-10-06T16:54:53.400Z opencode/glm-5.3 item.submitted
+2026-10-06T16:57:06.214Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T16:57:07.008Z pavi item.accepted
