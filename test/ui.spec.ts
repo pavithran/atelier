@@ -108,7 +108,21 @@ it('a cut record says so where the graph rests',()=>{
  expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:partial,owner:'pavi'}))
   .toContain('the most recent part of the record');
 });
-it('the flow route is served behind sign-in, under a policy that allows only the fonts',async()=>{
+// A live page: the policy names one nonce, every script tag carries it and
+// loads only Atelier's own script, and the next request gets another nonce.
+const NONCE=/'nonce-([A-Za-z0-9+/=]+)'/;
+function liveChecks(html:string,csp:string){
+ const nonce=NONCE.exec(csp)?.[1];
+ expect(nonce,csp).toBeTruthy();
+ expect(nonce!.length).toBeGreaterThanOrEqual(20);
+ expect(csp).toContain(`script-src 'nonce-${nonce}'`);expect(csp).toContain("connect-src 'self'");expect(csp).toContain("default-src 'none'");
+ const tags=html.match(/<script\b[^>]*>/g)??[];
+ expect(tags.length).toBeGreaterThan(0);
+ for(const t of tags){expect(t).toContain(`nonce="${nonce}"`);expect(t).toContain('src="/live.js"');}
+ expect(html).not.toMatch(/<script\b[^>]*>[^<]/);
+ return nonce!;
+}
+it('the flow route is served behind sign-in, under a policy that admits the fonts and the live script by its nonce',async()=>{
  const TOKEN='flow-test-token';
  const testEnv={...env,ATELIER_TOKEN:TOKEN} as typeof env;
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
@@ -116,11 +130,38 @@ it('the flow route is served behind sign-in, under a policy that allows only the
  expect(out.status).not.toBe(200);
  const res=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:signedIn}}),testEnv);
  expect(res.status).toBe(200);
- expect(await res.text()).toContain('<title>Flow · Atelier</title>');
+ const html=await res.text();
+ expect(html).toContain('<title>Flow · Atelier</title>');
  const csp=res.headers.get('content-security-policy')!;
- expect(csp).toContain("default-src 'none'");
  expect(csp).toContain('font-src https://fonts.gstatic.com');
- expect(csp).not.toContain('script-src');
+ expect(html).toContain('<main id="main" data-live-refresh="15">');
+ expect(html).toContain('class="meta live-note" hidden');
+ const first=liveChecks(html,csp);
+ const again=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:signedIn}}),testEnv);
+ const second=liveChecks(await again.text(),again.headers.get('content-security-policy')!);
+ expect(second).not.toBe(first);
+ // Decisions and a task's page are live too; the public pages and the Studio carry no script and admit none.
+ const decisions=await worker.fetch(new Request('https://atelier.test/decisions',{headers:{cookie:signedIn}}),testEnv);
+ liveChecks(await decisions.text(),decisions.headers.get('content-security-policy')!);
+ for(const path of ['/studio','/projects','/how']){
+  const r=await worker.fetch(new Request(`https://atelier.test${path}`,{headers:{cookie:signedIn}}),testEnv);
+  expect(r.status).toBe(200);
+  expect(r.headers.get('content-security-policy')).not.toContain('script-src');
+  expect(await r.text()).not.toContain('<script');
+ }
+ const js=await worker.fetch(new Request('https://atelier.test/live.js'),testEnv);
+ expect(js.status).toBe(200);expect(js.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+ expect(await js.text()).toContain('data-live-refresh');
+});
+it('a page without a nonce carries no script tag, and one with a nonce carries exactly the live script',()=>{
+ const s=story();
+ expect(renderFlow([s],s.tally,'pavi','PAVI')).not.toContain('<script');
+ const live=renderFlow([s],s.tally,'pavi','PAVI',false,new Map(),'all',undefined,[],{nonce:'abc+/=',refresh:15});
+ expect(live).toContain('<script nonce="abc+/=" src="/live.js" defer></script>');
+ expect(live.match(/<script/g)).toHaveLength(1);
+ expect(live).toContain('it refreshes every 15 seconds.');
+ const noRefresh=renderItem(project,detail(),'PAVI',null,{nonce:'abc'});
+ expect(noRefresh).toContain('<script nonce="abc"');expect(noRefresh).not.toContain('data-live-refresh');expect(noRefresh).not.toContain('class="meta live-note"');
 });
 
 // ── project titles ──

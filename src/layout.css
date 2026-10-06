@@ -456,6 +456,19 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 .resting-graph svg.graph { width: 100%; height: auto; }
 .resting-graph .legend-line { margin-bottom: 8px; }
 
+/* ── live: the refresh and the scrubber (src/live.ts) ───────────────────── */
+/* After a refresh the graph is drawn at rest; only a mark that was not there before arrives. While scrubbing, the script draws each step itself. */
+.graph.settled .draw, .graph.settled .pop, .graph.scrub .draw, .graph.scrub .pop, .graph.scrub .g-task.live .g-head { animation: none; }
+.graph.settled .pop.fresh { animation: arrive .9s ease-out both; }
+.live-note { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font: 12px/1.4 var(--font-mono); }
+.live-note .pulse { flex: none; }
+.scrubber { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 6px 10px; align-items: center; margin: 2px 4px 8px; }
+.scrubber button { padding: 5px 12px; min-height: 32px; font-size: 13px; }
+.scrubber input[type="range"] { width: 100%; min-height: 32px; margin: 0; padding: 0; background: transparent; border: 0; accent-color: var(--signal); }
+.scrubber output { grid-column: 1 / -1; font: 12px/1.4 var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; }
+.stage .scrubber { padding: 0 16px 10px; }
+@media (max-width: 720px) { .scrubber { grid-template-columns: minmax(0, 1fr) auto auto; } .scrubber input[type="range"] { grid-column: 1 / -1; grid-row: 1; } }
+
 /* ── graph: hover and focus ──────────────────────────────────────────────── */
 /* The hit area is larger than the mark and never painted, whatever the mark's own circle rules say. */
 .graph .g-bead circle.hit, .graph .g-band { fill: transparent; stroke: none; pointer-events: all; }

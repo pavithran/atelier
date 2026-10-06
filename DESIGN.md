@@ -79,9 +79,14 @@ staggered above and below the line so none hides another.
 
 ## Constraints
 
-No script runs on any page; every action is a form post bound to the
-revision on screen, and the content security policy forbids script. Badges
-never wrap. Pages hold their layout without horizontal scrolling at 390 px,
+Every page reads fully without script, and every action is a form post
+bound to the revision on screen. Flow, Decisions and a task's page also
+carry Atelier's own script, served from this origin under a nonce made for
+the request, which the content security policy names and the script tag
+carries; no inline script and no script from elsewhere runs, and every
+other page keeps the policy that forbids script. The script only refreshes
+those pages and animates what arrived, and adds the scrubber that steps
+through a task's recorded events in order. Badges never wrap. Pages hold their layout without horizontal scrolling at 390 px,
 and the navigation drops its icons below 720 px so all four destinations fit.
 
 The [orchestrator design](docs/orchestrator.md) describes plans, review and integration, with implementation status.

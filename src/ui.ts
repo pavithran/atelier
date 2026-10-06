@@ -1,6 +1,8 @@
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
-// Server-rendered pages. No scripts: every action is a plain form post, and the
-// Studio refreshes itself with a meta refresh, so the CSP can forbid script.
+// Server-rendered pages. Every action is a plain form post and every page
+// reads fully without script; the Studio refreshes itself with a meta
+// refresh. A page given a `Live` nonce also carries Atelier's own script,
+// which refreshes and animates it and nothing more (src/live.ts).
 // Colours, type, spacing and radii come from the portfolio theme (theme.css);
 // layout.css only arranges them.
 
@@ -20,6 +22,11 @@ import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./tim
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
+
+// A page that carries the live script (src/live.ts): the request's nonce,
+// which the script tag and the policy both name, and how often the page
+// refreshes itself, in seconds, or nothing for the scrubber alone.
+export interface Live { nonce: string; refresh?: number }
 import {
   DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -79,9 +86,16 @@ const NAV: [string, string, string][] = [
 const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
 // `signedIn` draws the sign-out form in the rail; the sign-in page has none.
-export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true): string {
+// `live` adds the script under its nonce; with a refresh, <main> says how
+// often, and a note the script reveals says when this copy was drawn.
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
+  const liveAttr = live?.refresh ? ` data-live-refresh="${live.refresh}"` : "";
+  const liveNote = live?.refresh
+    ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live: this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</p>`
+    : "";
+  const script = live ? `\n<script nonce="${e(live.nonce)}" src="/live.js" defer></script>` : "";
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
@@ -96,7 +110,7 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
   <p>Many agents, one owner per task.<br>Decisions with evidence.</p>${signedIn ? `
   <form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : ""}</div>
 </aside>
-<main id="main">${body}</main></body></html>`;
+<main id="main"${liveAttr}>${liveNote}${body}</main>${script}</body></html>`;
 }
 
 // The shell of the pages anyone can read: no rail, and no link into a signed-in
@@ -235,6 +249,7 @@ export function renderInbox(
   queued: { project: ProjectRecord; item: Item }[] = [],
   latest?: { story: Story; owner: string },
   details: Map<string, Detail> = new Map(),
+  live?: Live,
 ): string {
   const names = titleMap(projects);
   const groups = new Map<string, InboxEntry[]>();
@@ -279,7 +294,7 @@ export function renderInbox(
     : latest?.story.threads.length
       ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
-  return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName);
+  return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
 
 // ── flow ───────────────────────────────────────────────────────────────────
@@ -476,7 +491,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   return { stages, columns, shown };
 }
 
-export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), sinceParam = "all", familyParam?: string, familiesPresent: string[] = []): string {
+export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), sinceParam = "all", familyParam?: string, familiesPresent: string[] = [], live?: Live): string {
   const t = drawnTotal(stories);
   // Replay keeps the filters in force, so it replays what is shown.
   const filtered = [sinceParam !== "all" ? `since=${e(sinceParam)}` : "", familyParam ? `family=${e(familyParam)}` : ""].filter(Boolean).join("&amp;");
@@ -508,7 +523,7 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
   ${filters}
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
   ${body}
-</div>`, "Flow", ownerName);
+</div>`, "Flow", ownerName, 0, true, live);
 }
 
 // ── showcase ───────────────────────────────────────────────────────────────
@@ -990,12 +1005,12 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 
 // ── a task ─────────────────────────────────────────────────────────────────
 
-export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null): string {
+export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   const closed = d.item.state === "merged" || d.item.state === "abandoned";
   return page(d.item.title, `<div class="page-width">
   <nav class="breadcrumbs"><a href="/decisions">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
-</div>`, closed ? "History" : "Decisions", ownerName);
+</div>`, closed ? "History" : "Decisions", ownerName, 0, true, live);
 }
 
 const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad", none: "" };
