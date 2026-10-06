@@ -294,7 +294,7 @@ test("a report reads as text: windows, each span's models, balances and notes", 
 
 test("the command line is validated, and the runner name defaults to the machine's", () => {
   assert.deepEqual(usageOptions(args(), "Studio.local"), { name: "home:studio.local", dryRun: false, configPath: undefined });
-  assert.deepEqual(usageOptions(args("name=home:Mac", "dry-run", "config=/c.json")), { name: "home:Mac", dryRun: true, configPath: "/c.json" });
+  assert.deepEqual(usageOptions(args("name=home:Mac", "dry-run", "config=/c.json")), { name: "home:mac", dryRun: true, configPath: "/c.json" });
   for (const bad of [args("once"), args("probe"), args("name=studio"), args("dry-run=yes"), { ...args(), _: ["runner", "x"] }, args("name=home:a", "name=home:b")]) assert.throws(() => usageOptions(bad), /usage: atelier runner --usage|use --name home:NAME/);
 });
 

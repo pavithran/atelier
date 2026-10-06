@@ -485,7 +485,10 @@ export class Ledger extends DurableObject<Env> {
       }
       // After a handoff the new owner holds no runner yet; the first runner to
       // claim as that owner takes the claim, and any other is refused above.
-      if (!held && asking) this.update(id, { owner: actor, runner: asking });
+      if (!held && asking) {
+        this.update(id, { owner: actor, runner: asking });
+        this.log(id, actor, "item.runner_adopted", { runner: asking }, proved);
+      }
       return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
     }
     this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null });
@@ -542,7 +545,14 @@ export class Ledger extends DurableObject<Env> {
   undispatch(id: string, actor: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner withdraws a dispatch", 403);
     const item = this.item(id);
-    if (!item.dispatch || item.state !== "open") throw new RuleError("not_dispatched", `${id} is not waiting for a runner`);
+    if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`);
+    // A claimed or submitted task keeps its dispatch, and waits in the queue
+    // again if it is released; an accepted, merged or abandoned one never does.
+    if (item.state !== "open") {
+      throw new RuleError("not_dispatched", ["claimed", "submitted"].includes(item.state)
+        ? `${id} is ${item.state} by ${item.owner}; its dispatch applies again only if it is released, so withdraw it then`
+        : `${id} is ${item.state}, so its dispatch no longer applies and there is nothing to withdraw`);
+    }
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, new Date().toISOString(), id);
     this.log(id, actor, "item.undispatched", {});
     return this.item(id);

@@ -12,7 +12,7 @@ export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
   const { agents, errors } = parseConfig(config);
   if (errors.length) throw new Error(errors.join("; "));
-  return { runner: `home:${name.slice(5)}`, kind: "home", agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  return { runner: name.toLowerCase(), kind: "home", agents: agents.map(({ agent, models }) => ({ agent, models })) };
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
