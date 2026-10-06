@@ -147,6 +147,7 @@ export interface ProjectView { project: ProjectRecord; items: Item[]; unavailabl
 const KIND: Record<InboxEntry["kind"], [string, string]> = {
   accept: ["Ready to accept", "go"],
   merge: ["Ready to merge", "go"],
+  ship: ["To ship", "ask"],
   assess: ["Review required", "ask"],
   blocked: ["Blocked", "ask"],
   scope: ["Scope changed", "ask"],

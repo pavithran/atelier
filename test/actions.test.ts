@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   approvalStatus, approveAction, cleanApprovalInput, cleanRun, consumeAction, expirySeconds, listApprovals,
-  recordActionRun, withdrawAction, type ActionStore,
+  recordActionRun, unrunKinds, withdrawAction, type ActionStore,
 } from "../src/actions.ts";
 import { parseRuleError } from "../src/rules.ts";
 
@@ -112,6 +112,19 @@ test("status: used before withdrawn before expired", () => {
   assert.equal(approvalStatus(base, later(1000)), "expired");
   assert.equal(approvalStatus({ ...base, withdrawn: { by: "owner", at: T0, note: "" } }, later(5000)), "withdrawn");
   assert.equal(approvalStatus({ ...base, consumed: { by: "owner", at: T0 } }, later(5000)), "consumed");
+});
+
+test("the kinds a merged revision still needs: only a run of the kind after the merge retires one", () => {
+  // The event log's sequence numbers stand for the order of things: a run
+  // recorded after an item.merged event (seq 10 here) covers that merge,
+  // whatever the baseline's head was when it ran.
+  const run = (kind: string | null, seq: number) => ({ kind, seq });
+  assert.deepEqual(unrunKinds(["deploy", "install"], [], 10), ["deploy", "install"]);
+  assert.deepEqual(unrunKinds(["deploy", "install"], [run("deploy", 9)], 10), ["deploy", "install"], "a run before the merge does not cover it");
+  assert.deepEqual(unrunKinds(["deploy", "install"], [run("deploy", 11)], 10), ["install"]);
+  assert.deepEqual(unrunKinds(["deploy", "install"], [run("deploy", 10)], 10), ["deploy", "install"], "only a run strictly after the merge covers it");
+  assert.deepEqual(unrunKinds(["deploy", "install"], [run(null, 12), run("push", 13)], 10), ["deploy", "install"], "other kinds, and runs with none, clear nothing");
+  assert.deepEqual(unrunKinds([], [run("deploy", 11)], 10), []);
 });
 
 test("a run record is checked field by field, and may name only an approval its kind and revision used", () => {
