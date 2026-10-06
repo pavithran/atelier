@@ -149,8 +149,18 @@ ControlPlane policy files. Models are compared without letter case or a
 `:profile` suffix, and a name the model registry
 ([`src/models/registry.ts`](src/models/registry.ts)) lists for a model, such as
 `claude-opus-5-5` for `opus-5.5`, is that model. What a check executes is protected automatically: a script it runs (`./check.sh`,
-`node scripts/verify.mjs`), and `package.json` when it goes through a package
-manager, whose scripts an item could otherwise rewrite. An item therefore
+`bin/check`, `node scripts/verify.mjs`); the recipe files `make` and `just`
+run (`Makefile`, `makefile`, `GNUmakefile` and every `*.mk`; `justfile`,
+`Justfile`, `.justfile` and every `*.just`; or the file and directory the
+command's `-f` and `-C` options name); the manifest a package manager runs
+scripts from, whose scripts an item could otherwise rewrite, with the
+configuration that changes what it runs (`package.json` with `.npmrc` for
+npm, `.pnpmfile.cjs` for pnpm, `.yarnrc.yml` and `.yarn/releases/**` for
+yarn, `bunfig.toml` for bun); the manifests build tools run code from
+(`Cargo.toml` and `build.rs` for cargo, `Package.swift` for swift, the
+project and workspace for xcodebuild, `deno.json` for `deno task`); and the
+local binary `npx`, `bunx`, `pnpm dlx` or `yarn exec` would run, under
+`node_modules/.bin/`. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such
 as the code under test, are not protected, and nor is test configuration such
 as `vitest.config.ts` unless the project protects it. Protected paths match

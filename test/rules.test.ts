@@ -164,10 +164,38 @@ test("repo names are safe and stable", () => {
   assert.throws(() => repoName("---"), /cannot make a repo name/);
 });
 
+test("what a runner executes is protected: make and just recipes, npx's binary, manifests of build tools, paths run directly", () => {
+  const sorted = (files: string[]) => [...files].sort();
+  assert.deepEqual(checkFiles(["make test"]), sorted(["Makefile", "makefile", "GNUmakefile", "**/*.mk"]));
+  assert.deepEqual(checkFiles(["make -C native -f build.mk all", "make --directory=./lib --makefile=rules.mk"]), sorted(["native/build.mk", "lib/rules.mk", "**/*.mk"]));
+  assert.deepEqual(checkFiles(["make -C ../other check", "make -f /etc/Makefile"]), ["**/*.mk"]);
+  assert.deepEqual(checkFiles(["just check"]), sorted(["justfile", "Justfile", ".justfile", "**/*.just"]));
+  assert.deepEqual(checkFiles(["just --justfile ci.just test"]), sorted(["ci.just", "**/*.just"]));
+  assert.deepEqual(checkFiles(["npx vitest run"]), sorted(["package.json", ".npmrc", "node_modules/.bin/vitest"]));
+  assert.deepEqual(checkFiles(["npx --yes -p typescript tsc --noEmit", "npx eslint@9 ."]), sorted(["package.json", ".npmrc", "node_modules/.bin/tsc", "node_modules/.bin/eslint"]));
+  assert.deepEqual(checkFiles(["pnpm dlx @scope/tool --flag", "yarn exec lint", "bun x vitest", "bunx tsc"]), sorted([
+    "package.json", ".npmrc", ".pnpmfile.cjs", "node_modules/.bin/tool", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**", "node_modules/.bin/lint", "bunfig.toml", "node_modules/.bin/vitest", "node_modules/.bin/tsc",
+  ]));
+  assert.deepEqual(checkFiles(["pnpm test", "yarn test", "bun test"]), sorted(["package.json", ".npmrc", ".pnpmfile.cjs", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**", "bunfig.toml"]));
+  assert.deepEqual(checkFiles(["cargo test --workspace"]), sorted(["**/Cargo.toml", "**/build.rs", ".cargo/config", ".cargo/config.toml"]));
+  assert.deepEqual(checkFiles(["swift test"]), sorted(["**/Package.swift", "**/Package@swift-*.swift"]));
+  assert.deepEqual(checkFiles(["xcodebuild -scheme App -destination 'platform=iOS Simulator' test"]), sorted(["**/*.xcodeproj/**", "**/*.xcworkspace/**", "**/Package.swift", "**/Package@swift-*.swift"]));
+  assert.deepEqual(checkFiles(["deno task test", "deno test"]), ["deno.json", "deno.jsonc"]);
+  assert.deepEqual(checkFiles(["bin/check", "CI=1 scripts/verify --strict", "./bin/lint"]), ["bin/check", "bin/lint", "scripts/verify"]);
+  // Paths outside the repository, and arguments that are not run, are not.
+  assert.deepEqual(checkFiles(["/usr/bin/true", "../shared/run", "cat docs/a.md"]), []);
+  // The guarded set carries these: an item that edits its Makefile or an
+  // included rules file under `make test` needs an independent review.
+  const made: ProjectPolicy = { checks: ["make test"], protected: [] };
+  for (const path of ["Makefile", "lib/rules.mk", "gnumakefile"]) assert.equal(changeClass([path], made), "protected", path);
+  assert.equal(changeClass(["src/main.c"], made), "coordinated");
+  assert.equal(changeClass(["node_modules/.bin/vitest"], { checks: ["npx vitest run"], protected: [] }), "protected");
+});
+
 test("files named by a check are protected: an item cannot weaken its own grader", () => {
-  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), ["check.sh", "package.json", "scripts/verify.mjs"]);
+  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), [".npmrc", "check.sh", "package.json", "scripts/verify.mjs"]);
   assert.deepEqual(checkFiles(["grep -q export src/a.ts"]), []);
-  assert.deepEqual(checkFiles(["npm ci --prefer-offline && npm test", "npm run check && npm run build"]), ["package.json"]);
+  assert.deepEqual(checkFiles(["npm ci --prefer-offline && npm test", "npm run check && npm run build"]), [".npmrc", "package.json"]);
   const p: ProjectPolicy = { checks: ["./check.sh"], protected: [] };
   const g = gate(item({ scope: [] }), p, [pass({ claim: "./check.sh", changedPaths: ["check.sh"] })], []);
   assert.equal(g.needsAssessor, true);
