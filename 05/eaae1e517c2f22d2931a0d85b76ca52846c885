@@ -1,0 +1,24 @@
+atelier atelier/t194 "The runner serves review jobs through Antigravity (agy): a review request routed to antigravity/gemini-3.1-pro or antigravity/gpt-oss-120b is run as bin/orchestrate/review.sh does (a throwaway clone at the head, commands allowed with the terminal sandboxed, the diff and the task in the prompt, VERDICT and findings parsed into the review), so atelier land gets its cross-family review without a session running the script by hand"
+accepted head 8442a08f26147c7d4899f1182739543e858fc258
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T21:10:46.981Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T21:10:50.190Z
+REVIEW approve — antigravity/gemini-3.1-pro: The runner serves Antigravity reviews
+2026-10-06T20:07:12.259Z pavi item.created
+2026-10-06T20:31:33.143Z opencode/deepseek-v4-pro item.claimed
+2026-10-06T20:31:39.445Z opencode/deepseek-v4-pro fork.created
+2026-10-06T20:51:09.796Z opencode/deepseek-v4-pro push.observed
+2026-10-06T20:55:22.582Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T20:55:25.651Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T20:55:26.438Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T21:00:21.804Z antigravity/gemini-3.1-pro review.rejected
+2026-10-06T21:01:37.274Z opencode/deepseek-v4-pro push.observed
+2026-10-06T21:04:02.287Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T21:04:05.185Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T21:04:05.974Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T21:07:16.461Z antigravity/gemini-3.1-pro review.rejected
+2026-10-06T21:08:37.346Z opencode/deepseek-v4-pro push.observed
+2026-10-06T21:10:47.422Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T21:10:50.527Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T21:10:51.466Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T21:14:09.705Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T21:14:10.481Z pavi item.accepted
