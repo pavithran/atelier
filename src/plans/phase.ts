@@ -11,7 +11,7 @@ import type { Plan } from "./schema.ts";
 
 // The item states a part or the plan item can be in. Mirrors the ledger's
 // states without importing its row types.
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned";
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned" | "blocked";
 
 // The derived state of a plan. Only the reason for `blocked` is stored; every
 // other state is computed from plain data.
@@ -134,6 +134,21 @@ function histories(events: readonly LedgerEvent[]): Map<string, PartHistory> {
         committed.set(key, false);
         h.waiting = false;
         break;
+      // A review rejected a submitted part with blocking findings and the
+      // part was released back to its builder. The builder's finished attempt
+      // becomes a failed one, so the next dispatch retries the same builder
+      // once with the findings, then moves to an alternate, then blocks the
+      // plan, as a failed finish does (docs/orchestrator.md, section 4).
+      case "review.rework": {
+        const builder = typeof event.data.builder === "string" ? event.data.builder : holder.get(key);
+        const last = h.attempts.at(-1);
+        if (last && last.outcome === "finished" && last.actor === builder) last.outcome = "failed";
+        else if (builder) h.attempts.push({ actor: builder, outcome: "failed" });
+        holder.set(key, null);
+        committed.set(key, false);
+        h.waiting = false;
+        break;
+      }
       case "item.submitted":
         if (holder.get(key)) h.attempts.push({ actor: holder.get(key)!, outcome: "finished" });
         holder.set(key, null);
@@ -223,6 +238,8 @@ export function planActions(input: TickInput): TickResult {
   let live = input.plan.parts.filter((p) => {
     const state = states.get(p.key);
     if (state === "claimed" || state === "submitted") return true;
+    // A blocked part counts as live, so it still holds a slot in the parallel limit.
+    if (state === "blocked") return true;
     return state === "open" && (history.get(p.key)?.waiting ?? false);
   }).length;
 

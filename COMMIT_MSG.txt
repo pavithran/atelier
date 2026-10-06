@@ -1,0 +1,11 @@
+Merge main into t181: review jobs beside plan jobs
+
+- cli/runner-config.mjs: PLACEHOLDERS now knows every placeholder ({brief_file}, {plan_file}, {diff_file}, {verdict_file} and the rest), and the unknown-placeholder check accepts the same set.
+- cli/atelier.mjs: the runner keeps both the plan job's server calls (jobBrief, postPlan) and main's reportRun wired to the run-reports route.
+- cli/runner.mjs: offerFrom offers build, plan and any config-listed jobs (e.g. review); commandFor substitutes all five placeholders; runPlanTask, planFilePath and runReview are both kept, the loop dispatches plan, review and build jobs, and runRunner takes jobBrief, postPlan and reportRun.
+- src/tokens.ts: the agent route allowlist keeps job-brief on GET and adds review-claim, review-release, block and unblock to POST alongside everything from both sides.
+- docs/orchestrator.md: the status paragraph says steps 1 to 11 are built (7, 9 and 10 included); only integration steps 12 to 14 remain.
+- src/ledger.ts: dropped the local `type Finding` alias, which collided with the `Finding` imported from rules.ts now that step 7 imports it; both refer to the same shape.
+- test/plan-routes.spec.ts: a blocking rejection now sends a part back on its own (the rework transition), so the manual release after the rejection was removed and the rework brief is still asserted to quote the findings and the failing check.
+
+Agent: opencode/deepseek-v4-pro

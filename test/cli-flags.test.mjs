@@ -92,6 +92,9 @@ globalThis.fetch = async (url, options = {}) => {
       const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(rest) ?? [];
       if (verb === "handoff") data = { item: { ...item(id), owner: body.to }, next: "next" };
       else if (verb === "dispatch") data = { ...item(id), dispatch: { to: body.to ?? "any" } };
+      else if (verb === "block") data = { ...item(id), state: "blocked", blocked: { reason: body.reason, by: "codex/test" } };
+      else if (verb === "unblock") data = { ...item(id), state: "claimed" };
+      else if (verb === "edit") data = { ...item(id), ...body };
       else data = detail(id);
     }
   }
@@ -205,4 +208,55 @@ test("a flag the command does not take, or a stray --, is refused before any req
   const ok = f.run(f.checkout, ["ls", "--project", "demo", "--all"]);
   assert.equal(ok.status, 0, ok.stderr);
   assert.match(ok.stdout, /t1 .*Task t1/);
+});
+
+test("new and edit send the framing as lists and a line, block sends its reason, and an empty value clears only on edit", (t) => {
+  const f = fixture(t);
+  const made = f.run(f.checkout, ["new", "Frame it", "--scope", "src/**", "--non-goal", "no CSS", "--non-goal", "no routes", "--stop-when", "a check fails twice", "--next-gate", "design review", "--project", "demo"]);
+  assert.equal(made.status, 0, made.stderr);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]), [
+    ["/api/projects/demo/items", { title: "Frame it", scope: ["src/**"], nonGoals: ["no CSS", "no routes"], stopWhen: ["a check fails twice"], nextGate: "design review" }],
+  ]);
+  f.clear();
+  // A field not given is not sent, so the server keeps what the item has.
+  const plain = f.run(f.checkout, ["new", "Plain", "--project", "demo"]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Plain", scope: [] }]);
+  f.clear();
+  for (const [argv, message] of [
+    [["new", "Title", "--non-goal", "", "--project", "demo"], /--non-goal needs text: atelier new --non-goal "TEXT", once per entry/],
+    [["new", "Title", "--stop-when", "  ", "--project", "demo"], /--stop-when needs text: atelier new --stop-when "TEXT", once per entry/],
+    [["new", "Title", "--next-gate", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
+    [["new", "Title", "--next-gate", "  ", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
+    [["edit", "t1", "--project", "demo"], /usage: atelier edit ID \[--non-goal TEXT\]/],
+    [["edit", "t1", "--non-goal", "", "--non-goal", "x", "--project", "demo"], /--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear/],
+    [["edit", "t1", "--scope", "src/**", "--project", "demo"], /edit does not take --scope/],
+    [["block", "t1", "--project", "demo"], /usage: atelier block \[ID\] "what it is waiting on"/],
+    [["block", "--project", "demo"], /usage: atelier block/],
+  ]) {
+    const r = f.run(f.checkout, argv);
+    assert.equal(r.status, 1, argv.join(" "));
+    assert.match(r.stderr, message, argv.join(" "));
+  }
+  assert.deepEqual(f.requests(), []);
+  // edit sends exactly what it is given: a replacement list, an empty list, a cleared gate.
+  const edited = f.run(f.checkout, ["edit", "t1", "--non-goal", "no CSS", "--stop-when", "", "--next-gate", "", "--project", "demo"]);
+  assert.equal(edited.status, 0, edited.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t1/edit", { nonGoals: ["no CSS"], stopWhen: [], nextGate: null }, "owner"]]);
+  assert.match(edited.stdout, /^t1 edited\.\nNon-goals: no CSS\n$/);
+  f.clear();
+  // block takes the id first when given, else the workspace's item; the reason is the words after it.
+  const blocked = f.run(f.checkout, ["block", "t2", "waiting", "on", "the", "keys", "--project", "demo"]);
+  assert.equal(blocked.status, 0, blocked.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/block", { reason: "waiting on the keys" }]]);
+  assert.match(blocked.stdout, /^t2 is blocked: waiting on the keys\. It keeps its owner and workspace; run atelier unblock t2 when it can go on\.\n$/);
+  f.clear();
+  const here = f.run(f.workspace, ["block", "needs a decision"], { ATELIER_ACTOR: "codex/test" });
+  assert.equal(here.status, 0, here.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.path, q.body, q.actor]), [["/api/projects/demo/items/t1/block", { reason: "needs a decision" }, "codex/test"]]);
+  f.clear();
+  const unblocked = f.run(f.workspace, ["unblock"], { ATELIER_ACTOR: "codex/test" });
+  assert.equal(unblocked.status, 0, unblocked.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.path, q.body, q.actor]), [["/api/projects/demo/items/t1/unblock", {}, "codex/test"]]);
+  assert.match(unblocked.stdout, /^t1 is unblocked and claimed again\.\n$/);
 });

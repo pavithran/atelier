@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Entry, Reader } from "../src/diff.ts";
+import type { Patch } from "../src/preview/merge.ts";
 import { END_OF_ARCHIVE } from "../src/sandbox/tar.ts";
 import { writeTree } from "../src/sandbox/tree.ts";
 
@@ -45,4 +46,45 @@ test("a missing blob stops the stream instead of writing a partial tree", async 
     blob: async () => null,
   };
   await assert.rejects(writeTree(reader, "root", async () => {}), /blob gone for a not found/);
+});
+
+// A merged check's tree: the head's with main's changes laid over it by path.
+test("a patch lays a merge over the tree: replaced, removed and added files, and a folder only the patch holds", async () => {
+  const trees = new Map<string, Entry[]>();
+  const blobs = new Map<string, Uint8Array>();
+  const enc = new TextEncoder();
+  const blob = (h: string, t: string) => (blobs.set(h, enc.encode(t)), h);
+  trees.set("root", [
+    { name: "keep.txt", mode: "100644", hash: blob("k", "kept\n"), type: "blob" },
+    { name: "gone.txt", mode: "100644", hash: blob("g", "gone\n"), type: "blob" },
+    { name: "both.txt", mode: "100644", hash: blob("b", "head's\n"), type: "blob" },
+    { name: "src", mode: "40000", hash: "srctree", type: "tree" },
+  ]);
+  trees.set("srctree", [{ name: "index.ts", mode: "100644", hash: blob("i", "export {};\n"), type: "blob" }]);
+  blob("m", "main's\n");
+  const reader: Reader = { tree: async (h) => trees.get(h) ?? null, blob: async (h) => blobs.get(h) ?? null };
+  const patch = new Map<string, Patch | null>([
+    ["gone.txt", null],
+    ["both.txt", { type: "blob", data: enc.encode("merged\n") }],
+    ["src/main.ts", { type: "exec", hash: "m" }],
+    ["docs/new/guide.md", { type: "blob", hash: "m" }],
+  ]);
+  const chunks: Uint8Array[] = [];
+  const files = await writeTree(reader, "root", async (b) => { chunks.push(b); }, "", patch);
+  chunks.push(END_OF_ARCHIVE);
+  assert.equal(files, 5);
+  const dir = mkdtempSync(join(tmpdir(), "tree-patch-"));
+  try {
+    writeFileSync(join(dir, "t.tar"), Buffer.concat(chunks));
+    execFileSync("tar", ["-xf", "t.tar"], { cwd: dir });
+    assert.equal(readFileSync(join(dir, "keep.txt"), "utf8"), "kept\n");
+    assert.equal(existsSync(join(dir, "gone.txt")), false, "removed by the patch");
+    assert.equal(readFileSync(join(dir, "both.txt"), "utf8"), "merged\n");
+    assert.equal(readFileSync(join(dir, "src/index.ts"), "utf8"), "export {};\n");
+    assert.equal(readFileSync(join(dir, "src/main.ts"), "utf8"), "main's\n");
+    assert.equal(statSync(join(dir, "src/main.ts")).mode & 0o777, 0o755);
+    assert.equal(readFileSync(join(dir, "docs/new/guide.md"), "utf8"), "main's\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

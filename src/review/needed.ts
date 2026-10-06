@@ -13,13 +13,11 @@ import {
   type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
-import type { Finding } from "./verdict.ts";
 
 // A review with the findings parseVerdict read from its reply. Review in
-// src/rules.ts has no findings field, so this adds one, optional.
-export interface ReviewRecord extends Review {
-  findings?: readonly Finding[];
-}
+// src/rules.ts carries the findings field, so this is the same shape; the
+// alias names the reviewer's record as the brief reads it.
+export type ReviewRecord = Review;
 
 // What the ledger knows of a review request for this item. Open and claimed
 // requests are live; answered and withdrawn ones are not.
