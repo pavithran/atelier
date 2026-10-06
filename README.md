@@ -453,7 +453,11 @@ review independence, even if a Git push was first observed after handoff or
 release. Recorded push contributors also remain. Agent tokens cannot reopen accepted work by reviewing it.
 Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
-owner token. Agent tokens cannot sign in to the browser. Events from agent
+owner token. Agent tokens cannot sign in to the browser. Signing in to the
+browser with the owner token starts a session: a random id, sent only in the
+cookie, whose hash the Worker stores with a thirty day expiry it enforces.
+Sign out, in the rail of every page, ends the session at once. The token
+itself is never a cookie. Events from agent
 requests show `token proved` beside the actor; this proves identity, not the
 truth of a reported result.
 

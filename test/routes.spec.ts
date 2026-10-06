@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 
 // The queue and claim routes driven through the Worker's own fetch handler,
 // so the header parsing and wiring are tested, not only the Ledger beneath.
@@ -296,8 +297,8 @@ it("removed projects disappear from signed-in pages and a cached showcase", asyn
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Visible work", [], "owner");
   await L.claim("t1", "codex/gpt-6-astra");
-  const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: `atelier=${hex}` } }), { ...testEnv, SHOWCASE: name } as typeof env);
+  const signedIn = await signIn(TOKEN, testEnv);
+  const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), { ...testEnv, SHOWCASE: name } as typeof env);
   expect(await (await get("/showcase")).text()).toContain(name);
   expect((await call("DELETE", `/projects/${name}`, "owner", { force: true })).status).toBe(200);
   for (const path of ["/projects", "/flow", "/decisions", "/showcase"]) {
@@ -596,8 +597,8 @@ it("the project page carries the same standing as the route", async () => {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("A queued <task>", [], "owner");
   await L.dispatch("t1", "owner", { to: "cloud" });
-  const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const page = await worker.fetch(new Request(`https://atelier.test/p/${name}`, { headers: { cookie: `atelier=${hex}` } }), testEnv);
+  const signedIn = await signIn(TOKEN, testEnv);
+  const page = await worker.fetch(new Request(`https://atelier.test/p/${name}`, { headers: { cookie: signedIn } }), testEnv);
   expect(page.status).toBe(200);
   const html = await page.text();
   expect(html).toContain('id="standing"');

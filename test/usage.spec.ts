@@ -3,6 +3,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
 import { Ledger } from "../src/ledger.ts";
 import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 import { describeAlert, renderUsage, tokens } from "../src/usage/page.ts";
 import { DEFAULT_THRESHOLDS, type UsageReport } from "../src/usage/report.ts";
 
@@ -220,8 +221,8 @@ it("token counts and alert keys read as the page shows them", () => {
 
 it("the Usage page is served behind sign-in, with what the runner reported", async () => {
   await call("POST", "/usage/zcode", "owner", { models: [{ model: "glm-5.3", spans: { "7d": { requests: 2, tokens: 3500 } } }], notes: ["zcode records no cost"] }, { "x-atelier-runner": "home:page" });
-  const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const page = await worker.fetch(new Request("https://atelier.test/usage", { headers: { cookie: `atelier=${hex}` } }), testEnv);
+  const signedIn = await signIn(TOKEN, testEnv);
+  const page = await worker.fetch(new Request("https://atelier.test/usage", { headers: { cookie: signedIn } }), testEnv);
   expect(page.status).toBe(200);
   const html = await page.text();
   expect(html).toContain("<title>Usage · Atelier</title>");

@@ -77,7 +77,8 @@ const NAV: [string, string, string][] = [
 
 const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
-export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0): string {
+// `signedIn` draws the sign-out form in the rail; the sign-in page has none.
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
@@ -91,7 +92,8 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
   <a class="brand" href="/">Atelier</a>
   <nav aria-label="Main navigation">${nav}</nav>
   <div class="rail-foot"><span class="avatar">${e((ownerName || "P").slice(0, 1))}</span><strong>${e(ownerName || "Project owner")}</strong>
-  <p>Many agents, one owner per task.<br>Decisions with evidence.</p></div>
+  <p>Many agents, one owner per task.<br>Decisions with evidence.</p>${signedIn ? `
+  <form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : ""}</div>
 </aside>
 <main id="main">${body}</main></body></html>`;
 }
@@ -170,7 +172,7 @@ export function renderLogin(error?: string, showcase = false): string {
     <button class="primary">Sign in</button>
   </form>
   <p class="meta">${showcase ? 'Not the owner? <a href="/showcase">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
-</section>`, "");
+</section>`, "", null, 0, false);
 }
 
 // ── decisions ──────────────────────────────────────────────────────────────

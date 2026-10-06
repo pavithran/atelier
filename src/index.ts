@@ -162,6 +162,33 @@ function serverToken(env: Env): string | undefined {
   return (env as unknown as { ATELIER_TOKEN?: string }).ATELIER_TOKEN;
 }
 
+// Browser sessions. Signing in with the owner token issues a fresh random id,
+// sent only in the cookie; the index Durable Object stores its hash with an
+// expiry, as it stores agent tokens, and every browser request looks the hash
+// up there. The server enforces the expiry, so a copied cookie stops working
+// when the session ends whatever the browser kept, and logout deletes the row,
+// which ends the session at once. A stored session rather than a signed
+// cookie because revocation needs server state in any case, and a random id
+// then needs no signing key: nothing to set beyond ATELIER_TOKEN, and nothing
+// derivable from it. The lookup costs one Durable Object read per browser
+// request, as an agent token costs per API request.
+const SESSION_SECONDS = 30 * 24 * 60 * 60;
+const COOKIE = /(?:^|;\s*)atelier=([a-f0-9]{64})/;
+const cookieFlags = "Path=/; HttpOnly; Secure; SameSite=Strict";
+
+async function startSession(env: Env, now: number): Promise<string> {
+  const id = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  await index(env).startSession({ hash: await sha256(id), createdAt: new Date(now).toISOString(), expiresAt: new Date(now + SESSION_SECONDS * 1000).toISOString() });
+  return `atelier=${id}; ${cookieFlags}; Max-Age=${SESSION_SECONDS}`;
+}
+
+// Ends the session the request's cookie names, if any, and clears the cookie.
+async function endSession(req: Request, env: Env): Promise<string> {
+  const id = COOKIE.exec(req.headers.get("cookie") ?? "")?.[1];
+  if (id) await index(env).endSession(await sha256(id));
+  return `atelier=; ${cookieFlags}; Max-Age=0`;
+}
+
 async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentToken | null> {
   const want = serverToken(env);
   if (!want) return null;
@@ -171,9 +198,12 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentT
     const token = await index(env).agentToken(await sha256(bearer));
     return token && tokenActive(token, Date.now()) ? token : null;
   }
-  const cookie = /(?:^|;\s*)atelier=([a-f0-9]{64})/.exec(req.headers.get("cookie") ?? "")?.[1];
-  if (cookie && sameString(cookie, await sha256(want))) return "ui";
-  return null;
+  const id = COOKIE.exec(req.headers.get("cookie") ?? "")?.[1];
+  if (!id) return null;
+  // The index drops an expired row when it is read; the time is checked here
+  // too, so the answer never depends on which of the two clocks is read.
+  const session = await index(env).session(await sha256(id));
+  return session && Date.parse(session.expiresAt) > Date.now() ? "ui" : null;
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -1174,15 +1204,15 @@ export default {
           const token = String((await req.formData()).get("token") ?? "");
           const want = serverToken(env);
           if (!want || !sameString(token, want)) return html(renderLogin("That token is not this server's."), 401);
-          return new Response(null, {
-            status: 303,
-            headers: {
-              location: "/",
-              "set-cookie": `atelier=${await sha256(want)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`,
-            },
-          });
+          return new Response(null, { status: 303, headers: { location: "/", "set-cookie": await startSession(env, Date.now()) } });
         }
         return html(renderLogin(undefined, (await liveShowcase(env).catch(() => [])).length > 0));
+      }
+      // Sign out: a form in every signed-in page's rail. The Origin check is
+      // the one every owner form makes, so another site cannot end a session.
+      if (url.pathname === "/logout" && req.method === "POST") {
+        if (req.headers.get("origin") !== url.origin) return html("Cross-origin form refused.", 403);
+        return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
       const how = await authorised(req, env);
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
