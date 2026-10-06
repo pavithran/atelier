@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
@@ -103,6 +103,35 @@ export function writeBrief(workspace, text) {
 
 export const removeBrief = ({ file }) => rmSync(file, { force: true });
 
+// Every opencode process opens one database in its data folder,
+// $XDG_DATA_HOME/opencode/opencode.db, and prunes it at startup; runs
+// started together deadlock on it, holding it at 0% CPU without reaching
+// the model. So each opencode run gets a data folder of its own. Keys that
+// reach opencode through its environment or its config still do: the
+// harness inherits the runner's environment with only XDG_DATA_HOME
+// changed, and opencode reads its config from XDG_CONFIG_HOME and its
+// downloads from XDG_CACHE_HOME. A key saved by `opencode auth login` is in
+// the shared data folder's auth.json, which a run does not see. Other
+// harnesses keep the runner's environment as it is.
+export const OWN_DATA_HOME = new Set(["opencode"]);
+
+// The folder is a sibling of the workspace, like the brief, so nothing in
+// it can be committed. A second interrupt ends the runner through
+// process.exit, which runs no finally block, so the folder is also removed
+// on exit while it exists.
+export function makeDataHome(workspace) {
+  const dir = mkdtempSync(join(dirname(workspace), `.atelier-${basename(workspace)}-opencode-data-`));
+  const onExit = () => rmSync(dir, { recursive: true, force: true });
+  process.on("exit", onExit);
+  return { dir, onExit };
+}
+
+// Retried, because a process the harness left behind may still be writing as the folder goes.
+export function removeDataHome({ dir, onExit }) {
+  if (onExit) process.removeListener("exit", onExit);
+  rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+}
+
 async function checked(argv, options, executeChild = execute) {
   const result = await executeChild(argv, options);
   if (result.timedOut) throw new Error(`${options.step} timed out; claim preserved for owner inspection`);
@@ -140,9 +169,20 @@ export async function runTask(assignment, config, name, io) {
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
     brief = await io.brief(workspace, briefFor({ ...item, owner: actor }, project));
-    advance({ type: "start" });
-    taskFailure = true;
-    const result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace);
+    // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
+    // is removed when the harness ends, however it ends, before anything else.
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    try {
+      advance({ type: "start" });
+      taskFailure = true;
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { XDG_DATA_HOME: dataHome.dir } : undefined);
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
     if (result.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
     taskFailure = result.code !== 0;
@@ -219,8 +259,10 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         await checked(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
       }
     },
-    harness: (argv, cwd) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }),
-    brief: writeBrief, removeBrief,
+    // `env` holds what a run changes in the runner's environment (OWN_DATA_HOME).
+    harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
+      ...(env ? { env: { ...process.env, ...env } } : {}) }),
+    brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     ...taskIO,
   };
   try {
