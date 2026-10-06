@@ -119,6 +119,10 @@ function git(args, opts = {}) {
   const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
+  // git itself did not run: it is not on PATH or not executable, or its
+  // output overran the buffer. There is no exit status to read, so this ends
+  // the command whatever allowFail says, and the error is the detail.
+  if (r.error) die(`git ${shown.join(" ")} could not run: ${r.error.code === "ENOENT" ? "git was not found on PATH" : r.error.message}`);
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
