@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
+import { landingDir, landingJournalFile } from "../cli/landing.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 function fixture(t) {
@@ -57,7 +58,7 @@ globalThis.fetch = async (url, options) => {
   return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
 };
 `);
-  const runWith = (env, ...args) => spawnSync(process.execPath, ["--import", preload, cli, ...args], { cwd: checkout, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner", GIT_CONFIG_NOSYSTEM: "1", ...env } });
+  const runWith = (env, ...args) => spawnSync(process.execPath, ["--import", preload, cli, ...args], { cwd: checkout, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner", GIT_CONFIG_NOSYSTEM: "1", ...env } });
   const run = (...args) => runWith({}, ...args);
   // A command that refuses before any request leaves no log.
   const requests = () => existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
@@ -375,7 +376,8 @@ const unfinished = {
   "REVERT_HEAD": { say: /a revert in progress/, make: (f) => writeFileSync(join(f.checkout, ".git", "REVERT_HEAD"), f.head + "\n") },
   "rebase-merge": { say: /a rebase in progress/, make: (f) => mkdirSync(join(f.checkout, ".git", "rebase-merge")) },
   "rebase-apply": { say: /a rebase in progress/, make: (f) => mkdirSync(join(f.checkout, ".git", "rebase-apply")) },
-  "a landing journal": { say: /a landing in progress/, make: (f) => writeFileSync(join(f.checkout, ".git", "atelier-landing.json"), "{}\n") },
+  // The journal lives under the cache, keyed by the checkout's Git directory, not in it.
+  "a landing journal": { say: /a landing in progress/, make: (f) => { const file = landingJournalFile(landingDir(join(f.dir, "cache"), join(f.checkout, ".git"))); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "{}\n"); } },
   "a cherry-pick stopped on a conflict": {
     say: /a cherry-pick in progress/,
     make: (f) => { diverge(f); conflict(f, "cherry-pick", "side"); assert.ok(marked(f, "CHERRY_PICK_HEAD") && unmerged(f)); },
