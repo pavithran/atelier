@@ -1,4 +1,5 @@
 import { familyOf } from "./models/pool.ts";
+import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -145,9 +146,34 @@ export function assertReviewAllowed(item: Item, proved: boolean): void {
 
 // "claude-code/opus-5.5" → "opus-5.5". The model, not the harness, is what
 // makes a second opinion independent; the same model in another harness is not.
+// This is the model as the actor spells it, for display; independence
+// compares modelKey.
 export function modelOf(actor: string): string {
   const slash = actor.indexOf("/");
   return slash === -1 ? actor : actor.slice(slash + 1);
+}
+
+// The model an actor runs, as review independence compares it. Letter case
+// and a ":profile" suffix (the AI Studio's oMLX profiles) do not make another
+// model, so the name is lowercased and cut at its first colon. A name the
+// model registry knows, as a model's id or one of its aliases, becomes that
+// model's id: "claude-code/Opus-5.5:fast" and "antigravity/claude-opus-5-5"
+// both give "opus-5.5". A name the registry does not know is compared as it
+// is after lowercasing and cutting.
+const bareModel = (model: string) => model.toLowerCase().split(":")[0];
+const REGISTERED = new Map(MODEL_PROFILES.flatMap((p) => [p.id, ...(p.aliases ?? [])].map((name) => [bareModel(name), bareModel(p.id)] as const)));
+
+export function modelKey(actor: string): string {
+  const model = bareModel(modelOf(actor));
+  return REGISTERED.get(model) ?? model;
+}
+
+// Whether two actor names stand for one agent: the same harness, in any
+// letter case, running the same model by modelKey. The same model in another
+// harness is another agent, though not another model.
+export function sameActor(a: string, b: string): boolean {
+  const harness = (actor: string) => (actor.includes("/") ? actor.slice(0, actor.indexOf("/")).toLowerCase() : "");
+  return harness(a) === harness(b) && modelKey(a) === modelKey(b);
 }
 
 // Minimal glob: `**` crosses directories, `*` does not, everything else literal.
@@ -232,8 +258,11 @@ export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEF
 
 // ControlPlane names agents separately from the harness that runs a model.
 export function agentOf(actor: string, agents: Record<string, AgentPolicy>): string | null {
-  const [harness, model] = actor.toLowerCase().split("/");
-  if (!model) return null;
+  const [harness, named] = actor.toLowerCase().split("/");
+  if (!named) return null;
+  // The model by modelKey, so a profile suffix or another name for the same
+  // model never maps the actor to another agent.
+  const model = modelKey(actor);
   const fixed = harness === "claude-code" ? "claude" : harness === "codex" ? "codex"
     : harness === "zcode" || (harness === "opencode" && model.startsWith("glm")) ? "glm" : null;
   const family = familyOf(model);
@@ -387,11 +416,14 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       if (!r.approve) return false;
       if (r.by === owner) return true;
       if (!validActor(r.by) || !r.by.includes("/")) return false;
+      // Models and agents are compared by modelKey and sameActor, so a
+      // contributor's model under another letter case, profile or registered
+      // name never counts as independent of itself.
       return contributors.every((actor) => {
-        if (r.by === actor) return false;
-        if (!governed) return modelOf(r.by) !== modelOf(actor);
+        if (sameActor(r.by, actor)) return false;
+        if (!governed) return modelKey(r.by) !== modelKey(actor);
         if (kind === "coordinated") return true;
-        const family = familyOf(modelOf(r.by)), contributorFamily = familyOf(modelOf(actor));
+        const family = familyOf(modelKey(r.by)), contributorFamily = familyOf(modelKey(actor));
         return family !== "other" && contributorFamily !== "other" && family !== contributorFamily;
       });
     });
