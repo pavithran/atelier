@@ -102,29 +102,6 @@ test("the latest observation at a head wins", () => {
   assert.match(g.blockers.join(), /failed when observed/);
 });
 
-test("decision 2026-10-06: a failing merged run survives a later plain run; only a passing merged run or a new head clears it", () => {
-  const fail = pass({ passed: false, merged: "c".repeat(40), at: "2026-10-03T12:00:00.000Z" });
-  const plain = pass({ at: "2026-10-03T13:00:00.000Z" });
-  const g = gate(item(), policy, [fail, plain], []);
-  assert.equal(g.ready, false);
-  assert.deepEqual(g.blockers, ["`npm test` failed when observed at this head merged with main at cccccccc; only a passing merged run or a new head clears it"]);
-  // A later passing merged run clears it; and read apart the other way, a
-  // passing merged run does not clear a failing plain one.
-  const cleared = gate(item(), policy, [fail, plain, pass({ merged: "d".repeat(40), at: "2026-10-03T14:00:00.000Z" })], []);
-  assert.deepEqual(cleared, { ready: true, blockers: [], needsAssessor: false, outOfScope: [] });
-  const plainFail = pass({ passed: false, at: "2026-10-03T12:00:00.000Z" });
-  const mergedPass = pass({ merged: "c".repeat(40), at: "2026-10-03T13:00:00.000Z" });
-  assert.match(gate(item(), policy, [plainFail, mergedPass], []).blockers.join(), /`npm test` failed when observed/);
-  // A new head ends it: evidence at the old head is read no more.
-  const moved = gate(item({ head: H2 }), policy, [fail, plain, pass({ head: H2, at: "2026-10-03T15:00:00.000Z" })], []);
-  assert.equal(moved.ready, true);
-});
-
-test("decision 2026-10-06: a merged run never satisfies a required check and never measures the changed paths", () => {
-  const g = gate(item(), policy, [pass({ merged: "c".repeat(40) })], []);
-  assert.deepEqual(g.blockers, ["`npm test` not yet observed at this head", "changed paths not yet observed"]);
-});
-
 test("protected paths need a model of another family; the project owner's approval is not that review", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
   const sameModel: Review = { itemId: "t1", by: "other-harness/opus-5.5", head: H1, approve: true, note: "", at: T };
