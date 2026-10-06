@@ -1393,10 +1393,10 @@ const commands = {
     const words = args._.slice(1);
     const named = /^t\d+$/.test(words[0] ?? "") ? words.shift() : null;
     const claim = words.join(" ");
-    if (!claim) die(usage.report);
-    if (args.item !== undefined && (typeof args.item !== "string" || !/^t\d+$/.test(args.item))) die(`--item needs an item id, such as t7: ${usage.report}`);
+    if (!claim) die(COMMAND_USAGE.report);
+    if (args.item !== undefined && (typeof args.item !== "string" || !/^t\d+$/.test(args.item))) die(`--item needs an item id, such as t7: ${COMMAND_USAGE.report}`);
     const name = project(), here = wsConfig("item"), id = args.item ?? named ?? here;
-    if (!id) die(`which item? pass its id (t3) or run inside its workspace: ${usage.report}`);
+    if (!id) die(`which item? pass its id (t3) or run inside its workspace: ${COMMAND_USAGE.report}`);
     if (here && id !== here && args.item === undefined && args.project === undefined) {
       die(`this is ${here}'s workspace, and the claim names ${id}; to record it on ${id} from here: atelier report "…" --item ${id}`);
     }
