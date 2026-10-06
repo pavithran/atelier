@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { insecureServer } from "../cli/atelier.mjs";
 
 // `atelier login --server URL` against a stand-in server on localhost, with
 // the file store forced so no Keychain is touched. The token an earlier login
@@ -15,7 +16,8 @@ import { join, resolve } from "node:path";
 const cli = resolve("cli/atelier.mjs");
 const STORED = "stored-token-for-old", TYPED = "typed-token-for-new", ENV = "env-token-for-session";
 
-// `configured` is the server config.json names; "SELF" means the stand-in itself.
+// `configured` is the server config.json names; "SELF" means the stand-in
+// itself, and a function is given the stand-in's address to derive one.
 async function setup(t, { status = 200, configured = "https://old.invalid" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-login-server-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -29,7 +31,8 @@ async function setup(t, { status = 200, configured = "https://old.invalid" } = {
   await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
-  const before = { server: configured === "SELF" ? url : configured, owner: "alpha", ownerName: "Alpha", projects: { p: { path: "/x", branch: "main" } } };
+  const named = typeof configured === "function" ? configured(url) : configured === "SELF" ? url : configured;
+  const before = { server: named, owner: "alpha", ownerName: "Alpha", projects: { p: { path: "/x", branch: "main" } } };
   writeFileSync(join(dir, "config.json"), JSON.stringify(before));
   writeFileSync(join(dir, "secrets.json"), JSON.stringify({ API_TOKEN: STORED }), { mode: 0o600 });
   const run = async (argv, { input = "", env = {} } = {}) => {
@@ -177,4 +180,40 @@ for (const status of [401, 503]) test(`ATELIER_TOKEN for SELF that SELF answers 
   assert.deepEqual(f.seen, [`Bearer ${ENV}`]);
   assert.deepEqual(f.config(), f.before, "config.json changed on a refused login");
   assert.equal(f.stored(), STORED, "the store changed on a refused login");
+});
+
+// The owner token goes with every request as a bearer header, so a server
+// reached over plain http would show it to every network on the way. Such an
+// address is refused before any request, wherever it is named; a server on
+// this machine is the one exception.
+test("https anywhere and plain http on this machine pass; plain http elsewhere and non-URLs are refused", () => {
+  for (const url of ["https://atelier.example.com", "https://atelier.example.workers.dev", "http://localhost:8787", "http://127.0.0.1:8787", "http://[::1]:8787"]) assert.equal(insecureServer(url), undefined, url);
+  for (const url of ["http://atelier.example.com", "http://atelier.example.workers.dev", "http://0.0.0.0:8787", "http://10.0.0.2:8787"]) assert.match(insecureServer(url) ?? "", /is not https: the owner token goes with every request/, url);
+  assert.match(insecureServer("ftp://localhost") ?? "", /is not https/);
+  assert.match(insecureServer("atelier.example.com") ?? "", /is not a URL/);
+});
+
+// The stand-in listens on 127.0.0.1, which 0.0.0.0 reaches as well, so a
+// request the rule let through would show up in `seen`.
+test("an http server on another host is refused before any request, named by ATELIER_SERVER, config.json or login --server", async (t) => {
+  const plain = (url) => url.replace("127.0.0.1", "0.0.0.0");
+  const f = await setup(t, { configured: plain });
+  for (const env of [{ ATELIER_SERVER: plain(f.url), ATELIER_TOKEN: ENV }, {}]) {
+    const r = await f.run(["ls", "--project", "p"], { env });
+    assert.equal(r.code, 1, r.output);
+    assert.match(r.output, /http:\/\/0\.0\.0\.0:\d+ is not https: the owner token goes with every request/);
+  }
+  const login = await f.run(["login", "--server", `${plain(f.url)}/`], { input: `${TYPED}\n` });
+  assert.equal(login.code, 1, login.output);
+  assert.match(login.output, /is not https/);
+  assert.deepEqual(f.seen, [], "a request reached the server");
+  assert.deepEqual(f.config(), f.before);
+  assert.equal(f.stored(), STORED);
+});
+
+test("plain http on localhost is accepted, as on 127.0.0.1", async (t) => {
+  const f = await setup(t);
+  const r = await f.run(["ls", "--project", "p"], { env: { ATELIER_SERVER: f.url.replace("127.0.0.1", "localhost"), ATELIER_TOKEN: ENV } });
+  assert.equal(r.code, 0, r.output);
+  assert.deepEqual(f.seen, [`Bearer ${ENV}`]);
 });
