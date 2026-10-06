@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 
 // A handoff, release or abandon must not leave the old holder a working
 // write token it is no longer meant to have. These tests drive the Worker's
@@ -110,10 +111,11 @@ it("the owner's abandon, and the owner's release and handoff forms, fail with no
   fa.state.revoking = "fails";
   const abandoned = await owner("POST", `${base}/t1/abandon`, { note: "not needed" });
   expect({ status: abandoned.status, error: await errorOf(abandoned) }).toEqual({ status: 503, error: "revoke_failed" });
-  const cookie = `atelier=${[...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: fa.artifacts } as typeof env;
+  const cookie = await signIn(TOKEN, bindings);
   const form = (id: string, verb: string, fields: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/${id}/${verb}`, {
     method: "POST", headers: { cookie, origin: "https://atelier.test", "content-type": "application/x-www-form-urlencoded" }, body: fields,
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: fa.artifacts } as typeof env);
+  }), bindings);
   const released = await form("t2", "release", `note=done&head=${H0}`);
   const handed = await form("t3", "handoff", `note=yours&head=${H0}&to=${encodeURIComponent(B)}`);
   expect([released.status, handed.status]).toEqual([503, 503]);
