@@ -1,3 +1,4 @@
+import { layersFigure } from "./diagrams.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
 // reads fully without script; the Studio refreshes itself with a meta
@@ -677,6 +678,11 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   </section>` : ""}
   ${compareBlock(stories, imported, total, owner, who, anchor)}
   ${body}
+  <section aria-label="Where it runs" id="where">
+    <h2 class="section-title">Where it runs</h2>
+    ${layersFigure()}
+    <p class="meta">How a task goes from claim to merge, and the rules each step enforces: <a href="/how#the-loop">How it works</a>.</p>
+  </section>
   <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message or address in them. Review notes, reports and diffs stay private in every case.</p>
 `,
   });

@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import how from "../src/how.css";
+import layout from "../src/layout.css";
 import { escapeText, renderLogin, renderShowcase } from "../src/ui";
 import { HELP_FORMS, guideText } from "../src/usage.ts";
 import { LOOP, ORCHESTRATOR, RULES } from "../src/how-data.ts";
@@ -61,12 +62,12 @@ it("draws the loop as an inline SVG that stands alone, with a caption and a labe
 
 it("keeps the diagram's text between 11 and 13 pixels at drawn scale", async () => {
   const { body } = await page();
-  const svg = /<svg[\s\S]*?<\/svg>/.exec(body)![0];
-  const classes = new Set([...svg.matchAll(/<text class="([a-z-]+)"/g)].map((m) => m[1]));
-  expect([...classes].sort()).toEqual(["hw-cmd", "hw-lane-label", "hw-move", "hw-name", "hw-note", "hw-recs"]);
+  const svgs = [...body.matchAll(/<svg[\s\S]*?<\/svg>/g)].map((m) => m[0]);
+  const classes = new Set(svgs.flatMap((svg) => [...svg.matchAll(/<text class="([a-z-]+)"/g)].map((m) => m[1])));
+  expect([...classes].sort()).toEqual(["hw-cmd", "hw-lane-label", "hw-move", "hw-name", "hw-note", "hw-recs", "lay-label", "lay-name", "lay-sub"]);
   for (const name of classes) {
-    const rule = new RegExp(`\\.${name}\\s*\\{[^}]*font:[^;}]*?(\\d+)px`).exec(how);
-    expect(rule, `${name} has no font size in how.css`).not.toBeNull();
+    const rule = new RegExp(`\\.${name}\\s*\\{[^}]*font:[^;}]*?(\\d+)px`).exec(name.startsWith("lay-") ? layout : how);
+    expect(rule, `${name} has no font size in its stylesheet`).not.toBeNull();
     const size = Number(rule![1]);
     expect(size, name).toBeGreaterThanOrEqual(11);
     expect(size, name).toBeLessThanOrEqual(13);
@@ -84,7 +85,7 @@ it("lists every rule, and every contents link has its section", async () => {
   const { body } = await page();
   for (const rule of RULES) expect(body).toContain(`<h3>${escapeText(rule.title)}</h3>`);
   const links = [...body.matchAll(/<a href="#([a-z-]+)"/g)].map((m) => m[1]);
-  expect(links).toEqual(["terms", "the-loop", "rules", "the-orchestrator", "commands"]);
+  expect(links).toEqual(["terms", "where-it-runs", "the-loop", "rules", "the-orchestrator", "commands"]);
   for (const id of links) expect(body).toContain(`<section id="${id}" class="how-section">`);
 });
 
@@ -112,4 +113,15 @@ it("is linked from the sign-in page and the public showcase, which stay free of 
   expect(showcase).toContain('<a href="/how">How it works</a>');
   expect(showcase).not.toContain('href="/p/');
   expect((await (await get("/login")).text())).toContain('href="/how"');
+});
+
+it("the How page and the showcase draw where Atelier runs, layer by layer", async () => {
+  const pages: [string, string][] = [["/how", (await page()).body], ["/showcase", renderShowcase([], undefined as never, "pavi", "PAVI")]];
+  for (const [path, body] of pages) {
+    expect(body, path).toContain('class="lay-fig"');
+    expect(body, path).toContain("The CLI is the one path to Cloudflare");
+    expect(body, path).toContain(">Check container<");
+    expect(body, path).toContain(">with --sandbox; internet off<");
+  }
+  expect(pages[0][1].indexOf('id="where-it-runs"')).toBeLessThan(pages[0][1].indexOf('id="the-loop"'));
 });
