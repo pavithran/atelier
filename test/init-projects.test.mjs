@@ -31,7 +31,7 @@ globalThis.fetch = async (url, options) => {
     return Response.json({ from, to, key: from, names: [from, to], project: { name: to, repo: from, policy: { checks: [], protected: [] } } });
   }
   return Response.json(options.method === 'DELETE' ? { removed: true } : {
-    project: { repo: 'weblog', policy: { checks: [], protected: ['manual/**'] } },
+    project: { repo: 'weblog', policy: { checks: [], protected: ['manual/**'], ...(process.env.TEST_APPROVED ? { approval: process.env.TEST_APPROVED } : {}) } },
     remote: 'https://git.test/weblog', token: 'test-token',
     baseline: { remote: 'https://git.test/weblog', token: 'test-token' }
   });
@@ -145,6 +145,37 @@ test("CLI init sends ControlPlane role and class policy", () => fixture(({ comma
   const body = JSON.parse(calls()[0].body);
   assert.deepEqual(body.agents, agents);
   assert.deepEqual(body.execution, execution);
+}));
+
+test("CLI init keeps the approval recorded on a ControlPlane project unless the baseline is replaced", () => fixture(({ command, initial, calls }) => {
+  const dir = join(initial.projects.weblog.path, "docs/control-plane");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents: { codex: { available: true, eligible_roles: ["executor"] } } }));
+  const approval = "PAVI, 2026-10-01: approved the copy";
+  // Nothing recorded yet: the approval is asked for, after one read and no write.
+  const asked = command(["init", "--title", "Weblog"]);
+  assert.equal(asked.status, 1, asked.stdout);
+  assert.match(asked.stderr, /Record the project owner's approval/);
+  assert.deepEqual(calls().map((c) => c.method), ["GET"]);
+  // Recorded: a change to the title or the checks keeps it and sends none.
+  const kept = command(["init", "--title", "Weblog", "--check", "npm test"], { TEST_APPROVED: approval });
+  assert.equal(kept.status, 0, kept.stderr);
+  const put = calls().filter((c) => c.method === "PUT").at(-1);
+  assert.equal(JSON.parse(put.body).approval, undefined);
+  assert.deepEqual(JSON.parse(put.body).checks, ["npm test"]);
+  assert.ok(kept.stdout.includes(`Approval:   ${approval}`), kept.stdout);
+  // Given, it is sent as before, with no read first.
+  const given = command(["init", "--approval", "PAVI, 2026-10-02: approved again"], { TEST_APPROVED: approval });
+  assert.equal(given.status, 0, given.stderr);
+  assert.deepEqual(calls().slice(-1).map((c) => [c.method, JSON.parse(c.body).approval]), [["PUT", "PAVI, 2026-10-02: approved again"]]);
+  // --reset drops the recorded policy and --history-since replaces the baseline: asked again, and told why.
+  for (const [flag, why] of [[["--reset"], /--reset starts the policy over/], [["--history-since", "2026-01-01"], /--history-since replaces the baseline/]]) {
+    const again = command(["init", ...flag], { TEST_APPROVED: approval });
+    assert.equal(again.status, 1, again.stdout);
+    assert.match(again.stderr, why);
+    assert.match(again.stderr, /Record the project owner's approval/);
+  }
+  assert.equal(calls().filter((c) => c.method === "PUT").length, 2);
 }));
 
 test("CLI sync refreshes ControlPlane policy even when the baseline already matches", () => fixture(({ command, initial, calls }) => {
