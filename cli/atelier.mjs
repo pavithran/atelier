@@ -21,13 +21,13 @@ import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, session
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
-import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
+import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision } from "../src/control-plane.ts";
 import { assertEligible, checkApplies, pathCollisions } from "../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
-import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
+import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLeft, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
@@ -706,10 +706,10 @@ export function readControlPlane(top) {
   const read = (name) => {
     try {
       const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error(`${name} is empty or is not an object`);
+      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error("empty, or not a JSON object");
       return value;
     }
-    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+    catch (error) { if (error.code === "ENOENT") return null; throw new Error(`${join("docs", "control-plane", name)}: ${error.message}`); }
   };
   const agent = read("agent-policy.v1.json");
   const exec = read("execution-policy.v1.json");
@@ -749,14 +749,16 @@ export async function refreshControlPlane(top, name, request = call, report = co
   let cp;
   try { cp = readControlPlane(top); }
   catch (error) {
-    report(`Warning: ControlPlane policy could not be read: ${error.message}. Continuing without a refresh; merge uses the policy recorded at acceptance.`);
-    return { skipped: true, changes: [] };
+    report(`Warning: ControlPlane policy could not be read: ${error.message}. The stored policy was not refreshed.`);
+    return { skipped: true, changes: [], error: error.message };
   }
   if (!cp) return null;
-  const before = (await request("GET", P(name), undefined, OWNER)).project.policy;
+  const current = await request("GET", P(name), undefined, OWNER);
+  const before = current.project.policy;
   const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
   // Roles and change classes are compared here too, as whole values with their
-  // keys in a fixed order; the merge guard compares protected paths only.
+  // keys in a fixed order; the merge guard compares the fields an acceptance
+  // records (mergePolicyDecision).
   const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
   const changes = [...controlPlaneChanges(before, policy),
     ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`)];
@@ -764,7 +766,7 @@ export async function refreshControlPlane(top, name, request = call, report = co
     await request("PUT", P(name), policy, OWNER);
     for (const change of changes) report(`ControlPlane ${change}`);
   }
-  return { before, policy: { ...before, ...policy }, changes };
+  return { before, policy: { ...before, ...policy }, changes, items: current.items ?? [] };
 }
 
 // The receipt goes only into a real folder reached through no symlink, the
@@ -1384,7 +1386,9 @@ const commands = {
       return;
     }
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
-    const cp = readControlPlane(top);
+    let cp;
+    try { cp = readControlPlane(top); }
+    catch (error) { die(`ControlPlane policy could not be read: ${error.message}. Fix the file, then run atelier init again.`); }
     // A ControlPlane project is copied into Artifacts with the owner's
     // approval recorded on it. An init that changes the checks, the title or
     // the policy of a project already registered keeps that approval; it is
@@ -1907,29 +1911,96 @@ const commands = {
     if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
     const name = project(), id = itemArg();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
-    // Ends an interrupted merge's landing lease, so the task's owner can push
-    // again; refused once the merge is on the baseline.
+    // Ends a landing. It holds the landing lock throughout, as merge does, so
+    // it never runs beside a merge of this checkout that may be publishing.
+    // The journal is matched by project and item alone, so a landing whose
+    // acceptance was withdrawn or moved after it began, and which can no
+    // longer be finished, can still be cancelled. What the landing left in
+    // the checkout, a merge commit or an unfinished Git merge (landingLeft),
+    // is kept unless the owner asks for it to go with --discard-local; then
+    // the checkout returns to where the merge began. The landing lease is
+    // cancelled on the server while the item is accepted at the revision the
+    // journal names, or when there is no journal: a lease is taken for the
+    // accepted revision alone, and no push or review moves the acceptance
+    // while one is held, so with another acceptance this landing has none,
+    // and a lease on the new revision is not this landing's to end.
     if (args.cancel === true) {
       const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
-      const item = (await call("GET", I(name, id), undefined, OWNER)).item;
-      let journal;
-      try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
-      const local = journal.state?.mergeCommit;
-      // An unpublished merge commit in the checkout is kept unless the owner
-      // asks for it to go; then the checkout returns to where the merge began.
-      if (local && args["discard-local"] !== true) {
-        die(`the checkout holds this merge's unpublished commit ${short(local)} on top of ${short(journal.state.start)}.\nFinish it with: atelier merge ${id}\nor cancel and remove it with: atelier merge ${id} --cancel --discard-local`);
-      }
-      await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
-      if (local) {
-        if (git(["rev-parse", "HEAD"], { cwd }) !== local || git(["status", "--porcelain"], { cwd })) die(`the checkout moved since the merge; reset it yourself, then remove ${journal.file}`);
-        git(["reset", "--quiet", "--hard", journal.state.start], { cwd });
-        console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(journal.state.start)}.`);
-      }
-      journal.clear();
-      return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+      let unlock;
+      try { unlock = landingLock(landing); } catch (error) { die(error.message); }
+      try {
+        let journal;
+        try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id }); } catch (error) { die(error.message); }
+        const item = (await call("GET", I(name, id), undefined, OWNER)).item;
+        const begun = journal.state, head = begun ? begun.head : item.acceptedHead;
+        const ours = !begun || (item.state === "accepted" && item.acceptedHead === begun.head);
+        const now = item.state === "accepted" ? `accepted at ${short(item.acceptedHead)}` : item.state;
+        const left = begun ? landingLeft(git, cwd, gitDir, begun, p.branch, `Atelier: ${name}/${id} accepted at ${begun.head}`) : {};
+        const local = left.commit;
+        // Whether the baseline holds a commit, asked of its whole history,
+        // fetched here and read by Git.
+        let baselineHead = null;
+        if (local || (ours && head)) {
+          const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
+          git(["fetch", "--quiet", base.remote, p.branch], { cwd, token: base.token });
+          baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
+        }
+        const onBaseline = (commit) => !!commit && !!baselineHead && git(["merge-base", "--is-ancestor", commit, baselineHead], { cwd, allowFail: true }).status === 0;
+        // A merge already on the baseline is never cancelled, and the checkout
+        // keeps it. The journal says so once the push has returned; for a
+        // push that reached the baseline just before the process stopped, the
+        // baseline's history says so. In a project whose baseline holds part
+        // of its history, the baseline has the merge's rebuilt twin, paired
+        // with it before the push. A merge the server has recorded, or can no
+        // longer record since the item is not accepted at its revision, leaves
+        // only the journal to remove; one it can record, merge records.
+        if (local) {
+          const pairs = p.fresh === true ? loadPairs(gitDir, name) : null;
+          const sent = pairs ? Object.keys(pairs).find((commit) => pairs[commit] === local) : local;
+          if (begun.phase === "published" || onBaseline(sent)) {
+            const lost = left.held ? "" : `\n${p.branch} no longer holds the merge commit ${short(local)}; put it back on that commit before the next merge.`;
+            if (ours) die(`${id}'s merge ${short(sent ?? local)} is already on the baseline, so the landing cannot be cancelled, and the checkout keeps it.\nRecord the merge with: atelier merge ${id}${lost}`);
+            journal.clear();
+            if (item.state === "merged") return console.log(`${id} is already merged as ${short(sent ?? local)}. The landing journal is removed; the checkout keeps the merge.${lost}`);
+            return console.log(`${id}'s merge ${short(sent ?? local)} is on the baseline, but ${id} is ${now}, so Atelier cannot record it. The landing journal is removed; the checkout keeps the merge, as the baseline does.${lost}`);
+          }
+        }
+        // The accepted revision on the baseline through another merge commit,
+        // made elsewhere: its lease is that merge's, left for it to be
+        // recorded. Without a journal there is nothing else to cancel.
+        const landed = ours && onBaseline(head);
+        if (landed && !begun) die(item.state === "merged" ? `${id} is already merged; there is no landing to cancel` : `${id} at ${short(head)} is already merged on the baseline, so its landing lease cannot be cancelled. Record that merge by running atelier merge ${id} in the checkout that made it`);
+        if (left.held || left.merging) {
+          const what = left.held ? `this merge's unpublished commit ${short(local)} on top of ${short(begun.start)}` : `this merge's unfinished Git merge of ${short(begun.head)} on ${short(begun.start)}`;
+          if (args["discard-local"] !== true) {
+            if (!ours) die(`${id} is ${now}, no longer accepted at ${short(begun.head)}, the revision this landing merged, so the landing cannot be finished. The checkout holds ${what}.\nRemove it with: atelier merge ${id} --cancel --discard-local`);
+            if (landed) die(`${id} at ${short(head)} is already on the baseline through another merge commit, so this landing cannot be finished. The checkout holds ${what}.\nRemove it with: atelier merge ${id} --cancel --discard-local`);
+            die(`the checkout holds ${what}.\n${left.held ? `Finish it with: atelier merge ${id}` : `Abort it with git merge --abort, then finish the landing with: atelier merge ${id}`}\nor cancel and remove it with: atelier merge ${id} --cancel --discard-local`);
+          }
+          if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
+          const at = git(["rev-parse", "HEAD"], { cwd });
+          if (left.held && at !== local) die(`${p.branch} moved since the merge: it is at ${short(at)}, past the merge commit ${short(local)}. Nothing was changed. Move your commits off it and put ${p.branch} back on ${short(local)}, or on ${short(begun.start)} where the merge began, then run: atelier merge ${id} --cancel --discard-local`);
+          if (left.held && git(["status", "--porcelain"], { cwd })) die(`the checkout has uncommitted changes on top of the merge commit ${short(local)}. Nothing was changed. Set them aside (git stash), then run: atelier merge ${id} --cancel --discard-local`);
+        }
+        if (ours && !landed) await call("POST", `${I(name, id)}/landing`, { cancel: true }, OWNER);
+        if (left.held) {
+          git(["reset", "--quiet", "--hard", begun.start], { cwd });
+          console.log(`Removed the unpublished merge commit; ${p.branch} is back at ${short(begun.start)}.`);
+        } else if (left.merging) {
+          git(["merge", "--abort"], { cwd });
+          const rest = git(["status", "--porcelain", "--untracked-files=all"], { cwd });
+          console.log(`Aborted the unfinished Git merge; ${p.branch} is at ${short(begun.start)}, where the merge began.${rest ? `\nGit still lists these files as changed or untracked; remove any the merge left:\n${rest}` : ""}`);
+        }
+        journal.clear();
+        if (landed) return console.log(`${id}: the landing in this checkout is cancelled. ${id} at ${short(head)} is already on the baseline through another merge commit, so its landing lease is left for that merge to be recorded.`);
+        if (ours) return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+        return console.log(`${id}: the landing in this checkout is cancelled. ${id} is ${now}, and nothing changed on the server${item.state === "accepted" ? `; merge its accepted revision with: atelier merge ${id}` : ""}.`);
+      } finally { unlock(); }
     }
     const refreshed = await refreshControlPlane(cwd, name);
+    // The merge compares the policy as it is now with the one the acceptance
+    // was made under, so a policy it cannot read stops it here.
+    if (refreshed?.skipped) die(`ControlPlane policy could not be read: ${refreshed.error}. Fix the file, then run atelier merge ${id} again.`);
     if (args.head !== undefined) {
       if (!/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT] [--override-review REASON]] | atelier merge ID --cancel [--discard-local]");
       const reason=overrideArg("merge ID --head FULL_REVISION");
@@ -1946,13 +2017,21 @@ const commands = {
     try {
       try { adoptOldLanding(gitDir,landing); } catch (error) { die(error.message); }
       const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
+      // A landing begun at an acceptance that has since been withdrawn or
+      // moved cannot be finished: what it merged is no longer what is accepted.
+      let begun;
+      try { begun=landingJournal(landing,{project:name,item:id}).state; } catch (error) { die(error.message); }
+      if (begun && (begun.head!==item.acceptedHead || !['accepted','merged'].includes(item.state))) {
+        const left=landingLeft(git,cwd,gitDir,begun,p.branch,`Atelier: ${name}/${id} accepted at ${begun.head}`);
+        die(`${id} is ${item.state==='accepted'?`accepted at ${short(item.acceptedHead)}`:item.state}, no longer accepted at ${short(begun.head)}, where this checkout began landing it, so that landing cannot be finished. Cancel it with: atelier merge ${id} --cancel${left.held||left.merging?' --discard-local':''}${item.state==='accepted'?', then merge again':''}`);
+      }
       if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
       if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
       const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
       if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
-      const acceptedPolicy = { ...d.policy, protected: d.acceptanceProtected ?? [] };
+      const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
       if (refreshed?.policy) {
-        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, []);
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
         if (decision.warning) console.error(decision.warning);
       }
       if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
@@ -1965,8 +2044,12 @@ const commands = {
       if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
       if (refreshed?.policy) {
         if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
-        const paths = git(['diff', '--name-only', '--no-renames', '-z', item.base, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
-        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true);
+        // The accepted revision's own changes: those since the newest baseline
+        // commit it holds, which atelier update moves past the recorded base.
+        const forkPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
+        const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base;
+        const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true, context);
         if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
       }
       const local=git(['rev-parse','HEAD'],{cwd});
@@ -2035,7 +2118,8 @@ const commands = {
         }
       }
       const mergeCommit=journal.state.mergeCommit;
-      if(git(['rev-parse','HEAD'],{cwd})!==mergeCommit)die('checkout moved after the merge; restore the checkout before retrying');
+      const at=git(['rev-parse','HEAD'],{cwd});
+      if(at!==mergeCommit)die(`the checkout moved after the merge: ${p.branch} is at ${short(at)}, not at the merge commit ${short(mergeCommit)}. Put ${p.branch} back on ${short(mergeCommit)}, moving any commits of yours off it, then run atelier merge ${id} again, or cancel the landing with: atelier merge ${id} --cancel`);
       // Take the landing lease: it confirms the acceptance has not moved and
       // stops a push over this revision until the merge is recorded.
       // A refusal ends the command here with the server's reason; the local

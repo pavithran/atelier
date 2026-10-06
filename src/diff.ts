@@ -194,26 +194,45 @@ function differing(a: Entry[] | null, b: Entry[] | null): [Entry | undefined, En
   return out.sort((x, y) => (x[2] < y[2] ? -1 : x[2] > y[2] ? 1 : 0));
 }
 
-async function changedLeaves(r: Reader, base: string | null, head: string | null, prefix: string, out: [Leaf | null, Leaf | null][], cap: number) {
-  if (out.length > cap) return;
-  // The listings are passed straight to differing() and never held here.
-  // Every changed entry is kept: a changed subdirectory may hold no changed
-  // file at all (an empty tree), so no level can know in advance how many of
-  // its entries will be listed.
+// Changed entries a level holds while the diff descends into one of them,
+// however wide the level is.
+const RETAINED = 1_000;
+
+// The changed entries of one level from `from` on, at most `size` of them,
+// with how many the level has. The listings and the whole changed list live
+// only in this call, so a level holds no more than the page it is given.
+async function changedPage(r: Reader, base: string | null, head: string | null, from: number, size: number) {
   const changed = differing(...(await Promise.all([base ? r.tree(base) : [], head ? r.tree(head) : []])));
-  for (const [l, rt, name] of changed) {
-    if (out.length > cap) return;
-    const path = prefix + name;
-    const lTree = l?.type === "tree", rTree = rt?.type === "tree";
-    if (lTree || rTree) {
-      await changedLeaves(r, lTree ? l!.hash : null, rTree ? rt!.hash : null, path + "/", out, cap);
-      if (l && !lTree) out.push([{ path, hash: l.hash, mode: l.mode }, null]);
-      if (rt && !rTree) out.push([null, { path, hash: rt.hash, mode: rt.mode }]);
-      continue;
+  return { page: changed.slice(from, from + size), total: changed.length };
+}
+
+async function changedLeaves(r: Reader, base: string | null, head: string | null, prefix: string, out: [Leaf | null, Leaf | null][], cap: number) {
+  // A level holds one page of RETAINED changed entries while the diff
+  // descends, so a deep tree where every file at every level changed holds a
+  // page per ancestor rather than each ancestor's whole directory. When
+  // entries remain past the page, the level is read again and continues from
+  // the next one: an entry that lists nothing, such as an added empty
+  // directory, never hides a later one. The page is the same size however
+  // close the list is to its cap, so a level is read at most once per page
+  // rather than once per entry as the cap nears.
+  for (let done = 0; out.length <= cap; ) {
+    const { page, total } = await changedPage(r, base, head, done, RETAINED);
+    done += page.length;
+    for (const [l, rt, name] of page) {
+      if (out.length > cap) return;
+      const path = prefix + name;
+      const lTree = l?.type === "tree", rTree = rt?.type === "tree";
+      if (lTree || rTree) {
+        await changedLeaves(r, lTree ? l!.hash : null, rTree ? rt!.hash : null, path + "/", out, cap);
+        if (l && !lTree) out.push([{ path, hash: l.hash, mode: l.mode }, null]);
+        if (rt && !rTree) out.push([null, { path, hash: rt.hash, mode: rt.mode }]);
+        continue;
+      }
+      // A submodule is listed as a change of the commit it points to; its
+      // contents live in another repository and are not read.
+      out.push([l ? { path, hash: l.hash, mode: l.mode } : null, rt ? { path, hash: rt.hash, mode: rt.mode } : null]);
     }
-    // A submodule is listed as a change of the commit it points to; its
-    // contents live in another repository and are not read.
-    out.push([l ? { path, hash: l.hash, mode: l.mode } : null, rt ? { path, hash: rt.hash, mode: rt.mode } : null]);
+    if (done >= total) return;
   }
 }
 

@@ -874,7 +874,12 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
-    this.log(id, actor, "item.accepted", { head: item.head, protected: [...policy.protected], ...(override ? { reviewOverridden: true } : {}) }, at);
+    // The policy the acceptance is made under, for the merge guard's
+    // comparison with the policy at merge time.
+    this.log(id, actor, "item.accepted", {
+      head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
+      ...(override ? { reviewOverridden: true } : {}),
+    }, at);
     return this.item(id);
   }
 
@@ -1017,8 +1022,14 @@ export class Ledger extends DurableObject<Env> {
     // Read acceptance separately so later events cannot hide its snapshot.
     const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.accepted' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
     const acceptance = row ? JSON.parse(row.data as string) : null;
-    const acceptanceProtected: string[] | null = acceptance?.head === item.acceptedHead ? acceptance.protected ?? null : null;
-    return { item, policy, acceptanceProtected, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    const current = acceptance?.head === item.acceptedHead ? acceptance : null;
+    const acceptanceProtected: string[] | null = current?.protected ?? null;
+    // The fields the acceptance recorded of the policy it was made under; an
+    // older acceptance recorded the protected paths alone.
+    const acceptancePolicy: Record<string, unknown> | null = current
+      ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
+      : null;
+    return { item, policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string): InboxEntry[] {

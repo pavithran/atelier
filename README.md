@@ -150,8 +150,22 @@ ControlPlane policy files. Models are compared without letter case or a
 `:profile` suffix, and a name the model registry
 ([`src/models/registry.ts`](src/models/registry.ts)) lists for a model, such as
 `claude-opus-5-5` for `opus-5.5`, is that model. What a check executes is protected automatically: a script it runs (`./check.sh`,
-`node scripts/verify.mjs`), and `package.json` when it goes through a package
-manager, whose scripts an item could otherwise rewrite. An item therefore
+`bin/check`, `node scripts/verify.mjs`); the recipe files `make` and `just`
+run (`Makefile`, `makefile`, `GNUmakefile` and every `*.mk`; `justfile`,
+`Justfile`, `.justfile` and every `*.just`; or the file and directory the
+command's `-f` and `-C` options name); the manifest a package manager runs
+scripts from, whose scripts an item could otherwise rewrite, with the
+configuration that changes what it runs (`package.json` with `.npmrc` for
+npm, `.pnpmfile.cjs` for pnpm, `.yarnrc.yml` and `.yarn/releases/**` for
+yarn, `bunfig.toml` for bun); the manifests build tools run code from
+(`Cargo.toml` and `build.rs` for cargo, `Package.swift` for swift, the
+project and workspace for xcodebuild, `deno.json` for `deno task`); and the
+local binary `npx`, `bunx`, `pnpm dlx` or `yarn exec` would run, under
+`node_modules/.bin/`. A runner's name counts wherever it stands in the
+check's line: behind `env`, `time`, `timeout`, `sudo`, `nice`, `cross-env`
+or `xvfb-run`, inside a shell's `-c` string, after `if` or `!`, or on a
+later line; and a manager given `--prefix`, `-C`, `--dir` or `--cwd` reads
+its files under that directory too. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such
 as the code under test, are not protected, and nor is test configuration such
 as `vitest.config.ts` unless the project protects it. Protected paths match
@@ -250,15 +264,26 @@ merged.
   the stored protected paths, eligible agents and overlap rule. The refresh
   preserves paths recorded locally by `init --protect`. Approval, checks and
   other project settings are kept. For a baseline with full history, `sync`
-  only refreshes this policy. Malformed or empty policy files produce a
-  warning and skip the refresh. Merge then uses the acceptance policy.
-- Acceptance records the project's protected paths on the server. Every
-  merge attempt compares the current ControlPlane paths with that snapshot.
-  If the accepted revision touches a newly protected path, review the task
-  and accept again, or pass `--policy-changed-ok` after reviewing the change.
-  Older acceptances without a snapshot are treated as having no recorded
-  protected paths. Re-acceptance checks the current gate and records a new
-  snapshot. `merge --cancel` does not read or refresh ControlPlane policy.
+  only refreshes this policy. A malformed or empty policy file makes `sync`
+  warn and skip the refresh, and stops `init` and `merge` until it is fixed:
+  a merge never skips the comparison below.
+- Acceptance records the project's protected paths, eligible agents, overlap
+  rule and required checks on the server. Every merge attempt compares the
+  policy as it is now with that snapshot and warns of any difference. It
+  refuses, until the task is accepted again or `--policy-changed-ok` is
+  passed after reviewing the change, when the accepted revision touches a
+  newly protected path, a contributor is no longer eligible, a check required
+  now was not observed passing at the accepted revision, or overlapping
+  claims are now refused and the task's scope overlaps a live one. The paths
+  compared are the accepted revision's own: those since the newest baseline
+  commit it holds, so a workspace brought up to date with `atelier update`
+  is not charged with the baseline's changes. An acceptance made before the
+  snapshot recorded every field is compared on the protected paths it
+  recorded (none, for the oldest) and on the other fields as the server held
+  them before the refresh. The task page offers the re-acceptance, which
+  checks the current gate and records a new snapshot; so does
+  `atelier accept ID`. `merge --cancel` does not read or refresh ControlPlane
+  policy.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
@@ -1138,12 +1163,43 @@ Drive syncs and where it renames a file it finds in conflict to a copy. If
 publishing the baseline or recording the merge fails, rerun the same command.
 It resumes from the local merge commit. It refuses a different revision, a
 dirty checkout, or concurrent merge. If a process stops during the
-uncommitted Git merge, inspect `git status` and resolve or abort that merge
-before retrying. The journal preserves the original revision and starting
-commit. Never remove it to bypass a mismatch. While a merge holds the landing
-lease, the task cannot be abandoned, since the merge may already be on the
-baseline: finish it with `atelier merge t3`, or withdraw it with
-`atelier merge t3 --cancel` while it is not on the baseline, then abandon.
+uncommitted Git merge, abort that merge with `git merge --abort` before
+retrying, or cancel the landing. The journal preserves the original revision
+and starting commit. Never remove it to bypass a mismatch: cancel the landing.
+
+`atelier merge t9 --cancel` ends a landing. It takes the landing lock, as
+merge does, so it refuses while a merge of the same checkout is running, which
+may be publishing. It keeps what the landing left in the checkout, an
+unpublished merge commit or an unfinished Git merge, unless `--discard-local`
+is given. Then it aborts the unfinished Git merge, or puts the branch back on
+the commit where the merge began, the latter only while the branch is still on
+the merge commit with nothing uncommitted; otherwise it changes nothing and
+says what to move first. The journal is matched by task, not by revision: a
+push or review can withdraw an acceptance after the merge commit is made and
+before the landing lease is taken, and a new revision can then be accepted.
+Such a landing can no longer be finished, so `atelier merge t9` refuses it and
+names the cancel, which ends it in the checkout and leaves the server alone.
+With a journal, the landing lease is cancelled on the server only while the
+task is still accepted at the journal's revision. With a journal or without,
+the lease is left alone when the baseline already holds the accepted revision
+through a merge made elsewhere, whose lease it is; without a journal the
+cancel then refuses. Wherever the cancel asks what the baseline holds, it
+fetches the baseline and Git reads its whole history. The server also refuses
+to cancel a lease once the baseline holds the accepted revision, reading its
+history page by page.
+
+Once the merge is on the baseline the cancel refuses, with or without
+`--discard-local`, and the checkout keeps the merge: the journal says so once
+the push has returned, and for a push that reached the baseline just before
+the process stopped, the baseline's history says so. Rerun `atelier merge t9`
+to record it. A merge the server has already recorded, or can no longer
+record because the task is not accepted at that revision, leaves only the
+journal, which the cancel removes.
+
+While a merge holds the landing lease, the task cannot be abandoned, since the
+merge may already be on the baseline: finish it with `atelier merge t9`, or
+end it with `atelier merge t9 --cancel` while it is not on the baseline, then
+abandon.
 
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under
