@@ -1063,9 +1063,9 @@ const commands = {
 
   async wrap() {
     const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name, true);
-    // Until task t43 limits an agent's token to its own actor, the server
-    // records a session only for the project owner. Refuse here, before wrap
-    // commits or pushes anything the server would then not take a note for.
+    // The server records a session only for the project owner. Refuse here,
+    // before wrap commits or pushes anything the server would then not take a
+    // note for.
     if (as !== OWNER) die(`only the project owner records a session: run wrap as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
     const head = git(["rev-parse", "HEAD"], { cwd });
     let data;

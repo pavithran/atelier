@@ -20,7 +20,9 @@ It rests on three rules.
    unless the deployment names another (see Setup).
    Work reaches the project only when the project owner accepts it and
    merges it. Changes to protected paths also need approval from a model
-   other than every recorded contributor's, or from the project owner.
+   of another family than every recorded contributor's. The project owner's
+   approval is not that review; without one, the owner can accept only by
+   recording an override with its reason.
 
 The web inbox answers one question, *what needs the project owner now?*, and ranks the
 things a person must decide above the things an agent must fix.
@@ -51,8 +53,8 @@ changes and new files included. A clean checkout still gets a note. Wrap refuses
 before staging on a detached HEAD, on a merge, cherry-pick, revert, rebase or
 landing in progress, on unmerged files in the index (a squash merge or a stash
 pop leaves them with nothing else to show), and on a branch other than the
-registered branch. Only the project owner records a session; until task t43
-adds an allowlist for agent tokens, the server refuses any other actor.
+registered branch. Only the project owner records a session: the server
+refuses one from any other actor or any agent token.
 
 Wrap then updates the Atelier baseline through `sync` for fresh history or
 `publish` for full history. `--push` also pushes the checkout branch to every
@@ -720,9 +722,10 @@ waiting for an agent to choose it: `atelier dispatch t11 --to home --agent
 opencode --model glm-5.3-flash`, or "Send to an agent" on the task's page.
 `--to` is `home` (a runner on one of your machines), `cloud` (a Cloudflare
 container) or `any`; the agent and model are optional. Model names may carry a
-`:profile` suffix, as the AI Studio's do. No runner ships yet: the home and
-cloud runners are items t13 and t12, and until then a runner is anything that
-speaks the two requests below.
+`:profile` suffix, as the AI Studio's do. `atelier runner` is the home runner
+(see Home runner). No cloud runner ships: a task sent to `cloud` waits for a
+runner named `cloud:NAME`, which can be any program that speaks the two
+requests below.
 
 Runners are not sent work. A runner asks for it, describing what it can run,
 with `POST /api/queue` and a body such as
@@ -866,9 +869,10 @@ carries counts, windows, model names, costs and balances, never a prompt,
 a file name, a session id, a key or a header.
 
 The CLI's exit codes let the runner tell a task's own failure from the
-server's: 0 success, 1 a refusal or failure of the command, 3 a claim the
-server refused, 4 the server unavailable or a request that failed in
-transit (retry later).
+server's: 0 success, 1 a refusal or failure of the command, 2 a required
+check that failed, 3 a claim the server refused, 4 the server unavailable or
+a request that failed in transit (retry later). `atelier ops` has exit codes
+of its own (see Operations).
 
 ## The public showcase
 
@@ -902,10 +906,10 @@ labels still match the code.
 
 The Models page (`/models`) and `atelier models` hold the models Atelier
 can dispatch to. Each entry names the model as its harness does, the
-harness (OpenCode, Claude Code, Codex, ZCode or the Gemini CLI), where it
-runs, its provider and, for an API, the name of the Keychain entry on the
-runner's machine that holds its key. Atelier stores that name and never a
-key; a form or request that carries one is refused.
+harness (OpenCode, Claude Code, Codex, ZCode, the Gemini CLI or
+Antigravity), where it runs, its provider and, for an API, the name of the
+Keychain entry on the runner's machine that holds its key. Atelier stores
+that name and never a key; a form or request that carries one is refused.
 
 ```text
 atelier models add GLM-5.3-Flash-4_8bit --harness opencode --where home --endpoint http://studio.local:8000/v1
@@ -1052,7 +1056,8 @@ Run `node test/preview.mjs` for a local, read-only preview with illustrative
 content. It prints its URL. The preview cannot approve, merge, or create live
 tasks. Use `?state=empty`, `/p/cloudflare-git/t1?state=failed`, `state=ready`,
 `state=accepted`, `state=merged`, `state=unavailable`, or `state=long` to inspect
-important states. Append `theme=dark` to inspect the dark palette.
+important states. The pages follow the device's light or dark setting;
+change that setting to inspect the other palette.
 
 The visual composition is saved in `.impeccable/mocks/decisions.png` with its
 prompt. Product intent lives in `PRODUCT.md`; the implemented visual system
