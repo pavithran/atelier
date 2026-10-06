@@ -1,0 +1,16 @@
+atelier atelier/t172 "Main fails typecheck after t138 and t161 merged: t161's action store calls Ledger.log without the timestamp t151 made required (src/ledger.ts actionStore); pass one"
+accepted head 2510ab7ee13e5bef5e0c14ca7eedba82c052402e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T13:50:59.388Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T13:51:02.040Z
+REVIEW approve — claude-code/sonnet-5.5: Ledger.log requires its timestamp and the store now passes the time of the call; tsc for src and test exits 0; actions tests pass. Non-blocking: no test pins it beyond the type check; the store uses a fresh time rather than the Ledger's now.
+REVIEW OVERRIDDEN — pavi: PAVI, 2026-10-06: "temporarily override the family constraint and do it all with opus, fable and sonnet"; built by opus-5.5, reviewed and approved by sonnet-5.5.
+2026-10-06T13:49:01.989Z pavi item.created
+2026-10-06T13:49:03.261Z claude-code/opus-5.5 item.claimed
+2026-10-06T13:49:06.424Z claude-code/opus-5.5 fork.created
+2026-10-06T13:49:28.449Z claude-code/opus-5.5 push.observed
+2026-10-06T13:50:59.760Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:51:02.249Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:51:02.960Z claude-code/opus-5.5 item.submitted
+2026-10-06T13:51:55.278Z claude-code/sonnet-5.5 review.approved
+2026-10-06T13:51:56.126Z pavi review.overridden
+2026-10-06T13:51:56.126Z pavi item.accepted
