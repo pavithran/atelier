@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseArgs } from "../cli/atelier.mjs";
+import { noProjectMessage, parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
 
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
 // --sandbox-only) never takes the word after it, so an item id written after
@@ -73,7 +73,8 @@ function fixture(t) {
   writeFileSync(preload, `
 import { appendFileSync } from "node:fs";
 const HEAD = ${JSON.stringify(head)}, BASELINE = ${JSON.stringify(baseline)};
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: "submitted", owner: "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null });
+// t3 is open and held by nobody; every other item is submitted by codex/test.
+const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null });
 const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
@@ -98,7 +99,10 @@ globalThis.fetch = async (url, options = {}) => {
       else data = detail(id);
     }
   }
-  return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
+  // Any other project is one the server does not know, as the Worker answers it.
+  const status = !m && path.startsWith("/api/projects/") ? 404 : 200;
+  if (status === 404) data = { error: "no_project", detail: "project not initialised; run atelier init" };
+  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 };
 `);
   const run = (cwd, args, env = {}) => spawnSync(process.execPath, ["--import", preload, cli, ...args], {
@@ -107,8 +111,91 @@ globalThis.fetch = async (url, options = {}) => {
   });
   const requests = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : []);
   const clear = () => rmSync(log, { force: true });
-  return { checkout, workspace, run, requests, clear };
+  return { dir, checkout, workspace, run, requests, clear };
 }
+
+test("a folder that is no registered checkout is named, with every registered project and its folder", (t) => {
+  const f = fixture(t);
+  const elsewhere = join(f.dir, "elsewhere");
+  mkdirSync(elsewhere);
+  const r = f.run(elsewhere, ["unwrap"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: which project\? \S*\/elsewhere is not a registered checkout or a task workspace\. Pass --project NAME, or run the command in a registered checkout or in a task workspace\.$/m);
+  assert.match(r.stderr, new RegExp(`^Registered on this Mac:\\n  demo  \\S*/checkout$`, "m"));
+  assert.doesNotMatch(r.stderr, /named like this folder/);
+  assert.deepEqual(f.requests(), []);
+  // A folder named like a registered project: a copy or a second clone of its checkout.
+  const copy = join(f.dir, "copies", "demo");
+  mkdirSync(copy, { recursive: true });
+  const named = f.run(copy, ["ls"]);
+  assert.equal(named.status, 1);
+  assert.match(named.stderr, /^demo, named like this folder, is registered at \S*\/checkout; run the command there, or pass --project demo\.$/m);
+  assert.deepEqual(f.requests(), []);
+  // With nothing registered, init is the way to register a project.
+  assert.equal(unregisteredMessage("/work/x", {}), "which project? /work/x is not a registered checkout or a task workspace. Pass --project NAME, or run the command in a registered checkout or in a task workspace.\nNo project is registered on this Mac: run atelier init in a project's checkout to register it.");
+  assert.equal(unregisteredMessage("/work/Photograph", { photograph: { path: "/p" }, demo: { path: "/d" } }).split("\n").slice(1).join("\n"), "Registered on this Mac:\n  demo        /d\n  photograph  /p\nphotograph, named like this folder, is registered at /p; run the command there, or pass --project photograph.");
+});
+
+test("a project the server does not know is answered with the registered names, closest first, and init only away from a checkout", (t) => {
+  const f = fixture(t);
+  const typo = f.run(f.checkout, ["ls", "--project", "demp"]);
+  assert.equal(typo.status, 1);
+  assert.equal(typo.stderr, "atelier: no project named demp on https://fake.invalid.\nRegistered on this Mac, closest first: demo.\nThis folder is demo's checkout: run the command with --project demo, or without --project.\n");
+  const elsewhere = join(f.dir, "elsewhere");
+  mkdirSync(elsewhere);
+  const away = f.run(elsewhere, ["show", "t1", "--project", "demp"]);
+  assert.equal(away.status, 1);
+  assert.equal(away.stderr, "atelier: no project named demp on https://fake.invalid.\nRegistered on this Mac, closest first: demo.\nTo register a new project, run atelier init in its checkout.\n");
+  // A refused claim keeps exit code 3, which the runner reads, whatever the message.
+  const claim = f.run(elsewhere, ["claim", "t1", "--project", "demp", "--as", "codex/test"]);
+  assert.equal(claim.status, 3, claim.stderr);
+  assert.match(claim.stderr, /^atelier: no project named demp on https:\/\/fake\.invalid\.$/m);
+  // The nearest name comes first; a name this Mac registers but the server lacks is its own case.
+  const projects = { atelier: { path: "/a" }, photograph: { path: "/p" }, demo: { path: "/d" } };
+  assert.match(noProjectMessage("atelir", "https://x", projects, null), /^Registered on this Mac, closest first: atelier, demo, photograph\.$/m);
+  assert.doesNotMatch(noProjectMessage("atelir", "https://x", projects, "demo"), /atelier init/);
+  assert.match(noProjectMessage("demo", "https://x", projects, "demo"), /^This Mac registers demo's checkout at \/d, but the server has no project under that name: .* run atelier init in that checkout\.$/m);
+  assert.equal(noProjectMessage("x", "https://x", {}, null), "no project named x on https://x.\nNo project is registered on this Mac. To register one, run atelier init in its checkout.");
+});
+
+test("abandon says whose write token is revoked, or that nobody held the item", (t) => {
+  const f = fixture(t);
+  const held = f.run(f.checkout, ["abandon", "t1", "--project", "demo"]);
+  assert.equal(held.status, 0, held.stderr);
+  assert.equal(held.stdout, "t1 abandoned; codex/test's write token is revoked.\n");
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/abandon", { note: "" }]]);
+  const open = f.run(f.checkout, ["abandon", "t3", "--note", "Superseded by t5", "--project", "demo"]);
+  assert.equal(open.status, 0, open.stderr);
+  assert.equal(open.stdout, "t3 abandoned; nobody held it, so no write token was revoked.\n");
+  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/t3/abandon")).map((q) => q.body), [{ note: "Superseded by t5" }]);
+});
+
+test("init refuses to run in a task workspace, names its project and task, and registers nothing", (t) => {
+  const f = fixture(t);
+  const config = () => readFileSync(join(f.dir, "config.json"), "utf8");
+  const before = config();
+  const r = f.run(f.workspace, ["init"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: this folder is demo\/t1's task workspace, not a project checkout; nothing was registered\. Run atelier init in demo's checkout: cd ".*checkout" && atelier init$/m);
+  assert.deepEqual(f.requests(), [], "a request was sent");
+  assert.equal(config(), before, "config.json changed");
+});
+
+test("when git itself cannot run, the error says why instead of showing an empty detail", (t) => {
+  const f = fixture(t);
+  const empty = join(f.dir, "no-bin");
+  mkdirSync(empty);
+  const r = f.run(f.checkout, ["init"], { PATH: empty });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: git rev-parse --show-toplevel could not run: git was not found on PATH$/m);
+  assert.deepEqual(f.requests(), []);
+  // A registered checkout that is gone is named as the cause, not PATH.
+  const gone = join(f.dir, "gone");
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", projects: { demo: { path: gone, branch: "main" } } }));
+  const missing = f.run(f.dir, ["notes-remote", "origin", "--project", "demo"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /^atelier: git remote could not run: the folder \S*\/gone does not exist$/m);
+});
 
 test("review --approve t2 in t1's workspace reviews t2, never the workspace's item", (t) => {
   const f = fixture(t);
@@ -192,7 +279,7 @@ test("init sends a switch as true or false, as it was written, and refuses any o
 test("a flag the command does not take, or a stray --, is refused before any request", (t) => {
   const f = fixture(t);
   for (const [argv, message] of [
-    [["ls", "--bogus", "--project", "demo"], /ls does not take --bogus; see atelier help/],
+    [["ls", "--bogus", "--project", "demo"], /ls does not take --bogus; see atelier ls --help/],
     [["wrap", "Done", "--no-chcek"], /wrap does not take --no-chcek; see atelier wrap --help/],
     [["show", "t1", "--project", "demo", "--", "extra", "words"], /show does not take "--" and the words after it/],
   ]) {

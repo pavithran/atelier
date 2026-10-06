@@ -14,7 +14,7 @@ import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync,
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay, WRAP_MARKERS, unmergedPaths, wrapRefusal, failingChecksRefusal, failingChecksOverridden } from "../src/sessions.ts";
 
@@ -126,6 +126,16 @@ function git(args, opts = {}) {
   const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
+  // git itself did not run: the folder it was to run in is missing, it is
+  // not on PATH or not executable, or its output overran the buffer. There
+  // is no exit status, so the error is the detail and the command ends; a
+  // caller that takes failures gets the result and judges it, as it would a
+  // probe of a folder that may not be there.
+  if (r.error) {
+    if (opts.allowFail) return r;
+    const why = r.error.code !== "ENOENT" ? r.error.message : opts.cwd && !existsSync(opts.cwd) ? `the folder ${opts.cwd} does not exist` : "git was not found on PATH";
+    die(`git ${shown.join(" ")} could not run: ${why}`);
+  }
   let detail = (r.stderr || r.stdout || "").trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
@@ -196,8 +206,9 @@ function storeWorkspaceToken(dir, remote, token) {
 // the command's row is refused before the command runs. --project and --as
 // belong to every row, since project() and actor() read them, and --help
 // anywhere prints usage. The commands in REST take `--` and the words after it.
-const COMMON = { project: false, as: false };
-const FLAGS = {
+// test/command-help.test.mjs holds this table to the help in src/usage.ts.
+export const COMMON = { project: false, as: false };
+export const FLAGS = {
   unwrap: {},
   wrap: { next: false, found: false, push: true, "no-check": true, "allow-failing": true },
   token: { days: false, label: false },
@@ -403,19 +414,71 @@ export function initName(projects, top, explicit, renameLocal) {
   return { name, existing };
 }
 
+// The folder the current directory belongs to (the top of its Git repository,
+// else the directory itself) and the project registered for it, or null.
+// Compared as real paths: git reports /private/var/… for a checkout
+// registered as /var/… on macOS, and any symlinked folder the same way.
+function registeredHere() {
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const here = top.status === 0 ? top.stdout.trim() : process.cwd();
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const name = top.status === 0 ? Object.entries(cfg.projects ?? {}).find(([, p]) => real(p.path) === real(here))?.[0] ?? null : null;
+  return { here, name };
+}
+
 function project() {
   if (args.project) return args.project;
   const fromWs = wsConfig("project");
   if (fromWs) return fromWs;
-  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  if (top.status === 0) {
-    const here = top.stdout.trim();
-    // Compared as real paths: git reports /private/var/… for a checkout
-    // registered as /var/… on macOS, and any symlinked folder the same way.
-    const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
-    for (const [name, p] of Object.entries(cfg.projects ?? {})) if (real(p.path) === real(here)) return name;
+  const { here, name } = registeredHere();
+  if (name) return name;
+  die(unregisteredMessage(here, cfg.projects));
+}
+
+// What a command that needs a project says when this folder is neither a
+// registered checkout nor a task workspace: the folder, every project
+// registered on this Mac with its checkout, and the one named like this
+// folder, since a copy or a second clone of a registered checkout is the
+// usual way to be in the wrong one.
+export function unregisteredMessage(here, projects) {
+  const names = Object.keys(projects ?? {}).sort();
+  const first = `which project? ${here} is not a registered checkout or a task workspace. Pass --project NAME, or run the command in a registered checkout or in a task workspace.`;
+  if (!names.length) return `${first}\nNo project is registered on this Mac: run atelier init in a project's checkout to register it.`;
+  const width = Math.max(...names.map((n) => n.length)) + 2;
+  const lines = [first, "Registered on this Mac:", ...names.map((n) => `  ${n.padEnd(width)}${projects[n].path ?? "no folder recorded"}`)];
+  const like = names.find((n) => n.toLowerCase() === basename(here).toLowerCase());
+  if (like) lines.push(`${like}, named like this folder, is registered at ${projects[like].path}; run the command there, or pass --project ${like}.`);
+  return lines.join("\n");
+}
+
+// Edit distance between two names: how many characters to insert, drop or
+// change, so the registered name nearest a mistyped one comes first.
+export function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
   }
-  die("which project? pass --project NAME, or run inside a registered checkout or workspace");
+  return prev[b.length];
+}
+
+// What a command says when the server has no project under the name it was
+// given. The registered names come first, nearest the name first, since a
+// mistyped --project is the usual cause. init is named only away from a
+// registered checkout, where it would register the wrong folder; in one, the
+// folder's own project is the answer. A name this Mac registers but the
+// server lacks is its own case: the project is gone there, or the server is
+// another one.
+export function noProjectMessage(name, host, projects, here) {
+  const names = Object.keys(projects ?? {});
+  const first = `no project named ${name} on ${host}.`;
+  if (projects?.[name]) return `${first}\nThis Mac registers ${name}'s checkout at ${projects[name].path}, but the server has no project under that name: it was removed there, or ${host} is not the server it was registered with. To create it there, run atelier init in that checkout.`;
+  const lines = [first];
+  if (names.length) lines.push(`Registered on this Mac, closest first: ${names.slice().sort((a, b) => editDistance(a, name) - editDistance(b, name) || a.localeCompare(b)).join(", ")}.`);
+  if (here) lines.push(`This folder is ${here}'s checkout: run the command with --project ${here}, or without --project.`);
+  else lines.push(names.length ? "To register a new project, run atelier init in its checkout." : "No project is registered on this Mac. To register one, run atelier init in its checkout.");
+  return lines.join("\n");
 }
 
 // --summary takes text: an empty or blank value is refused, not dropped. A
@@ -516,9 +579,18 @@ async function call(method, path, body, as, extra = {}) {
   } catch (error) { die(`server request failed: ${error.message}`, 4); }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
-    res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
+  if (!res.ok) {
+    // 4 for a server that cannot answer, 3 for a refused claim (the runner
+    // reads it), 1 otherwise, whatever the message says.
+    const code = res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1;
+    // A project the server does not know, asked for by name: the answer
+    // names what this Mac knows instead of the server's "run atelier init",
+    // which an agent would obey in whatever folder it stands in.
+    const named = data.error === "no_project" ? /^\/projects\/([^/]+)/.exec(path)?.[1] : undefined;
+    if (named) die(noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name), code);
+    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`, code);
+  }
   return data;
 }
 
@@ -961,24 +1033,20 @@ export function formatBrief(project, id, brief, origin) {
 
 // ── commands ───────────────────────────────────────────────────────────────
 
-// The checkout's state against the baseline, in words. The baseline's head is
-// read with ls-remote, so nothing is fetched into the checkout.
+// The checkout's state against the baseline, in words. The baseline's head
+// comes from the server (GET baseline-head), as the Worker reads it from
+// Artifacts: no token is minted and nothing is fetched into the checkout, so
+// status and unwrap, which print this line, read and write nothing.
 // Every path out of it is one flattened line, whatever a name holds.
 async function checkoutStatus(name, as) {
   return flat(await checkoutStatusLine(name, as));
 }
 
-async function checkoutStatusLine(name, as, readOnly = false) {
+async function checkoutStatusLine(name, as) {
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) return checkoutLine({ name, registered: false });
   const cwd = p.path, fresh = p.fresh === true;
-  let baselineHead;
-  if (readOnly) baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
-  else {
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const listed = git(["ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd, token: base.token });
-    baselineHead = listed.split(/\s/)[0];
-  }
+  const baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
   if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
   // The registered branch is compared, whatever is checked out: the line
   // names that branch, so its head is what it must describe.
@@ -1147,7 +1215,7 @@ const commands = {
     const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
     console.log(formatStanding(standing, OWNER_NAME));
-    console.log(await checkoutStatusLine(name, as, true));
+    console.log(await checkoutStatusLine(name, as));
     if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
     if (cwd) {
       console.log(`Current branch: ${git(["branch", "--show-current"], { cwd }) || "detached HEAD"}`);
@@ -1449,6 +1517,14 @@ const commands = {
 
   // The project owner, in the project's checkout.
   async init() {
+    // A task workspace is a clone claimWorkspace made, named by the project
+    // and item in its Git config. Registering it would make the workspace a
+    // project called after its folder, so init stops here and says where to run.
+    const wsItem = wsConfig("item"), wsProject = wsConfig("project");
+    if (wsItem) {
+      const path = cfg.projects?.[wsProject]?.path;
+      die(`this folder is ${wsProject}/${wsItem}'s task workspace, not a project checkout; nothing was registered. Run atelier init in ${wsProject}'s checkout${path ? `: cd ${JSON.stringify(path)} && atelier init` : ", which is not registered on this Mac."}`);
+    }
     const checks = listArg("check", "init"), given = args.multi.protect ? listArg("protect", "init") : null;
     const top = git(["rev-parse", "--show-toplevel"]);
     let name, existing;
@@ -1774,9 +1850,13 @@ const commands = {
     }
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
     git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
+    // After the rebase the fork no longer holds the head Atelier recorded,
+    // so the push needs --force, whose lease refuses to overwrite anything
+    // pushed since (see push). Both ends of the rebase name that one command.
+    const next = "Push with: atelier push --force";
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
-    if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, \`git rebase --continue\`, then \`atelier push --force\`.\n${r.stdout}${r.stderr}`);
-    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. Push with: atelier push --force`);
+    if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, then git rebase --continue. ${next}\n${r.stdout}${r.stderr}`);
+    console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. ${next}`);
   },
 
   // Observed evidence: run each required check (or the given command) in a
@@ -1956,10 +2036,14 @@ const commands = {
     console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
   },
 
+  // The server clears the owner and revokes the holder's write token, as a
+  // handoff or a release does. The holder is read first: the answer carries
+  // the item with its owner already cleared, and an open item has none.
   async abandon() {
     const name = project(), id = itemArg();
+    const { item: before } = await call("GET", I(name, id), undefined, OWNER);
     await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
-    console.log(`${id} abandoned.`);
+    console.log(before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`);
   },
 
   // The project owner traces a defect to an item's accepted revision. The

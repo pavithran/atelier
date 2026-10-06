@@ -126,6 +126,7 @@ test("an id with no claim, a bad --item, and --help are answered with the usage,
   assert.match(other.stderr, /report does not take --note; see atelier report --help/);
   const help = f.run(f.workspace, ["report", "--help"]);
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /usage: atelier report \[ID\] .* \(in a workspace, ID is its item unless --item or --project says otherwise\)/);
+  assert.match(help.stdout, /^usage: atelier report \[ID\] "what you verified and how" \[--item ID\] \[--project P\]$/m);
+  assert.match(help.stdout, /in a workspace, another item's id needs `--item ID`/);
   assert.deepEqual(f.recorded(), []);
 });
