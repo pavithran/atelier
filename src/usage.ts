@@ -47,7 +47,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "show ID [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--json` prints it for scripts." },
     { form: "owners [--json]", about: "Prints one line per live task: its state, its owner and since when." },
     { form: "inbox [--json]", about: "Prints the decision brief of each task that needs the project owner, most urgent first. `--json` prints the entries for scripts." },
-    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them." },
+    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, and the same local facts under `local`." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
@@ -254,8 +254,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   inbox: { flags: { "--json": "prints the entries as JSON" }, example: "atelier inbox" },
   status: {
     flags: {
-      "--project P": "where one project stands, as text, instead of the owner's queue for every project",
-      "--json": "prints machine-readable records, each item with its created, updated and last-push times",
+      "--project P": "where one project stands, as text, instead of the owner's queue for every project; ends with an On this Mac section when any of its tasks has a workspace here",
+      "--json": "prints machine-readable records, each item with its created, updated and last-push times; with --project, also the local facts of this Mac's workspaces and any landing",
     },
     example: "atelier status --project demo",
   },
