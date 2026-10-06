@@ -35,10 +35,16 @@ End in the registered checkout with `atelier wrap "summary" --next "what is next
 The words after `wrap` that no flag has taken are joined into one summary, quoted
 or not. Give the summary first: a flag takes the word after it as its value.
 It runs the registered checks, warns about an unchanged state file and records a
-`session.wrapped` ledger event. `--no-check` skips registered checks. Results are
-Reported because they ran in the owner's checkout. A failing check still closes
-the session and is recorded. Wrap commits everything selected by `git add -A`,
-with the summary as its subject, next text as its body and an `Atelier-Session`
+`session.wrapped` ledger event. Results are Reported because they ran in the
+owner's checkout. A failing check refuses the commit: wrap names each failed
+check with how it ended (its exit status, the signal that ended it, or a
+timeout), stages nothing, records no note and pushes nothing, so the checkout
+is as the checks left it. `--allow-failing` commits anyway, and the note
+records which checks it let through beside their Reported results. `--no-check`
+skips the registered checks and the note records the skip; it is not combined
+with `--allow-failing`, since a skipped check cannot fail. Wrap commits
+everything selected by `git add -A`, with the summary as its subject, next text
+as its body and an `Atelier-Session`
 trailer naming the note's session time. It runs `git diff --cached --check` after
 staging, so whitespace errors are checked in what the commit holds, staged
 changes and new files included. A clean checkout still gets a note. Wrap refuses

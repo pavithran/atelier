@@ -153,9 +153,9 @@ test("unwrap reports a tracking ref it cannot compare and carries on", (t) => {
   assert.match(r.stdout, /Say in a short paragraph/);
 });
 
-test("wrap commits with summary, next and trailer, records failed checks and updates baseline", (t) => {
+test("wrap commits with summary, next and trailer when the checks pass, and updates the baseline", (t) => {
   const f = fixture(t);
-  const result = f.run("wrap", "Finished", "--next", "Fix check");
+  const result = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Finished", "--next", "Fix check");
   assert.equal(result.status, 0, result.stderr);
   assert.notEqual(f.git("rev-parse", "HEAD"), f.head);
   assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
@@ -167,9 +167,87 @@ test("wrap commits with summary, next and trailer, records failed checks and upd
   assert.equal(data.commit, f.git("rev-parse", "HEAD"));
   assert.match(f.git("log", "-1", "--format=%B"), new RegExp(data.sessionAt));
   // The whitespace check runs on what the commit will hold, so after the registered checks and staging.
-  assert.deepEqual(data.checks.map((c) => [c.command, c.passed, c.grade]), [["exit 7", false, "reported"], ["git diff --cached --check", true, "reported"]]);
+  assert.deepEqual(data.checks.map((c) => [c.command, c.passed, c.grade]), [["true", true, "reported"], ["git diff --cached --check", true, "reported"]]);
+  assert.equal(data.checksOverridden, undefined, "nothing was overridden");
   assert.match(result.stdout, /Refresh STATE.md/);
-  assert.match(result.stdout, /session closed with a failing check/);
+  assert.match(result.stdout, /Relay: session closed; checks are Reported, not Observed\./);
+  assert.doesNotMatch(result.stdout, /overridden/);
+});
+
+// A failing registered check refuses the commit, as an unfinished checkout
+// does: the tree, the index and HEAD stay as the checks left them, and no
+// request writes. The fixture's default check is `exit 7`.
+function refusesFailingChecks(f, env, say) {
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(join(f.checkout, "STATE.md"), old, old);
+  const before = snapshot(f.checkout), head = f.git("rev-parse", "HEAD");
+  const r = f.runWith(env, "wrap", "Refuse", "--next", "x");
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, say);
+  assert.match(r.stderr, /Nothing was staged, recorded or pushed\./);
+  assert.deepEqual(snapshot(f.checkout), before, "no file, and not the index, changed");
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(f.git("diff", "--cached", "--name-only"), "", "nothing was staged");
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head, "the baseline was not updated");
+  assert.deepEqual(f.requests().filter((q) => q.method !== "GET"), [], "no note, no baseline update");
+  return r;
+}
+
+test("wrap refuses to commit when a registered check fails, naming it with its exit status", (t) => {
+  const f = fixture(t);
+  const r = refusesFailingChecks(f, {}, /^atelier: wrap refuses to commit with a failing check: exit 7 \(exited 7\)\. Fix it, or run again with --allow-failing to commit anyway\./m);
+  assert.match(r.stdout, /Reported: exit 7: failed \(owner's checkout, not a clean clone\)\./, "the result was printed before the refusal");
+  assert.doesNotMatch(r.stdout, /Uncommitted files|Refresh STATE\.md|Relay:/, "wrap stopped right after the checks");
+});
+
+test("the refusal names every failed check, with the signal that ended one that did not exit", (t) => {
+  const f = fixture(t);
+  const r = refusesFailingChecks(f, { FAKE_CHECKS: JSON.stringify(["exit 7", "true", "kill -TERM $$"]) },
+    /wrap refuses to commit with 2 failing checks: exit 7 \(exited 7\), kill -TERM \$\$ \(ended by SIGTERM\)\. Fix them, or run again with --allow-failing/);
+  assert.match(r.stdout, /Reported: true: passed/);
+});
+
+test("wrap --allow-failing commits past a failing check and records the override in the note", (t) => {
+  const f = fixture(t);
+  const result = f.run("wrap", "Finished", "--next", "Fix check", "--allow-failing");
+  assert.equal(result.status, 0, result.stderr);
+  assert.notEqual(f.git("rev-parse", "HEAD"), f.head);
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+  assert.match(f.git("log", "-1", "--format=%B"), /^Finished\n\nFix check\n\nAtelier-Session: /);
+  const writes = f.requests().filter((r) => r.method === "POST" && r.path.endsWith("/sessions"));
+  assert.equal(writes.length, 1);
+  const data = JSON.parse(writes[0].body);
+  assert.equal(data.commit, f.git("rev-parse", "HEAD"));
+  assert.deepEqual(data.checks.map((c) => [c.command, c.passed, c.grade]), [["exit 7", false, "reported"], ["git diff --cached --check", true, "reported"]]);
+  assert.deepEqual(data.checksOverridden, ["exit 7"]);
+  assert.equal(data.checksSkipped, false);
+  assert.match(result.stdout, /^Failing checks overridden by --allow-failing: exit 7 \(exited 7\)\.$/m);
+  assert.match(result.stdout, /^Relay: session closed with a failing check overridden by --allow-failing\.$/m);
+  // The note the server returned is printed with the override in it.
+  assert.match(result.stdout, /^Failing checks overridden by --allow-failing: exit 7\.$/m);
+});
+
+test("wrap --allow-failing with passing checks records no override", (t) => {
+  const f = fixture(t);
+  const r = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Fine", "--allow-failing");
+  assert.equal(r.status, 0, r.stderr);
+  const data = JSON.parse(f.requests().find((q) => q.method === "POST" && q.path.endsWith("/sessions")).body);
+  assert.equal(data.checksOverridden, undefined);
+  assert.doesNotMatch(r.stdout, /overridden/);
+});
+
+test("--allow-failing takes no value and is not combined with --no-check; either refusal touches nothing", (t) => {
+  for (const [args, say] of [
+    [["--allow-failing", "--no-check"], /--allow-failing and --no-check together: skipped checks cannot fail; give one or the other/],
+    [["--allow-failing=yes"], /--allow-failing takes no value/],
+  ]) {
+    const f = fixture(t), before = snapshot(f.checkout);
+    const r = f.run("wrap", "Mixed", ...args);
+    assert.equal(r.status, 1, r.stdout);
+    assert.match(r.stderr, say);
+    assert.deepEqual(snapshot(f.checkout), before);
+    assert.deepEqual(f.requests(), [], "refused before any request");
+  }
 });
 
 test("an unquoted summary is one summary", (t) => {
@@ -378,7 +456,8 @@ function refuses(f, say) {
   const old = new Date(Date.now() - 60_000);
   if (existsSync(join(f.checkout, "STATE.md"))) utimesSync(join(f.checkout, "STATE.md"), old, old);
   const before = snapshot(f.checkout), head = f.git("rev-parse", "HEAD");
-  const r = f.run("wrap", "Refuse");
+  // The registered check passes, so the refusal under test is the only one.
+  const r = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Refuse");
   assert.equal(r.status, 1, r.stdout);
   assert.match(r.stderr, say);
   assert.deepEqual(snapshot(f.checkout), before, "no file, and not the index, changed");
@@ -527,14 +606,21 @@ test("wrap pushes each remote, continues after failure, files found tasks and th
   assert.match(r.stdout, /Relay: session closed with a failed push to broken\./);
   assert.match(r.stdout, /Remote broken: failed\./);
 });
-test("wrap names every failed push in the relay line, beside a failing check", (t) => {
+test("wrap names every failed push in the relay line, beside an overridden failing check", (t) => {
   const f = fixture(t);
   f.git("remote", "add", "gone", join(f.dir, "gone.git"));
   f.git("remote", "add", "missing", join(f.dir, "missing.git"));
+  const r = f.run("wrap", "Push", "--push", "--allow-failing");
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /Relay: session closed with a failing check overridden by --allow-failing and failed pushes to gone, missing\./);
+  assert.match(r.stderr, /push failed for 2 remotes: gone, missing/);
+});
+test("without the override, a failing check stops wrap before any remote is pushed", (t) => {
+  const f = fixture(t), path = remote(f, "origin");
   const r = f.run("wrap", "Push", "--push");
   assert.equal(r.status, 1);
-  assert.match(r.stdout, /Relay: session closed with a failing check and failed pushes to gone, missing\./);
-  assert.match(r.stderr, /push failed for 2 remotes: gone, missing/);
+  assert.match(r.stderr, /wrap refuses to commit with a failing check/);
+  assert.equal(f.git("--git-dir", path, "for-each-ref", "refs/heads"), "", "origin took no push");
 });
 test("wrap gives the owner's remotes a normal push with LFS uploads, and Atelier's baseline still skips them", (t) => {
   const f = fixture(t);

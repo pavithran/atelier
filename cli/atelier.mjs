@@ -4,7 +4,9 @@
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
 // sees in Artifacts. Session checks run in the registered checkout and are
-// Reported. Wrap commits and updates the baseline; checkout remote pushes are opt-in.
+// Reported; one that fails stops wrap before it stages anything, unless
+// --allow-failing is given. Wrap commits and updates the baseline; checkout
+// remote pushes are opt-in.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -14,7 +16,7 @@ import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
+import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, sessionNoteText, UNWRAP_RELAY, FILING_RELAY, sessionText, sessionCommitMessage, wrapRelay, WRAP_MARKERS, unmergedPaths, wrapRefusal, failingChecksRefusal, failingChecksOverridden } from "../src/sessions.ts";
 
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
@@ -135,7 +137,7 @@ const auth = (token) => ["-c", `http.extraHeader=Authorization: Bearer ${token}`
 const COMMON = { project: false, as: false };
 const FLAGS = {
   unwrap: {},
-  wrap: { next: false, found: false, push: true, "no-check": true },
+  wrap: { next: false, found: false, push: true, "no-check": true, "allow-failing": true },
   token: { days: false, label: false },
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true },
@@ -905,13 +907,29 @@ const commands = {
     catch (err) { die(err.message); }
     const found = args.multi.found ?? [];
     if (found.length > 100 || found.some((text) => !sessionText(text))) die("--found needs text, at most 100 times");
+    const allowFailing = args["allow-failing"] === true;
+    data.checksSkipped = args["no-check"] === true;
+    // Skipped checks cannot fail, so the override would record nothing: the
+    // owner says which of the two is meant.
+    if (allowFailing && data.checksSkipped) die("--allow-failing and --no-check together: skipped checks cannot fail; give one or the other");
     wrapReady(name, cwd, true);
     const { project: record } = await call("GET", P(name), undefined, as);
-    data.checksSkipped = args["no-check"] === true;
+    const failing = [];
     if (!data.checksSkipped) for (const command of record.policy.checks) {
       const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
       data.checks.push({ command, passed: result.status === 0, grade: "reported" });
       console.log(`Reported: ${command}: ${result.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+      if (result.status !== 0) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.error?.code === "ETIMEDOUT" });
+    }
+    // A failing registered check stops wrap here, with every result printed
+    // and nothing staged, recorded or pushed: the checks ran in the checkout
+    // as the owner left it, and the refusal touches nothing after them.
+    // --allow-failing commits anyway, and the note names the checks it let
+    // through beside their Reported results.
+    if (failing.length && !allowFailing) die(failingChecksRefusal(failing));
+    if (failing.length) {
+      data.checksOverridden = failing.map((c) => c.command);
+      console.log(failingChecksOverridden(failing));
     }
     const [previous] = await call("GET", `${P(name)}/sessions`, undefined, as);
     const { state, modified } = sessionFiles(cwd);

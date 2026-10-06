@@ -1,6 +1,6 @@
 {
   "unwrap": "usage: atelier unwrap [--project P]\n",
-  "wrap": "usage: atelier wrap \"summary\" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]\n",
+  "wrap": "usage: atelier wrap \"summary\" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]\n",
   "start": "usage: atelier start ID [--as harness/model]\n",
   "done": "usage: atelier done \"summary\"\n",
   "adopt": "usage: atelier adopt --project NAME [--as harness/model]\n",
