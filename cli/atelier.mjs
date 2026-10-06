@@ -28,6 +28,7 @@ export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.t
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
 import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
+import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatStatus } from "./status.mjs";
@@ -1432,7 +1433,8 @@ const commands = {
       pushed = built.head;
       console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
     } else {
-      git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${branch}:${branch}`], { cwd: top, token: r.baseline.token });
+      try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log }); }
+      catch (err) { die(err.message); }
     }
     cfg.projects ??= {};
     cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
