@@ -3,8 +3,8 @@
 // The move is an ordinary Atelier task. adopt creates it, claims it, and
 // writes into its workspace the files that make the project work through
 // Atelier: bin/control-plane forwards each ControlPlane command to the Atelier
-// command it became, bin/control-plane-paste points handoffs at
-// `atelier handoff`, and AGENTS.md carries the text `atelier guide` prints.
+// command it became, bin/control-plane-paste says that no command renders a
+// paste any more, and AGENTS.md carries the text `atelier guide` prints.
 // What the move cannot settle by itself is read from the project's checkout
 // and reported on the task: state ControlPlane still holds, capabilities that
 // name files the project no longer has, a vendored copy of ControlPlane's
@@ -91,10 +91,26 @@ export function insertSection(markdown, text) {
   return `${before ? `${before}\n\n` : ""}${block}\n${after ? `\n${after}` : ""}`;
 }
 
-// bin/control-plane-paste, when the project has one, becomes a two-line script:
-// a handoff carries a session's work on in Atelier, so there is nothing to paste.
-export function pasteScript() {
-  return `#!/bin/sh\necho 'Handoffs go through: atelier handoff ID --to HARNESS/MODEL --note "why"' >&2\n`;
+// bin/control-plane-paste, when the project has one, becomes a script that
+// answers a paste request the way the relay rule in the guide does: no
+// command renders a paste any more, the agent writes the relay envelope
+// itself (one fenced block with a language tag, a copy saved under
+// ~/Documents/ai-project-data/<project>/), and `atelier handoff` transfers a
+// task's ownership, which is never part of a paste request. It exits 2, the
+// code the entry point gives a command that moved into Atelier. POSIX sh; the
+// text is a quoted heredoc, so the project's name is written as it is.
+export function pasteScript(project) {
+  return `#!/bin/sh
+cat >&2 <<'EOF'
+control-plane-paste: no command renders a paste any more; this project works through Atelier.
+Write the relay envelope yourself, as the relay rule in AGENTS.md says: one complete fenced
+block with a language tag (bash for a command the owner runs, text for prose, a brief or an
+envelope), and save a copy under ~/Documents/ai-project-data/${project}/, never the portfolio root.
+\`atelier handoff\` transfers ownership of a task to another agent. It is not a relay and is
+never part of a paste request.
+EOF
+exit 2
+`;
 }
 
 function readJson(path) {
@@ -319,7 +335,7 @@ export function adoption({ project, checkout, workspace, guide, template = readF
   catch (error) { throw new Error(`AGENTS.md cannot be read: ${error.message}`); }
   const files = [
     { path: "bin/control-plane", text: fillTemplate(template, project), mode: 0o755 },
-    ...(paste ? [{ path: "bin/control-plane-paste", text: pasteScript(), mode: 0o755 }] : []),
+    ...(paste ? [{ path: "bin/control-plane-paste", text: pasteScript(project), mode: 0o755 }] : []),
     { path: "AGENTS.md", text: insertSection(held, section(guide)), mode: null },
   ];
   // Measured after the section is in: the project's own ceiling decides
@@ -328,8 +344,8 @@ export function adoption({ project, checkout, workspace, guide, template = readF
   if (ceiling) throw new Error(ceiling);
   const message = `Move ${project} from ControlPlane to Atelier\n\n`
     + "bin/control-plane now prints the Atelier command it runs and forwards to it,\n"
-    + "never to ControlPlane's central checkout; bin/control-plane-paste points\n"
-    + "handoffs at atelier handoff; AGENTS.md carries the Atelier guide.\n";
+    + "never to ControlPlane's central checkout; bin/control-plane-paste says that\n"
+    + "no command renders a paste any more; AGENTS.md carries the Atelier guide.\n";
   return { files, leftovers: leftovers(checkout), message };
 }
 
