@@ -256,7 +256,10 @@ merged.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
-  every merge receipt.
+  every merge receipt. Once recorded it stands: a later `init` that changes
+  the checks, the title or the policy keeps it, and it is asked for again
+  only when `--reset` starts the policy over or `--history-since` replaces
+  the baseline.
 - `atelier merge` writes a `control-plane.landing-receipt` into
   `docs/control-plane/landing-receipts/` as part of the merge commit, so the
   merge and its record are one change.
@@ -279,16 +282,24 @@ atelier adopt --project NAME --as HARNESS/MODEL
 It refuses unless the project is registered in Atelier and the checkout is
 clean. Every check that can refuse the move runs before the task is created,
 so a refusal leaves nothing behind — no task, no claim: the checkout's files
-are readable, the AGENTS.md edit is computable, and no symbolic link stands
-where the move writes. The move writes into the task's workspace and nothing
+are readable, the AGENTS.md edit is computable, it stays under the ceiling
+the project's `docs/control-plane/context-budget.v1.json` sets (the one
+`atelier wrap` refuses to commit over; the refusal says how many lines over
+and which file), no symbolic link stands where the move writes, and the
+agent is one the project's policy admits (the same rule a claim applies). The
+move writes into the task's workspace and nothing
 outside it: a file it writes that is a symlink is replaced with a regular
 file, never written through, and a symlinked directory above one refuses the
 move (an AGENTS.md that is a symlink is refused too, because the section is
 built from its text). It creates the task "Move NAME from ControlPlane to
 Atelier", claims it as `--as` (without it, as the current actor), and in the
 task's workspace it writes `bin/control-plane`, replaces
-`bin/control-plane-paste`, when the project has one, with two lines pointing
-handoffs at `atelier handoff`, and inserts the text `atelier guide` prints
+`bin/control-plane-paste`, when the project has one, with a script that says
+no command renders a paste any more, that the agent writes the relay
+envelope itself as the relay rule says (one fenced block with a language
+tag, a copy saved under `~/Documents/ai-project-data/<project>/`) and that
+`atelier handoff` transfers ownership and is not a relay, and exits 2; and
+it inserts the text `atelier guide` prints
 into `AGENTS.md`: right after its first heading, at the top when the file has
 no heading, and in place of the section it already carries, so adopting a
 project again cannot stack a second one. It commits those changes in the
@@ -314,9 +325,12 @@ the agent finishing the task must settle: a
 `completed-unreconciled` or `blocked`, with its plan id, state and owner; a
 capability in `docs/control-plane/project-adapter.v1.json` whose command names
 a file the project does not have — the command is read as shell words, so a
-quoted path with spaces stays one word, and a script run through an
+quoted path with spaces stays one word; a script run through an
 interpreter or `env` (`python3 tools/ship.py`, `bash bin/sweep.sh`) is judged
-by the script, not the interpreter; a vendored `tools/control-plane/`
+by the script, not the interpreter; each command in a chain or a pipeline
+(`&&`, `||`, `|`, `;`) is judged on its own program, a shell's `-c` command
+line the same way, and a glob, a redirection or any argument after the
+program is never judged; a vendored `tools/control-plane/`
 directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
 names `pickup-card`, `control-plane-paste`, `session-receipt` or
 `audit record`, with its file and line number. The same list is recorded on

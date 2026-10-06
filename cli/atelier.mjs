@@ -22,7 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
-import { pathCollisions } from "../src/rules.ts";
+import { assertEligible, pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
@@ -480,6 +480,22 @@ async function call(method, path, body, as, extra = {}) {
 const P = (name) => `/projects/${encodeURIComponent(name)}`;
 const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 const short = (s) => (s ? s.slice(0, 8) : "—");
+
+// The owner's approval recorded on the project, or null when the project is
+// not registered yet or records none. Asked with a plain request rather than
+// `call`, because a project not yet registered answers 404, and here that is
+// an answer, not a failure.
+async function recordedApproval(name) {
+  await resolveTokenActor();
+  let res, data;
+  try {
+    res = await fetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+    data = await res.json().catch(() => ({}));
+  } catch (error) { die(`server request failed: ${error.message}`, 4); }
+  if (res.status === 404) return null;
+  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? "the project could not be read"}`, res.status >= 500 ? 4 : 1);
+  return data.project?.policy?.approval ?? null;
+}
 
 function workspacePath(name, id) {
   return join(CACHE, "work", name, id);
@@ -1353,8 +1369,17 @@ const commands = {
     }
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
     const cp = readControlPlane(top);
+    // A ControlPlane project is copied into Artifacts with the owner's
+    // approval recorded on it. An init that changes the checks, the title or
+    // the policy of a project already registered keeps that approval; it is
+    // asked for again when --reset starts the policy over, which drops it,
+    // and when --history-since replaces the baseline.
     if (cp && !args.approval) {
-      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      const replaced = args.reset === true ? "--reset starts the policy over" : args["history-since"] !== undefined ? "--history-since replaces the baseline" : null;
+      const recorded = replaced ? null : await recordedApproval(name);
+      if (!recorded) {
+        die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      }
     }
     // Only what this command names is sent; the server keeps everything else
     // as it is. --reset starts the policy over from these options and the
@@ -1434,6 +1459,12 @@ const commands = {
     try { adoption({ project: name, checkout: p.path, workspace: p.path, guide: guideText() }); }
     catch (error) { die(error.message); }
     const as = await actor(OWNER);
+    // The project's policy says who may claim here. It is asked before the
+    // task exists, as the claim would ask it, so an agent it does not admit
+    // leaves no unclaimed task behind.
+    const { project: record } = await call("GET", P(name), undefined, as);
+    try { assertEligible(as, record?.policy ?? {}, OWNER); }
+    catch (error) { die(`${error.message}. The move was not started; run it as an eligible agent: atelier adopt --project ${name} --as HARNESS/MODEL`); }
     const item = await call("POST", `${P(name)}/items`, { title: `Move ${name} from ControlPlane to Atelier`, scope: SCOPE }, as);
     const { dir } = await claimWorkspace(name, item.id, as);
     let plan;
