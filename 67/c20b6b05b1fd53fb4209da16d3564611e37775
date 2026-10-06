@@ -1,0 +1,22 @@
+atelier atelier/t203 "The home runner's CLI helper never captures output, so review-claim, read-token, integrated and base-token return nothing and JSON.parse fails: every review, integrate and refresh job fails in real use ('Unexpected end of JSON input'), hidden by tests that stub io.cli. Capture stdout for the calls whose output the runner reads, with a test of the real helper (found serving t200's review, 2026-10-06)"
+accepted head 15281a2a51cba0a7cc0fd21c701f193d48ef2ca0
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T22:24:01.485Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T22:24:04.527Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T22:26:13.752Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T22:26:16.554Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T22:29:08.366Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T22:29:13.442Z
+REVIEW approve — antigravity/gemini-3.1-pro: The runner captures the CLI output it parses
+2026-10-06T22:16:50.526Z pavi item.created
+2026-10-06T22:16:54.413Z claude-code/opus-5.5 item.claimed
+2026-10-06T22:17:03.426Z claude-code/opus-5.5 fork.created
+2026-10-06T22:22:10.558Z claude-code/opus-5.5 push.observed
+2026-10-06T22:24:02.287Z claude-code/opus-5.5 evidence.observed
+2026-10-06T22:24:04.729Z claude-code/opus-5.5 evidence.observed
+2026-10-06T22:26:14.157Z claude-code/opus-5.5 evidence.observed
+2026-10-06T22:26:16.776Z claude-code/opus-5.5 evidence.observed
+2026-10-06T22:29:08.987Z claude-code/opus-5.5 evidence.observed
+2026-10-06T22:29:13.671Z claude-code/opus-5.5 evidence.observed
+2026-10-06T22:29:15.631Z claude-code/opus-5.5 item.submitted
+2026-10-06T22:31:47.558Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T22:31:48.435Z pavi item.accepted
