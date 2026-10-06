@@ -2,14 +2,17 @@
 // agent took, from its claim to its merge or closure, with a bead for each
 // push, check, review and decision. Pure functions over the Ledger's items and
 // events, so the pages that draw it and the tests that check it read the same
-// model. Drawing is server-side SVG; the replay is CSS animation, because the
-// pages carry no script.
+// model. Drawing is server-side SVG and the replay is CSS animation, so the
+// picture is whole without script; the live script (live.ts) only steps
+// through it and animates what arrives.
 
 import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
+import { withServed } from "./models/served.ts";
 import { shortStamp, stamp } from "./time.ts";
+import { withoutAddresses } from "./text.ts";
 
 export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
 
@@ -86,8 +89,8 @@ export interface Story {
 
 // Bookkeeping takes a quarter step on the axis so the work gets the width, and
 // is not an agent's move: a session note records where a session ended, not work.
-const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "item.released", "session.wrapped"]);
-const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched", "review.overridden"]);
+export const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "item.released", "item.runner_adopted", "session.wrapped"]);
+export const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched", "review.overridden"]);
 
 export function emptyTally(): Tally {
   return { agentMoves: 0, decisions: 0, checks: 0, inCloud: 0, sentBack: 0, localRuns: 0, agents: [], byVendor: {},
@@ -112,13 +115,16 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd
 
 // For a public page: what an agent or the owner wrote (review notes, reports,
 // check commands, closing notes) is left out, and the owner is named rather
-// than addressed. Titles, models, kinds and times stay.
+// than addressed. Titles, models, kinds and times stay, titles without any
+// email address in them.
 export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: string; family?: string }
 
 export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
   const R = !!opts.redact;
   const you = opts.ownerLabel ?? "You";
-  const sortedEvs = [...events].sort((a, b) => a.seq - b.seq);
+  // An event the owner annotated as served by another model is drawn and
+  // counted under that model; the annotations are not drawn.
+  const sortedEvs = withServed(events).sort((a, b) => a.seq - b.seq);
   const keptItems = new Set<string>();
   let filterActive = false;
   if (opts.since || opts.family) {
@@ -192,7 +198,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       case "item.claimed":
         t.claims++;
         if (!th) {
-          th = { id, title: item?.title ?? id, state: item?.state ?? "claimed", start: pos, end: null, ending: null, holds: [], beads: [] };
+          th = { id, title: R ? withoutAddresses(item?.title ?? id) : item?.title ?? id, state: item?.state ?? "claimed", start: pos, end: null, ending: null, holds: [], beads: [] };
           threads.set(id, th);
         }
         if (th.holds.at(-1)?.who !== ev.actor) th.holds.push({ who: ev.actor, pos });
@@ -261,7 +267,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
     for (const ev of evs) if (posOf.get(ev.seq)! <= target) best = ev;
     return { pos: best ? posOf.get(best.seq)! : 0, at: best?.at ?? "" };
   });
-  return { project, title, partial, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
+  return { project, title: R ? withoutAddresses(title) : title, partial, span, times, threads: [...threads.values()].sort((a, b) => a.start - b.start), moments, tally: t };
 }
 
 // ── drawing ────────────────────────────────────────────────────────────────
@@ -283,7 +289,7 @@ const r1 = (n: number) => Math.round(n * 10) / 10;
 
 // Hover cards. A card is drawn last, above every thread, and shown by CSS
 // while the pointer hovers over its mark, or its mark has focus: :has() ties the two together, since
-// SVG has no z-index and the pages carry no script. Each drawing gets its own
+// SVG has no z-index and the page must work without script. Each drawing gets its own
 // id prefix so two graphs on a page never share a card.
 let drawings = 0;
 const CHAR_W = 6.7;           // IBM Plex Mono at 11px, per character, near enough for a card's width
@@ -367,22 +373,28 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     // A thread draws itself in with a dash animation measured in pathLength
     // units. A local run is dotted instead, in user units, so it is drawn
     // without the animation: the two dash patterns cannot share one path.
-    const thread = (who: string, cls: string, style: string, d: string) => isLocalRun(who)
-      ? `<path class="g-thread${cls} local" style="--c:${c(who)}" d="${d}"/>`
-      : `<path class="g-thread${cls} draw" pathLength="1" style="--c:${c(who)};${style}" d="${d}"/>`;
-    g.push(thread(segs[0].who, "", `--d:${at(th.start)};--l:0.35s`, `M${r1(xs - R)} ${MAIN}C${xs} ${MAIN} ${r1(xs - R)} ${y} ${xs} ${y}`));
+    // Each piece carries where it falls on the axis (data-pos, or data-from
+    // and data-to for a segment) and a key that names its event (data-ev),
+    // so the live script can step through the events and tell a mark that
+    // just arrived from one that was already drawn.
+    const thread = (who: string, cls: string, style: string, d: string, attrs = "") => isLocalRun(who)
+      ? `<path class="g-thread${cls} local" style="--c:${c(who)}" d="${d}"${attrs}/>`
+      : `<path class="g-thread${cls} draw" pathLength="1" style="--c:${c(who)};${style}" d="${d}"${attrs}/>`;
+    const first = th.holds[0].who === owner ? (o.ownerLabel ?? "you") : splitActor(th.holds[0].who).model || th.holds[0].who;
+    g.push(thread(segs[0].who, "", `--d:${at(th.start)};--l:0.35s`, `M${r1(xs - R)} ${MAIN}C${xs} ${MAIN} ${r1(xs - R)} ${y} ${xs} ${y}`,
+      ` data-pos="${th.start}" data-say="${esc(`${th.id} taken by ${first}`)}" data-ev="${esc(`${th.id} start`)}"`));
     for (const sg of segs) {
       const a = Math.max(x(sg.from), xs), b = sg.to === end ? xe : x(sg.to);
-      if (b > a) g.push(thread(sg.who, " g-lane", `--d:${at(sg.from)};--l:${len(sg.from, sg.to)}`, `M${a} ${y}H${b}`));
+      if (b > a) g.push(thread(sg.who, " g-lane", `--d:${at(sg.from)};--l:${len(sg.from, sg.to)}`, `M${a} ${y}H${b}`, ` data-from="${sg.from}" data-to="${sg.to}"`));
     }
     const lastWho = segs.at(-1)!.who;
     if (th.ending === "merged") {
-      g.push(thread(lastWho, "", `--d:${at(end)};--l:0.35s`, `M${xe} ${y}C${r1(xe + R)} ${y} ${xe} ${MAIN} ${r1(xe + R)} ${MAIN}`));
+      g.push(thread(lastWho, "", `--d:${at(end)};--l:0.35s`, `M${xe} ${y}C${r1(xe + R)} ${y} ${xe} ${MAIN} ${r1(xe + R)} ${MAIN}`, ` data-pos="${end}"`));
     } else if (closed) {
-      g.push(`<path class="g-cap pop" style="--d:${at(end)}" d="M${xe} ${y - 6}V${y + 6}"/>`);
+      g.push(`<path class="g-cap pop" style="--d:${at(end)}" d="M${xe} ${y - 6}V${y + 6}" data-pos="${end}" data-say="${esc(`${th.id} ${th.ending === "closed" ? "closed without merging" : "released"}`)}" data-ev="${esc(`${th.id} ${th.ending}`)}"/>`);
     } else {
       const cls = isLocalRun(lastWho) ? " local" : "";
-      g.push(`<circle class="g-head pop${cls}" style="--c:${c(lastWho)};--d:${at(end)}" cx="${xe}" cy="${y}" r="4.5"/>`);
+      g.push(`<circle class="g-head pop${cls}" style="--c:${c(lastWho)};--d:${at(end)}" cx="${xe}" cy="${y}" r="4.5" data-pos="${end}" data-say="${esc(`${th.id}: ${STATE_NAMES[th.state] ?? th.state}`)}" data-ev="${esc(`${th.id} head`)}"/>`);
     }
     // On a card, a review is an edge: from a node in its reviewer's colour, shaped as
     // the verdict, down to the task. A sent-back edge is dashed and its node ringed.
@@ -392,11 +404,11 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
       const isLocal = isLocalRun(b.actor);
       if (o.mini && (b.kind === "approve" || b.kind === "reject")) {
         const bx = x(b.pos), nx = Math.max(bx - 22, X0 + 6), ny = y - 24;
-        edges.push(`<g class="g-edge ${b.kind} pop" style="--c:${c(b.actor)};--d:${at(b.pos)}"><title>${esc(b.label)}</title>`
+        edges.push(`<g class="g-edge ${b.kind} pop" style="--c:${c(b.actor)};--d:${at(b.pos)}" data-pos="${b.pos}"><title>${esc(b.label)}</title>`
           + `<path d="M${r1(nx)} ${ny + 5}C${r1(nx)} ${y - 8} ${r1(bx - 10)} ${y - 12} ${r1(bx)} ${y - 8}"/>`
           + `<g transform="translate(${r1(nx)} ${ny})">${b.kind === "reject" ? '<circle class="ring" r="7"/><path d="M-4 -3L0 4L4 -3Z"/>' : '<path d="M-4 3L0 -4L4 3Z"/>'}</g></g>`);
       }
-      g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key, isLocal));
+      g.push(bead(b, x(b.pos), y, at(b.pos), c(b.actor), key, isLocal, ` data-pos="${b.pos}" data-ev="${esc(`${th.id} ${b.kind} ${b.at}`)}"`));
       cards.push({ key, x: x(b.pos), y, color: c(b.actor), head: `${shortStamp(b.at)} · ${th.id} · ${BEAD_NAMES[b.kind]}`, body: b.label, href: b.href });
     });
     g.unshift(...edges);
@@ -410,7 +422,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     out.push(`<g class="g-task${closed ? " closed" : ""}${live ? " live" : ""}" data-task="${tkey}">${title}${band}${o.href ? `<a href="${esc(o.href(th))}" data-key="${tkey}">${label}</a>` : label}${g.join("")}</g>`);
     if (th.merge) {
       const mx = r1(xe + R);
-      out.push(`<g class="pop" style="--d:${at(end)}"><circle class="g-merge" cx="${mx}" cy="${MAIN}" r="${compact ? 4 : 5.5}"><title>${esc(`${th.id} merged as ${th.merge.sha.slice(0, 12)}`)}</title></circle>${
+      out.push(`<g class="pop" style="--d:${at(end)}" data-pos="${end}" data-say="${esc(`${th.id} merged into main${th.merge.sha ? ` as ${th.merge.sha.slice(0, 8)}` : ""}`)}" data-ev="${esc(`${th.id} merged`)}"><circle class="g-merge" cx="${mx}" cy="${MAIN}" r="${compact ? 4 : 5.5}"><title>${esc(`${th.id} merged as ${th.merge.sha.slice(0, 12)}`)}</title></circle>${
         !compact && th.merge.sha && mx - lastLabel > 62 ? `<text class="g-sha" x="${mx}" y="${MAIN - 11}" text-anchor="middle">${esc(th.merge.sha.slice(0, 7))}</text>` : ""}</g>`);
       if (!compact && th.merge.sha && mx - lastLabel > 62) lastLabel = mx;
     }
@@ -428,7 +440,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
   out.push(`<style>${rules ? `${rules}{opacity:1;visibility:visible;transition-delay:0s}` : ""}</style><g class="g-cards">${cards.map((k) => drawCard(k, W, H)).join("")}</g>`);
   const one = s.threads.length === 1 ? s.threads[0] : null;
   const label = one ? `${one.id}, ${one.title}: its thread, ${one.beads.length} marks` : `${s.title}: ${s.threads.length} tasks taken by agents, ${s.tally.merges} merged into main`;
-  return `<svg class="graph${compact ? " compact" : ""}${o.mini ? " mini" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">${out.join("")}</svg>`;
+  return `<svg class="graph${compact ? " compact" : ""}${o.mini ? " mini" : ""}" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}" data-span="${s.span}">${out.join("")}</svg>`;
 }
 
 const BEAD_NAMES: Record<BeadKind, string> = {
@@ -436,23 +448,23 @@ const BEAD_NAMES: Record<BeadKind, string> = {
   approve: "approved", reject: "sent back", handoff: "handed off", accept: "accepted", dispatch: "dispatched",
 };
 const STATE_NAMES: Record<string, string> = {
-  open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed",
+  open: "open", claimed: "in progress", submitted: "in review", accepted: "accepted", merged: "merged", abandoned: "closed", blocked: "blocked",
 };
 
 // A mark with somewhere to go (its commit, its task's checks) is a link, so a
 // keyboard reaches it as a pointer does; one without is focusable all the same.
-function bead(b: Bead, X: number, y: number, d: string, color: string, key: string, isLocal = false): string {
-  const mark = beadMark(b, X, y, d, color, key, isLocal);
+function bead(b: Bead, X: number, y: number, d: string, color: string, key: string, isLocal = false, attrs = ""): string {
+  const mark = beadMark(b, X, y, d, color, key, isLocal, attrs);
   return b.href ? `<a href="${esc(b.href)}" class="g-bead-link" data-key="${key}">${mark}</a>` : mark;
 }
 
-function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: string, isLocal: boolean): string {
+function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: string, isLocal: boolean, attrs = ""): string {
   // Each mark is focusable, so a keyboard reaches the same card a pointer does;
   // its accessible name is the card's text. A linked mark leaves focus to its link.
   const name = esc(`${stamp(b.at)}, ${BEAD_NAMES[b.kind]}: ${b.label}`);
   const focus = b.href ? "" : ' tabindex="0"';
   // A local bead is hollow and outlined in its actor's colour, so it carries the colour itself.
-  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}${isLocal ? " local" : ""}" style="--d:${d}${style}${isLocal && !style.includes("--c:") ? `;--c:${color}` : ""}" transform="translate(${X} ${y})" data-key="${key}"${focus} role="img" aria-label="${name}"><circle class="hit" r="10"/>`;
+  const open = (cls: string, style = "") => `<g class="g-bead pop ${cls}${isLocal ? " local" : ""}" style="--d:${d}${style}${isLocal && !style.includes("--c:") ? `;--c:${color}` : ""}" transform="translate(${X} ${y})" data-key="${key}"${focus} role="img" aria-label="${name}"${attrs}><circle class="hit" r="10"/>`;
   switch (b.kind) {
     case "push": return `${open("push")}<path d="M0 -6V6"/></g>`;
     case "pass": return `${open("pass")}<circle r="3.6"/></g>`;

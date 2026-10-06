@@ -46,10 +46,10 @@ test("expiry is exclusive and revocation takes effect immediately", () => {
 
 test("route policy grants workflow operations and defaults to refusing", () => {
   const task = ["projects", "p", "items", "t1"];
-  for (const verb of ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release"]) {
+  for (const verb of ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release", "block", "unblock"]) {
     assert.equal(agentRoute("POST", [...task, verb]), true, verb);
   }
-  for (const verb of ["accept", "merged", "landing", "abandon", "dispatch", "undispatch", "future"]) {
+  for (const verb of ["accept", "merged", "landing", "abandon", "dispatch", "undispatch", "edit", "future"]) {
     assert.equal(agentRoute("POST", [...task, verb]), false, verb);
   }
   for (const method of ["GET", "POST", "PUT", "DELETE"]) {
@@ -62,4 +62,12 @@ test("route policy grants workflow operations and defaults to refusing", () => {
   assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "read" }), true);
   for (const path of [["config"], ["projects"], ["inbox"], ["queue"], ["projects", "p"], [...task], [...task, "brief"], [...task, "diff"], [...task, "sandbox", "run"]]) assert.equal(agentRoute("GET", path), true, path.join("/"));
   assert.equal(agentRoute("POST", [...task, "claim", "extra"]), false);
+});
+
+test("an agent token may post a plan document, and reaches no other plan route", () => {
+  const plan = ["projects", "p", "items", "t1", "plan"];
+  assert.equal(agentRoute("POST", plan), true);
+  for (const sub of ["approve", "revise", "reroute", "retry", "stop", "future"]) assert.equal(agentRoute("POST", [...plan, sub]), false, sub);
+  assert.equal(agentRoute("GET", plan), false);
+  assert.equal(agentRoute("POST", ["projects", "p", "items"], { kind: "plan", goal: "x" }), false);
 });

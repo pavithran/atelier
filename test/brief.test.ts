@@ -302,9 +302,11 @@ test("an empty record yields no invented evidence", () => {
   assert.equal(b.decided, "Wait on t21 with nothing pushed: Idle.");
 });
 
-test("cleanSummary trims, replaces control characters and caps at 600", () => {
+// Task t138: a summary over 600 characters was cut to 600 without a word.
+test("cleanSummary trims and replaces control characters, and refuses a summary over 600 characters", () => {
   assert.equal(cleanSummary("  a\nb\u0007c  "), "a b c");
-  assert.equal(cleanSummary("x".repeat(900))?.length, 600);
+  assert.equal(cleanSummary(`  ${"x".repeat(600)}\n`)?.length, 600);
+  assert.throws(() => cleanSummary("x".repeat(601)), /too_long\|the summary is 601 characters; the limit is 600\. Shorten it and send it again/);
   assert.equal(cleanSummary("   "), undefined);
   assert.equal(cleanSummary(42), undefined);
 });

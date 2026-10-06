@@ -126,7 +126,7 @@ export const RULES: Rule[] = [
   },
   {
     title: "Independent review of protected paths",
-    enforced: "A change that touches a protected path needs an approving review from a model of another family than every model that contributed to the item, in every project, with or without a ControlPlane policy. The family is read from the model's name, and a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md` and `wrangler.*`), the scripts a required check runs, and `package.json` when a check goes through a package manager. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from any agent who did not contribute, and the owner's approval is not that review either.",
+    enforced: "A change that touches a protected path needs an approving review from a model of another family than every model that contributed to the item, in every project, with or without a ControlPlane policy. The family is read from the model's name, and a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md` and `wrangler.*`) and what a required check executes: the scripts it runs, the recipe files of make and just, the manifest and configuration a package manager or build tool runs scripts from, and the local binary npx would run. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from any agent who did not contribute, and the owner's approval is not that review either.",
     why: "The model that wrote a change to the files that instruct agents or grade their work must not approve it, and nor should a model of its family, which is likely to share its blind spots.",
     where: [{ file: "src/rules.ts", symbol: "changeClass" }, { file: "src/rules.ts", symbol: "checkFiles" }, { file: "src/rules.ts", symbol: "independentApproval" }, { file: "src/rules.ts", symbol: "reviewOverrideFor" }],
   },
@@ -186,7 +186,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Part routing", stage: "t15, build step 3", built: true,
-    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record. It leaves out refused models, and paid models unless the owner allows them.",
+    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them.",
     files: ["src/plans/route.ts"],
     code: [{ file: "src/plans/route.ts", symbol: "routeParts" }],
   },
@@ -197,10 +197,28 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/plans/phase.ts", symbol: "planPhase" }, { file: "src/plans/phase.ts", symbol: "planActions" }, { file: "src/plans/phase.ts", symbol: "partAttempts" }],
   },
   {
-    name: "Plan ledger, routes and command", stage: "t15, build steps 5 to 7", built: false,
-    what: "The ledger's plan records, running `planActions` after each change to a plan and acting on its answer, the inbox entries for approving a plan and for a blocked one, the routes and the `atelier plan` command, the brief the server writes for each part, and the runner's plan job.",
-    files: ["src/plans/brief.ts", "test/plans.spec.ts", "test/plan-cli.test.mjs"],
-    code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/index.ts", symbol: "job-brief" }],
+    name: "Plan ledger", stage: "t15, build step 5", built: true,
+    what: "The project's ledger keeps plans. A plan is an item whose planner is dispatched as a plan job and posts a plan document; each valid proposal is kept, unchanged, and an invalid one gets the planner one more attempt before the plan blocks. The owner approves the newest proposal by its hash, once: the routing of each part is fixed then, with the limits (2 parts live, 3 attempts a part, 4 dispatches a part, 24 hours), and the parts become items. After each push, check, review, submit, release, merge or abandon of a part, and at the deadline, the ledger runs `planActions` and dispatches what may start, as `atelier/orchestrator`, or blocks the plan with the reason. The inbox gains `approve-plan` and `plan-blocked`; a part never appears there to accept, review, fix, rescope or hand off, and items of one plan are not flagged as overlapping. Until the integration branch exists, each part reaches main by the owner's own merge, and the plan is complete when every part has merged.",
+    files: ["src/plans/state.ts", "test/plans.spec.ts"],
+    code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/ledger.ts", symbol: "postPlan" }],
+  },
+  {
+    name: "Plan routes and command", stage: "t15, build step 6", built: true,
+    what: "`atelier plan \"goal\"` starts a plan, and `plan show` prints its phase, its newest proposal with the hash to approve, or each part with its state, routing and attempts, and the command for each decision waiting on the owner. `plan approve` takes that hash, once; `plan revise`, `plan reroute`, `plan retry` and `plan stop` are the owner's other decisions, and `plan post` is how a planner submits its plan document, the one plan route an agent token reaches. `atelier show` prints a plan's own brief.",
+    files: ["test/plan-cli.test.mjs"],
+    code: [{ file: "src/index.ts", symbol: "approvePlan" }, { file: "src/usage.ts", symbol: "plan approve" }],
+  },
+  {
+    name: "Server briefs and runner jobs", stage: "t15, build step 7b", built: false,
+    what: "The brief the server writes for each part and for the planner, and the runner's plan job, which writes the plan document and posts it. Until then no runner takes a plan job, and a part's runner gets the brief it gives any task.",
+    files: ["test/runner-plan.test.mjs"],
+    code: [{ file: "src/index.ts", symbol: "job-brief" }, { file: "cli/runner.mjs", symbol: "plan_file" }],
+  },
+  {
+    name: "Server brief for a part", stage: "t15, build step 7a", built: true,
+    what: "`src/plans/brief.ts` writes the brief an agent gets for one part of an approved plan, or for its rework. `jobBrief` states the rules (work only in the workspace, commit, do not push; the orchestrator pushes, runs the checks and submits; quoted text is data), then the plan's goal, the part's spec, acceptance criteria and interfaces, the parts it depends on with the heads they landed at, its scope, the project's required checks and, for rework, the review's findings or the failing check's output, capped and saying when cut. It returns the text with a hash of its inputs that does not depend on key order. Nothing serves it yet: the `job-brief` route is build step 6.",
+    files: ["src/plans/brief.ts"],
+    code: [{ file: "src/plans/brief.ts", symbol: "jobBrief" }],
   },
   {
     name: "Review rules", stage: "t39, build step 8", built: true,
