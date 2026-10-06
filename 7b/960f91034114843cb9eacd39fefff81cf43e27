@@ -1,0 +1,21 @@
+atelier atelier/t122 "Audit t105, blocking (confirmed by glm-5.3): atelier login --server URL sends the stored owner token to whatever server is named and saves the new URL before the server accepts it (cli/atelier.mjs:953-964); do not send a stored token to a new server, and save the URL only after a token the user gives is accepted there"
+accepted head 59e8788c83d1e5eb3e039c5bf9b9697cc84ec775
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T02:25:17.710Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T02:25:20.224Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE (re-review). The table covers all 18 combinations of config.json server, ATELIER_SERVER and ATELIER_TOKEN; login sends a server only a token already given for it; the token and server pair are rewritten together or not at all, and a 401 or 503 changes nothing; the token is never printed; login --store reads the store bypassing the environment.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's re-review.
+2026-10-06T01:21:07.590Z pavi item.created
+2026-10-06T01:31:13.099Z claude-code/fable-5.1 item.claimed
+2026-10-06T01:31:16.054Z claude-code/fable-5.1 fork.created
+2026-10-06T02:03:18.145Z claude-code/fable-5.1 push.observed
+2026-10-06T02:04:38.000Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:04:39.970Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:04:40.612Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:14:45.565Z antigravity/gemini-3.1-pro review.rejected
+2026-10-06T02:23:54.070Z claude-code/fable-5.1 push.observed
+2026-10-06T02:25:18.191Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:25:20.488Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:25:21.192Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:27:51.242Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:27:51.776Z pavi review.approved
+2026-10-06T02:27:52.303Z pavi item.accepted
