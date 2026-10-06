@@ -29,7 +29,9 @@
 //
 // What is reported is counts, windows, model names, costs and balances.
 // No prompt, file name, session id, key or header ever leaves the machine:
-// any key read is remembered and removed from every line printed.
+// any key read is remembered and removed from every line printed, and every
+// name a record supplies is cleaned before it is printed or reported
+// (cleanBody).
 
 import { existsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -196,6 +198,24 @@ export async function gatherUsage(io, config, scrub) {
   return { reports, skipped, via };
 }
 
+// ── what leaves the machine ────────────────────────────────────────────────
+
+// A report body with every string a tool's record supplied (window, model
+// and provider names) and every note cleaned as the server cleans them
+// (src/usage/report.ts: control characters and key-shaped text removed) and
+// cut to its lengths, after `safe` has removed any key read here. The
+// records are files any process of the owner's can write, so what is in
+// them reaches neither the terminal nor Atelier as it was found. A window
+// or model whose name is left empty is dropped; the server refuses one.
+export function cleanBody(body, safe) {
+  return {
+    windows: body.windows.map((w) => ({ ...w, name: safe(w.name, 40) })).filter((w) => w.name),
+    models: body.models.map((m) => ({ ...m, model: safe(m.model, 128), provider: m.provider == null ? null : safe(m.provider, 64) || null })).filter((m) => m.model),
+    balances: body.balances,
+    notes: body.notes.map((n) => safe(n, 300)).filter(Boolean),
+  };
+}
+
 // ── plain text ─────────────────────────────────────────────────────────────
 
 export function describeReport(tool, body, now) {
@@ -228,7 +248,7 @@ export function usageOptions(args, host = hostname()) {
   let name = args.name;
   if (name === undefined) name = `home:${host.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64) || "runner"}`;
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
-  return { name: `home:${name.slice(5)}`, dryRun: args["dry-run"] === true, configPath: args.config };
+  return { name: name.toLowerCase(), dryRun: args["dry-run"] === true, configPath: args.config };
 }
 
 function defaultIo() {
@@ -258,7 +278,9 @@ export async function runUsage(args, given = {}) {
     configNote = "No runner config was found, so no balance is asked for.";
   }
 
-  const { reports, skipped, via } = await gatherUsage(io, config, scrub);
+  const { reports: gathered, skipped, via } = await gatherUsage(io, config, scrub);
+  // Cleaned once, so what is printed and what is reported are the same values.
+  const reports = gathered.map((r) => ({ tool: r.tool, body: cleanBody(r.body, safe) }));
   const now = io.now();
   const out = [`Usage on ${opts.name}, as of ${stamp(now)}.`];
   if (configNote) out.push(configNote);
