@@ -451,3 +451,97 @@ it("sessions record, clean, cap and read newest first, and only the project owne
   const standing = await (await call("GET", "/projects/sessions/standing", "owner")).json() as { session: { data: { summary: string } } };
   expect(standing.session.data.summary).toBe("Note 5");
 });
+
+// Artifacts as it behaved for llm-basics: a fork's repository info names a
+// branch (main) its HEAD does not (master). `info` gives each repository's
+// reported default branch by name; forks are named with "--". Creating a
+// repository a second time fails as the binding does.
+function branchArtifacts(info: { baseline: string; fork: string }) {
+  const created = new Set<string>(), calls: { create: string[]; forks: string[] } = { create: [], forks: [] };
+  const artifacts = {
+    create: async (name: string, opts: { setDefaultBranch?: string }) => {
+      calls.create.push(`${name}:${opts.setDefaultBranch}`);
+      if (created.has(name)) throw new Error(`repo already exists: ${name}`);
+      created.add(name);
+      return {};
+    },
+    get: async (name: string) => ({
+      info: async () => ({ remote: `https://git.test/${name}.git`, defaultBranch: name.includes("--") ? info.fork : info.baseline }),
+      createToken: async () => ({ plaintext: "token", id: `id-${name}`, expiresAt: "soon" }),
+      revokeToken: async () => true,
+      fork: async (fork: string) => { calls.forks.push(fork); return {}; },
+      log: async () => [{ hash: "0".repeat(40) }],
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts;
+  const send = (method: string, path: string, actor: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+  return { artifacts, calls, send };
+}
+
+type Claimed = { workspace: { defaultBranch: string }; baseline: { defaultBranch: string } };
+
+it("init records the branch it names, and every token route gives that branch, whatever any repository's info reports", async () => {
+  const name = "branch-master", A = "opencode/glm-5.3";
+  // Both report main: only the registration says master.
+  const { calls, send } = branchArtifacts({ baseline: "main", fork: "main" });
+  const init = await send("PUT", `/projects/${name}`, "owner", { checks: ["npm test"], defaultBranch: "master" });
+  expect(init.status).toBe(200);
+  expect(await init.json()).toMatchObject({ project: { branch: "master" }, baseline: { defaultBranch: "master" } });
+  expect(calls.create).toEqual([`${name}:master`]);
+  // Init again without a branch keeps it; the baseline exists, so nothing is created.
+  expect(await (await send("PUT", `/projects/${name}`, "owner", { title: "Kept" })).json()).toMatchObject({ project: { branch: "master" } });
+
+  const item = await (await send("POST", `/projects/${name}/items`, "owner", { title: "Edit", scope: [] })).json() as { id: string };
+  const claimed = await send("POST", `/projects/${name}/items/${item.id}/claim`, A, {});
+  expect(claimed.status).toBe(200);
+  const c = await claimed.json() as Claimed;
+  expect([c.workspace.defaultBranch, c.baseline.defaultBranch]).toEqual(["master", "master"]);
+  expect(calls.forks).toEqual([`${name}--${item.id}`]);
+  // A second claim refreshes the workspace with the same branch.
+  expect(((await (await send("POST", `/projects/${name}/items/${item.id}/claim`, A, {})).json()) as Claimed).workspace.defaultBranch).toBe("master");
+  const read = await (await send("POST", `/projects/${name}/items/${item.id}/read-token`, A, {})).json() as { defaultBranch: string };
+  const base = await (await send("POST", `/projects/${name}/baseline-token`, A, {})).json() as { defaultBranch: string };
+  expect([read.defaultBranch, base.defaultBranch]).toEqual(["master", "master"]);
+});
+
+it("a project registered before init recorded its branch takes the baseline's branch, never the fork's", async () => {
+  const name = "branch-unrecorded";
+  await project(name);
+  const { send } = branchArtifacts({ baseline: "master", fork: "main" });
+  const item = await (await send("POST", `/projects/${name}/items`, "owner", { title: "Edit", scope: [] })).json() as { id: string };
+  const c = await (await send("POST", `/projects/${name}/items/${item.id}/claim`, "opencode/glm-5.3", {})).json() as Claimed;
+  expect([c.workspace.defaultBranch, c.baseline.defaultBranch]).toEqual(["master", "master"]);
+});
+
+it("init records main for a baseline it creates without a branch, and refuses a branch Git would not take", async () => {
+  const { calls, send } = branchArtifacts({ baseline: "main", fork: "main" });
+  expect(await (await send("PUT", "/projects/branch-default", "owner", {})).json()).toMatchObject({ project: { branch: "main" } });
+  // Any name Git takes for a branch is taken, slashes and letters beyond ASCII included.
+  expect(await (await send("PUT", "/projects/branch-slash", "owner", { defaultBranch: "release/übersetzung-2" })).json()).toMatchObject({ project: { branch: "release/übersetzung-2" } });
+  for (const bad of ["-delete", ".hidden", "a..b", "feature/", "x.lock", "a.lock/b", "has space", "a:b", "a@{1}", "@", "", 7]) {
+    const res = await send("PUT", "/projects/branch-bad", "owner", { defaultBranch: bad });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "bad_branch" });
+  }
+  // Refused before Artifacts is asked to create anything.
+  expect(calls.create).toEqual(["branch-default:main", "branch-slash:release/übersetzung-2"]);
+});
+
+it("push events are read on the project's branch, not the one the fork's info reports", async () => {
+  const name = "branch-events", A = "opencode/glm-5.3", H0 = "0".repeat(40), H1 = "1".repeat(40), H2 = "2".repeat(40);
+  const record = { name, repo: name, branch: "master", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record as never, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
+  await L.newItem("Observe", [], "owner"); await L.claim("t1", A); await L.setFork("t1", `${name}--t1`, H0, A);
+  const artifacts = { get: async () => ({ info: async () => ({ defaultBranch: "main" }), log: async () => [{ hash: H2 }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
+  const notice = (ref: string) => ({ type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref, after: H1 } });
+  const send = (body: unknown) => worker.queue({ messages: [{ body, ack() {}, retry() {} }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: artifacts });
+  await send(notice("refs/heads/main"));
+  expect((await L.item("t1")).head).toBe(H0);
+  await send(notice("refs/heads/master"));
+  expect((await L.item("t1")).head).toBe(H2);
+});

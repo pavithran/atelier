@@ -116,10 +116,10 @@ In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records the required checks and the protected paths, and an optional display title. |
+| `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. |
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
-| `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/`. |
-| `atelier push` | the item's owner | Pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
+| `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. |
+| `atelier push` | the item's owner | Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
 | `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, measures which paths changed since the baseline, and records the results as Observed. A result for a head that has since moved is refused. |
 | `atelier report "…"` | anyone | Records a Reported claim. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
@@ -831,8 +831,9 @@ to its own remotes remain separate decisions.
 ## Push event setup
 
 The Worker has a Queues consumer for `cf.artifacts.repo.pushed` notices in
-the `atelier` namespace. It rereads the default branch from Artifacts,
-ignores unrelated branches and duplicate events, and retries failed reads.
+the `atelier` namespace. It acts on pushes to the project's branch, the one
+init registered, ignores other branches and duplicate events, and retries
+failed reads.
 A new push invalidates acceptance and evidence for the previous revision.
 The CLI's push observation remains available when event delivery is delayed.
 
