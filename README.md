@@ -1013,19 +1013,30 @@ Drive syncs and where it renames a file it finds in conflict to a copy. If
 publishing the baseline or recording the merge fails, rerun the same command.
 It resumes from the local merge commit. It refuses a different revision, a
 dirty checkout, or concurrent merge. If a process stops during the
-uncommitted Git merge, inspect `git status` and resolve or abort that merge
-before retrying. The journal preserves the original revision and starting
-commit. Never remove it to bypass a mismatch.
+uncommitted Git merge, abort that merge with `git merge --abort` before
+retrying, or cancel the landing. The journal preserves the original revision
+and starting commit. Never remove it to bypass a mismatch: cancel the landing.
 
-`atelier merge t9 --cancel` ends a landing. It keeps an unpublished merge
-commit in the checkout unless `--discard-local` is given, and then puts the
-branch back on the commit where the merge began. Once the merge is on the
-baseline it refuses, with or without `--discard-local`, and the checkout
-keeps the merge: the journal says so once the push has returned, and for a
-push that reached the baseline just before the process stopped, the
-baseline's history, which the cancel fetches and Git reads in full, says so.
-Rerun `atelier merge t9` to record it. A merge the server has already
-recorded leaves only the journal, which the cancel removes.
+`atelier merge t9 --cancel` ends a landing. It keeps what the landing left in
+the checkout, an unpublished merge commit or an unfinished Git merge, unless
+`--discard-local` is given. Then it aborts the unfinished Git merge, or puts
+the branch back on the commit where the merge began, the latter only while the
+branch is still on the merge commit with nothing uncommitted; otherwise it
+changes nothing and says what to move first. The journal is matched by task,
+not by revision: a push or review can withdraw an acceptance after the merge
+commit is made and before the landing lease is taken, and a new revision can
+then be accepted. Such a landing can no longer be finished, so
+`atelier merge t9` refuses it and names the cancel, which ends it in the
+checkout and leaves the server alone. The landing lease is cancelled on the
+server only while the task is still accepted at the journal's revision.
+
+Once the merge is on the baseline the cancel refuses, with or without
+`--discard-local`, and the checkout keeps the merge: the journal says so once
+the push has returned, and for a push that reached the baseline just before
+the process stopped, the baseline's history, which the cancel fetches and Git
+reads in full, says so. Rerun `atelier merge t9` to record it. A merge the
+server has already recorded, or can no longer record because the task is not
+accepted at that revision, leaves only the journal, which the cancel removes.
 
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under
