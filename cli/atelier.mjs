@@ -193,8 +193,9 @@ function storeWorkspaceToken(dir, remote, token) {
 // the command's row is refused before the command runs. --project and --as
 // belong to every row, since project() and actor() read them, and --help
 // anywhere prints usage. The commands in REST take `--` and the words after it.
-const COMMON = { project: false, as: false };
-const FLAGS = {
+// test/command-help.test.mjs holds this table to the help in src/usage.ts.
+export const COMMON = { project: false, as: false };
+export const FLAGS = {
   unwrap: {},
   wrap: { next: false, found: false, push: true, "no-check": true, "allow-failing": true },
   token: { days: false, label: false },

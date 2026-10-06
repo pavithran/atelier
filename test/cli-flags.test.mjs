@@ -266,7 +266,7 @@ test("init sends a switch as true or false, as it was written, and refuses any o
 test("a flag the command does not take, or a stray --, is refused before any request", (t) => {
   const f = fixture(t);
   for (const [argv, message] of [
-    [["ls", "--bogus", "--project", "demo"], /ls does not take --bogus; see atelier help/],
+    [["ls", "--bogus", "--project", "demo"], /ls does not take --bogus; see atelier ls --help/],
     [["wrap", "Done", "--no-chcek"], /wrap does not take --no-chcek; see atelier wrap --help/],
     [["show", "t1", "--project", "demo", "--", "extra", "words"], /show does not take "--" and the words after it/],
   ]) {
