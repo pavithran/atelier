@@ -227,9 +227,9 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/review/needed.ts", symbol: "reviewNeeded" }, { file: "src/review/reviewer.ts", symbol: "pickReviewer" }, { file: "src/review/brief.ts", symbol: "reviewBrief" }, { file: "src/review/verdict.ts", symbol: "parseVerdict" }],
   },
   {
-    name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: false,
-    what: "Review requests on the ledger and a reviewer's claim on one, findings stored with a review, sending a rejected part back to its builder, and the runner's review job, which gives a model the brief and posts the verdict it returns. Until then a review is recorded only when someone runs `atelier review`.",
-    files: [],
+    name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: true,
+    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor, and the queue offers them as `review` jobs. A reviewer's runner claims one, clones the part read-only, gives the model the review brief and posts the verdict with its findings. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request.",
+    files: ["src/ledger.ts", "cli/runner.mjs", "test/review-requests.spec.ts"],
     code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "verdict_file" }],
   },
   {
