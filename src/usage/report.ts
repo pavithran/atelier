@@ -107,11 +107,21 @@ const when = (v: unknown): string | null => {
 
 const SECRET_FIELDS = ["key", "apiKey", "token", "authorization", "header", "headers"];
 
+// A tool or runner name is stored as sent, drawn on the usage page and put in
+// an alert's title, which goes to ntfy.sh, so it must be a plain name: the
+// tool matches TOOL (the runner matched parseRunner's pattern already), and
+// neither looks like a key by the patterns redactKeys removes, in the case
+// it was sent or the case it is stored in. A report with such a name is
+// refused, and the refusal does not repeat the name.
+const keyShaped = (name: string) => redactKeys(name) !== name || redactKeys(name.toLowerCase()) !== name.toLowerCase();
+
 // A report from the route body, validated, or a RuleError saying what is
 // wrong. `at` and `by` are the server's: when it arrived and which runner
 // sent it, as a model status takes them.
 export function cleanReport(tool: string, body: Record<string, unknown>, at: string, by: string): UsageReport {
+  if (keyShaped(tool)) throw bad("the tool name looks like a key; a report names its tool plainly, such as codex");
   if (!TOOL.test(tool)) throw bad(`"${tool}" is not a tool name Atelier can record`);
+  if (keyShaped(by)) throw bad("the runner name looks like a key; name the runner plainly in X-Atelier-Runner, such as home:studio");
   if (SECRET_FIELDS.some((f) => f in body)) throw bad("a usage report carries numbers, never a key or a header");
   const windows = list(body.windows, "windows", 10).map((w): UsageWindow => {
     const x = (w ?? {}) as Record<string, unknown>;
