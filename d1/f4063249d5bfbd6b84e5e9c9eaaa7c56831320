@@ -1,0 +1,16 @@
+atelier atelier/t117 "Audit t105, blocking (confirmed by glm-5.3): a path differing from a protected path only by letter case is unprotected (globToRegExp has no i flag, src/rules.ts:154-171), and on macOS the merge writes the agent's claude.md over CLAUDE.md on disk and in fresh clones; fold case for the guarded set only, and refuse a merge whose tree holds case-folding duplicates"
+accepted head e0d309010cf3745b21314a34c32632444d94b870
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T02:12:49.011Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T02:12:51.139Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. foldPath follows APFS (canonical decomposition, full case folding, recomposition) and matchesFolded keeps the exact match too, so folding only adds protection; scopes and the direct allow-list stay exact, which is the safe side; the merge refusal runs git merge-tree --write-tree before git merge and touches neither index nor tree; the Git < 2.38 fallback is safe; tests build real colliding trees.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T01:21:05.692Z pavi item.created
+2026-10-06T01:30:40.881Z claude-code/opus-5.5 item.claimed
+2026-10-06T01:30:43.445Z claude-code/opus-5.5 fork.created
+2026-10-06T02:11:29.760Z claude-code/opus-5.5 push.observed
+2026-10-06T02:12:49.196Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:12:51.214Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:12:51.884Z claude-code/opus-5.5 item.submitted
+2026-10-06T02:19:23.440Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:19:23.965Z pavi review.approved
+2026-10-06T02:19:24.483Z pavi item.accepted
