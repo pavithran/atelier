@@ -853,7 +853,10 @@ export function checkFiles(checks: string[]): string[] {
   // A directory an option names, normalised as Git names a changed path: "."
   // and empty segments dropped, ".." resolved against what precedes it. Null
   // when it climbs out of the repository, where nothing it names is guarded.
+  // A directory outside the repository (an absolute path) names no file the
+  // item can edit, so it guards nothing.
   const normalDir = (dir: string): string | null => {
+    if (dir.startsWith("/")) return null;
     const parts: string[] = [];
     for (const part of dir.split("/")) {
       if (!part || part === ".") continue;

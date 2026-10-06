@@ -240,7 +240,7 @@ function chainFiles(commands, dir) {
     const at = commandWord(words);
     if (at !== -1 && words[at] === "cd") {
       const target = words[at + 1];
-      dir = target && !target.startsWith("-") && !EXPANDED.test(target) && dir !== undefined ? join(dir, target) : undefined;
+      dir = target && !target.startsWith("-") && !EXPANDED.test(target) && dir !== undefined ? (target.startsWith("/") ? target : join(dir, target)) : undefined;
       continue;
     }
     if (dir !== undefined && at !== -1) files.push(...programFile(words, dir, at));
