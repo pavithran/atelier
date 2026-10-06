@@ -177,6 +177,7 @@ export function sameActor(a: string, b: string): boolean {
 }
 
 // Minimal glob: `**` crosses directories, `*` does not, everything else literal.
+// Case-sensitive, as Git's paths are; `matchesFolded` is the matcher that is not.
 export function globToRegExp(glob: string): RegExp {
   let out = "";
   for (let i = 0; i < glob.length; i++) {
@@ -198,6 +199,51 @@ export function globToRegExp(glob: string): RegExp {
 
 export function matchesAny(path: string, globs: string[]): boolean {
   return globs.some((g) => globToRegExp(g).test(path));
+}
+
+// One spelling for every name that macOS's default disk (APFS, case-insensitive)
+// treats as the same file. APFS compares names after canonical decomposition
+// and full Unicode case folding, so `claude.md` is `CLAUDE.md`, a decomposed
+// `café` is the precomposed one, and `AGENTſ.md` (long s), `ﬁle` (ligature) and
+// `straße` are `AGENTS.md`, `file` and `strasse`. Lower, upper, then lower
+// case again gives that folding in JavaScript: the middle step turns `ſ` into
+// `S` and `ß` into `SS`, the first turns `ẞ` into `ß`. Final sigma (U+03C2) is
+// the one lowercase mapping that depends on context, so it becomes plain sigma
+// (U+03C3), as case folding does. This agrees with APFS for every code point
+// that has a case mapping or a decomposition, except dotless `ı`, which this
+// folds to `i` and APFS keeps apart: an error on the cautious side.
+export function foldPath(path: string): string {
+  return path.normalize("NFD").toLowerCase().toUpperCase().toLowerCase().replace(/\u03c2/g, "\u03c3").normalize("NFC");
+}
+
+// The matcher for the guarded set: protected globs, the default protected
+// files and the files checks execute. On the owner's Mac a path that differs
+// from a guarded one only by letter case or Unicode form is written to the
+// guarded file, so it counts as guarded. A path matching as written always
+// counts, so folding only ever adds to the set.
+export function matchesFolded(path: string, globs: string[]): boolean {
+  const folded = foldPath(path);
+  return matchesAny(path, globs) || globs.some((g) => globToRegExp(foldPath(g)).test(folded));
+}
+
+// Groups of paths that Git keeps apart and macOS stores as one file, so a
+// checkout on a Mac writes one over the other. The directories of each path
+// are compared too. A group is reported where the clash arises: `Docs/a.md`
+// and `docs/a.md` differ in a parent directory, and the group of `Docs` and
+// `docs` names that already.
+export function pathCollisions(paths: string[]): string[][] {
+  const all = new Set<string>();
+  for (const path of paths) {
+    const parts = path.split("/");
+    parts.forEach((_, i) => all.add(parts.slice(0, i + 1).join("/")));
+  }
+  const groups = new Map<string, string[]>();
+  for (const path of all) {
+    const key = foldPath(path);
+    groups.set(key, [...(groups.get(key) ?? []), path]);
+  }
+  const parent = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+  return [...groups.values()].filter((group) => group.length > 1 && new Set(group.map(parent)).size < group.length);
 }
 
 // Two scopes overlap when a literal prefix of one could fall inside the other.
@@ -291,10 +337,15 @@ export function measuredPaths(value: unknown): string[] | null {
   return Array.isArray(value) && value.every((p) => typeof p === "string") ? value : null;
 }
 
+// The guarded set is matched whatever the letter case or Unicode form, since
+// the owner's Mac writes such a variant to the guarded file. The direct
+// allow-list, like an item's scope, is matched as written: it grants an
+// exemption from review, so a variant path falls outside it and needs the
+// review, which is the safe side of the comparison.
 export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass | null {
   if (!paths.length) return null;
   const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? [])];
-  if (paths.some((p) => matchesAny(p, guarded))) return "protected";
+  if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
   const direct = policy.execution?.direct;
   return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
 }
@@ -434,6 +485,8 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   }
   const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
   for (const r of rejected) blockers.push(`rejected by ${r.by}: ${r.note || "no note"}`);
+  // Scope is matched as written: a path in another letter case is reported
+  // outside it, which shows the variant rather than hiding it.
   const outOfScope = item.scope.length ? changed.filter((p) => !matchesAny(p, item.scope)) : [];
   return { ready: blockers.length === 0, blockers, needsAssessor, outOfScope, ...(governed ? { changeClass: kind, requirement } : {}) };
 }

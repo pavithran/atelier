@@ -104,6 +104,15 @@ test("merge warns and refuses newly protected touched paths unless overridden", 
   assert.deepEqual(mergePolicyDecision(before, before, ["AGENTS.md"]), { warning: null, refusal: null });
 });
 
+test("merge matches newly protected paths whatever their letter case or Unicode form", () => {
+  const after = { ...before, protected: ["AGENTS.md", "src/**", "CLAUDE.md"] };
+  for (const path of ["SRC/secret.ts", "claude.md", "Src/Secret.ts"]) {
+    assert.ok(mergePolicyDecision(before, after, [path]).refusal?.includes(`newly protected paths: ${path}.`), path);
+  }
+  // A variant of a path protected at acceptance is not newly protected.
+  assert.equal(mergePolicyDecision(before, after, ["agents.md", "AGENT\u017f.md"]).refusal, null);
+});
+
 test("merge warns on eligibility and overlap changes without refusing unrelated paths", () => {
   const result = mergePolicyDecision(before, { ...before, eligible: ["codex"], refuseOverlap: true }, ["src/a.ts"]);
   assert.match(result.warning, /eligible:.*refuseOverlap:/);

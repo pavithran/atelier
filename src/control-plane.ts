@@ -1,4 +1,4 @@
-import { checkFiles, matchesAny } from "./rules.ts";
+import { checkFiles, matchesFolded } from "./rules.ts";
 
 type Policy = { protected?: string[]; checks?: string[]; eligible?: string[]; refuseOverlap?: boolean };
 
@@ -15,8 +15,9 @@ export function controlPlaneChanges(before: Policy, after: Policy) {
 
 export function mergePolicyDecision(before: Policy, after: Policy, paths: string[], allowChanged = false) {
   const changes = controlPlaneChanges(before, after);
+  // Matched as changeClass matches the guarded set: whatever the letter case or Unicode form.
   const guarded = (policy: Policy) => [...(policy.protected ?? []), ...checkFiles(policy.checks ?? [])];
-  const newlyProtected = paths.filter((path) => matchesAny(path, guarded(after)) && !matchesAny(path, guarded(before)));
+  const newlyProtected = paths.filter((path) => matchesFolded(path, guarded(after)) && !matchesFolded(path, guarded(before)));
   return {
     warning: changes.length ? `Warning: ControlPlane policy changed since acceptance: ${changes.join("; ")}` : null,
     refusal: changes.length && newlyProtected.length && !allowChanged
