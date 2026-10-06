@@ -146,7 +146,7 @@ export function harnessEnv(base, names = [], tokens = []) {
   for (const name of names) {
     const value = base[name];
     if (value === undefined || /^ATELIER_/i.test(name)) continue;
-    if (tokens.some((token) => token && value.includes(token))) withheld.push(name);
+    if (tokens.some((token) => token && value.includes(token))) { withheld.push(name); delete env[name]; }
     else env[name] = value;
   }
   return { env, withheld };

@@ -1079,3 +1079,10 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
     assert.equal(process.listenerCount("exit"), listeners);
   }
 });
+
+test("a named variable the check allowlist already passes is withheld too when it holds the owner's token", () => {
+  const base = { PATH: "/usr/bin:/opt/atl_ownertoken/bin", HOME: "/tmp/h" };
+  const { env, withheld } = harnessEnv(base, ["PATH"], ["atl_ownertoken"]);
+  assert.deepEqual(withheld, ["PATH"]);
+  assert.equal(env.PATH, undefined);
+});
