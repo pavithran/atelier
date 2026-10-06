@@ -65,7 +65,7 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // window. The registry's Harness and Family types predate the pool, and
 // route() reads only ids, harness names and evidence, so the pool's wider
 // names pass through.
-function profileFor(entry: ModelEntry, profiles: readonly ModelProfile[]): ModelProfile {
+export function profileFor(entry: ModelEntry, profiles: readonly ModelProfile[]): ModelProfile {
   const names = [entry.id, ...entry.aliases].map((name) => name.toLowerCase());
   const known = profiles.find((profile) => names.includes(profile.id.toLowerCase()));
   return {
@@ -83,7 +83,7 @@ const add = (a: ActorRecord, b: ActorRecord): ActorRecord => ({
   reviewsApproved: a.reviewsApproved + b.reviewsApproved, reviewsRejected: a.reviewsRejected + b.reviewsRejected,
   handoffsAway: a.handoffsAway + b.handoffsAway, merges: a.merges + b.merges,
 });
-function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEvent[]): ModelRecord {
+export function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEvent[]): ModelRecord {
   const record = buildRecord(events);
   const merged = new Map<string, ActorRecord>();
   for (const entry of pool) {

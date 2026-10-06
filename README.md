@@ -911,6 +911,45 @@ else, while it waits. Names are matched and stored in lower case, so
 that made it; after a handoff, the first runner to claim as the new owner
 takes it, and the task's history records which runner that was.
 
+## Plans
+
+A plan turns one goal into several items. The project owner states the goal
+with `atelier plan "goal" [--scope GLOB]... [--planner harness/model]`.
+Atelier creates the plan item and queues it as a plan job for the planner
+named, or else for the first model in the pool for research work that is not
+refused, not paid per token and may plan. A project has one active plan at a
+time. The planner, holding the plan item's claim, posts a plan document
+(`atelier.plan.v1`: the goal and its parts, each with a scope, dependencies,
+a brief and acceptance criteria) with `atelier plan post tP FILE`. An
+invalid one is refused with every error, and the planner gets one more
+attempt before the plan blocks.
+
+`atelier plan show tP` prints the newest proposal with its hash. `atelier
+plan approve tP --hash HASH [--allow-paid]` approves that exact split, once;
+an older hash is refused, and `atelier plan revise tP --note TEXT` sends a
+proposal back instead. Approval fixes the limits (two parts live at once,
+three attempts a part, four dispatches a part, 24 hours) and each part's
+routing: a builder, two alternates and a reviewer of another family, chosen
+from the model pool and the ledger's record. The parts become items, and
+Atelier dispatches each one, as `atelier/orchestrator`, once the parts it
+depends on have merged. A part its builder releases twice goes to an
+alternate. A plan that reaches a limit blocks and appears in the inbox; the
+owner decides with `atelier plan retry tN`, `atelier plan reroute tN --to
+harness/model`, `atelier abandon tN` or `atelier plan stop tP`, which closes
+the plan and its open parts and revokes their write tokens. `atelier show
+tP` prints the plan's brief.
+
+Not built yet: no runner takes a plan job, so a planner claims the plan item
+with `atelier claim tP --as harness/model --runner home:NAME` and posts its
+plan by hand; a part's runner gets the brief any task gets; nothing reviews
+a part automatically; and parts do not merge into a branch of the plan's
+own. Until then each part reaches main as any item does, through the owner's
+acceptance and merge. The inbox lists a part only once it is accepted, so
+`atelier plan show tP` gives the command for each part waiting on the owner,
+and the plan is complete once every part has merged.
+[docs/orchestrator.md](docs/orchestrator.md) holds the design and says which
+of its steps are built.
+
 ## Home runner
 
 `atelier runner` polls the queue every 30 seconds, claims one eligible task,
