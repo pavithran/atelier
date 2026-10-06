@@ -1,0 +1,16 @@
+atelier atelier/t123 "Audit t105, raised to blocking by gemini-3.1-pro: in a project without ControlPlane policy files the same model counts as its own independent reviewer under a profile suffix or another letter case (modelOf keeps 'glm:fast' and 'GLM-5.3' distinct from 'glm-5.3', src/rules.ts:148-151, 392); normalise the model id (case, profile suffix) before comparing"
+accepted head 9222308cc7562edd522f1b5b7f8207b7ecd018d4
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T01:53:38.609Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T01:53:40.732Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. gate, the self-review refusal, agentOf, the automatic review rules, integration and routing all compare by modelKey/sameActor now. Normalisation only makes the gate stricter; registry aliases cannot spoof another family. The owner's name, cross-harness independence for coordinated changes and earlier rejections stay exact, justifiably. Tests cover case and profile variants.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T01:21:07.979Z pavi item.created
+2026-10-06T01:30:35.006Z claude-code/opus-5.5 item.claimed
+2026-10-06T01:30:37.506Z claude-code/opus-5.5 fork.created
+2026-10-06T01:52:20.255Z claude-code/opus-5.5 push.observed
+2026-10-06T01:53:38.788Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:53:40.816Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:53:41.562Z claude-code/opus-5.5 item.submitted
+2026-10-06T01:57:55.804Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T01:57:56.430Z pavi review.approved
+2026-10-06T01:57:57.056Z pavi item.accepted
