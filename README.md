@@ -958,13 +958,27 @@ review a protected change needs: that review must already exist, or
 accepting. Acceptance still goes through the gate. Already accepted work
 needs only `atelier merge t9 --head FULL_COMMIT_SHA`.
 
-Merging records a journal in the registered checkout's Git directory,
-`atelier-landing.json`. If publishing the baseline or recording the merge
-fails, rerun the same command. It resumes from the local merge commit. It
-refuses a different revision, a dirty checkout, or concurrent merge. If a
-process stops during the uncommitted Git merge, inspect `git status` and
-resolve or abort that merge before retrying. The journal preserves the
-original revision and starting commit. Never remove it to bypass a mismatch.
+Merging records a journal for the registered checkout under the CLI's cache,
+`~/Library/Caches/ai-projects/cloudflare-git/landing/KEY/journal.json`, with
+the lock that keeps merges one at a time beside it. KEY is derived from the
+checkout's Git directory; neither file lives in that directory, which iCloud
+Drive syncs and where it renames a file it finds in conflict to a copy. If
+publishing the baseline or recording the merge fails, rerun the same command.
+It resumes from the local merge commit. It refuses a different revision, a
+dirty checkout, or concurrent merge. If a process stops during the
+uncommitted Git merge, inspect `git status` and resolve or abort that merge
+before retrying. The journal preserves the original revision and starting
+commit. Never remove it to bypass a mismatch.
+
+An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
+with its lock, `atelier-landing.lock`, beside it. A landing interrupted under
+it is picked up where it was left: the next `atelier merge`, `merge --cancel`
+or `sync` moves the journal under the cache unchanged and goes on from it, and
+removes the lock once the process its owner record names (`pid`, or the `pid 2`
+copy iCloud makes) is gone. A live owner still blocks, a lock with no owner
+record waits for a human, and a journal found in both places is refused with
+both paths named. `atelier wrap` names such a journal as a landing in progress
+and moves nothing.
 
 The browser provides this local command after acceptance. It does not run a
 network-accessible local executor. Deployment and pushing the project branch
