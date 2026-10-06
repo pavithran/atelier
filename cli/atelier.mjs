@@ -421,6 +421,36 @@ export function unregisteredMessage(here, projects) {
   return lines.join("\n");
 }
 
+// Edit distance between two names: how many characters to insert, drop or
+// change, so the registered name nearest a mistyped one comes first.
+export function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[b.length];
+}
+
+// What a command says when the server has no project under the name it was
+// given. The registered names come first, nearest the name first, since a
+// mistyped --project is the usual cause. init is named only away from a
+// registered checkout, where it would register the wrong folder; in one, the
+// folder's own project is the answer. A name this Mac registers but the
+// server lacks is its own case: the project is gone there, or the server is
+// another one.
+export function noProjectMessage(name, host, projects, here) {
+  const names = Object.keys(projects ?? {});
+  const first = `no project named ${name} on ${host}.`;
+  if (projects?.[name]) return `${first}\nThis Mac registers ${name}'s checkout at ${projects[name].path}, but the server has no project under that name: it was removed there, or ${host} is not the server it was registered with. To create it there, run atelier init in that checkout.`;
+  const lines = [first];
+  if (names.length) lines.push(`Registered on this Mac, closest first: ${names.slice().sort((a, b) => editDistance(a, name) - editDistance(b, name) || a.localeCompare(b)).join(", ")}.`);
+  if (here) lines.push(`This folder is ${here}'s checkout: run the command with --project ${here}, or without --project.`);
+  else lines.push(names.length ? "To register a new project, run atelier init in its checkout." : "No project is registered on this Mac. To register one, run atelier init in its checkout.");
+  return lines.join("\n");
+}
+
 // --summary takes text: an empty or blank value is refused, not dropped. A
 // bare flag is refused by the flag table before the command runs.
 function summaryArg(cmd) {
@@ -497,9 +527,16 @@ async function call(method, path, body, as, extra = {}) {
   } catch (error) { die(`server request failed: ${error.message}`, 4); }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-  if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
-    res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
+  if (!res.ok) {
+    // A project the server does not know, asked for by name: the answer
+    // names what this Mac knows instead of the server's "run atelier init",
+    // which an agent would obey in whatever folder it stands in.
+    const named = data.error === "no_project" ? /^\/projects\/([^/]+)/.exec(path)?.[1] : undefined;
+    if (named) die(noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name));
+    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`,
+      res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+        method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
+  }
   return data;
 }
 

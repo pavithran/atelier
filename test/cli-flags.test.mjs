@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
+import { noProjectMessage, parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
 
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
 // --sandbox-only) never takes the word after it, so an item id written after
@@ -96,7 +96,10 @@ globalThis.fetch = async (url, options = {}) => {
       else data = detail(id);
     }
   }
-  return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
+  // Any other project is one the server does not know, as the Worker answers it.
+  const status = !m && path.startsWith("/api/projects/") ? 404 : 200;
+  if (status === 404) data = { error: "no_project", detail: "project not initialised; run atelier init" };
+  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 };
 `);
   const run = (cwd, args, env = {}) => spawnSync(process.execPath, ["--import", preload, cli, ...args], {
@@ -128,6 +131,24 @@ test("a folder that is no registered checkout is named, with every registered pr
   // With nothing registered, init is the way to register a project.
   assert.equal(unregisteredMessage("/work/x", {}), "which project? /work/x is not a registered checkout or a task workspace. Pass --project NAME, or run the command in a registered checkout or in a task workspace.\nNo project is registered on this Mac: run atelier init in a project's checkout to register it.");
   assert.equal(unregisteredMessage("/work/Photograph", { photograph: { path: "/p" }, demo: { path: "/d" } }).split("\n").slice(1).join("\n"), "Registered on this Mac:\n  demo        /d\n  photograph  /p\nphotograph, named like this folder, is registered at /p; run the command there, or pass --project photograph.");
+});
+
+test("a project the server does not know is answered with the registered names, closest first, and init only away from a checkout", (t) => {
+  const f = fixture(t);
+  const typo = f.run(f.checkout, ["ls", "--project", "demp"]);
+  assert.equal(typo.status, 1);
+  assert.equal(typo.stderr, "atelier: no project named demp on https://fake.invalid.\nRegistered on this Mac, closest first: demo.\nThis folder is demo's checkout: run the command with --project demo, or without --project.\n");
+  const elsewhere = join(f.dir, "elsewhere");
+  mkdirSync(elsewhere);
+  const away = f.run(elsewhere, ["show", "t1", "--project", "demp"]);
+  assert.equal(away.status, 1);
+  assert.equal(away.stderr, "atelier: no project named demp on https://fake.invalid.\nRegistered on this Mac, closest first: demo.\nTo register a new project, run atelier init in its checkout.\n");
+  // The nearest name comes first; a name this Mac registers but the server lacks is its own case.
+  const projects = { atelier: { path: "/a" }, photograph: { path: "/p" }, demo: { path: "/d" } };
+  assert.match(noProjectMessage("atelir", "https://x", projects, null), /^Registered on this Mac, closest first: atelier, demo, photograph\.$/m);
+  assert.doesNotMatch(noProjectMessage("atelir", "https://x", projects, "demo"), /atelier init/);
+  assert.match(noProjectMessage("demo", "https://x", projects, "demo"), /^This Mac registers demo's checkout at \/d, but the server has no project under that name: .* run atelier init in that checkout\.$/m);
+  assert.equal(noProjectMessage("x", "https://x", {}, null), "no project named x on https://x.\nNo project is registered on this Mac. To register one, run atelier init in its checkout.");
 });
 
 test("abandon says whose write token is revoked, or that nobody held the item", (t) => {
