@@ -1,0 +1,16 @@
+atelier atelier/t106 "Concurrent opencode runs deadlock on their shared database: every opencode process opens ~/.local/share/opencode/opencode.db (247 MB here) and prunes it at startup; on 2026-10-05 six runs started within minutes all stopped after 'init' at 0% CPU for 30 minutes, holding the database, and none reached the model. One run alone, or runs each given their own XDG_DATA_HOME, work. The home runner (cli/runner.mjs) should start each opencode harness run with its own data folder beside the workspace, removed afterwards"
+accepted head c2d79d88f82a1164fd8601b2acf7425c2a79faa9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T01:11:13.502Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T01:11:15.556Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. Each opencode run gets a mkdtemp folder beside the workspace (0700), removed on every exit path including a second interrupt; removal acts only on that folder; other harnesses are unchanged; credentials come through the inherited environment; stdin is ignored, so opencode cannot hang on it; tests run real subprocesses.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-05T23:59:33.962Z pavi item.created
+2026-10-06T00:46:09.580Z claude-code/opus-5.5 item.claimed
+2026-10-06T00:46:11.802Z claude-code/opus-5.5 fork.created
+2026-10-06T01:09:54.903Z claude-code/opus-5.5 push.observed
+2026-10-06T01:11:13.603Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:11:15.636Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:11:16.418Z claude-code/opus-5.5 item.submitted
+2026-10-06T01:16:25.284Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T01:16:25.929Z pavi review.approved
+2026-10-06T01:16:26.652Z pavi item.accepted
