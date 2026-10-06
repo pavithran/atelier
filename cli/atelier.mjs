@@ -160,13 +160,13 @@ const FLAGS = {
   review: { approve: true, reject: true, note: false, head: false },
   handoff: { to: false, note: false },
   release: { note: false },
-  accept: { head: false },
+  accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
   done: { sandbox: true, summary: false },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
-  merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true },
+  merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
   "notes-remote": { off: true },
   dispatch: { to: false, agent: false, model: false, note: false },
   undispatch: {},
@@ -339,9 +339,10 @@ function listArg(flag, cmd) {
   return values.map((v) => v.trim());
 }
 
-// --override-review takes the reason the override records. A bare flag or a
-// blank reason is refused here, before any request; the server refuses the
-// same (overrideReason in src/rules.ts).
+// --override-review takes the reason the override records. A bare flag is
+// refused by the flag table, which gives it this message, before the command
+// runs; an empty or blank reason is refused here, before any request. The
+// server refuses the same (overrideReason in src/rules.ts).
 function overrideArg(form) {
   const reason = args["override-review"];
   if (reason === undefined) return undefined;
