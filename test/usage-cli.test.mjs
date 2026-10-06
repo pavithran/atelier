@@ -335,6 +335,41 @@ test("a key a tool echoes back is removed from what is printed", async (t) => {
   assert.match(printed, /deepseek: the balance call was refused \(HTTP 401\); check the key/);
 });
 
+test("names from a tool's record are cleaned and redacted before they are printed or reported", async (t) => {
+  // A key in a format no pattern knows, remembered because it was read for the balance call.
+  const UNUSUAL = "dummy-deepseek-key-in-an-unusual-format";
+  const FORGED = "\x1b[2J\x1b[HFORGED: checks passed sk-AUDIT1234567890";
+  const { io, calls } = fakeIo(t, {
+    rows: {
+      zcode: [zrow(FORGED, hoursAgo(1)), zrow("m".repeat(200), hoursAgo(1)), zrow("\x1b\x07\u2028", hoursAgo(1))],
+      opencode: [orow("glm-5.3", hoursAgo(1), { providerID: `provider ${UNUSUAL}` })],
+    },
+    io: {
+      readSecret: () => UNUSUAL,
+      readCodex: () => ({ limits: { at: NOW, windows: [{ name: "weekly\x1b]0;owned\x07", usedPercent: 5, resetsAt: null }] } }),
+    },
+  });
+  await runUsage(args("name=home:test"), io);
+  const printed = calls.printed.join("\n"), strings = [];
+  JSON.stringify(calls.report, (key, value) => { if (typeof value === "string") strings.push(value); return value; });
+  for (const [where, text] of [["printed", printed.replace(/\n/g, " ")], ["uploaded", strings.join(" ")]]) {
+    assert.equal(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(text), false, `${where}: no control characters`);
+    assert.equal(text.includes("sk-AUDIT1234567890"), false, `${where}: no key-shaped text`);
+    assert.equal(text.includes(UNUSUAL), false, `${where}: no remembered key`);
+  }
+  const by = Object.fromEntries(calls.report.map((r) => [r.tool, r.body]));
+  assert.deepEqual(by.codex.windows.map((w) => w.name), ["weekly ]0;owned"]);
+  assert.deepEqual(by.zcode.models.map((m) => m.model), ["[2J [HFORGED: checks passed [key removed]", "m".repeat(128)], "cut to the server's length; a name of control characters alone is dropped");
+  assert.equal(by.opencode.models[0].provider, "provider [key removed]");
+  assert.match(printed, /\n {4}\[2J \[HFORGED: checks passed \[key removed\]: 1 request, 1000 tokens\n/);
+  // The server keeps what was sent: the client cleaned it the same way.
+  for (const r of calls.report) {
+    const kept = cleanReport(r.tool, r.body, new Date(NOW).toISOString(), "home:test");
+    assert.deepEqual([kept.windows.map((w) => w.name), kept.models.map((m) => [m.model, m.provider]), kept.notes],
+      [r.body.windows.map((w) => w.name), r.body.models.map((m) => [m.model, m.provider]), r.body.notes], r.tool);
+  }
+});
+
 test("--dry-run gathers and prints but reports nothing", async (t) => {
   const { io, calls } = fakeIo(t);
   await runUsage(args("name=home:test", "dry-run"), io);
