@@ -1,0 +1,21 @@
+atelier atelier/t119 "Audit t105, blocking (confirmed by glm-5.3): atelier push and atelier update run anywhere: from the owner's project checkout they push its HEAD to the checkout's own origin and rebase it; guard both as finish does (cli/atelier.mjs:1302) so they run only in a task workspace"
+accepted head 76a92f26faf941b7da29710f16fa68fd2716b87a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T02:08:05.409Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T02:08:09.637Z
+REVIEW approve — pavi: Owner approval at 76a92f26: rebase onto t116's merge; the only change since Gemini 3.1 Pro's approval at dbbbfe1a is the README row conflict, resolved to keep both t116's check row and t119's push row.
+2026-10-06T01:21:06.445Z pavi item.created
+2026-10-06T01:30:53.313Z claude-code/fable-5.1 item.claimed
+2026-10-06T01:30:56.425Z claude-code/fable-5.1 fork.created
+2026-10-06T01:54:48.659Z claude-code/fable-5.1 push.observed
+2026-10-06T01:56:12.091Z claude-code/fable-5.1 evidence.observed
+2026-10-06T01:56:14.395Z claude-code/fable-5.1 evidence.observed
+2026-10-06T01:56:15.093Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:06:12.364Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:06:12.968Z pavi review.approved
+2026-10-06T02:06:13.667Z pavi item.accepted
+2026-10-06T02:06:46.187Z claude-code/fable-5.1 push.observed
+2026-10-06T02:08:07.664Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:08:09.713Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:08:10.333Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:08:17.589Z pavi review.approved
+2026-10-06T02:08:18.157Z pavi item.accepted
