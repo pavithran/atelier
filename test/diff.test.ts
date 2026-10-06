@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import v8 from "node:v8";
+import vm from "node:vm";
 import { againstMain, changedPaths, diffLines, itemDiff, measureWorkspace, mergeBase, pairReader, repoReader, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
 
 const replay = (ops: { op: string; text: string }[]) => ({
@@ -170,6 +172,76 @@ test("empty subdirectories never hide a later change, in a diff or in the protec
   assert.deepEqual(await changedPaths(r, "base", "head"), ["z.txt"]);
 });
 
+test("a deep tree where every file at every level changed holds a page per ancestor, not each ancestor's directory", async () => {
+  // 40 levels, each a subdirectory and 5,000 changed files: holding every
+  // level's changed entries while descending is about 200,000 entries.
+  // The heap is measured at the deepest level, after a full collection.
+  v8.setFlagsFromString("--expose-gc");
+  const gc = vm.runInNewContext("gc") as () => void;
+  const depth = 40, width = 5_000;
+  const listing = (side: string, level: number): Entry[] => [
+    ...(level < depth - 1 ? [{ name: "dir", mode: "40000", hash: `${side}:${level + 1}`, type: "tree" }] : []),
+    ...Array.from({ length: width }, (_, i) => ({ name: `f${String(i).padStart(4, "0")}`, mode: "100644", hash: `${side}:${level}:${i}`, type: "blob" })),
+  ];
+  let deepest = 0;
+  const r: Reader = {
+    tree: async (h) => {
+      const [side, level] = h.split(":");
+      if (side === "head" && Number(level) === depth - 1) { gc(); deepest = process.memoryUsage().heapUsed; }
+      return listing(side, Number(level));
+    },
+    blob: async () => new TextEncoder().encode("x\n"),
+  };
+  gc();
+  const start = process.memoryUsage().heapUsed;
+  const { files, truncated } = await treeDiff(r, "base:0", "head:0");
+  assert.equal(truncated, true);
+  assert.equal(files.length, 60);
+  const held = (deepest - start) / 1e6;
+  assert.ok(held < 24, `${held.toFixed(1)} MB held at the deepest level; one page per ancestor is about 11 MB, every entry about 52 MB`);
+});
+
+test("a level with more changed entries than its page is read again past them, so empty directories past the page never hide a change", async () => {
+  // A page is a thousand entries. 1,002 added empty directories come first:
+  // the first page lists nothing, and the diff still finds the files after
+  // them, in order, and still says it is cut at three.
+  const empty = "e".repeat(40);
+  const trees: Record<string, Entry[]> = {
+    base: [],
+    head: [
+      ...Array.from({ length: 1_002 }, (_, i) => ({ name: `d${String(i).padStart(4, "0")}`, mode: "40000", hash: empty, type: "tree" })),
+      ...Array.from({ length: 5 }, (_, i) => ({ name: `f${i}`, mode: "100644", hash: `${i}`.repeat(40), type: "blob" })),
+    ],
+    [empty]: [],
+  };
+  let levelReads = 0;
+  const r: Reader = { tree: async (h) => { if (h === "head") levelReads++; return trees[h] ?? null; }, blob: async () => new TextEncoder().encode("x\n") };
+  const { files, truncated } = await treeDiff(r, "base", "head", { files: 3, blobBytes: 1e6, diffLines: 1e6, treeReads: 1e6, context: 3 });
+  assert.deepEqual(files.map((f) => f.path), ["f0", "f1", "f2"]);
+  assert.equal(truncated, true);
+  assert.equal(levelReads, 2, "the level is read again for the entries past its page, not held whole");
+  // The page keeps its size as the list nears its cap: a level of 3,000
+  // empty directories and then the files is read once per page, not once
+  // per entry left under the cap.
+  const near: Record<string, Entry[]> = { ...trees, head: [...Array.from({ length: 3_000 }, (_, i) => ({ name: `d${String(i).padStart(4, "0")}`, mode: "40000", hash: empty, type: "tree" })), ...trees.head.slice(1_002)] };
+  levelReads = 0;
+  const nearReader: Reader = { tree: async (h) => { if (h === "head") levelReads++; return near[h] ?? null; }, blob: r.blob };
+  const cut = await treeDiff(nearReader, "base", "head", { files: 3, blobBytes: 1e6, diffLines: 1e6, treeReads: 1e6, context: 3 });
+  assert.deepEqual(cut.files.map((f) => f.path), ["f0", "f1", "f2"]);
+  assert.equal(levelReads, 4);
+  // The protected-path list sees every path, past a page of a thousand
+  // entries that list nothing.
+  const many: Record<string, Entry[]> = {
+    base: [],
+    head: [...Array.from({ length: 1_005 }, (_, i) => ({ name: `d${String(i).padStart(4, "0")}`, mode: "40000", hash: empty, type: "tree" })), { name: "z.txt", mode: "100644", hash: "1".repeat(40), type: "blob" }],
+    [empty]: [],
+  };
+  levelReads = 0;
+  const wide: Reader = { tree: async (h) => { if (h === "head") levelReads++; return many[h] ?? null; }, blob: r.blob };
+  assert.deepEqual(await changedPaths(wide, "base", "head"), ["z.txt"]);
+  assert.ok(levelReads > 1);
+});
+
 // Two repositories as the Artifacts binding presents them: a first-parent log
 // newest first, flat trees named by a label, and blobs named by their text.
 // Each repository answers only for the objects it holds, as a fork that has
@@ -215,7 +287,7 @@ test("a merge that makes an older main commit the fork point cannot hide a rever
   assert.equal(await fork.readTree("new"), null, "the fork never holds main's newer tree");
   assert.deepEqual(await changedPaths(pairReader(fork, main), m!.mainTree, m!.headTree), ["AGENTS.md", "a.ts"]);
   // What the evidence route records, by the same measure.
-  assert.deepEqual(await measureWorkspace(A, "main", "fork"), { head: "M", changedPaths: ["AGENTS.md", "a.ts"] });
+  assert.deepEqual(await measureWorkspace(A, "main", "fork"), { head: "M", main: "new", changedPaths: ["AGENTS.md", "a.ts"] });
   // The first-parent fork point is the one the agent built, and lists only a.ts.
   const base = mergeBase((await fork.log({ limit: 500 })).map((c) => c.hash), (await main.log({ limit: 1000 })).map((c) => c.hash));
   assert.equal(base, "old");

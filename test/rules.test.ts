@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, validActor,
-  decisionFor, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
+  decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
@@ -32,6 +32,20 @@ test("globs: ** crosses directories, * does not", () => {
   assert.ok(globToRegExp("**/*.md").test("x.md"));
   assert.ok(matchesAny("wrangler.jsonc", ["wrangler.*"]));
   assert.ok(!matchesAny("src/wrangler.jsonc", ["wrangler.*"]));
+});
+
+test("globs: a newline is a path character, so ** crosses it under a protected directory", () => {
+  // Git allows a newline in a path; a file under a protected directory stays
+  // protected with one in its name, for every matcher the guarded set uses.
+  const odd = "docs/control-plane/agent\n-policy.v1.json";
+  assert.ok(matchesAny(odd, ["docs/control-plane/**"]));
+  assert.ok(matchesFolded(odd, ["docs/control-plane/**"]));
+  assert.equal(changeClass([odd], { checks: [], protected: ["docs/control-plane/**"] }), "protected");
+  assert.ok(matchesAny("a\nb/c.md", ["**/*.md"]));
+  assert.ok(matchesAny("src/a\nb.ts", ["src/*.ts"]));
+  assert.ok(matchesAny("src/a\n.ts", ["src/a?.ts"]));
+  // A newline never lets a single star cross a slash.
+  assert.ok(!matchesAny("src/a\n/b.ts", ["src/*.ts"]));
 });
 
 test("model is what makes a reviewer independent", () => {
@@ -150,10 +164,82 @@ test("repo names are safe and stable", () => {
   assert.throws(() => repoName("---"), /cannot make a repo name/);
 });
 
+test("what a runner executes is protected: make and just recipes, npx's binary, manifests of build tools, paths run directly", () => {
+  const sorted = (files: string[]) => [...files].sort();
+  assert.deepEqual(checkFiles(["make test"]), sorted(["Makefile", "makefile", "GNUmakefile", "**/*.mk"]));
+  assert.deepEqual(checkFiles(["make -C native -f build.mk all", "make --directory=./lib --makefile=rules.mk"]), sorted(["native/build.mk", "lib/rules.mk", "**/*.mk"]));
+  assert.deepEqual(checkFiles(["make -C ../other check", "make -f /etc/Makefile"]), ["**/*.mk"]);
+  assert.deepEqual(checkFiles(["just check"]), sorted(["justfile", "Justfile", ".justfile", "**/*.just"]));
+  assert.deepEqual(checkFiles(["just --justfile ci.just test"]), sorted(["ci.just", "**/*.just"]));
+  assert.deepEqual(checkFiles(["npx vitest run"]), sorted(["package.json", ".npmrc", "node_modules/.bin/vitest"]));
+  assert.deepEqual(checkFiles(["npx --yes -p typescript tsc --noEmit", "npx eslint@9 ."]), sorted(["package.json", ".npmrc", "node_modules/.bin/tsc", "node_modules/.bin/eslint"]));
+  assert.deepEqual(checkFiles(["pnpm dlx @scope/tool --flag", "yarn exec lint", "bun x vitest", "bunx tsc"]), sorted([
+    "package.json", ".npmrc", ".pnpmfile.cjs", "node_modules/.bin/tool", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**", "node_modules/.bin/lint", "bunfig.toml", "node_modules/.bin/vitest", "node_modules/.bin/tsc",
+  ]));
+  assert.deepEqual(checkFiles(["pnpm test", "yarn test", "bun test"]), sorted(["package.json", ".npmrc", ".pnpmfile.cjs", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**", "bunfig.toml"]));
+  assert.deepEqual(checkFiles(["cargo test --workspace"]), sorted(["**/Cargo.toml", "**/build.rs", ".cargo/config", ".cargo/config.toml"]));
+  assert.deepEqual(checkFiles(["swift test"]), sorted(["**/Package.swift", "**/Package@swift-*.swift"]));
+  assert.deepEqual(checkFiles(["xcodebuild -scheme App -destination 'platform=iOS Simulator' test"]), sorted(["**/*.xcodeproj/**", "**/*.xcworkspace/**", "**/Package.swift", "**/Package@swift-*.swift"]));
+  assert.deepEqual(checkFiles(["deno task test", "deno test"]), ["deno.json", "deno.jsonc"]);
+  assert.deepEqual(checkFiles(["bin/check", "CI=1 scripts/verify --strict", "./bin/lint"]), ["bin/check", "bin/lint", "scripts/verify"]);
+  // Paths outside the repository, and arguments that are not run, are not.
+  assert.deepEqual(checkFiles(["/usr/bin/true", "../shared/run", "cat docs/a.md"]), []);
+  // The guarded set carries these: an item that edits its Makefile or an
+  // included rules file under `make test` needs an independent review.
+  const made: ProjectPolicy = { checks: ["make test"], protected: [] };
+  for (const path of ["Makefile", "lib/rules.mk", "gnumakefile"]) assert.equal(changeClass([path], made), "protected", path);
+  assert.equal(changeClass(["src/main.c"], made), "coordinated");
+  assert.equal(changeClass(["node_modules/.bin/vitest"], { checks: ["npx vitest run"], protected: [] }), "protected");
+});
+
+test("a runner's name counts anywhere in a check line: through wrappers, a shell's -c string, shell syntax and a newline", () => {
+  // Each form reaches npm, so each protects package.json; the check cannot
+  // be weakened by wrapping the runner. The forms that protect nothing are
+  // collected, so a failure names every one.
+  const unprotected = (forms: string[], file: (files: string[]) => boolean) => forms.filter((form) => !file(checkFiles([form])));
+  assert.deepEqual(unprotected([
+    "env CI=1 npm test", "sh -c 'npm test'", "bash -c \"npm run check\"", "time npm test", "timeout 600 npm test", "timeout -k 5 600 npm test",
+    "exec npm test", "command npm test", "sudo npm test", "sudo -u app npm test", "nice -n 10 npm test", "cross-env CI=1 npm test", "xvfb-run -a npm test",
+    "/usr/bin/env npm test", "if npm test; then :; fi", "! npm test", "{ npm test; }", "echo start\nnpm test", "nohup npm test", "bash -euo pipefail -c 'npm test'",
+  ], (files) => files.includes("package.json")), []);
+  assert.deepEqual(unprotected(["env make check", "sh -c \"make check\"", "timeout 600 make check", "echo start\nmake check"], (files) => files.includes("Makefile")), []);
+  assert.deepEqual(unprotected(["sh -c 'just check'"], (files) => files.includes("justfile")), []);
+  assert.deepEqual(unprotected(["env cargo test"], (files) => files.includes("**/Cargo.toml")), []);
+  assert.deepEqual(unprotected(["sudo npx vitest run"], (files) => files.includes("node_modules/.bin/vitest")), []);
+  // A path run directly counts in every command position the wrappers and shells lead to.
+  assert.deepEqual(unprotected(
+    ["env CI=1 bin/check", "sh -c 'bin/check'", "timeout 600 bin/check", "if bin/check; then :; fi", "echo start\nbin/check", "bash -c 'env CI=1 scripts/verify'"],
+    (files) => files.some((f) => f === "bin/check" || f === "scripts/verify"),
+  ), []);
+  // A manager told where its project is reads that directory's files too.
+  assert.ok(checkFiles(["npm --prefix packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["npm -C packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["pnpm -C packages/app test"]).includes("packages/app/.pnpmfile.cjs"));
+  assert.ok(checkFiles(["pnpm --dir=packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["yarn --cwd packages/app test"]).includes("packages/app/.yarnrc.yml"));
+  assert.ok(checkFiles(["npm --prefix packages/app test"]).includes("package.json"));
+});
+
+test("a check line holding a word that names an Object.prototype member finds no runner and never throws", () => {
+  // The runner tables are looked up by word; these words are keys of every
+  // plain object, and a lookup that found them would iterate a function.
+  for (const word of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]) {
+    const lines = [`grep -q ${word} src/a.ts`, `node --test --test-name-pattern ${word}`, `${word} test`, `npm ${word} check`, `${word} -c "npm test"`];
+    assert.doesNotThrow(() => checkFiles(lines), word);
+    assert.deepEqual(checkFiles([`grep -q ${word} src/a.ts`]), [], word);
+    assert.deepEqual(checkFiles([`${word} test`]), [], word);
+    assert.ok(checkFiles([`npm ${word} check`]).includes("package.json"), word);
+    // The gate reads the same tables through changeClass.
+    const p: ProjectPolicy = { checks: [`grep -q ${word} src/a.ts`], protected: ["AGENTS.md"] };
+    assert.equal(changeClass(["src/a.ts"], p), "coordinated", word);
+    assert.equal(gate(item({ scope: [] }), p, [pass({ claim: p.checks[0], changedPaths: ["src/a.ts"] })], []).ready, true, word);
+  }
+});
+
 test("files named by a check are protected: an item cannot weaken its own grader", () => {
-  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), ["check.sh", "package.json", "scripts/verify.mjs"]);
+  assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), [".npmrc", "check.sh", "package.json", "scripts/verify.mjs"]);
   assert.deepEqual(checkFiles(["grep -q export src/a.ts"]), []);
-  assert.deepEqual(checkFiles(["npm ci --prefer-offline && npm test", "npm run check && npm run build"]), ["package.json"]);
+  assert.deepEqual(checkFiles(["npm ci --prefer-offline && npm test", "npm run check && npm run build"]), [".npmrc", "package.json"]);
   const p: ProjectPolicy = { checks: ["./check.sh"], protected: [] };
   const g = gate(item({ scope: [] }), p, [pass({ claim: "./check.sh", changedPaths: ["check.sh"] })], []);
   assert.equal(g.needsAssessor, true);
@@ -188,11 +274,17 @@ test("overlapping claims are refused when the project says so, and only then", (
   assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
 
-test("gc removes only clean workspaces at their confirmed merged head", async () => {
+test("gc removes clean workspaces at a head that proves nothing is unpublished", async () => {
   const { gcWorkspaceReason } = await import("../src/rules.ts");
   assert.equal(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, false), null);
-  for (const state of ["open", "claimed", "submitted", "accepted", "abandoned"] as const) {
-    assert.match(gcWorkspaceReason(item({ state, acceptedHead: H1 }), H1, false, false)!, /not confirmed merged/);
+  // An abandoned item never merges; the last head Atelier recorded is its proof.
+  assert.equal(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, false), null);
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, true, false));
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, true));
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: H2 }), H1, false, false));
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: null }), H1, false, false));
+  for (const state of ["open", "claimed", "submitted", "accepted"] as const) {
+    assert.match(gcWorkspaceReason(item({ state, acceptedHead: H1 }), H1, false, false)!, /neither merged nor abandoned/);
   }
   assert.ok(gcWorkspaceReason(undefined, H1, false, false));
   assert.ok(gcWorkspaceReason(item({ state: "merged" }), H1, false, false));
@@ -248,6 +340,13 @@ test("actor names allow a :profile suffix on the model, never on the harness", (
   assert.ok(validActor("pavi"));
   assert.equal(validActor("open:code/glm"), false);
   assert.equal(validActor("opencode/mlx-community/Qwen3"), false);
+});
+
+test("an actor name is at most 200 characters, whatever its shape", () => {
+  assert.ok(validActor("h/" + "m".repeat(198)), "a harness and model naming exactly 200");
+  assert.equal(validActor("h/" + "m".repeat(199)), false);
+  assert.ok(validActor("a".repeat(200)), "a harness alone naming exactly 200");
+  assert.equal(validActor("a".repeat(201)), false);
 });
 
 const governed: ProjectPolicy = {
@@ -435,14 +534,19 @@ test("holders remain contributors when Git pushes precede observation", () => {
     assert.ok(contributors.includes("codex/gpt-6"));
     assert.ok(contributors.includes("claude-code/opus-5.5"));
     assert.ok(contributors.includes("opencode/glm-5.3"));
+    // Task t94: after a release, the push observed while nobody held the
+    // item was counted under the name the Ledger logs it with,
+    // atelier/events, a contributor of no recognised family, so no
+    // reviewer could be shown to be of another family. Every holder is
+    // already listed, and the push is attributed to none.
+    assert.deepEqual(contributors, ["codex/gpt-6", "claude-code/opus-5.5", "opencode/glm-5.3"]);
     const held = item({ pushActors: contributors });
     const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
     assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
-    // After a release, the push observed while nobody held the item is
-    // recorded as atelier/events: a contributor whose family is not
-    // recognised, so no reviewer can be shown to be of another family.
-    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, kind === "item.handoff");
+    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
   }
+  // A push seen before anyone claimed the item is attributed to nobody.
+  assert.deepEqual(pushActors([{ kind: "push.observed", actor: "atelier/events", data: {} }]), []);
 });
 
 // Audit t105, finding F4: in a project without ControlPlane policy files the
@@ -642,4 +746,96 @@ test("pathCollisions names each group of paths that would share one file, where 
   // A file and a directory of the same folded name are one name on the disk.
   assert.deepEqual(pathCollisions(["readme", "README/a.md"]), [["readme", "README"]]);
   assert.deepEqual(pathCollisions(["a.md", "b/a.md", "B.md"]), []);
+});
+
+// The checks on the would-be merge, the head merged with main as it is now,
+// are bound to both revisions: they stand beside the merge preview and never
+// in place of the head's own run.
+test("a merged check never satisfies the head's own check, and is read beside the preview with its main head", () => {
+  const M0 = "c".repeat(40), M1 = "d".repeat(40);
+  const merged = pass({ merged: true, mainHead: M1, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  assert.equal(evidenceAt(policy, [merged], H1).checks[0].grade, "pending");
+  assert.equal(evidenceAt(policy, [merged], H1).changedPaths, null);
+  assert.match(gate(item(), policy, [merged], []).blockers.join(), /not yet observed at this head/);
+  const view = mergedChecksAt(policy, [merged], H1, M1);
+  assert.deepEqual(view.checks.map((c) => [c.claim, c.grade, c.passed, c.mainHead, c.stale, c.where]), [["npm test", "observed", true, M1, false, "runner"]]);
+  assert.equal(view.run, true);
+  assert.equal(mergedChecksAt(policy, [merged], H1, M0).checks[0].stale, true, "stale once main has moved past the head it merged with");
+  assert.equal(mergedChecksAt(policy, [merged], H2, M1).run, false, "a new head retires every merged run");
+  assert.deepEqual(mergedChecksAt(policy, [], H1, M1), { checks: [{ claim: "npm test", grade: "pending", passed: null, stale: false }], run: false });
+  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on the agent's machine does not count");
+  // The head's own run records main's head too, and is still the head's check.
+  const own = pass({ mainHead: M0 });
+  assert.deepEqual(evidenceAt(policy, [own], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "runner", mainHead: M0 }]);
+});
+
+test("a failing merged check blocks only when main moved after the head's own checks passed, until a later run passes", () => {
+  const M0 = "c".repeat(40), M1 = "d".repeat(40), M2 = "e".repeat(40);
+  const own = pass({ mainHead: M0 });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  const g = gate(item(), policy, [own, failing], []);
+  assert.equal(g.ready, false);
+  assert.deepEqual(g.blockers, ["`npm test` failed on the merge with main at dddddddd, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace"]);
+  assert.deepEqual(mergedBlockers(policy, [own, failing], H1), g.blockers);
+  const decision = decisionFor(item(), policy, [own, failing], []);
+  assert.equal(decision.title, "Checks need attention");
+  assert.match(decision.detail, /fail on its merge with main/);
+  assert.equal(inboxFor("p", [item()], policy, [own, failing], [], new Date(T))[0]?.kind, "failing");
+  // Shown, not required: main had not moved when the head's own check passed against the same commit.
+  assert.equal(gate(item(), policy, [pass({ mainHead: M1 }), failing], []).ready, true);
+  // A head check that recorded no main head cannot say main moved.
+  assert.equal(gate(item(), policy, [pass(), failing], []).ready, true);
+  // A merged run that precedes every run of the head's own check leaves nothing to compare main with, and the head's own run that follows does not clear it (t178).
+  assert.equal(gate(item(), policy, [pass({ mainHead: M0, at: "2026-10-03T15:00:00.000Z" }), failing], []).ready, false);
+  // A passing merged run never blocks, and a later one clears an earlier failure.
+  assert.equal(gate(item(), policy, [own, pass({ merged: true, mainHead: M1, changedPaths: null })], []).ready, true);
+  assert.equal(gate(item(), policy, [own, failing, pass({ merged: true, mainHead: M2, changedPaths: null, at: "2026-10-03T14:00:00.000Z" })], []).ready, true);
+  // While the head's own check is pending or failing, that check is the blocker.
+  assert.deepEqual(gate(item(), policy, [failing], []).blockers.filter((b) => b.includes("merge")), []);
+  assert.deepEqual(gate(item(), policy, [own, pass({ passed: false, mainHead: M0, at: "2026-10-03T12:30:00.000Z" }), failing], []).blockers.filter((b) => b.includes("merge")), []);
+  // Under sandboxOnly, a merged run on the agent's machine neither blocks nor counts.
+  const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
+  assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), failing], []).ready, true);
+  assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), { ...failing, where: "sandbox" }], []).ready, false);
+});
+
+// PAVI's decision of 2026-10-06 (t178): a failing merged check at the head
+// stands until a merged run passes or the head moves. The head's own check,
+// run again later, passes on the head's tree and says nothing about the merge.
+test("a failing merged check survives a later plain run of the head's own check", () => {
+  const M0 = "c".repeat(40), M1 = "d".repeat(40);
+  const own = pass({ mainHead: M0 });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  assert.equal(gate(item(), policy, [own, failing], []).ready, false);
+  // Run again later against main as it now is: the same main head the merged run named.
+  const again = pass({ mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
+  const g = gate(item(), policy, [own, failing, again], []);
+  assert.equal(g.ready, false);
+  assert.deepEqual(g.blockers, mergedBlockers(policy, [own, failing], H1));
+  assert.equal(mergedBlockers(policy, [own, failing, again], H1).length, 1);
+  // And against the older main head the first run saw.
+  assert.equal(gate(item(), policy, [own, failing, pass({ mainHead: M0, at: "2026-10-03T14:00:00.000Z" })], []).ready, false);
+  // The head's own check still has to pass: a later failing plain run is the blocker, not the merged one.
+  assert.deepEqual(gate(item(), policy, [own, failing, pass({ passed: false, mainHead: M1, at: "2026-10-03T14:00:00.000Z" })], []).blockers.filter((b) => b.includes("merge")), []);
+});
+
+test("a passing merged run clears a failing one, whatever plain runs came between", () => {
+  const M1 = "d".repeat(40);
+  const own = pass({ mainHead: "c".repeat(40) });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  const again = pass({ mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
+  const passing = pass({ merged: true, mainHead: M1, changedPaths: null, at: "2026-10-03T15:00:00.000Z" });
+  assert.equal(gate(item(), policy, [own, failing, again], []).ready, false);
+  assert.equal(gate(item(), policy, [own, failing, again, passing], []).ready, true);
+  assert.deepEqual(mergedBlockers(policy, [own, failing, again, passing], H1), []);
+});
+
+test("a new head clears a failing merged check", () => {
+  const M1 = "d".repeat(40);
+  const own = pass({ mainHead: "c".repeat(40) });
+  const failing = pass({ merged: true, mainHead: M1, passed: false, changedPaths: null, at: "2026-10-03T13:00:00.000Z" });
+  assert.equal(mergedBlockers(policy, [own, failing], H1).length, 1);
+  assert.deepEqual(mergedBlockers(policy, [own, failing], H2), []);
+  const next = pass({ head: H2, mainHead: M1, at: "2026-10-03T14:00:00.000Z" });
+  assert.equal(gate(item({ head: H2 }), policy, [own, failing, next], []).ready, true);
 });

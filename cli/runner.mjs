@@ -1,16 +1,20 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { checkEnv } from "./check-env.mjs";
+import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
+import { reviewBrief } from "../src/review/brief.ts";
+import { parseVerdict } from "../src/review/verdict.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
   const { agents, errors } = parseConfig(config);
   if (errors.length) throw new Error(errors.join("; "));
-  return { runner: `home:${name.slice(5)}`, kind: "home", agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  return { runner: name.toLowerCase(), kind: "home", agents: agents.map(({ agent, models }) => ({ agent, models })), ...(config.jobs?.length ? { jobs: config.jobs } : {}) };
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
@@ -30,9 +34,9 @@ export function briefFor(item, project) {
   ].join("\n");
 }
 
-export function commandFor(entry, { model, briefFile, workspace }) {
-  const values = { model, brief_file: briefFile, workspace };
-  return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace)\}/g, (_, key) => values[key]));
+export function commandFor(entry, { model, briefFile, workspace, diffFile, verdictFile }) {
+  const values = { model, brief_file: briefFile, workspace, diff_file: diffFile, verdict_file: verdictFile };
+  return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace|diff_file|verdict_file)\}/g, (_, key) => values[key]));
 }
 
 // Observations are supplied by the loop; terminal states remain terminal.
@@ -57,31 +61,60 @@ export function nextStep(state, result) {
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
 
-export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env } = {}) {
+// The process groups execute() has started and not yet seen end.
+const liveGroups = new Set();
+
+// SIGKILL to every process group execute() started that has not ended. A
+// second interrupt calls it just before process.exit, which leaves no time
+// for a grace period.
+export function killGroups() {
+  for (const pid of liveGroups) { try { process.kill(-pid, "SIGKILL"); } catch { /* The group has ended. */ } }
+  liveGroups.clear();
+}
+
+// The child leads a process group of its own, and the group ends with it.
+// When the child exits, whether it succeeded or failed, when its deadline
+// passes and when `signal` aborts, every process in the group gets SIGTERM,
+// then SIGKILL if any is left after `graceMs`. The result comes back once
+// the group is gone, so nothing the child started still runs in its folder.
+// A process that leaves the group (setsid) is beyond this.
+export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
       stdio: ["ignore", capture ? "pipe" : "inherit", captureError ? "pipe" : "inherit"] });
-    let output = "", stderr = "", error, timedOut = false, stopping = false, closed, escalated = false;
-    const kill = (sig) => { try { if (child.pid) process.kill(-child.pid, sig); } catch { /* The group may already have exited. */ } };
+    const pid = child.pid;
+    if (pid) liveGroups.add(pid);
+    let output = "", stderr = "", error, timedOut = false, closed, ending = false, ended = !pid;
+    // A signal to every process in the group; false once none is left.
+    const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
     const finish = () => {
-      if (!closed || (stopping && !escalated)) return;
+      if (!closed || !ended) return;
       clearTimeout(deadline);
-      signal?.removeEventListener("abort", stop);
+      signal?.removeEventListener("abort", end);
       if (error) reject(error);
       else resolve({ ...closed, output: output.trim(), stderr: stderr.trim(), timedOut });
     };
-    const stop = () => {
-      if (stopping) return;
-      stopping = true;
-      kill("SIGTERM");
-      setTimeout(() => { kill("SIGKILL"); escalated = true; finish(); }, 5000);
+    const end = () => {
+      if (ending || ended) return;
+      ending = true;
+      const until = Date.now() + graceMs;
+      const done = () => { liveGroups.delete(pid); ended = true; finish(); };
+      const wait = () => {
+        if (!send(0)) return done();
+        if (Date.now() >= until) { send("SIGKILL"); return done(); }
+        setTimeout(wait, 50);
+      };
+      send("SIGTERM");
+      wait();
     };
-    const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
-    signal?.addEventListener("abort", stop, { once: true });
+    const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
+    signal?.addEventListener("abort", end, { once: true });
     child.stdout?.on("data", (chunk) => { output += chunk; });
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
     child.on("error", (e) => { error = e; });
+    // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
+    child.on("exit", () => { clearTimeout(deadline); end(); });
     child.on("close", (code, sig) => { closed = { code, signal: sig }; finish(); });
   });
 }
@@ -103,16 +136,67 @@ export function writeBrief(workspace, text) {
 
 export const removeBrief = ({ file }) => rmSync(file, { force: true });
 
+// The diff a review job writes for the reviewer, a sibling of the workspace
+// as the brief is, so neither can be committed. The verdict file is where the
+// harness writes its reply; the runner names it in the command and reads it
+// after the harness ends.
+export function writeDiff(workspace, text) {
+  const file = join(dirname(workspace), `.atelier-diff-${randomUUID()}.txt`);
+  writeFileSync(file, text, { mode: 0o600, flag: "wx" });
+  return { file };
+}
+export const removeDiff = ({ file }) => rmSync(file, { force: true });
+
+export function verdictPath(workspace) {
+  return join(dirname(workspace), `.atelier-verdict-${randomUUID()}.txt`);
+}
+
+export function readVerdict(file) {
+  return readFileSync(file, "utf8");
+}
+
+// A harness runs a model and the code the model writes, so it gets what a
+// check gets (checkEnv in check-env.mjs: the variables toolchains need, nothing
+// named ATELIER_* and nothing whose name says it holds a secret) and the
+// variables its runner config entry names in `env`, such as the provider key
+// opencode reads, taken from the runner's environment. A named variable that
+// holds one of `tokens`, the owner's Atelier token (ownerTokens), is withheld
+// whatever its name. Returns the environment and the names withheld.
+export function harnessEnv(base, names = [], tokens = []) {
+  const env = checkEnv(base), withheld = [];
+  for (const name of names) {
+    const value = base[name];
+    if (value === undefined || /^ATELIER_/i.test(name)) continue;
+    if (tokens.some((token) => token && value.includes(token))) { withheld.push(name); delete env[name]; }
+    else env[name] = value;
+  }
+  return { env, withheld };
+}
+
+// The owner's Atelier token as this machine holds it: ATELIER_TOKEN, and the
+// one `atelier login` stored. Read only when an entry names variables to pass.
+export function ownerTokens(base = process.env) {
+  const tokens = [base.ATELIER_TOKEN?.trim()];
+  try { tokens.push(readSecret("API_TOKEN", { env: { ...base, ATELIER_TOKEN: "" } })); } catch { /* A store that cannot be read gives the CLI no token either. */ }
+  return tokens.filter(Boolean);
+}
+
+// A review job clones the part's fork read-only with an Artifacts read token,
+// which git sends as an Authorization header through its environment, as the
+// CLI's auth() does, never in an argument.
+function gitAuth(token, base = process.env) {
+  const n = Number.parseInt(base.GIT_CONFIG_COUNT ?? "", 10) || 0;
+  return { ...base, GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "http.extraHeader", [`GIT_CONFIG_VALUE_${n}`]: `Authorization: Bearer ${token}` };
+}
+
 // Every opencode process opens one database in its data folder,
 // $XDG_DATA_HOME/opencode/opencode.db, and prunes it at startup; runs
 // started together deadlock on it, holding it at 0% CPU without reaching
-// the model. So each opencode run gets a data folder of its own. Keys that
-// reach opencode through its environment or its config still do: the
-// harness inherits the runner's environment with only XDG_DATA_HOME
-// changed, and opencode reads its config from XDG_CONFIG_HOME and its
-// downloads from XDG_CACHE_HOME. A key saved by `opencode auth login` is in
-// the shared data folder's auth.json, which a run does not see. Other
-// harnesses keep the runner's environment as it is.
+// the model. So each opencode run gets a data folder of its own, set over
+// what harnessEnv gives it. Keys reach opencode through the variables its
+// entry names and through its config, which it reads from XDG_CONFIG_HOME
+// (~/.config when that is not named). A key saved by `opencode auth login`
+// is in the shared data folder's auth.json, which a run does not see.
 export const OWN_DATA_HOME = new Set(["opencode"]);
 
 // The folder is a sibling of the workspace, like the brief, so nothing in
@@ -169,6 +253,8 @@ export async function runTask(assignment, config, name, io) {
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
     brief = await io.brief(workspace, briefFor({ ...item, owner: actor }, project));
+    const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
     // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
     // is removed when the harness ends, however it ends, before anything else.
     const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
@@ -176,7 +262,7 @@ export async function runTask(assignment, config, name, io) {
     try {
       advance({ type: "start" });
       taskFailure = true;
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { XDG_DATA_HOME: dataHome.dir } : undefined);
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
@@ -224,6 +310,78 @@ export async function runTask(assignment, config, name, io) {
 
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 
+// A review job (docs/orchestrator.md, section 4): the runner claims a review
+// request, clones the part's head read-only, writes the diff, gives the
+// reviewer the brief and the diff, reads the verdict and posts it. A harness
+// that writes no valid verdict releases the request, so another reviewer may
+// take it.
+export async function runReview(assignment, config, name, io) {
+  const { project, item, agent, model, actor } = assignment;
+  let brief, diffFile, workspace, verdictFile;
+  const release = async (reason) => {
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    catch (error) { io.log(`review release failed: ${error.message}`); }
+  };
+  try {
+    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    // Claim the request; the server returns the part, the brief's inputs and a
+    // read token for the fork, so the part can be cloned read-only.
+    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    // A review clones into a folder of its own beside the task's workspace,
+    // never into the builder's, and the folder is removed when the job ends.
+    workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
+    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
+    if (io.stopped()) throw new Error("interrupted");
+    const diff = await io.diff(workspace, claimed.item.base, claimed.head);
+    if (!claimed.need) {
+      await release("the review request no longer needs an answer");
+      return { phase: "failed", reason: "the review request no longer needs an answer", taskFailure: true };
+    }
+    const text = reviewBrief({
+      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner,
+    });
+    brief = await io.brief(workspace, text);
+    diffFile = await io.writeDiff(workspace, diff);
+    verdictFile = io.verdictPath(workspace);
+    const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    const result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, env);
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.timedOut) {
+      await release("harness timed out");
+      return { phase: "failed", reason: "harness timed out", taskFailure: true };
+    }
+    if (result.code !== 0) {
+      await release(`harness exited ${result.code}`);
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
+    }
+    // A harness that wrote no verdict file leaves nothing to read; the
+    // request is released like any other unusable verdict.
+    let reply;
+    try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+    const parsed = parseVerdict(reply);
+    if (!parsed.ok) {
+      await release(parsed.error);
+      io.log(`review released: ${parsed.error}`);
+      return { phase: "failed", reason: parsed.error, taskFailure: true };
+    }
+    const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
+    if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    await io.cli(argv);
+    io.log(`reviewed: ${parsed.verdict}`);
+    return { phase: "reviewed", verdict: parsed.verdict };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  } finally {
+    if (brief) await io.removeBrief(brief);
+    if (diffFile) io.removeDiff(diffFile);
+    if (verdictFile) io.removeFile?.(verdictFile);
+    if (workspace) io.removeTree?.(workspace);
+  }
+}
+
 export function failureCount(count, state) {
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
@@ -232,15 +390,34 @@ export function infrastructureFailureCount(count, state) {
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped ? count + 1 : 0;
 }
 
-export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute }) {
+// How a run ended, as the runner reports it to the server for the model's
+// reliability record (src/models/reliability.ts), or null when the ledger
+// already holds the reason or the reason is not the model's: a refused
+// claim, the workspace, an interrupt, a harness that could not start, or a
+// step after the harness. A harness past its time limit timed out; one that
+// exited cleanly without a new commit stalled; one that exited with an error
+// was refused, by the harness or its provider.
+export function runOutcome(state) {
+  if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
+  if (state.reason === "harness timed out") return "timed-out";
+  if (state.reason === "harness made no new commit") return "stalled";
+  if (/^harness exited /.test(state.reason ?? "")) return "refused";
+  return null;
+}
+
+// `reportRun(body, runner, signal)` sends a run report; a report that fails
+// is logged and the loop goes on.
+export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute, reportRun }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH]");
   }
   const config = readConfig(args.config), offer = offerFrom(config, args.name);
   const controller = new AbortController();
+  // The first interrupt ends the active child's group with its grace
+  // period; a second kills every group at once and exits.
   const stop = () => {
-    if (controller.signal.aborted) process.exit(130);
+    if (controller.signal.aborted) { killGroups(); process.exit(130); }
     controller.abort();
   };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -248,6 +425,8 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   const io = {
+    removeFile: (file) => rmSync(file, { force: true }),
+    removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     workspacePath, log: line, stopped: () => controller.signal.aborted,
     cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, claim: argv[0] === "claim",
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
@@ -259,10 +438,13 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         await checked(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
       }
     },
-    // `env` holds what a run changes in the runner's environment (OWN_DATA_HOME).
-    harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
-      ...(env ? { env: { ...process.env, ...env } } : {}) }),
+    // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
+    harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env }),
+    env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
+    clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
+    diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
+    writeDiff, removeDiff, verdictPath, readVerdict,
     ...taskIO,
   };
   try {
@@ -274,8 +456,17 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         if (controller.signal.aborted) break;
         for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
-          state = await runTask(task, config, offer.runner, io);
+          state = task.item.dispatch?.job === "review"
+            ? await runReview(task, config, offer.runner, io)
+            : await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
+          const outcome = runOutcome(state);
+          if (outcome && reportRun) {
+            try {
+              await reportRun({ actor: task.actor, role: "build", outcome, project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
+              io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
+            } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
+          }
           const key = taskKey(task), count = failureCount(failures.get(key) ?? 0, state);
           failures.set(key, count);
           if (count === 2) io.log(`${task.project}/${task.item.id} needs the owner's attention after 2 failures; skipped for this process`);

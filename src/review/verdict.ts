@@ -8,17 +8,13 @@
 // the reason, and the caller asks again or stops.
 
 import { TEXT_CONTROLS } from "../text.ts";
+import type { Finding } from "../rules.ts";
+
+export type { Finding };
 
 // Blocking findings are correctness, security and data loss faults; every
 // other finding is a follow-up and never holds a change back.
-export type Severity = "blocking" | "follow-up";
-
-export interface Finding {
-  file: string;
-  line: number | null;
-  severity: Severity;
-  text: string;
-}
+export type Severity = Finding["severity"];
 
 export type ParsedVerdict =
   | { ok: true; verdict: "approve" | "reject"; summary: string; findings: Finding[] }

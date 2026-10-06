@@ -202,8 +202,9 @@ Show this diagram, or draw it.
  │  Ledger: one Durable Object per project, holding items, owners,   │
  │          graded evidence, reviews and every event                 │
  │  CheckRunner: one Durable Object + container per check run        │
- │  Pages (no script): Decisions · Flow · Studio · Models · Usage ·  │
- │                     Projects · History                            │
+ │  Pages, read without script: Decisions · Flow · Studio · Models · │
+ │  Usage · Projects · History; one first-party script, admitted by  │
+ │  a per-request nonce, refreshes Flow, Decisions and a task's page │
  └───────────────┬───────────────────────────────────┬───────────────┘
                  │ Artifacts binding                 │ egress gateway
                  ▼                                   ▼

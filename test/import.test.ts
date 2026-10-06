@@ -60,6 +60,34 @@ test("the name is the text before the email, or after it when nothing comes befo
   assert.match(svg, /aria-label="Demo before Atelier: 1 commit, 1 naming an agent"/);
 });
 
+// Task t158 (security pass 2, finding 7): a co-author address written
+// without angle brackets became a lane, a digit or a model's name in it
+// being enough, and was drawn on the public showcase.
+test("an address without angle brackets is no name, and is never drawn", () => {
+  for (const trailer of ["jane2@private.example", "claude@private.example", "1234567+jdoe@users.noreply.github.com", "Jane Doe 2 @ private.example", "jane2\u200b@private.example"]) {
+    assert.deepEqual(agentsIn(`x\n\nCo-Authored-By: ${trailer}`), [], trailer);
+  }
+  // The address goes; a model's name beside it stays.
+  assert.deepEqual(agentsIn("x\n\nCo-Authored-By: Claude Opus 5.5 claude@private.example"), ["Claude Opus 5.5"]);
+  assert.deepEqual(agentsIn("x\n\nAgent: codex/gpt-6-astra (codex@private.example)"), ["codex/gpt-6-astra"]);
+  const h = buildImported([c("a", 1, "x\n\nCo-Authored-By: jane2@private.example"), c("b", 2, "y\n\nCo-Authored-By: Claude Opus 5.5 1234567+jdoe@users.noreply.github.com")], null, true);
+  assert.deepEqual(h.lanes.map((l) => [l.label, l.names]), [["opus-5.5", ["Claude Opus 5.5"]], [NO_AGENT, []]]);
+  assert.ok(!drawImported(h, "pavi", "Demo").includes("@"));
+});
+
+// Task t167: a trailer name with no letter at all, only a digit or a slash
+// among its marks, was counted as an agent and drew a lane of its own.
+test("a name with no letter is no agent, whatever its digits and slashes", () => {
+  for (const trailer of ["2", "4.2", "1/2", "5/5.5", "/", "🤖9"]) {
+    assert.deepEqual(agentsIn(`x\n\nCo-Authored-By: ${trailer}`), [], trailer);
+  }
+  // A digit or a slash in a name with letters still reads as a model.
+  assert.deepEqual(agentsIn("x\n\nAgent: zcode/glm-5.3"), ["zcode/glm-5.3"]);
+  const h = buildImported([c("a", 1, "one\n\nCo-Authored-By: 2"), c("b", 2, "two\n\nCo-Authored-By: Claude Opus 5.5 <x>")], null, true);
+  assert.equal(h.attributed, 1);
+  assert.deepEqual(h.lanes.map((l) => [l.label, l.count]), [["opus-5.5", 1], [NO_AGENT, 1]]);
+});
+
 test("the cutoff is the first task created, however long the event record", () => {
   assert.equal(firstTaskAt([]), null);
   assert.equal(firstTaskAt([{ createdAt: "2026-10-02T00:00:00Z" }, { createdAt: "2026-09-30T12:00:00Z" }]), Date.parse("2026-09-30T12:00:00Z") / 1000);
