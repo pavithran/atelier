@@ -3,7 +3,7 @@ atelier — one owner per item, observed evidence, the project owner decides.
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
            notes-remote [REMOTE | --off]
-Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--json] · inbox · status [--project P] (with a project: where it stands, as text) · open
+Items      new "title" [--scope GLOB]... · ls [--all] [--json] · show ID · owners [--json] · inbox · status [--project P] [--json] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] · done "summary"
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report [ID] "…" [--item ID] · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
