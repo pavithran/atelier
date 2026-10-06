@@ -1,0 +1,34 @@
+atelier atelier/t191 "Orchestration scripts in the repo: bin/orchestrate/ holds the opencode runner, the Antigravity review in a throwaway clone, land and queue, and the CLI fixture regeneration, without machine paths, so any session on any Mac can run Atelier's partner agents"
+accepted head 07411d3a18582ccee239d809740eb830eba4f545
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T20:22:47.466Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T20:22:50.549Z
+REVIEW approve — antigravity/gemini-3.1-pro: Orchestration scripts in the repo; cold start and lessons in the handbook
+2026-10-06T18:52:41.874Z pavi item.created
+2026-10-06T18:52:45.083Z claude-code/opus-5.5 item.claimed
+2026-10-06T18:52:51.992Z claude-code/opus-5.5 fork.created
+2026-10-06T19:00:24.585Z claude-code/opus-5.5 push.observed
+2026-10-06T19:03:07.569Z claude-code/opus-5.5 evidence.observed
+2026-10-06T19:03:12.076Z claude-code/opus-5.5 evidence.observed
+2026-10-06T19:03:13.351Z claude-code/opus-5.5 item.submitted
+2026-10-06T19:20:31.341Z claude-code/opus-5.5 push.observed
+2026-10-06T19:22:31.030Z claude-code/opus-5.5 evidence.observed
+2026-10-06T19:22:34.250Z claude-code/opus-5.5 evidence.observed
+2026-10-06T19:22:35.171Z claude-code/opus-5.5 item.submitted
+2026-10-06T19:44:05.705Z claude-code/opus-5.5 push.observed
+2026-10-06T19:46:24.123Z claude-code/opus-5.5 evidence.observed
+2026-10-06T19:46:32.646Z claude-code/opus-5.5 evidence.observed
+2026-10-06T19:46:34.315Z claude-code/opus-5.5 item.submitted
+2026-10-06T20:04:52.256Z claude-code/opus-5.5 push.observed
+2026-10-06T20:06:54.594Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:06:57.421Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:06:58.244Z claude-code/opus-5.5 item.submitted
+2026-10-06T20:11:38.073Z claude-code/opus-5.5 push.observed
+2026-10-06T20:13:23.531Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:13:26.211Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:13:27.029Z claude-code/opus-5.5 item.submitted
+2026-10-06T20:20:53.798Z claude-code/opus-5.5 push.observed
+2026-10-06T20:22:47.945Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:22:50.831Z claude-code/opus-5.5 evidence.observed
+2026-10-06T20:22:51.666Z claude-code/opus-5.5 item.submitted
+2026-10-06T20:26:42.563Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T20:26:43.354Z pavi item.accepted
