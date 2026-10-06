@@ -91,7 +91,7 @@ function rules(): string {
 
 function orchestrator(): string {
   return `
-<p>The orchestrator is a design: a planner proposes a plan of parts, the owner approves it once, and Atelier then dispatches the parts, routes each to a model, reviews it and integrates the results. <code>docs/orchestrator.md</code> holds the design and its build sequence. Today the owner sends each item to a runner by hand: <code>atelier dispatch</code> queues it, and <code>atelier runner</code> claims it and works it.</p>
+<p>The orchestrator is a design: a planner proposes a plan of parts, the owner approves it once, and Atelier then dispatches the parts, routes each to a model, reviews it and integrates the results. <code>docs/orchestrator.md</code> holds the design and its build sequence. The parts built so far are pure functions with tests, in <code>src/plans</code> and <code>src/review</code>, and nothing else calls them yet. Today the owner sends each item to a runner by hand: <code>atelier dispatch</code> queues it, and <code>atelier runner</code> claims it and works it.</p>
 <ul class="how-status">${ORCHESTRATOR.map((p) => `<li><span class="tag ${p.built ? "go" : "ask"}">${p.built ? "Built" : "Not built yet"}</span><div><h3>${e(p.name)} <span class="meta">${e(p.stage)}</span></h3><p>${md(p.what)}</p></div></li>`).join("")}</ul>`;
 }
 

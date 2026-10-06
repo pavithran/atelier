@@ -27,13 +27,13 @@ export const HELP_TITLE = "atelier — one owner per item, observed evidence, th
 
 export const HELP_GROUPS: HelpGroup[] = [
   { name: "Sessions", lines: [[
-    { form: "unwrap [--project P]", about: "Reads where the project stands, the state of this checkout, the newest session note, the state file and any dated handoffs, and writes nothing. The project owner's session starts here." },
+    { form: "unwrap [--project P]", about: "Reads where the project stands, the state of this checkout, where its branch stands against each of the checkout's remotes as last fetched or pushed, the newest session note, the state file (the first of `docs/STATE.md`, `STATE.md` and `PROJECT.md` that exists) and any dated handoffs. It fetches and writes nothing. The project owner's session starts here." },
     { form: 'wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]', about: "Closes the owner's session in the registered checkout: runs the registered checks, commits everything with the summary as its subject, updates the baseline and records a session note on the ledger. Check results are Reported, because they ran on the owner's machine. `--push` also pushes the checkout's own remotes; `--found` files a task for each defect found; `--no-check` skips the checks." },
   ]] },
   { name: "Setup", lines: [[
     { form: "login --server URL", about: "Stores this server's address and the owner's token, asking for the token when none is stored. A token the server refuses is not stored." },
     { form: "login --store", about: "Names the token store in use and whether it holds a token. It never prints the token." },
-    { form: "init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
+    { form: "init [--title TEXT] [--check CMD]... [--protect GLOB]... [--sandbox-only] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
     { form: "sync", about: "Refreshes the stored policy from the project's ControlPlane files. For a baseline built with `--history-since`, it also carries commits made in the checkout outside Atelier to the baseline." },
     { form: "publish", about: "Pushes the registered branch to the baseline with a write token. It is refused for a baseline that holds only part of the history; `sync` does that job." },
   ], [
@@ -52,10 +52,10 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "start ID [--as H/M]", about: "Claims the item, prepares its workspace as `claim` does, and prints its title, scope and any dispatch note." },
     { form: 'done "summary"', about: "Pushes, runs the required checks and submits, in that order, and stops at the first step that fails, naming it. Its last line says `Ready for the owner` or what still blocks the item." },
   ], [
-    { form: "claim ID --as H/M [--runner home:NAME]", about: "Takes ownership of an item, forks the baseline into the item's workspace, mints a write token for the claimant alone and clones the workspace. Claiming again refreshes the token. `--runner` names the runner when a runner claims a dispatched task." },
+    { form: "claim ID --as H/M [--runner home:NAME]", about: "Takes ownership of an item, forks the baseline into the item's workspace, mints a write token for the claimant alone, clones the workspace and records the project's branch as the one it pushes to. Claiming again refreshes the token and that branch, saying when the branch changed. `--runner` names the runner when a runner claims a dispatched task." },
     { form: "finish [--sandbox] [--summary T]", about: "Run in the claimed workspace: pushes, runs the required checks and submits, only if they pass and the workspace has not changed meanwhile. `--sandbox` runs the checks in a Cloudflare container. `done` is `finish` with a required summary." },
-    { form: "push", about: "Pushes the workspace to the item's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named." },
-    { form: "update", about: "Rebases the workspace onto whatever has merged to the baseline since the fork. After a rebase, push with `--force`; the lease refuses to overwrite anything pushed since." },
+    { form: "push", about: "Pushes the workspace to the item's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease." },
+    { form: "update", about: "Rebases the workspace onto whatever has merged to the baseline since the fork, then names the next step, `atelier push --force`, whose lease refuses to overwrite anything pushed since the workspace last fetched." },
     { form: "check [--sandbox | -- CMD]", about: "Runs each required check, or the command after `--`, in a clean clone of exactly the head Artifacts holds, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs them in a Cloudflare container instead." },
     { form: "report \"…\"", about: "Records a Reported claim at the current head: what the agent verified and how. It is shown and never counted as a check." },
     { form: "submit [--summary T]", about: "Marks the item ready for the owner and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission." },
@@ -80,7 +80,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "queue", about: "Lists everything waiting for a runner, across projects, oldest first." },
   ]] },
   { name: "Projects", lines: [[
-    { form: "projects rename OLD NEW", about: "" },
+    { form: "projects rename OLD NEW", about: "The project owner gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every fork stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused." },
     { form: "projects remove NAME [--force]", about: "Removes a project from the index and from this machine's config. The Artifacts repository and the ledger are kept. It is refused while work is live unless `--force` is given." },
     { form: "init --name NAME --rename-local", about: "Changes only this machine's local name for the registered checkout. Nothing on the server changes." },
   ], [
@@ -88,11 +88,11 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Local", lines: [[
     { form: "gc [--project NAME] [--dry-run | --apply]", about: "Previews the local workspace and check clones that are safe to remove; `--apply` removes them. It never touches Artifacts or the project checkout." },
-    { form: "runner --name home:NAME [--once] [--config PATH]", about: "The home runner: polls the queue every 30 seconds, claims one eligible task and runs its configured harness in the claimed workspace. When the harness commits, the runner runs `finish`. `--once` handles at most one task." },
+    { form: "runner --name home:NAME [--once] [--config PATH]", about: "The home runner: polls the queue every 30 seconds, claims one eligible task and runs its configured harness in the claimed workspace. Each opencode run gets a data folder of its own beside the workspace, removed when the run ends, because opencode runs that share one deadlock on its database. When the harness commits, the runner runs `finish`. `--once` handles at most one task." },
   ], [
     { form: "runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]", aside: "what each home model's harness serves", about: "Reports which model each home harness actually served, from the records the harness keeps, and sends the result to the server as each model's status. `--probe` also sends one short prompt to each model that can be probed; `--dry-run` reports nothing." },
   ], [
-    { form: "runner --usage [--name home:NAME] [--dry-run] [--config PATH]", aside: "each tool's windows, served models, costs and balances", about: "" },
+    { form: "runner --usage [--name home:NAME] [--dry-run] [--config PATH]", aside: "each tool's windows, served models, costs and balances", about: "Reports how much of each tool's allowance this machine has used: Codex's 5-hour and weekly windows, the requests and tokens zcode and opencode recorded by served model over the last 5 hours, 24 hours and 7 days (with cost, for opencode), and the DeepSeek balance when the runner config names its Keychain entry. Each tool's summary goes to the server under the runner's name, for the Usage page and its alerts; `--dry-run` reports nothing. It runs once, not as part of the runner loop. Claude's plan limits and Gemini's spend have no record on the machine and are not reported." },
   ]] },
   { name: "Ops", lines: [[
     { form: "ops COMMAND [ARGS...]", aside: "portfolio operations, run by the private atelier-ops toolkit when installed", about: "Hands everything after `ops` to the private `atelier-ops` toolkit, named by `ATELIER_OPS` or found on `PATH`. Without one it says so and exits 2." },
