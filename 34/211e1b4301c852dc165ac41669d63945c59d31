@@ -1,0 +1,24 @@
+atelier atelier/t193 "atelier status: collapse the scope-overlap notices into one line per pair of tasks, after the waits that need the owner, so the real waits are not drowned (found by the cold-start test of 2026-10-06)"
+accepted head e35cee4cffd40f1f6da476ca5e80aeeac161cc77
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T22:11:04.055Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T22:11:07.171Z
+2026-10-06T18:57:24.245Z pavi item.created
+2026-10-06T21:52:27.019Z opencode/glm-5.3 item.claimed
+2026-10-06T21:52:38.033Z opencode/glm-5.3 fork.created
+2026-10-06T22:07:04.207Z pavi land.lease
+2026-10-06T22:07:05.226Z pavi land.merge
+2026-10-06T22:07:14.955Z pavi land.regenerate
+2026-10-06T22:07:17.632Z opencode/glm-5.3 push.observed
+2026-10-06T22:07:17.775Z pavi land.push
+2026-10-06T22:08:47.202Z pavi land.lease
+2026-10-06T22:08:47.951Z pavi land.merge
+2026-10-06T22:08:57.112Z pavi land.regenerate
+2026-10-06T22:08:58.643Z pavi land.push
+2026-10-06T22:11:04.659Z opencode/glm-5.3 evidence.observed
+2026-10-06T22:11:07.471Z opencode/glm-5.3 evidence.observed
+2026-10-06T22:11:07.990Z pavi land.check
+2026-10-06T22:11:08.412Z opencode/glm-5.3 item.submitted
+2026-10-06T22:11:08.663Z pavi land.submit
+2026-10-06T22:11:08.937Z pavi land.review
+2026-10-06T22:11:09.783Z pavi item.accepted
+2026-10-06T22:11:09.925Z pavi land.accept
