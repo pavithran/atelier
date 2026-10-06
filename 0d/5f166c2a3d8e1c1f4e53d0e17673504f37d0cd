@@ -1,0 +1,16 @@
+atelier cloudflare-git/t100 "Rename a project on the server: move a project's ledger (items, events, reviews, policy, sessions) to a new name, keep its baseline repository and forks, redirect the old URLs and API paths, and update the local config; first use: cloudflare-git becomes atelier (PAVI, 2026-10-05)"
+accepted head 0f3e0f26a3261d595eaccb8b6c15d75605e4828c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T00:02:07.788Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T00:02:10.729Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. No token can reach another project through a rename or a former name; only the owner renames; every route resolves to the storage key; the page redirect is same-site. Follow-ups: a retried rename after a failed second write returns from=<new name>, so the CLI leaves the local config entry unmoved; resolveProject runs one names query per registered project on every request.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-05T23:12:19.456Z pavi item.created
+2026-10-05T23:37:49.672Z claude-code/fable-5.1 item.claimed
+2026-10-05T23:37:52.885Z claude-code/fable-5.1 fork.created
+2026-10-06T00:00:49.526Z claude-code/fable-5.1 push.observed
+2026-10-06T00:02:08.216Z claude-code/fable-5.1 evidence.observed
+2026-10-06T00:02:10.824Z claude-code/fable-5.1 evidence.observed
+2026-10-06T00:02:11.592Z claude-code/fable-5.1 item.submitted
+2026-10-06T00:09:31.398Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T00:09:32.169Z pavi review.approved
+2026-10-06T00:09:32.873Z pavi item.accepted
