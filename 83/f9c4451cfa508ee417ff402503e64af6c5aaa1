@@ -1,0 +1,16 @@
+atelier atelier/t138 "Audit t105 follow-up (confirmed by gemini-3.1-pro): review, handoff and release notes have no size cap (src/index.ts around 567, src/ledger.ts around 546), so an agent token can grow the Ledger without bound; cap note length"
+accepted head 980e55ec3159103b6eb6e1e99de9df30e1016729
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T13:15:22.948Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T13:15:29.550Z
+REVIEW approve — claude-code/fable-5.1: All seven commits read with the code around them; each fix is real and tested on the real routes; callers, README and CLI consistent; typecheck clean; vitest and node failures are flakes or identical on main. Non-blocking: the standing-route test still times out cold; withoutAddresses removes any @token; addEvidence and addReview still read two clocks for row and event; a non-holder's local check runs before the 403; plan leftovers over 500 characters die mid-loop.
+REVIEW OVERRIDDEN — pavi: PAVI, 2026-10-06: "temporarily override the family constraint and do it all with opus, fable and sonnet"; built by opus-5.5, reviewed and approved by fable-5.1.
+2026-10-06T02:22:19.059Z pavi item.created
+2026-10-06T12:37:35.616Z claude-code/opus-5.5 item.claimed
+2026-10-06T12:37:39.005Z claude-code/opus-5.5 fork.created
+2026-10-06T13:13:03.254Z claude-code/opus-5.5 push.observed
+2026-10-06T13:15:23.728Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:15:29.992Z claude-code/opus-5.5 evidence.observed
+2026-10-06T13:15:31.240Z claude-code/opus-5.5 item.submitted
+2026-10-06T13:35:30.695Z claude-code/fable-5.1 review.approved
+2026-10-06T13:35:31.587Z pavi review.overridden
+2026-10-06T13:35:31.587Z pavi item.accepted
