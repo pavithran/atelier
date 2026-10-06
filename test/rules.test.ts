@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap, validActor,
+  assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, validActor,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
 
@@ -478,4 +478,62 @@ test("review independence includes every contributor after a handoff", () => {
   assert.equal(gate(handed, governed, evidence, [review("qwen/qwen3")]).ready, true);
   assert.equal(gate(handed, governed, [pass()], [review("codex/gpt-6")]).ready, false);
   assert.equal(gate(handed, governed, evidence, [review("owner")]).ready, true);
+});
+
+// macOS's default disk stores names that differ only by letter case or
+// Unicode form as one file, so the owner's checkout writes such a path over
+// the protected file it aliases.
+const defaults: ProjectPolicy = { checks: ["npm test", "./check.sh"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", "docs/caf\u00e9/**"] };
+
+test("a path differing from a guarded path only by letter case or Unicode form is protected", () => {
+  for (const path of [
+    "claude.md", "Claude.MD", "Agents.MD", "agents.md", "Wrangler.jsonc", "WRANGLER.toml",
+    "Package.json", "CHECK.sh",
+    "AGENT\u017f.md",          // long s: the disk folds it to S
+    "wrangler.j\u017fonc",
+    "pac\u212aage.json",       // Kelvin sign: the disk folds it to k
+    "docs/cafe\u0301/a.md",    // decomposed é under a precomposed protected directory
+    "DOCS/CAF\u00c9/a.md",
+  ]) assert.equal(changeClass([path], defaults), "protected", path);
+  for (const path of ["claude.mdx", "src/CLAUDE.md", "docs/cafe/a.md", "AGENTS\u200c.md"]) assert.equal(changeClass([path], defaults), "coordinated", path);
+  assert.equal(changeClass(["Docs/Secret/key"], governed), "protected");
+  // Folding only adds: a path that matches as written still matches.
+  assert.ok(matchesFolded("stra\u00dfe.md", ["stra?e.md"]));
+});
+
+test("an ungoverned gate asks for a review when claude.md stands in for CLAUDE.md", () => {
+  const held = item({ scope: [], owner: "opencode/glm-5.3:studio-code", pushActors: ["opencode/glm-5.3:studio-code"] });
+  const observed = defaults.checks.map((claim) => pass({ claim, changedPaths: ["claude.md"] }));
+  const g = gate(held, defaults, observed, []);
+  assert.deepEqual({ ready: g.ready, needsAssessor: g.needsAssessor }, { ready: false, needsAssessor: true });
+  assert.equal(gate(held, defaults, observed, [review("owner")]).ready, true);
+});
+
+test("item scopes and the direct allow-list are matched as written", () => {
+  // A variant path is not granted the direct class: it needs the review.
+  assert.equal(changeClass(["docs/a.md"], governed), "direct");
+  assert.equal(changeClass(["DOCS/a.md"], governed), "coordinated");
+  // A variant path is reported outside the scope.
+  assert.deepEqual(gate(item(), policy, [pass({ changedPaths: ["src/a.ts", "SRC/b.ts"] })], []).outOfScope, ["SRC/b.ts"]);
+});
+
+test("foldPath gives one spelling to the names a Mac's disk treats as one file", () => {
+  for (const [a, b] of [
+    ["CLAUDE.md", "claude.md"], ["caf\u00e9", "cafe\u0301"], ["CAF\u00c9", "cafe\u0301"], ["AGENTS.md", "AGENT\u017f.md"],
+    ["package.json", "pac\u212aage.json"], ["strasse", "stra\u00dfe"], ["STRA\u1e9eE", "strasse"], ["file", "\ufb01le"],
+    ["\u03a3\u039f\u03a6\u0399\u0391\u03a3", "\u03c3\u03bf\u03c6\u03b9\u03b1\u03c2"], ["\u212b", "\u00e5"],
+  ]) assert.equal(foldPath(a), foldPath(b), `${a} ${b}`);
+  // These stay apart on the disk too.
+  for (const [a, b] of [["A.md", "\uff21.md"], ["CLAUDE.md", "CLA\u200cUDE.md"], ["a/b", "a-b"]]) assert.notEqual(foldPath(a), foldPath(b), `${a} ${b}`);
+});
+
+test("pathCollisions names each group of paths that would share one file, where the clash arises", () => {
+  assert.deepEqual(pathCollisions(["CLAUDE.md", "README.md", "claude.md", "src/a.ts"]), [["CLAUDE.md", "claude.md"]]);
+  assert.deepEqual(pathCollisions(["AGENTS.md", "AGENT\u017f.md", "caf\u00e9.md", "cafe\u0301.md"]), [["AGENTS.md", "AGENT\u017f.md"], ["caf\u00e9.md", "cafe\u0301.md"]]);
+  // Directories clash too; the files under them are named by the directories' group.
+  assert.deepEqual(pathCollisions(["Docs/a.md", "docs/a.md", "docs/b.md"]), [["Docs", "docs"]]);
+  assert.deepEqual(pathCollisions(["docs/A.md", "docs/a.md"]), [["docs/A.md", "docs/a.md"]]);
+  // A file and a directory of the same folded name are one name on the disk.
+  assert.deepEqual(pathCollisions(["readme", "README/a.md"]), [["readme", "README"]]);
+  assert.deepEqual(pathCollisions(["a.md", "b/a.md", "B.md"]), []);
 });

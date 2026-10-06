@@ -140,7 +140,12 @@ model or from the project owner. Models are compared without letter case or a
 manager, whose scripts an item could otherwise rewrite. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such
 as the code under test, are not protected, and nor is test configuration such
-as `vitest.config.ts` unless the project protects it.
+as `vitest.config.ts` unless the project protects it. Protected paths match
+whatever the letter case or Unicode form, because the owner's Mac stores
+`claude.md` and `CLAUDE.md`, or `AGENTſ.md` (with a long s) and `AGENTS.md`, as
+one file; item scopes and `direct.allowed_path_patterns` match as written, so a
+variant falls outside them. `atelier merge` refuses, before it changes the
+checkout, a merge whose tree would hold two such paths, on any platform.
 
 ## Projects governed by ControlPlane
 
