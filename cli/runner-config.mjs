@@ -14,6 +14,8 @@ const PLACEHOLDERS = ["model", "brief_file", "workspace"];
 const KEYCHAIN_ENTRY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // A provider whose balance the usage report asks for (cli/usage.mjs).
 const PROVIDER = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
+// The name of an environment variable a harness entry passes on (runner.mjs harnessEnv).
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
 export function parseConfig(json) {
   const agents = [], errors = [];
@@ -77,7 +79,14 @@ export function parseConfig(json) {
       if (!placeholders.includes("model") || !placeholders.includes("brief_file")) bad("command must include {model} and {brief_file}");
       if (/[{}]/.test(entry.command[0])) bad("the executable must not contain placeholders");
     }
-    if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command] });
+    // Optional: the variables of the runner's environment this harness also
+    // gets, such as the provider key opencode reads. Atelier's own never.
+    if (entry.env !== undefined) {
+      if (!Array.isArray(entry.env) || entry.env.some((name) => typeof name !== "string" || !ENV_NAME.test(name)) ||
+          new Set(entry.env).size !== entry.env.length) bad("env must list distinct environment variable names");
+      else if (entry.env.some((name) => /^ATELIER_/i.test(name))) bad("env must not name an ATELIER_ variable; a harness never gets Atelier's credentials");
+    }
+    if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
   return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}) };
 }
