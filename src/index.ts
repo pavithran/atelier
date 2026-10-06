@@ -3,7 +3,7 @@ import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions,
 import { itemDiff, measureWorkspace, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
@@ -304,6 +304,58 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
     }
   }
   throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
+}
+
+// Whether the commit `from` holds `target` in its history. Artifacts lists
+// a first-parent chain up to a thousand commits at a time, so every chain is
+// read that way: the head's own, carried past each page from the last
+// commit's first parent, and the chain behind each further parent a merge
+// names, taken in the order met, so the nearest branch is read first. A
+// recorded head sits a few commits back on one of those chains and is found
+// on the first page or two; the whole history is read only to show that a
+// head holds nothing of the recorded one. The search stops at a budget of
+// commits and of reads, and then answers null: it has shown neither that
+// the target is held nor that it is not, and recordPush (ledger.ts) refuses
+// such a push unless it declares a rebase.
+const HISTORY_COMMITS = 10_000, HISTORY_READS = 100, HISTORY_PAGE = 1000;
+async function holdsCommit(env: Env, repo: string, from: string, target: string): Promise<{ holds: boolean | null; searched: number }> {
+  if (from === target) return { holds: true, searched: 0 };
+  using r = await env.ARTIFACTS.get(repo);
+  const seen = new Set<string>();
+  const starts = [from];
+  let reads = 0;
+  while (starts.length) {
+    const start = starts.shift()!;
+    if (seen.has(start)) continue;
+    if (reads >= HISTORY_READS || seen.size >= HISTORY_COMMITS) return { holds: null, searched: seen.size };
+    reads++;
+    const page = await r.log({ ref: start, limit: HISTORY_PAGE });
+    const branches: string[] = [];
+    let next: string | undefined;
+    for (const c of page) {
+      const parents = c.parents ?? [];
+      if (c.hash === target || parents.includes(target)) return { holds: true, searched: seen.size };
+      // A chain that reaches a commit already listed has joined a chain
+      // read already, or one waiting its turn: the rest of this page is covered.
+      if (seen.has(c.hash)) { next = undefined; break; }
+      seen.add(c.hash);
+      branches.push(...parents.slice(1));
+      next = parents[0];
+    }
+    starts.push(...branches);
+    if (next) starts.push(next);
+  }
+  return { holds: false, searched: seen.size };
+}
+
+// What the Worker found in the fork's history for a push: whether the head
+// it sees holds the head the Ledger recorded (null when the search stopped
+// at its budget first, with the number of commits it examined), and the
+// head the caller says `atelier update` rebased from, when it says so.
+async function pushLineage(env: Env, fork: string, observed: string, recorded: string | null, declared: unknown): Promise<PushLineage> {
+  const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, fork, observed, recorded);
+  const rebasedFrom = typeof declared === "string" && /^[a-f0-9]{40,64}$/.test(declared) ? declared : null;
+  return { holdsRecorded: holds, searched, rebasedFrom };
 }
 
 // The branch Atelier reads in a project's baseline and in every fork of it:
@@ -620,7 +672,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       // Re-claiming rotates the token: one live write token per item, ever.
       // If the old one cannot be revoked, the claim fails before a new one
-      // is minted, and the old one stays recorded.
+      // is minted, and the old one stays recorded. L.claim above is the
+      // claim's check, and it has already refused anyone who may not claim
+      // the item, so a refused claim revokes nothing: only the holder
+      // re-claiming, or the claimer of an item nobody holds, gets here, and
+      // `replaces` is the token this claim takes over.
       // The workspace and the baseline are both given the project's branch:
       // the fork's HEAD names it, and headOf reads HEAD.
       await revoke(env, fork, replaces);
@@ -651,7 +707,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      return json(await L.recordPush(id, actor, observed, body.head ?? null, !!c.token));
+      return json(await L.recordPush(id, actor, observed, body.head ?? null, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
     }
     case "evidence": {
       const item = await L.item(id);
@@ -965,13 +1021,19 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
     // As on the API routes: a change of owner is checked, the holder's
-    // write token revoked, and only then the change made.
+    // write token revoked, and only then the change made. The workspace is
+    // read after the token id, not taken from `before`: a token is recorded
+    // only once its workspace exists, so the workspace read here is the
+    // one the token was made for, even if a claim made both after `before`
+    // was read. With `before.fork` that token would go unrevoked, and the
+    // change would then take it off the record while it still works.
     const moving = verb === "abandon" || verb === "release" || verb === "handoff";
     if (moving) {
       if (verb === "abandon") await L.checkAbandon(id, owner);
       else if (verb === "release") await L.checkRelease(id, owner);
       else await L.checkHandoff(id, owner, String(form.get("to") ?? ""));
-      await revoke(env, before.fork, oldToken);
+      const { fork } = await L.item(id);
+      await revoke(env, fork, oldToken);
     }
     if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
     else if (verb === "undispatch") await L.undispatch(id, owner);
@@ -1114,7 +1176,14 @@ export default {
             // Only a push to the project's branch moves the head headOf reads.
             if (notice.ref !== `refs/heads/${await projectBranch(env, project)}`) break;
             const current = await headOf(env,notice.repo);
-            if (current) { const recorded = await L.observePush(item.id,current,item.head); if (!["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation"); }
+            if (current) {
+              // A head that does not hold the recorded one is not taken as
+              // progress (observePush); the compare-and-set retry is for a
+              // head that should have moved and did not.
+              const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
+              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded);
+              if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
+            }
             break;
           }
         }

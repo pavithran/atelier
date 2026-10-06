@@ -56,7 +56,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "finish [--sandbox] [--summary T]", about: "Run in the claimed workspace: pushes, runs the required checks and submits, only if they pass and the workspace has not changed meanwhile. `--sandbox` runs the checks in a Cloudflare container. `done` is `finish` with a required summary." },
     { form: "push", about: "Pushes the workspace to the item's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease." },
     { form: "update", about: "Rebases the workspace onto whatever has merged to the baseline since the fork, then names the next step, `atelier push --force`, whose lease refuses to overwrite anything pushed since the workspace last fetched." },
-    { form: "check [--sandbox | -- CMD]", about: "Runs each required check, or the command after `--`, in a clean clone of exactly the head Artifacts holds, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs them in a Cloudflare container instead." },
+    { form: "check [--sandbox | -- CMD]", about: "Runs each required check, or the command after `--`, in a clean clone of exactly the head Artifacts holds, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs them in a Cloudflare container instead. A local check runs with the caller's file access, so it can read their files and Keychain and reach the network; it is given only the environment variables toolchains need, and Atelier's tokens are redacted from its output before upload. Run untrusted code with `--sandbox`." },
     { form: "report [ID] \"…\" [--item ID]", about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted as a check." },
     { form: "submit [--summary T]", about: "Marks the item ready for the owner and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission." },
   ], [
@@ -126,12 +126,17 @@ export function helpText(): string {
 // Every form the help prints, in order.
 export const HELP_FORMS: string[] = HELP_GROUPS.flatMap((g) => g.lines.flat().map((c) => c.form));
 
+// What the usage of every command that runs checks locally says about them.
+const LOCAL_CHECK = "A local check runs on this machine with your file access: it can read your files and your Keychain and reach the network. It is given only PATH, HOME and the few other environment variables toolchains need, and Atelier's tokens are redacted from its output before it is uploaded. Run untrusted code in the sandbox: atelier check --sandbox, atelier finish --sandbox, or a project set up with atelier init --sandbox-only.";
+
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 export const COMMAND_USAGE: Record<string, string> = {
   unwrap: "usage: atelier unwrap [--project P]",
   wrap: 'usage: atelier wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]',
   start: "usage: atelier start ID [--as harness/model]",
-  done: 'usage: atelier done "summary"',
+  done: `usage: atelier done "summary"\n${LOCAL_CHECK}`,
+  finish: `usage: atelier finish [--sandbox] [--summary T]\n${LOCAL_CHECK}`,
+  check: `usage: atelier check [--sandbox | -- CMD]\n${LOCAL_CHECK}`,
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",

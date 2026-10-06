@@ -124,9 +124,10 @@ In detail:
 | --- | --- | --- |
 | `atelier init [--title TEXT]` | the project owner, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. |
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item. The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. |
-| `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. |
-| `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. |
+| `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
+| `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
+| `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
+| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -322,6 +323,13 @@ Trusted, and stated here so nobody assumes otherwise:
   and optionally to projects. The owner token still permits declared actors
   for orchestration. Keep it with the owner's tools. A workspace write token
   controls Git pushes and is separate from an API token.
+- **Git credentials stay off the command line.** The CLI hands every
+  Artifacts token to git through git's environment (`GIT_CONFIG_COUNT`,
+  `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`), never as an argument, because
+  any local user can read a process's arguments with `ps`. A workspace keeps
+  its write token in `.git/atelier-credentials`, readable only by its user
+  (mode 0600), which `.git/config` includes; anything running as that user
+  can still read it.
 - **Check execution is explicit.** Local checks run in a clean clone at
   the verified head, but a caller authorised to record checks, the item's own
   agent included, can forge a local result. It cannot forge what the change
@@ -331,6 +339,22 @@ Trusted, and stated here so nobody assumes otherwise:
   server and are available with `--sandbox`; `sandboxOnly` policy requires
   that evidence.
   The container integration still needs deployment and a live runtime check.
+- **A local check runs with the caller's file access.** `atelier check`,
+  `finish` and `done` run the item's check code on the caller's machine as
+  the caller, so it can read their files and Keychain and reach the network.
+  It is given only the environment variables toolchains need: `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `CI`,
+  `DEVELOPER_DIR`, `TOOLCHAINS`, the Node and OpenSSL certificate settings
+  and `npm_config_*`. It never gets `ATELIER_*`, `SSH_AUTH_SOCK` or a
+  variable whose name says it holds a token, key, secret, password or
+  credential; a check that needs another variable sets it in its own
+  command. Before the output is printed or uploaded as evidence, the CLI
+  redacts the API token, the read tokens for the fork and the baseline, and
+  the workspace's write token. Redaction matches each token exactly as
+  written, so a check that prints one encoded, reversed or in pieces is not
+  caught. Run untrusted code in the sandbox: `atelier check --sandbox`,
+  `atelier finish --sandbox`, or a project registered with
+  `atelier init --sandbox-only`.
 - **Merging happens locally.** The Artifacts binding and REST API can read
   repositories (commits, trees, blobs, files, a first-parent log) but cannot
   write. The only way to write is a git push with a write token, so Atelier

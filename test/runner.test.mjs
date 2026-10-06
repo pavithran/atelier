@@ -422,14 +422,22 @@ test("CLI git failure output removes credential arguments and echoed values", ()
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
   const gitSource = source.slice(source.indexOf("function git("), source.indexOf("// Tokens go"));
   let message;
+  // The stand-in git echoes its arguments and its environment's values, as
+  // an error message might.
   const git = runInNewContext(`${gitSource}; git`, {
     process: { env: {} }, redactGitArgs, gitEnv: (base, extra) => ({ ...base, ...extra }),
-    spawnSync: (_, args) => ({ status: 1, stderr: args.join(" ") }),
+    auth: (token) => ({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}` }),
+    spawnSync: (_, args, opts) => ({ status: 1, stderr: [...args, ...Object.values(opts.env)].join(" ") }),
     die: (text) => { message = text; throw new Error("failed"); },
   });
   assert.throws(() => git(["config", "http.https://remote.example.extraHeader", "Authorization: Bearer secret"]), /failed/);
   assert.ok(message.includes("[redacted]"));
   assert.ok(!message.includes("secret"));
+  // A token passed as opts.token travels in the environment, and is cut from
+  // what the error shows.
+  assert.throws(() => git(["fetch", "--quiet", "origin"], { token: "secret-token" }), /failed/);
+  assert.ok(message.includes("Authorization: Bearer [redacted]"), message);
+  assert.ok(!message.includes("secret-token"));
 });
 
 test("CLI distinguishes server claim refusals from unknown failures without network", async () => {
