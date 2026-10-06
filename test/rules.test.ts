@@ -220,6 +220,22 @@ test("a runner's name counts anywhere in a check line: through wrappers, a shell
   assert.ok(checkFiles(["npm --prefix packages/app test"]).includes("package.json"));
 });
 
+test("a check line holding a word that names an Object.prototype member finds no runner and never throws", () => {
+  // The runner tables are looked up by word; these words are keys of every
+  // plain object, and a lookup that found them would iterate a function.
+  for (const word of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]) {
+    const lines = [`grep -q ${word} src/a.ts`, `node --test --test-name-pattern ${word}`, `${word} test`, `npm ${word} check`, `${word} -c "npm test"`];
+    assert.doesNotThrow(() => checkFiles(lines), word);
+    assert.deepEqual(checkFiles([`grep -q ${word} src/a.ts`]), [], word);
+    assert.deepEqual(checkFiles([`${word} test`]), [], word);
+    assert.ok(checkFiles([`npm ${word} check`]).includes("package.json"), word);
+    // The gate reads the same tables through changeClass.
+    const p: ProjectPolicy = { checks: [`grep -q ${word} src/a.ts`], protected: ["AGENTS.md"] };
+    assert.equal(changeClass(["src/a.ts"], p), "coordinated", word);
+    assert.equal(gate(item({ scope: [] }), p, [pass({ claim: p.checks[0], changedPaths: ["src/a.ts"] })], []).ready, true, word);
+  }
+});
+
 test("files named by a check are protected: an item cannot weaken its own grader", () => {
   assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), [".npmrc", "check.sh", "package.json", "scripts/verify.mjs"]);
   assert.deepEqual(checkFiles(["grep -q export src/a.ts"]), []);

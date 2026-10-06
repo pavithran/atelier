@@ -515,32 +515,34 @@ const INTERPRETERS = new Set(["node", "sh", "bash", "zsh", "python", "python3", 
 // What each package manager runs scripts from, and the configuration that
 // can change what it runs: npm's script shell, pnpm's install hooks, yarn's
 // committed release and plugins, bun's preloads.
-const PACKAGE_MANAGERS: Record<string, string[]> = {
+// The tables are Maps, so a check line holding a word such as constructor
+// or __proto__ finds nothing rather than Object.prototype.
+const PACKAGE_MANAGERS = new Map<string, string[]>(Object.entries({
   npm: ["package.json", ".npmrc"],
   pnpm: ["package.json", ".npmrc", ".pnpmfile.cjs"],
   yarn: ["package.json", ".yarnrc", ".yarnrc.yml", ".yarn/plugins/**", ".yarn/releases/**"],
   bun: ["package.json", "bunfig.toml"],
-};
+}));
 // Build tools whose manifest names code they run: cargo's build scripts and
 // runner configuration, swift's package manifest, an Xcode project's or
 // workspace's build phases and schemes.
-const BUILD_TOOLS: Record<string, string[]> = {
+const BUILD_TOOLS = new Map<string, string[]>(Object.entries({
   cargo: ["**/Cargo.toml", "**/build.rs", ".cargo/config", ".cargo/config.toml"],
   swift: ["**/Package.swift", "**/Package@swift-*.swift"],
   xcodebuild: ["**/*.xcodeproj/**", "**/*.xcworkspace/**", "**/Package.swift", "**/Package@swift-*.swift"],
-};
+}));
 // The recipe files make and just read from the working directory, the files
 // those can include, and the options that name another file or directory.
-const RECIPES: Record<string, { files: string[]; included: string; file: string[]; dir: string[] }> = {
+const RECIPES = new Map<string, { files: string[]; included: string; file: string[]; dir: string[] }>(Object.entries({
   make: { files: ["Makefile", "makefile", "GNUmakefile"], included: "**/*.mk", file: ["-f", "--file", "--makefile"], dir: ["-C", "--directory"] },
   just: { files: ["justfile", "Justfile", ".justfile"], included: "**/*.just", file: ["-f", "--justfile"], dir: ["-d", "--working-directory"] },
-};
+}));
 
 // Words a shell puts before a command, and wrappers that run the command
 // after them: skipped to find the command, with each wrapper's own options
 // (those that take a value are listed) and, for timeout, its duration.
 const SHELL_WORDS = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "time", "exec", "command", "builtin", "nohup"]);
-const WRAPPERS: Record<string, { valued: string[]; args?: number }> = {
+const WRAPPERS = new Map<string, { valued: string[]; args?: number }>(Object.entries({
   env: { valued: ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"] },
   "/usr/bin/env": { valued: ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"] },
   "cross-env": { valued: [] },
@@ -549,7 +551,7 @@ const WRAPPERS: Record<string, { valued: string[]; args?: number }> = {
   nice: { valued: ["-n", "--adjustment"] },
   timeout: { valued: ["-s", "-k", "--signal", "--kill-after"], args: 1 },
   "xvfb-run": { valued: ["-s", "-e", "-f", "-p", "-n", "-w", "--server-args", "--error-file", "--auth-file", "--server-num", "--wait"] },
-};
+}));
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 
 export function checkFiles(checks: string[]): string[] {
@@ -570,7 +572,7 @@ export function checkFiles(checks: string[]): string[] {
     for (let i = from; i < words.length; i++) {
       const word = words[i];
       if (assignment(word) || SHELL_WORDS.has(word)) continue;
-      const wrapper = WRAPPERS[word];
+      const wrapper = WRAPPERS.get(word);
       if (!wrapper) return i;
       let args = wrapper.args ?? 0;
       while (i + 1 < words.length) {
@@ -603,10 +605,11 @@ export function checkFiles(checks: string[]): string[] {
   // The manager's files, and the same under the directory its --prefix, -C,
   // --dir or --cwd option names, where it then reads them.
   const managerFiles = (words: string[], at: number, manager: string) => {
-    for (const file of PACKAGE_MANAGERS[manager]) files.add(file);
+    const own = PACKAGE_MANAGERS.get(manager) ?? [];
+    for (const file of own) files.add(file);
     for (let i = at + 1; i < words.length; i++) {
       const dir = option(words, i, ["--prefix", "-C", "--dir", "--cwd"]);
-      if (dir !== null && inside(dir)) for (const file of PACKAGE_MANAGERS[manager]) add(`${dir.replace(/\/?$/, "/")}${file}`);
+      if (dir !== null && inside(dir)) for (const file of own) add(`${dir.replace(/\/?$/, "/")}${file}`);
     }
   };
   for (const cmd of checks) {
@@ -622,22 +625,22 @@ export function checkFiles(checks: string[]): string[] {
         const prev = words[i - 1];
         if (word.startsWith("-")) return;
         if (word.startsWith("./") || /\.sh$/.test(word) || (prev && INTERPRETERS.has(prev) && /[./]/.test(word))) add(word);
-        if (word in PACKAGE_MANAGERS) managerFiles(words, i, word);
-        for (const file of BUILD_TOOLS[word] ?? []) files.add(file);
+        if (PACKAGE_MANAGERS.has(word)) managerFiles(words, i, word);
+        for (const file of BUILD_TOOLS.get(word) ?? []) files.add(file);
         if (word === "deno" && words[i + 1] === "task") ["deno.json", "deno.jsonc"].forEach((file) => files.add(file));
         // npx, bunx and a package manager's dlx, exec or x run a local binary
         // by its name, resolved through the manager's own files.
-        const viaManager = prev in PACKAGE_MANAGERS && ["dlx", "exec", "x"].includes(word);
+        const viaManager = PACKAGE_MANAGERS.has(prev) && ["dlx", "exec", "x"].includes(word);
         if (word === "npx" || word === "bunx" || viaManager) {
           const manager = word === "npx" ? "npm" : word === "bunx" ? "bun" : prev;
-          for (const file of PACKAGE_MANAGERS[manager]) files.add(file);
+          for (const file of PACKAGE_MANAGERS.get(manager) ?? []) files.add(file);
           let j = i + 1;
           while (j < words.length && words[j].startsWith("-")) j += ["-p", "--package", "-c", "--call"].includes(words[j]) ? 2 : 1;
           // The binary's name: a scoped package's own name, without a version.
           const bin = words[j]?.split("/").pop()?.replace(/(?!^)@.*$/, "");
           if (bin && !words[j].startsWith(".")) files.add(`node_modules/.bin/${bin}`);
         }
-        const recipe = RECIPES[word];
+        const recipe = RECIPES.get(word);
         if (recipe) {
           let dir = "", named: string | null = null;
           for (let j = i + 1; j < words.length; j++) {
