@@ -160,6 +160,21 @@ one file; item scopes and `direct.allowed_path_patterns` match as written, so a
 variant falls outside them. `atelier merge` refuses, before it changes the
 checkout, a merge whose tree would hold two such paths, on any platform.
 
+A merge lands agent code in the owner's checkout, where Git's own
+configuration can run files from the tree: a hooks folder that
+`core.hooksPath` names, a filter, merge driver or textconv script, a hook
+defined in configuration, or a configuration file the checkout includes.
+`atelier merge` lists those paths from the checkout's configuration and
+refuses, before it changes the checkout, an accepted change that touches one,
+naming each; the owner reviews those files and lands the change by hand. It
+also refuses a symlink where the landing reads or writes its ControlPlane
+files (the policy files, the receipt template, the receipts folder), which
+would take the read or the write outside the checkout. Every Git command of
+`merge`, `merge --cancel` and `sync` runs with hooks off:
+`core.hooksPath=/dev/null` for a hooks folder, and `hook.NAME.enabled=false`
+for each hook defined in configuration, which Git 2.54 still runs under
+`core.hooksPath=/dev/null` alone.
+
 The changed paths are measured against main as it is now: every path whose
 content at the item's head differs from main's head. That is the set a merge
 could change on main whatever base git picks, since git keeps a path both

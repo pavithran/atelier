@@ -26,7 +26,7 @@ import { pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
-import { adoptOldLanding, landingDir, landingJournal, landingJournalFile, landingLock, oldLandingJournalFile } from "./landing.mjs";
+import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
@@ -111,8 +111,12 @@ export function gitEnv(base = process.env, extra = {}, args = [], ownerRemote = 
 
 // opts.token is an Artifacts token this one command sends as its
 // Authorization header (see auth). It is cut from any error text shown.
+// opts.hooks === false runs the command with every hook off (hooksOff in
+// cli/landing.mjs), as each Git command of a landing runs (landingGit).
 function git(args, opts = {}) {
-  const env = { ...(opts.token ? auth(opts.token) : {}), ...opts.env };
+  let off = {};
+  if (opts.hooks === false) { try { off = configEnv(hooksOff(opts.cwd, gitEnv(process.env, {}, args))); } catch (error) { die(error.message); } }
+  const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
   const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   const shown = redactGitArgs(args);
   let detail = (r.stderr || r.stdout || "").trim();
@@ -131,9 +135,25 @@ function git(args, opts = {}) {
 // and root can read its environment. The header takes the next free index, so
 // configuration the caller's environment already passes this way still holds.
 export function auth(token, base = process.env) {
-  const n = Number.parseInt(base.GIT_CONFIG_COUNT ?? "", 10) || 0;
-  return { GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "http.extraHeader", [`GIT_CONFIG_VALUE_${n}`]: `Authorization: Bearer ${token}` };
+  return configEnv([["http.extraHeader", `Authorization: Bearer ${token}`]], base);
 }
+
+// Settings given to git through its environment, as [key, value] pairs, at
+// the indexes after those the caller's environment already uses.
+function configEnv(settings, base = process.env) {
+  const n = Number.parseInt(base.GIT_CONFIG_COUNT ?? "", 10) || 0;
+  const env = { GIT_CONFIG_COUNT: String(n + settings.length) };
+  settings.forEach(([key, value], i) => { env[`GIT_CONFIG_KEY_${n + i}`] = key; env[`GIT_CONFIG_VALUE_${n + i}`] = value; });
+  return env;
+}
+
+// The runner for a landing's Git commands in the owner's checkout (merge,
+// merge --cancel and sync): every hook is off, so no hook runs while the
+// landing changes the checkout, whatever the accepted change put in a hooks
+// folder or a file a hook runs. Each of those commands declares
+// `const git = landingGit`, so every Git command in it, and in the helpers it
+// passes `git` to, runs this way.
+const landingGit = (args, opts = {}) => git(args, { ...opts, hooks: false });
 
 // A workspace keeps its write token in a file of its own,
 // .git/atelier-credentials, which only this user can read (0600) and which
@@ -719,10 +739,16 @@ export async function refreshControlPlane(top, name, request = call, report = co
   return { before, policy: { ...before, ...policy }, changes };
 }
 
+// The receipt goes only into a real folder reached through no symlink, the
+// template is read only when it is a regular file, and the receipt file is
+// opened with O_NOFOLLOW, so the receipt never reads or writes outside the
+// checkout. merge refuses a tree with a symlink on these paths before the
+// checkout changes (landingSymlinks); these checks hold even if one is there.
 function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass }) {
-  const dir = join(cwd, "docs", "control-plane", "landing-receipts");
-  if (!existsSync(dir)) return null;
-  const template = readJson(join(cwd, "docs", "control-plane", "landing-receipt.v1.json")) ?? {};
+  const dir = join(cwd, RECEIPTS_DIR);
+  const kind = (path) => lstatSync(join(cwd, path), { throwIfNoEntry: false });
+  if (!["docs", "docs/control-plane", RECEIPTS_DIR].every((path) => kind(path)?.isDirectory())) return null;
+  const template = (kind(RECEIPT_TEMPLATE)?.isFile() ? readJson(join(cwd, RECEIPT_TEMPLATE)) : null) ?? {};
   const date = new Date().toISOString().slice(0, 10);
   const file = join(dir, `${date}-atelier-${id}-${short(item.acceptedHead)}.json`);
   // The owner's override of the independent review, when one stands at the accepted head.
@@ -761,7 +787,7 @@ function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, bran
     unrelated_dirty: [],
     session_continuing: true,
   };
-  writeFileSync(file, JSON.stringify(receipt, null, 2) + "\n");
+  writeFileSync(file, JSON.stringify(receipt, null, 2) + "\n", { flag: fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW });
   return file.slice(cwd.length + 1);
 }
 
@@ -1745,6 +1771,7 @@ const commands = {
   // follow the checkout by itself: commits made in the checkout outside
   // Atelier are carried to it here, rebuilt with the same trees.
   async sync() {
+    const git = landingGit;
     const name = project();
     const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
     const refreshed = await refreshControlPlane(cwd, name);
@@ -1781,6 +1808,7 @@ const commands = {
   },
 
   async merge() {
+    const git = landingGit;
     // An override is recorded only while accepting, which needs the revision.
     if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
     const name = project(), id = itemArg();
@@ -1886,8 +1914,23 @@ const commands = {
           const merged=git(['merge-tree','--write-tree','--no-messages',local,target],{cwd,allowFail:true});
           const mergedTree=merged.status<=1?merged.stdout.split('\n')[0]:'';
           const tree=/^[0-9a-f]{40,64}$/.test(mergedTree)?mergedTree:target;
-          const clashes=pathCollisions(git(['ls-tree','-r','-z','--name-only','--full-tree',tree],{cwd,raw:true}).split('\0').filter(Boolean));
+          const entries=treeEntries(git(['ls-tree','-r','-z','--full-tree',tree],{cwd,raw:true}));
+          const clashes=pathCollisions(entries.map(e=>e.path));
           if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's owner must rename or remove all but one of each and submit a new revision`);}
+          // The landing reads the ControlPlane policy and receipt template
+          // and writes the receipt; a symlink on one of those paths would
+          // take the read or the write outside the checkout.
+          const links=landingSymlinks(entries);
+          if(links.length){journal.clear();die(`the merge would put a symlink where the landing reads or writes its ControlPlane files: ${links.join(', ')}. The landing would follow it out of the checkout. Nothing was merged; the task's owner must replace each with the file or folder itself and submit a new revision`);}
+          // A file that this checkout's Git configuration runs (a hook, a
+          // filter or merge driver script, an included configuration file)
+          // and that the merge would change would run during the merge, or
+          // stay to run at the owner's next Git command. The changed paths
+          // are those between this checkout and the merge's own tree.
+          let runs;
+          try{runs=touchedExecutables(git(['diff','--name-only','--no-renames','-z',local,tree],{cwd,raw:true}).split('\0').filter(Boolean),executablePaths(cwd,gitEnv()));}
+          catch(error){journal.clear();die(error.message);}
+          if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
