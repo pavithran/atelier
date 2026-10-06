@@ -1,0 +1,22 @@
+atelier atelier/t183 "Orchestrator steps 12 to 14 (t16): integration branch per plan: baseRepoOf(item) and a base-token route so parts fork from and are measured against the plan's fork; integrate jobs with the integrated and integration-failed routes, the mergeability pre-check and the reserved atelier/integrator actor; atelier runner --integrate (docs/orchestrator.md sections 5 and 8)"
+accepted head e81915f612c2a4aae3932e0339959688a33a1fea
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T17:02:50.964Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T17:02:54.586Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T17:15:19.481Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T17:15:23.338Z
+REVIEW approve — antigravity/gemini-3.1-pro: Orchestrator steps 12 to 14: the integration branch per plan.
+2026-10-06T14:44:49.043Z pavi item.created
+2026-10-06T15:26:42.962Z opencode/deepseek-v4-pro item.claimed
+2026-10-06T15:26:49.047Z opencode/deepseek-v4-pro fork.created
+2026-10-06T16:48:07.557Z opencode/deepseek-v4-pro push.observed
+2026-10-06T16:51:15.806Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T16:51:19.490Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T17:00:28.055Z opencode/deepseek-v4-pro push.observed
+2026-10-06T17:02:51.740Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T17:02:55.028Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T17:02:55.921Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T17:15:20.160Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T17:15:24.011Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T17:15:25.452Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T17:18:01.099Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T17:18:01.865Z pavi item.accepted
