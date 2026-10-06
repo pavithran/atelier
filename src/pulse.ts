@@ -43,9 +43,11 @@ export function windowDays(now: Date, days = PULSE_DAYS): string[] {
 }
 
 // `cut` says the events were read up to a limit, so the record may hold
-// older ones. Events arrive in any order; they are replayed by sequence so an
-// event Atelier recorded (a sandbox check, an observed push) is counted for
-// the agent that held the task then, as the Flow graph counts it.
+// older ones. Moves are counted as the Flow graph's buildStory counts them:
+// an agent's move is any event of theirs that is not bookkeeping (QUIET);
+// what Atelier itself recorded (a sandbox check, an observed push) is the
+// platform's work and no one's move; the owner's decisions are counted
+// apart, and nothing else of the owner's counts.
 export function buildPulse(events: LedgerEvent[], owner: string, now: Date, cut = false, days = PULSE_DAYS): Pulse {
   const keys = windowDays(now, days);
   const index = new Map(keys.map((k, i) => [k, i]));
@@ -59,29 +61,22 @@ export function buildPulse(events: LedgerEvent[], owner: string, now: Date, cut 
     // older events in the window went unread.
     cut: cut && oldest !== null && index.has(dayOf(oldest)),
   };
-  const holders = new Map<string, string>();
   for (const ev of sorted) {
-    if (ev.itemId) {
-      if (ev.kind === "item.claimed") holders.set(ev.itemId, ev.actor);
-      else if (ev.kind === "item.handoff" && typeof ev.data?.to === "string" && ev.data.to) holders.set(ev.itemId, ev.data.to);
-    }
     const slot = index.get(dayOf(ev.at));
     if (slot === undefined) continue;
     const day = pulse.days[slot];
     if (ev.kind === "item.merged") pulse.merges++;
-    if (QUIET.has(ev.kind)) continue;
+    if (QUIET.has(ev.kind) || isAtelier(ev.actor)) continue;
     if (ev.actor === owner) {
       if (DECISIONS.has(ev.kind)) { day.decisions++; pulse.decisions++; }
       continue;
     }
-    const actor = isAtelier(ev.actor) ? holders.get(ev.itemId ?? "") : ev.actor;
-    if (!actor) continue;
-    const v = vendorOf(actor, owner);
+    const v = vendorOf(ev.actor, owner);
     day.byVendor[v] = (day.byVendor[v] ?? 0) + 1;
     day.moves++;
     pulse.byVendor[v] = (pulse.byVendor[v] ?? 0) + 1;
     pulse.moves++;
-    if (!pulse.agents.includes(actor)) pulse.agents.push(actor);
+    if (!pulse.agents.includes(ev.actor)) pulse.agents.push(ev.actor);
   }
   return pulse;
 }

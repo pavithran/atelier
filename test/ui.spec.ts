@@ -151,7 +151,11 @@ it('the flow route is served behind sign-in, under a policy that admits the font
  }
  const js=await worker.fetch(new Request('https://atelier.test/live.js'),testEnv);
  expect(js.status).toBe(200);expect(js.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
- expect(await js.text()).toContain('data-live-refresh');
+ const script=await js.text();
+ expect(script).toContain('data-live-refresh');
+ // The revision rule's functions arrive as plain JavaScript, whatever bundled the Worker.
+ expect(script).toMatch(/function headsIn\(html\s*\)/);expect(script).toMatch(/function decideRefresh\(current\s*,\s*fetched\s*,\s*dirty\s*\)/);
+ expect(script).not.toMatch(/: string|RegExpExecArray/);
 });
 it('a page without a nonce carries no script tag, and one with a nonce carries exactly the live script',()=>{
  const s=story();
@@ -868,7 +872,7 @@ it('Projects draws a card per project with its tally, a two-week graph by family
  expect(html).toContain('<b>1</b>active');expect(html).toContain('<b>1</b>ready to start');expect(html).toContain('<b>1</b>merged');
  expect(html.match(/<svg class="pulse-graph"/g)).toHaveLength(1);
  expect(html).toContain('style="fill:var(--m-openai)"');expect(html).toContain('style="fill:var(--m-anthropic)"');expect(html).toContain('style="fill:var(--m-owner)"');
- expect(html).toContain('4 moves by 2 agents and 1 decision in two weeks · last activity 1 h ago.');
+ expect(html).toContain('3 moves by 2 agents and 1 decision in two weeks · last activity 1 h ago.');
  expect(html).toContain('most on 5 Oct');
  expect(html).toContain('Temporarily unavailable. Open to retry.');
  expect(html).toContain('class="legend-line"');
@@ -990,6 +994,11 @@ it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing foc
  expect(shown.status).toBe(200);
  const body=await shown.text();
  expect(body).toContain('class="login-backdrop"');expect(body).toContain('Shown work');expect(body).not.toContain('href="/p/');
+ // The stories are cached for a minute, as the showcase is: work taken since does not reach the open page until then.
+ await L.newItem('Later work',[],'owner');await L.claim('t2','codex/gpt-6');
+ const again=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ const cached=await again.text();
+ expect(cached).toContain('Shown work');expect(cached).not.toContain('Later work');
  const plain=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x'} as typeof env);
  expect(await plain.text()).not.toContain('class="login-backdrop"');
  const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);

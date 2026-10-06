@@ -2,8 +2,9 @@
 // agent took, from its claim to its merge or closure, with a bead for each
 // push, check, review and decision. Pure functions over the Ledger's items and
 // events, so the pages that draw it and the tests that check it read the same
-// model. Drawing is server-side SVG; the replay is CSS animation, because the
-// pages carry no script.
+// model. Drawing is server-side SVG and the replay is CSS animation, so the
+// picture is whole without script; the live script (live.ts) only steps
+// through it and animates what arrives.
 
 import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
@@ -283,7 +284,7 @@ const r1 = (n: number) => Math.round(n * 10) / 10;
 
 // Hover cards. A card is drawn last, above every thread, and shown by CSS
 // while the pointer hovers over its mark, or its mark has focus: :has() ties the two together, since
-// SVG has no z-index and the pages carry no script. Each drawing gets its own
+// SVG has no z-index and the page must work without script. Each drawing gets its own
 // id prefix so two graphs on a page never share a card.
 let drawings = 0;
 const CHAR_W = 6.7;           // IBM Plex Mono at 11px, per character, near enough for a card's width

@@ -19,26 +19,77 @@ export function csp(nonce?: string): string {
 
 export const LIVE_SCRIPT_TYPE = "text/javascript; charset=utf-8";
 
+// ── the revision rule ──────────────────────────────────────────────────────
+// Every action is a form post bound to the revision on screen (DESIGN.md).
+// A refresh must keep that true: a push while a task is in review moves its
+// head and leaves it submitted, and a copy fetched after that binds its
+// forms to the new head, which the owner has not read. So a fetched copy
+// may replace the page only while the revisions its forms bind to are the
+// ones the page already shows, none moved, none new, none gone; anything
+// else is stale. These functions decide that from the HTML, and they are
+// written in plain JavaScript because their source is also part of the
+// script the browser runs, and the tests call them as they are.
+
+// The revisions a page's forms bind to: the value of every hidden input
+// named head, in order. A page with no decision forms has none.
+export function headsIn(html: string): string[] {
+  const out: string[] = [];
+  const re = /<input[^>]*\bname="head"[^>]*\bvalue="([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) out.push(m[1]);
+  return out;
+}
+
+// What a refresh does with a fetched copy: the forms bind to the same
+// revisions and the owner is free to see it (swap); the revisions are the
+// same but the owner is mid-something (hold: the copy waits and the page
+// keeps refreshing); or the copy binds a form to a revision the page does
+// not show, or drops a form it had (stale: what is on screen is no longer
+// what the owner read). The values matter, not their order: a page may
+// reorder its forms without moving a revision. Stale wins over hold, so the
+// owner hears about a new revision even while typing.
+export type Refresh = "swap" | "hold" | "stale";
+export function decideRefresh(current: string[], fetched: string[], dirty: boolean): Refresh {
+  const shown = [...current].sort();
+  const wanted = [...fetched].sort();
+  if (shown.length !== wanted.length) return "stale";
+  for (let i = 0; i < shown.length; i++) if (shown[i] !== wanted[i]) return "stale";
+  return dirty ? "hold" : "swap";
+}
+
 // What the script does, in two parts.
 //
 // Refresh: on a page whose <main> carries data-live-refresh, the same page
-// is fetched again every so many seconds and <main>'s content swapped for
-// the new copy, unless the owner is in the middle of something: a form
-// field is focused or changed from its default, text is selected, or a
-// scrubber is away from its end. Open disclosures stay open and the scroll
-// position stays. Marks that were not on the page before arrive with the
-// pop animation; everything else is drawn at rest, so the graph never
-// redraws itself whole on a refresh. A response that lands on another page
-// (the session ended) reloads the page instead of swapping.
+// is fetched again every so many seconds, whatever the owner is doing, so a
+// new revision is heard about even mid-form. The fetched copy is compared
+// with the last copy the server sent, never with what this script has
+// drawn on top of the page, so its own additions (a revealed note, a
+// scrubber) never read as a change. A copy that differs goes to
+// decideRefresh (above): it replaces <main> when the forms still bind to
+// the revisions shown and the owner is not mid-something (a control
+// focused, a field changed, text selected, a scrubber away from its end);
+// it waits when the owner is; and when the copy binds a form to a revision
+// the page does not show, or drops one it had, it is never swapped in: the
+// page says a new revision arrived, with a link that reloads, and stops
+// refreshing. Swaps keep open disclosures open and the scroll position, and
+// marks that were not on the page before arrive with the pop animation, so
+// the graph never redraws itself whole. A response that lands on another
+// page (the session ended) reloads the page.
 //
 // Scrubber: under every graph that carries positions (data-pos on its marks,
 // data-from and data-to on its thread segments), a range input with Previous,
 // Next and Play steps through the recorded events in order, drawing the
 // picture as it stood after each one and saying which event that was.
-export const LIVE_SCRIPT = `(() => {
+export const LIVE_SCRIPT = `${headsIn.toString()}
+${decideRefresh.toString()}
+(() => {
   "use strict";
   var main = document.getElementById("main");
   if (!main) return;
+  // The copy as the server sent it, before this script touches the page:
+  // what a fetched copy is compared with, so the script's own additions
+  // never count as a change.
+  var last = main.innerHTML;
   var num = function (el, name) { return Number(el.getAttribute(name)); };
   var text = function (s) { return (s || "").replace(/\\s+/g, " ").trim(); };
 
@@ -124,15 +175,16 @@ export const LIVE_SCRIPT = `(() => {
     for (var i = 0; i < graphs.length; i++) scrubber(graphs[i]);
   }
 
-  var note = function () { var n = main.querySelector(".live-note"); if (n) n.hidden = false; };
+  var note = function () { var n = main.querySelector(".live-note:not(.stale)"); if (n) n.hidden = false; };
 
   // ── refresh ──
   var every = Number(main.getAttribute("data-live-refresh") || 0);
   if (every > 0) {
     var busy = false;
+    var ticker = null;
     function dirty() {
       var a = document.activeElement;
-      if (a && main.contains(a) && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName) && !a.closest(".scrubber")) return true;
+      if (a && main.contains(a) && /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(a.tagName)) return true;
       var fields = main.querySelectorAll("input, textarea, select");
       for (var i = 0; i < fields.length; i++) {
         var f = fields[i];
@@ -144,6 +196,24 @@ export const LIVE_SCRIPT = `(() => {
       var sel = window.getSelection();
       if (sel && !sel.isCollapsed && sel.anchorNode && main.contains(sel.anchorNode)) return true;
       return false;
+    }
+    // The fetched copy binds a form to a revision this page does not show,
+    // or drops a form it had: the page keeps what it shows, says so with a
+    // link that reloads it, and stops refreshing.
+    function stale() {
+      if (ticker) { clearInterval(ticker); ticker = null; }
+      var n = main.querySelector(".live-note:not(.stale)");
+      if (n) n.hidden = true;
+      var p = document.createElement("p");
+      p.className = "meta live-note stale";
+      p.setAttribute("role", "status");
+      p.appendChild(document.createTextNode("A new revision arrived. "));
+      var a = document.createElement("a");
+      a.href = window.location.href;
+      a.textContent = "Reload to review it";
+      p.appendChild(a);
+      p.appendChild(document.createTextNode("."));
+      main.insertBefore(p, main.firstChild);
     }
     function swap(fresh) {
       var had = {};
@@ -171,7 +241,7 @@ export const LIVE_SCRIPT = `(() => {
       scrubbers();
     }
     function tick() {
-      if (busy || document.hidden || dirty()) return;
+      if (busy || document.hidden) return;
       busy = true;
       fetch(window.location.href, { credentials: "same-origin", cache: "no-store", headers: { accept: "text/html" } }).then(function (res) {
         if (!res.ok) return null;
@@ -181,10 +251,17 @@ export const LIVE_SCRIPT = `(() => {
         if (html === null) return;
         var doc = new DOMParser().parseFromString(html, "text/html");
         var fresh = doc.getElementById("main");
-        if (fresh && fresh.innerHTML !== main.innerHTML) swap(fresh);
+        if (!fresh) return;
+        var copy = fresh.innerHTML;
+        if (copy === last) return;
+        var what = decideRefresh(headsIn(last), headsIn(copy), dirty());
+        if (what === "stale") { stale(); return; }
+        if (what === "hold") return;
+        last = copy;
+        swap(fresh);
       }).catch(function () { /* the next tick tries again */ }).then(function () { busy = false; });
     }
-    setInterval(tick, every * 1000);
+    ticker = setInterval(tick, every * 1000);
   }
 
   note();
