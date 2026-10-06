@@ -91,7 +91,7 @@ it("a project's existing checks keep running: an init that names no checks keeps
   const note = "PAVI, 2026-10-06: verify.sh reads the docs and runs the tests";
   expect((await call("PUT", "/projects/classes-legacy", "owner", { checkClasses: [{ command: "./scripts/verify.sh", by: "owner", note }] })).status).toBe(200);
   expect((await L.project()).policy.checkClasses).toEqual([{ command: "npm ci && npm test", by: "command" }, { command: "./scripts/verify.sh", by: "owner", note }]);
-  const page = await (await worker.fetch(new Request("https://atelier.test/p/classes-legacy", { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), testEnv)).text();
+  const page = await (await worker.fetch(new Request("https://atelier.test/p/classes-legacy/settings", { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), testEnv)).text();
   expect(page).toContain("read-only, declared by the project owner: PAVI, 2026-10-06: verify.sh reads the docs and runs the tests");
 });
 

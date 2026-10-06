@@ -110,7 +110,7 @@ it("init records the paths a check applies to, for registered checks only, and t
   expect((await call("PUT", `/projects/${name}`, "owner", { checks: ["make test"] })).status).toBe(200);
   const standing = await (await call("GET", `/projects/${name}/standing`, A)).json() as { checks: { command: string; paths: string[] | null }[] };
   expect(standing.checks).toMatchObject([{ command: "make test", paths: ["src/**"] }]);
-  const page = await (await worker.fetch(new Request(`https://atelier.test/p/${name}`, { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), testEnv)).text();
+  const page = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/settings`, { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), testEnv)).text();
   expect(page).toContain("read-only, a known build or test command; applies only when the change touches src/**");
 });
 
