@@ -7,6 +7,7 @@ import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type 
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -18,6 +19,8 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { actionForm, actionsApi } from "./actions-api.ts";
+import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
 import { renderHow } from "./how.ts";
@@ -579,7 +582,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // The owner gives the project a new name. The index decides and refuses a
   // clash; the project's own record follows. If that second write did not
   // happen, running the rename again, to the name the index already has,
-  // finishes it.
+  // finishes it, and the answer's `from` is the name the request used: the
+  // CLI moves its local entry from that name, and the index already
+  // answers the new one.
   if (parts[2] === "rename" && parts.length === 3 && m === "POST") {
     requireOwner(env, actor);
     const to = projectNameArg(body.to);
@@ -588,7 +593,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!ref.names.includes(to)) assertNewName(to);
     if (project === to) {
       if ((await L.project()).name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
-      return json({ from: project, to, key: ref.key, names: ref.names, project: await L.setName(to, actor) });
+      return json({ from: parts[1], to, key: ref.key, names: ref.names, project: await L.setName(to, actor) });
     }
     // The index knows registered names and former ones, and refuses those
     // again when it writes. A Ledger retained after a removal is known only
@@ -621,6 +626,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (scope === "write") requireOwner(env, actor);
     const p = await L.project();
     return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
+  }
+  // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
+  if (parts[2] === "actions") {
+    const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
+    return json(r.data, r.status);
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor), 201);
@@ -702,24 +712,43 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
     }
     case "push": {
+      // The head the workspace says it pushed is recorded beside the one
+      // Atelier reads when the two differ, so it must be a commit hash:
+      // anything else would be stored as the caller sent it.
+      const reported = body.head ?? null;
+      if (reported !== null && (typeof reported !== "string" || !/^[a-f0-9]{40,64}$/.test(reported))) {
+        throw new RuleError("bad_head", "head must be the full commit hash the workspace pushed, as git rev-parse HEAD prints it", 400);
+      }
       const item = await L.item(id);
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      return json(await L.recordPush(id, actor, observed, body.head ?? null, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
+      return json(await L.recordPush(id, actor, observed, reported, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
     }
     case "evidence": {
       const item = await L.item(id);
       const check = body.kind === "check";
+      // An observed check posted here is its sender's word, and the gate
+      // counts the latest one, so only the task's holder records it: anyone
+      // else could pass or fail another agent's task. The sandbox route,
+      // open to any caller in scope, runs the checks and records them itself.
+      if (check && actor !== item.owner) {
+        throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. To have Atelier run them, use atelier check ${id} --sandbox`, 403);
+      }
+      // A claim (a check's command or a report's text) and a check's output
+      // are stored as sent, so each over its limit is refused, not cut.
+      const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
+      assertLength(claim, CLAIM_MAX, check ? "the check's command" : "the report");
+      if (check) assertLength(outputTail, OUTPUT_MAX, "the check's output");
       const e: Evidence = {
         itemId: id,
-        claim: String(body.claim ?? "").slice(0, 500),
+        claim,
         grade: check ? "observed" : "reported",
         head: String(body.head ?? item.head ?? ""),
         passed: check ? Boolean(body.passed) : null,
         by: actor,
         at: new Date().toISOString(),
-        ...(check ? { changedPaths: null, outputTail: String(body.outputTail ?? "").slice(-4000), where: "runner" as const } : {}),
+        ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // An observed check counts only against the head Atelier itself reads
@@ -784,20 +813,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // (see dropToken), so a token a claim recorded in between is never left
     // live and unrecorded.
     case "handoff": {
-      const to = String(body.to ?? "");
+      const to = String(body.to ?? ""), note = String(body.note ?? "");
       const oldToken = await L.tokenId(id);
-      await L.checkHandoff(id, actor, to);
+      await L.checkHandoff(id, actor, to, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.handoff(id, actor, to, String(body.note ?? ""), !!c.token, oldToken);
+      const item = await L.handoff(id, actor, to, note, !!c.token, oldToken);
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
     case "release": {
+      const note = String(body.note ?? "");
       const oldToken = await L.tokenId(id);
-      await L.checkRelease(id, actor);
+      await L.checkRelease(id, actor, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.release(id, actor, String(body.note ?? ""), !!c.token, oldToken);
+      const item = await L.release(id, actor, note, !!c.token, oldToken);
       return json(item);
     }
     case "accept":
@@ -840,11 +870,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "abandon": {
       requireOwner(env, actor);
+      const note = String(body.note ?? "");
       const oldToken = await L.tokenId(id);
-      await L.checkAbandon(id, actor);
+      await L.checkAbandon(id, actor, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.abandon(id, actor, String(body.note ?? ""), oldToken);
+      const item = await L.abandon(id, actor, note, oldToken);
       return json(item);
     }
   }
@@ -985,6 +1016,14 @@ async function inbox(env: Env, token?: AgentToken) {
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
 
+// Whether a revision is on a project's main line as Atelier holds it: the
+// baseline's head or a commit in its history (see holdsCommit). Null when the
+// search stopped at its budget before it could tell.
+async function onMainLine(env: Env, repo: string, commit: string): Promise<boolean | null> {
+  const head = await headOf(env, repo);
+  return head ? (await holdsCommit(env, repo, head, commit)).holds : false;
+}
+
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
@@ -1017,6 +1056,11 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.newItem(String(form.get("title") ?? "").slice(0,300), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner);
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
     }
+    // The project page's protected-action forms: approve at the head it showed, or withdraw.
+    if (id === "actions") {
+      await actionForm(L, verb, form, owner, async (commit) => onMainLine(env, (await L.project()).repo, commit));
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}#actions`, c.url).toString(), 303);
+    }
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
@@ -1033,9 +1077,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // change would then take it off the record while it still works.
     const moving = verb === "abandon" || verb === "release" || verb === "handoff";
     if (moving) {
-      if (verb === "abandon") await L.checkAbandon(id, owner);
-      else if (verb === "release") await L.checkRelease(id, owner);
-      else await L.checkHandoff(id, owner, String(form.get("to") ?? ""));
+      if (verb === "abandon") await L.checkAbandon(id, owner, note);
+      else if (verb === "release") await L.checkRelease(id, owner, note);
+      else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
       const { fork } = await L.item(id);
       await revoke(env, fork, oldToken);
     }
@@ -1151,7 +1195,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const L = ledger(env, ref.key);
     if (parts.length === 2) {
       const standing = await standingOf(env, ref.key);
-      return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env), standing));
+      const p = await L.project();
+      // The approval form binds to the baseline's head as read now; the page
+      // still draws when Artifacts cannot be read, without the form.
+      const head = await headOf(env, p.repo).catch(() => null);
+      const actions = renderActions(p.name, await L.actionApprovals(), await L.actionRuns(10), head);
+      return html(renderProject(p, await L.items(), await L.events(undefined, 40), ownerName(env), standing, actions));
     }
     const res = await browse(env, c.url, ref, parts.slice(2));
     if (res) return res;

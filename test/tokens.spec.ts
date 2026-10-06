@@ -100,18 +100,13 @@ for (const transfer of ["handoff", "release"]) {
     expect(items[0]).toEqual(await L(name).item("t1"));
     expect(items[1].pushActors).toEqual(["qwen/qwen3"]);
     await L(name).addReview({ ...review, by: "opencode/glm-5.3" });
-    if (transfer === "handoff") {
-      expect((await L(name).detail("t1") as unknown as ReturnType<Ledger["detail"]>).gate).toMatchObject({ ready: true, needsAssessor: false });
-      expect((await L(name).accept("t1", "owner", head)).state).toBe("accepted");
-    } else {
-      // After a release, the push observed while nobody held the item is
-      // recorded as atelier/events, a contributor of no recognised family,
-      // so no reviewer can be shown to be of another family; only the
-      // owner's override, with its reason, accepts it.
-      expect((await L(name).detail("t1") as unknown as ReturnType<Ledger["detail"]>).gate).toMatchObject({ ready: false, needsAssessor: true });
-      await refusal(L(name).accept("t1", "owner", head), "not_ready", /protected path/);
-      expect((await L(name).accept("t1", "owner", head, "The unattributed push came from the released holder")).state).toBe("accepted");
-    }
+    // Task t94: after a release, the push observed while nobody held the
+    // item counted atelier/events, the name the Ledger logs it under, as a
+    // contributor of no recognised family, and no review could then count.
+    // The push was made with a holder's token, and every holder is listed.
+    expect((await L(name).item("t1")).pushActors).toEqual([ACTOR, next]);
+    expect((await L(name).detail("t1") as unknown as ReturnType<Ledger["detail"]>).gate).toMatchObject({ ready: true, needsAssessor: false });
+    expect((await L(name).accept("t1", "owner", head)).state).toBe("accepted");
   });
 }
 
