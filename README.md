@@ -821,9 +821,11 @@ Add `--apply` to remove them. `--dry-run` explicitly requests the preview.
 The command uses the configured cache (`ATELIER_CACHE` when set) and never
 deletes Artifacts repositories or changes the project's checkout.
 
-A workspace is eligible only when the server confirms that its item merged,
-its HEAD equals the accepted head, and it has no changed, untracked or ignored
-files, extra commits in refs or reflogs, linked worktrees, initialized
+A workspace is eligible only when the server confirms that its item merged or
+was abandoned, its HEAD equals the accepted head of the merge or, for an
+abandoned item, the last head Atelier recorded, and it has no changed or
+untracked files (files git ignores do not count as unpublished work), extra
+commits in refs or reflogs, linked worktrees, initialized
 submodules, or a Git operation in progress. Cleanup checks
 its recorded project and item identity and refreshes the item's state before
 removal. The current directory and its ancestors are preserved. Symlinked
