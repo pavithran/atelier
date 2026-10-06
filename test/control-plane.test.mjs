@@ -211,6 +211,7 @@ else if (args[0] === 'merge-base' && !args.includes('--is-ancestor')) console.lo
 // changed since the fork; from its real fork point, only its own.
 else if (args.includes('diff')) process.stdout.write(args.includes(${JSON.stringify(base)}) ? 'src/secret.ts\\0' : 'docs/own.md\\0');
 else if (args.includes('merge')) { console.error('merge reached'); process.exit(1); }
+else if (args[0] === 'merge-base' && args.at(-1) !== 'HEAD') process.exit(1);
 `, { mode: 0o755 });
     const storage = join(dir, "server.json");
     writeFileSync(storage, JSON.stringify({ policy: before, state: "accepted", acceptanceProtected: before.protected }));
