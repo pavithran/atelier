@@ -6,7 +6,7 @@
 // base, as git's own merge would decide, and is otherwise a conflict. Nothing
 // here writes; `atelier merge` still makes the merge.
 
-import { changedPaths, diffLines, repoReader, splitLines, type Reader } from "../diff.ts";
+import { changedPaths, diffLines, mergeBase, repoReader, splitLines, type Reader } from "../diff.ts";
 
 export interface Conflict { path: string; reason: string }
 export interface Mergeability {
@@ -153,6 +153,12 @@ export function overlaps(tasks: { id: string; paths: string[] }[]): { a: string;
 // Where a task stands against main as it is now: how far main has moved since
 // the task's fork point, and whether the task would merge. Artifacts lists
 // main's first-parent line only, so a merged task counts once, as its merge.
+//
+// The fork point is the newest commit on the workspace's first-parent line
+// that main's line also has. The agent shapes that line, so this preview is
+// advisory: it says what git would do with the history the fork presents.
+// What the task changes is measured elsewhere, against main's head (see
+// againstMain in src/diff.ts), and this preview never feeds the gate.
 export interface MainPreview {
   head: string;                 // main's head now
   ahead: number;                // commits on main's first-parent line since the fork point
@@ -161,6 +167,7 @@ export interface MainPreview {
 }
 
 const MAIN_LOG = 1000;
+const FORK_LOG = 500;
 
 // The commits in main's log that the fork point cannot reach. Artifacts gives
 // the first-parent line, so each merge counts once and the commits it brought
@@ -181,16 +188,22 @@ export function commitsSince(log: { hash: string; parents?: string[] }[], base: 
   return { ahead: log.length - reached.size, capped: false };
 }
 
-export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, base: string, baseTree: string, headTree: string): Promise<MainPreview | null> {
+// Null when either repository is empty, or when the fork's first-parent line
+// meets none of main's line within the logs read: there is then no fork
+// point to preview from, and the page says the preview could not be read.
+export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<MainPreview | null> {
   using baseline = await artifacts.get(baselineRepo);
   using fork = await artifacts.get(workspaceRepo);
-  const log = await baseline.log({ limit: MAIN_LOG });
-  const head = log[0];
-  if (!head) return null;
+  const [log, forkLog] = await Promise.all([baseline.log({ limit: MAIN_LOG }), fork.log({ limit: FORK_LOG })]);
+  const head = log[0], theirs = forkLog[0];
+  if (!head || !theirs) return null;
+  const base = mergeBase(forkLog.map((c) => c.hash), log.map((c) => c.hash));
+  if (!base) return null;
+  const baseTree = (forkLog.find((c) => c.hash === base) ?? log.find((c) => c.hash === base))!.treeHash;
   const { ahead, capped } = commitsSince(log, base, log.length >= MAIN_LOG);
   if (ahead === null) return null;
   const merge = head.hash === base
     ? { clean: true, conflicts: [], both: [], ours: 0, theirs: 0 }
-    : await mergeability(repoReader(baseline), repoReader(fork), baseTree, head.treeHash, headTree);
+    : await mergeability(repoReader(baseline), repoReader(fork), baseTree, head.treeHash, theirs.treeHash);
   return { head: head.hash, ahead, aheadCapped: capped, merge };
 }

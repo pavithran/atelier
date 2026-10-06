@@ -807,11 +807,13 @@ async function diffFor(env: Env, baselineRepo: string, fork: string | null): Pro
     console.error("diff unavailable", err);
     return "unavailable";
   }
-  // The merge preview is read beside the diff; when it cannot be read the
-  // diff is still shown, and the page says the preview is missing.
-  if (diff?.files.length && diff.baseTree && diff.headTree) {
+  // The diff is against main's head. The merge preview, read beside it, works
+  // from the fork point the workspace's own history presents and says how far
+  // main has moved; when it cannot be read the diff is still shown, and the
+  // page says the preview is missing.
+  if (diff?.files.length) {
     try {
-      diff.main = await previewAgainstMain(env.ARTIFACTS, baselineRepo, fork, diff.base, diff.baseTree, diff.headTree);
+      diff.main = await previewAgainstMain(env.ARTIFACTS, baselineRepo, fork);
     } catch (err) {
       console.error("merge preview unavailable", err);
       diff.main = null;

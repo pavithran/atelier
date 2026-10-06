@@ -1100,14 +1100,20 @@ export function renderFile(f: FileChange, open: boolean): string {
 function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null): string {
   if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
   if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
-  if (!diff.files.length) return `<p class="empty">No changes: the workspace is at <span class="mono">${short(diff.head)}</span>, the same as the baseline.</p>`;
+  if (!diff.files.length) return `<p class="empty">No changes: the workspace at <span class="mono">${short(diff.head)}</span> holds the same tree as main at <span class="mono">${short(diff.base)}</span>.</p>`;
   const added = diff.files.reduce((n, f) => n + f.added, 0);
   const removed = diff.files.reduce((n, f) => n + f.removed, 0);
   const moved = recordedHead && recordedHead !== diff.head
     ? `<p>${tag("Unrecorded", "ask")} Artifacts holds <span class="mono">${short(diff.head)}</span>, newer than the recorded head <span class="mono">${short(recordedHead)}</span>; the owner has pushed without running <code>atelier push</code>.</p>`
     : "";
-  const summary = `${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} changed, +${added} −${removed}, from <span class="mono">${short(diff.base)}</span> to <span class="mono">${short(diff.head)}</span>.`;
-  return `${moved}<p class="meta">${summary}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
+  // The diff is against main as it is now, so a workspace behind main shows
+  // main's newer changes too, as reversals; the preview beneath says how far
+  // main has moved, and the note says what that means for the list.
+  const summary = `${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} differ from main at <span class="mono">${short(diff.base)}</span>, +${added} −${removed}, at the workspace's <span class="mono">${short(diff.head)}</span>.`;
+  const behind = diff.main && diff.main.ahead > 0
+    ? ` Paths main changed since this task forked, and the workspace has not taken, are listed here as the workspace's changes until <code>atelier update</code> brings them in.`
+    : "";
+  return `${moved}<p class="meta">${summary}${behind}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
 ${renderMainPreview(diff.main)}
 ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 }
