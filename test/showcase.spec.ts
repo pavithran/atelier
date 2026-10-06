@@ -221,3 +221,18 @@ it("the public navigation never breaks a link's words and wraps under the brand 
   // The sign-in backdrop is clipped to the viewport.
   expect(layout).toMatch(/\.login-backdrop \{[\s\S]*?max-height: 100dvh; overflow: clip;/);
 });
+
+it("the showcase is held for a minute at most by the zone and by browsers, and says where checks run (t216)", async () => {
+  const record = { name: "ttl-check", repo: "ttl-check", policy: { checks: [], protected: [] }, createdAt: time };
+  await L("ttl-check").setProject(record, "owner");
+  await I().registerProject(record);
+  await I().setShowcase("ttl-check", "named");
+  for (let i = 0; i < 2; i++) { // the second read is served from the cache
+    const res = await worker.fetch(new Request("https://atelier.test/showcase"), testEnv);
+    expect(res.headers.get("cache-control")).toBe("public, max-age=60, s-maxage=60");
+    expect(res.headers.get("cdn-cache-control")).toBe("max-age=60");
+    const body = await res.text();
+    expect(body).toContain("on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.");
+    expect(body).not.toContain("or, where the project allows it, on the agent");
+  }
+});
