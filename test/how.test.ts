@@ -58,7 +58,10 @@ test("a part marked built has its files and code; a part marked not built has no
 test("the review code is called by the ledger and the runner, and nothing else", () => {
   const inside = join("src", "review") + sep;
   const imports = /(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\//;
-  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && imports.test(read(file)));
+  // The part brief (src/plans/brief.ts) shares the verdict's finding type and
+  // limits; it calls none of the review code.
+  const sharesTypes = new Set([join("src", "plans", "brief.ts")]);
+  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   assert.ok(ORCHESTRATOR.find((p) => p.name === "Review requests and runner job" && p.built));
   const command = ORCHESTRATOR.find((p) => p.name === "Plan routes and command")!;
