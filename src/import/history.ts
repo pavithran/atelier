@@ -4,7 +4,7 @@
 // "Co-Authored-By:" and "Agent:" lines, or to no agent. This is what the
 // commits claim, not evidence Atelier observed, and the pages say so.
 
-import { TEXT_CONTROLS } from "../text.ts";
+import { TEXT_CONTROLS, withoutAddresses } from "../text.ts";
 
 export interface ImportedCommit { hash: string; message: string; committedAt: number }
 
@@ -30,7 +30,7 @@ export const NO_AGENT = "No agent named";
 // The shape of an ImportedHistory and how its lanes are named. Cached copies
 // are keyed by it, so a change to either reaches the pages at once: raise it
 // whenever buildImported or agentsIn would give a different result.
-export const IMPORTED_FORMAT = 2;
+export const IMPORTED_FORMAT = 3;
 const FRESH_ROOT = /^Atelier-Fresh-History: [0-9a-f]{40,64}$/m;
 const NAME_LIMIT = 40;
 
@@ -46,17 +46,20 @@ export function agentsIn(message: string): string[] {
     // Doe, and "<a@b.c> Claude Opus 5.5" is Claude Opus 5.5. Anything else in
     // angle brackets goes too. Invisible and direction-changing characters
     // go, as in a project title, because the name is drawn on public pages.
+    // For the same reason an address without angle brackets goes as well,
+    // before the invisible characters that could split it become spaces,
+    // and a name that still holds an @ is not taken.
     const email = /<[^<>]*@[^<>]*>/.exec(m[1]);
     const before = email ? m[1].slice(0, email.index) : m[1];
     const side = email && !before.replace(/<[^>]*>/g, "").trim() ? m[1].slice(email.index + email[0].length) : before;
-    const name = side.replace(/<[^>]*>/g, "").replace(/\s*\([^)]*\)\s*/g, " ")
+    const name = withoutAddresses(side.replace(/<[^>]*>/g, "")).replace(/\s*\([^)]*\)\s*/g, " ")
       .replace(TEXT_CONTROLS, " ")
       .replace(/\s+/g, " ").trim();
     // A human co-author is a person, not an agent: keep only names that
     // read as a model or an agent harness and model. The whole name is
     // tested, then it is capped by code points, so a digit or slash after
     // the cap, or half of an emoji, is not what decides.
-    if (name && (/\//.test(name) || /\d/.test(name) || /^(claude|gpt|codex|gemini|glm|deepseek|qwen|opus|sonnet|haiku|fable)\b/i.test(name))) {
+    if (name && !name.includes("@") && (/\//.test(name) || /\d/.test(name) || /^(claude|gpt|codex|gemini|glm|deepseek|qwen|opus|sonnet|haiku|fable)\b/i.test(name))) {
       names.add(Array.from(name).slice(0, NAME_LIMIT).join("").trim());
     }
   }

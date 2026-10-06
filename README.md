@@ -129,7 +129,7 @@ In detail:
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
 | `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
-| `atelier check` | anyone | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. |
+| `atelier check` | the item's owner; anyone with `--sandbox` | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. A result run on the caller's machine is recorded only for the item's owner, since the gate counts it on the caller's word; anyone the project's tokens reach may ask for a sandbox run, which records its own results. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
@@ -281,7 +281,10 @@ merged.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
   a ControlPlane project until the project owner's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
-  every merge receipt.
+  every merge receipt. Once recorded it stands: a later `init` that changes
+  the checks, the title or the policy keeps it, and it is asked for again
+  only when `--reset` starts the policy over or `--history-since` replaces
+  the baseline.
 - `atelier merge` writes a `control-plane.landing-receipt` into
   `docs/control-plane/landing-receipts/` as part of the merge commit, so the
   merge and its record are one change.
@@ -304,16 +307,24 @@ atelier adopt --project NAME --as HARNESS/MODEL
 It refuses unless the project is registered in Atelier and the checkout is
 clean. Every check that can refuse the move runs before the task is created,
 so a refusal leaves nothing behind — no task, no claim: the checkout's files
-are readable, the AGENTS.md edit is computable, and no symbolic link stands
-where the move writes. The move writes into the task's workspace and nothing
+are readable, the AGENTS.md edit is computable, it stays under the ceiling
+the project's `docs/control-plane/context-budget.v1.json` sets (the one
+`atelier wrap` refuses to commit over; the refusal says how many lines over
+and which file), no symbolic link stands where the move writes, and the
+agent is one the project's policy admits (the same rule a claim applies). The
+move writes into the task's workspace and nothing
 outside it: a file it writes that is a symlink is replaced with a regular
 file, never written through, and a symlinked directory above one refuses the
 move (an AGENTS.md that is a symlink is refused too, because the section is
 built from its text). It creates the task "Move NAME from ControlPlane to
 Atelier", claims it as `--as` (without it, as the current actor), and in the
 task's workspace it writes `bin/control-plane`, replaces
-`bin/control-plane-paste`, when the project has one, with two lines pointing
-handoffs at `atelier handoff`, and inserts the text `atelier guide` prints
+`bin/control-plane-paste`, when the project has one, with a script that says
+no command renders a paste any more, that the agent writes the relay
+envelope itself as the relay rule says (one fenced block with a language
+tag, a copy saved under `~/Documents/ai-project-data/<project>/`) and that
+`atelier handoff` transfers ownership and is not a relay, and exits 2; and
+it inserts the text `atelier guide` prints
 into `AGENTS.md`: right after its first heading, at the top when the file has
 no heading, and in place of the section it already carries, so adopting a
 project again cannot stack a second one. It commits those changes in the
@@ -339,9 +350,12 @@ the agent finishing the task must settle: a
 `completed-unreconciled` or `blocked`, with its plan id, state and owner; a
 capability in `docs/control-plane/project-adapter.v1.json` whose command names
 a file the project does not have — the command is read as shell words, so a
-quoted path with spaces stays one word, and a script run through an
+quoted path with spaces stays one word; a script run through an
 interpreter or `env` (`python3 tools/ship.py`, `bash bin/sweep.sh`) is judged
-by the script, not the interpreter; a vendored `tools/control-plane/`
+by the script, not the interpreter; each command in a chain or a pipeline
+(`&&`, `||`, `|`, `;`) is judged on its own program, a shell's `-c` command
+line the same way, and a glob, a redirection or any argument after the
+program is never judged; a vendored `tools/control-plane/`
 directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
 names `pickup-card`, `control-plane-paste`, `session-receipt` or
 `audit record`, with its file and line number. The same list is recorded on
@@ -492,7 +506,13 @@ claim, push, record checks and reports, submit, hand off, release, and review
 as themselves. Handoff targets must be harness/model identities other than
 the project owner. Every actor who held an item counts as a contributor for
 review independence, even if a Git push was first observed after handoff or
-release. Recorded push contributors also remain. Agent tokens cannot reopen accepted work by reviewing it.
+release. Recorded push contributors also remain; a push first observed while
+nobody holds the item adds no one, since it was made with an earlier holder's
+token. Agent tokens cannot reopen accepted work by reviewing it.
+What an agent writes has a stated limit, and text over it is refused whole,
+never cut: a review, handoff or release note 2,000 characters, a submit
+summary 600, a report or a check's command 500, a check's output 4,000. The
+head a push reports must be a commit hash.
 Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
 owner token. Agent tokens cannot sign in to the browser. Signing in to the
@@ -571,6 +591,16 @@ objects: `atelier wrap --push` pushes to them with LFS uploads on, even when
 is reported as failed, never as pushed.
 
 ## Projects too large for Artifacts
+
+Artifacts can refuse a long history as one push, for its size or the time it
+takes. `atelier init` then pushes the branch's first-parent history in steps of
+about 700 commits, oldest first, and prints a line for each step. If a step
+fails, init says which commit the baseline holds, and running the same
+`atelier init` again carries on from there: what is left is pushed whole, and
+if that is refused too, the steps begin after the commit the baseline holds.
+Each step runs the checkout's pre-push hook, as the whole push does. The
+baseline's branch holds only part of the history until the last step has
+pushed.
 
 Artifacts holds at most 1 GB per repository and 32 MB per file. A project
 whose history is larger can join with its recent history only:
@@ -921,8 +951,10 @@ without signing in. It shows the projects the owner names, as the Flow page
 draws them: each task's thread,
 who held it, its checks, reviews and decisions, and the tally. It leaves out
 what anyone wrote (review notes, reports, check commands and closing notes),
-the diffs, every form and every link into the signed-in pages. Nothing is
-shown until the owner names a project:
+the diffs, every form and every link into the signed-in pages. Every email
+address goes too: from task and project titles, and from the agent names read
+from commit trailers in the history before Atelier, where a name that is only
+an address is not taken. Nothing is shown until the owner names a project:
 
 ```text
 printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
@@ -1040,7 +1072,10 @@ It resumes from the local merge commit. It refuses a different revision, a
 dirty checkout, or concurrent merge. If a process stops during the
 uncommitted Git merge, inspect `git status` and resolve or abort that merge
 before retrying. The journal preserves the original revision and starting
-commit. Never remove it to bypass a mismatch.
+commit. Never remove it to bypass a mismatch. While a merge holds the landing
+lease, the task cannot be abandoned, since the merge may already be on the
+baseline: finish it with `atelier merge t3`, or withdraw it with
+`atelier merge t3 --cancel` while it is not on the baseline, then abandon.
 
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under

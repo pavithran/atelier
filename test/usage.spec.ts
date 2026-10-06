@@ -65,6 +65,25 @@ it("a runner reports a tool under its name, as it reports a model's status, and 
   expect(anonymous.status).toBe(401);
 });
 
+// Task t157: a key-shaped tool or runner name reached the stored report and
+// the alert's title sent to ntfy.sh.
+it("a report whose tool or runner name looks like a key is refused, and nothing is stored or alerted", async () => {
+  const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+  try {
+    const over = { NTFY_TOPIC: TOPIC } as Partial<typeof env>;
+    for (const [tool, runner] of [["sk-audit1234567890", "home:keyed"], ["codex", "home:sk-audit1234567890"]]) {
+      const res = await call("POST", `/usage/${tool}`, "owner", codexBody(95), { "x-atelier-runner": runner }, over);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; detail: string };
+      expect(body.error).toBe("bad_usage");
+      expect(body.detail).not.toContain("sk-audit");
+    }
+    const all = (await (await call("GET", "/usage", "owner")).json()) as { reports: UsageReport[]; alerts: { key: string }[] };
+    expect(JSON.stringify(all)).not.toContain("sk-audit");
+    expect(send).not.toHaveBeenCalled();
+  } finally { send.mockRestore(); }
+});
+
 it("the thresholds are owner settings with defaults, and off turns one off", async () => {
   const read = async (over: Record<string, string>) =>
     ((await (await call("GET", "/usage", "owner", undefined, {}, over as Partial<typeof env>)).json()) as { thresholds: unknown }).thresholds;
