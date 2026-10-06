@@ -823,11 +823,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       if (body.cancel === true) {
         // A merge already on the baseline cannot be cancelled: running the
-        // merge again records it.
+        // merge again records it. The accepted revision is looked for in the
+        // baseline's history as holdsCommit reads it, page by page and along
+        // each merge's other parents. A history too long to read within that
+        // search's budget does not hold the cancel back, or a lease on a
+        // large baseline could never end; the CLI has asked Git about the
+        // whole history before it sends the cancel.
         const item = await L.item(id);
         const p = await L.project();
-        using baseline = await env.ARTIFACTS.get(p.repo);
-        const landed = (await baseline.log({ limit: 1000 })).some((c) => c.parents.includes(item.acceptedHead ?? "-"));
+        const top = item.acceptedHead ? await headOf(env, p.repo) : null;
+        const landed = !!top && (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds === true;
         if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
         return json(await L.cancelLanding(id, actor));
       }
