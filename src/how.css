@@ -1,0 +1,75 @@
+/* The How it works page. Tokens come from theme.css; nothing here sets a colour. */
+.how { padding-bottom: 24px; }
+/* layout.css gives every dl a two-column grid and a 14px size; these lists set their own. */
+.how dl { font-size: 15px; }
+.how dt { margin-top: 0; }
+.how code:not(pre code) { background: var(--inset); border-radius: 4px; padding: 1px 5px; overflow-wrap: anywhere; }
+
+.how-hero { max-width: 78ch; margin: 8px 0 8px; }
+.how-hero h1 { font-size: clamp(38px, 5.4vw, 64px); line-height: 1; margin: 14px 0 20px; text-wrap: balance; }
+.how-hero .lead { margin-bottom: 14px; }
+.how-toc { display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-xxl); margin-top: 22px; padding: 14px 0; border-block: 1px solid var(--line); font-size: 14px; }
+.how-toc a { color: var(--text); text-decoration: none; }
+.how-toc a:hover { color: var(--signal-hot); text-decoration: underline; }
+
+.how-section { margin-top: 60px; }
+.how-section > h2 { font: 700 30px/1.15 var(--font-display); letter-spacing: -.02em; color: var(--text-bright); margin: 0 0 14px; }
+.how-section > p { max-width: 72ch; }
+.how-sub { font: 700 20px/1.3 var(--font-display); color: var(--text-bright); margin: 36px 0 8px; }
+
+.how-terms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 44px; margin: 0; }
+.how-terms > div { border-top: 1px solid var(--line); padding: 12px 0 16px; }
+.how-terms dt { font-weight: 600; color: var(--text-bright); }
+.how-terms dd { margin: 4px 0 0; color: var(--text-muted); }
+
+/* The diagram scrolls inside its frame on a narrow screen instead of shrinking its text. */
+.how-fig { margin: 24px 0 8px; }
+.how-fig .scroll { overflow-x: auto; background: var(--sheet); border: 1px solid var(--line); border-radius: var(--radius-medium); }
+.how-fig svg { display: block; width: 100%; min-width: 880px; height: auto; color: var(--text); }
+.how-fig figcaption { max-width: 80ch; margin-top: 12px; font-size: 14px; color: var(--text-muted); }
+.hw-lane { fill: rgba(var(--lift-rgb), .04); }
+.hw-lane-rec { fill: rgba(var(--observed-rgb), .07); }
+.hw-lane-label { fill: var(--text-muted); font: 500 12px var(--font-sans); }
+.hw-node { fill: var(--surface); stroke: var(--line-bright); stroke-width: 1.25; }
+.hw-node.hw-owner { stroke: var(--signal); }
+.hw-node.hw-cond { stroke-dasharray: 5 3; }
+.hw-name { fill: var(--text-bright); font: 600 12px var(--font-sans); }
+.hw-cmd { fill: var(--text-muted); font: 500 11px var(--font-mono); }
+.hw-rec { fill: var(--surface); stroke: var(--observed); stroke-width: 1; }
+.hw-recs { fill: var(--text); font: 400 11px var(--font-sans); }
+.hw-move { fill: var(--text-muted); font: italic 400 11px var(--font-sans); }
+.hw-note { fill: var(--text-muted); font: italic 400 11px var(--font-sans); }
+.hw-flow { fill: none; stroke: var(--text); stroke-width: 1.5; }
+.hw-drop { stroke: var(--text-muted); stroke-width: 1; }
+.hw-return { fill: none; stroke: var(--text-muted); stroke-width: 1.25; stroke-dasharray: 4 3; }
+.hw-head { fill: var(--text-muted); }
+.hw-head-flow { fill: var(--text); }
+
+.how-steps, .how-rules, .how-status { list-style: none; margin: 20px 0 0; padding: 0; max-width: 78ch; }
+.how-steps { counter-reset: step; }
+.how-steps > li { counter-increment: step; display: grid; grid-template-columns: 38px minmax(0, 1fr); column-gap: 14px; padding: 16px 0 18px; border-top: 1px solid var(--line); }
+.how-steps > li::before { content: counter(step); grid-row: 1 / 3; font: 700 24px/1.1 var(--font-display); color: var(--signal-hot); }
+.how-steps h3, .how-rules h3, .how-status h3 { margin: 0 0 4px; font: 700 18px/1.3 var(--font-display); color: var(--text-bright); }
+.how-steps p { margin: 0; }
+
+.how-rules > li { padding: 18px 0 20px; border-top: 1px solid var(--line); }
+.how-rules p { margin: 0 0 8px; }
+.how-rules .how-why { color: var(--text-muted); }
+.how-rules .how-why strong { color: var(--text); }
+.how-rules .how-where { margin: 0; font-size: 13px; color: var(--text-muted); }
+.how-limits { max-width: 78ch; margin: 0; padding-left: var(--space-xl); }
+.how-limits li { margin: 0 0 10px; }
+
+.how-status > li { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 0 18px; padding: 16px 0; border-top: 1px solid var(--line); align-items: start; }
+.how-status .tag { justify-self: start; margin-top: 2px; }
+.how-status h3 .meta { margin-left: 8px; font: 400 13px var(--font-sans); }
+.how-status p { margin: 0; }
+@media (max-width: 720px) { .how-status > li { grid-template-columns: 1fr; gap: 8px; } }
+
+.how-group h3 { font: 700 20px/1.3 var(--font-display); color: var(--text-bright); margin: 34px 0 6px; }
+.how-cmds { display: block; margin: 0; }
+.how-cmd { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 4px 28px; padding: 12px 0; border-top: 1px solid var(--line); }
+.how-cmd dt code { background: none; padding: 0; white-space: normal; color: var(--text-bright); }
+.how-cmd dd { margin: 0; color: var(--text-muted); }
+@media (max-width: 860px) { .how-cmd { grid-template-columns: minmax(0, 1fr); } }
+.how pre { max-height: 480px; white-space: pre-wrap; overflow-wrap: anywhere; }

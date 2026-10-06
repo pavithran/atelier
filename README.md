@@ -782,8 +782,9 @@ transit (retry later).
 
 ## The public showcase
 
-`/showcase` is the one page anyone can read without signing in. It shows the
-projects the owner names, as the Flow page draws them: each task's thread,
+`/showcase` is the one page that shows project data, and anyone can read it
+without signing in. It shows the projects the owner names, as the Flow page
+draws them: each task's thread,
 who held it, its checks, reviews and decisions, and the tally. It leaves out
 what anyone wrote (review notes, reports, check commands and closing notes),
 the diffs, every form and every link into the signed-in pages. Nothing is
@@ -798,6 +799,14 @@ page again. The page is cached for a minute, so a change to `SHOWCASE` shows
 within a minute. With a showcased project still registered, a visitor who is not signed in opens
 `atelier.zone` on it; signed in, `/` opens Decisions while something is
 waiting and Flow when nothing is, and `/decisions` is always Decisions.
+
+`/how` is the other public page. It explains what Atelier is, draws the loop
+from task to merge, states the rules the code enforces, marks which parts of
+the orchestrator are built, and lists every command. It reads no project and
+no setting, so every visitor gets the same text. Its command reference is drawn
+from `src/usage.ts`, the table `atelier help` prints from, and
+`test/how.test.ts` checks that the rules it names and its built and not built
+labels still match the code.
 
 ## The model pool
 
