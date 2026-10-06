@@ -604,10 +604,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "sessions" && parts.length === 3) {
     if (m === "GET") return json(await L.sessions());
     if (m === "POST") {
-      // Any bearer token can send any X-Atelier-Actor, so until agent tokens
-      // are limited to the actor they were issued for, a note's actor proves
-      // nothing, and only the project owner records a session. Task t43 adds
-      // that allowlist; it will let an agent's token record its own session.
+      // Only the project owner records a session: agentRoute gives an agent
+      // token no route here, and requireOwner refuses any other actor the
+      // owner token names.
       requireOwner(env, actor);
       return json(await L.wrapSession(body, actor), 201);
     }
