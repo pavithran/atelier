@@ -83,7 +83,11 @@ export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
 // the caller says `atelier update` rebased from, or null when it said nothing.
-export interface PushLineage { holdsRecorded: boolean; rebasedFrom: string | null }
+// What the Worker found in a fork's history for a push. holdsRecorded is
+// null when its search stopped at its budget before finding the recorded
+// head or reaching the end of the history; searched is how many commits it
+// examined by then.
+export interface PushLineage { holdsRecorded: boolean | null; searched?: number; rebasedFrom: string | null }
 
 // `reset` starts the policy over; the project's identity (its title, when the
 // init does not name one, its branch, and when it was created) is kept either way.
@@ -520,6 +524,16 @@ export class Ledger extends DurableObject<Env> {
   // is what the Worker found in the fork; a caller that has not looked
   // (the Ledger's own tests, which run without a repository) passes nothing
   // and is trusted.
+  //
+  // A search that stopped at its budget before finding the recorded head
+  // has shown neither a rewrite nor a head that holds it. Such a push is
+  // refused under its own code, so the caller can tell it from a rewrite,
+  // unless it declares the rebase; the declaration is then taken as it
+  // would be for a rewrite, and the record says the Worker could not
+  // confirm it. Refusing is the safer side: a head that drops recorded
+  // commits in a history too deep to read through is never recorded
+  // undeclared, while a head that holds the recorded one has it a few
+  // commits back on a chain the search reads first, well within the budget.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }): Item {
     const item = this.item(id);
     if (item.state !== "accepted") assertLive(item);
@@ -530,7 +544,11 @@ export class Ledger extends DurableObject<Env> {
     }
     if (item.head === observedHead) return item;
     const rewritten = !!item.head && !lineage.holdsRecorded;
+    const unverified = rewritten && lineage.holdsRecorded === null;
     if (rewritten && lineage.rebasedFrom !== item.head) {
+      if (unverified) {
+        throw new RuleError("ancestry_unverified", `${id}'s workspace is at ${observedHead.slice(0, 8)}, and Atelier could not verify ancestry within ${lineage.searched ?? 0} commits of the fork's history: ${item.head!.slice(0, 8)}, the head it recorded, is not among them, and the rest was not read. The recorded head stays. If atelier update rebased this workspace, push with atelier push --force, which declares the rebase`, 409);
+      }
       throw new RuleError("history_rewritten", `${id}'s workspace is at ${observedHead.slice(0, 8)}, which does not hold ${item.head!.slice(0, 8)}, the head Atelier recorded: the commits pushed before are no longer on its branch. Put them back under your commits (git fetch origin, then rebase or merge), then push again; after atelier update, push with atelier push --force`, 409);
     }
     const now = new Date().toISOString();
@@ -544,6 +562,7 @@ export class Ledger extends DurableObject<Env> {
       head: observedHead,
       ...(reportedHead && reportedHead !== observedHead ? { reportedHead, mismatch: true } : {}),
       ...(rewritten ? { rebasedFrom: item.head } : {}),
+      ...(unverified ? { unverified: true } : {}),
       ...(reopened ? { approvalInvalidated: true } : {}),
     }, proved);
     return this.item(id);
@@ -554,9 +573,12 @@ export class Ledger extends DurableObject<Env> {
   // `atelier push --force` whose declaration has not arrived yet. The head
   // stays where it was, and the event names both commits, so the owner sees
   // that the branch no longer holds what was recorded and nothing is lost
-  // unnoticed; the CLI's own call then records the push, or is refused. The
-  // queue delivers an event at least once, so the same sighting is noted once.
-  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded = true): Item {
+  // unnoticed; the CLI's own call then records the push, or is refused. A
+  // head the Worker could not place either way (holdsRecorded null, its
+  // search having stopped at its budget) is left the same way, with the
+  // reason saying so. The queue delivers an event at least once, so the
+  // same sighting is noted once.
+  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
     // While the accepted revision is landing, a push to the fork does not
@@ -566,7 +588,7 @@ export class Ledger extends DurableObject<Env> {
       const last = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'push.unrecorded' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const noted = last ? (JSON.parse(last.data as string) as { head?: string; recorded?: string }) : null;
       if (noted?.head !== observedHead || noted.recorded !== item.head) {
-        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source: "artifacts", reason: "history_rewritten" });
+        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source: "artifacts", reason: holdsRecorded === null ? "ancestry_unverified" : "history_rewritten" });
       }
       return item;
     }
