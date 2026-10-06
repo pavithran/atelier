@@ -34,6 +34,20 @@ test("globs: ** crosses directories, * does not", () => {
   assert.ok(!matchesAny("src/wrangler.jsonc", ["wrangler.*"]));
 });
 
+test("globs: a newline is a path character, so ** crosses it under a protected directory", () => {
+  // Git allows a newline in a path; a file under a protected directory stays
+  // protected with one in its name, for every matcher the guarded set uses.
+  const odd = "docs/control-plane/agent\n-policy.v1.json";
+  assert.ok(matchesAny(odd, ["docs/control-plane/**"]));
+  assert.ok(matchesFolded(odd, ["docs/control-plane/**"]));
+  assert.equal(changeClass([odd], { checks: [], protected: ["docs/control-plane/**"] }), "protected");
+  assert.ok(matchesAny("a\nb/c.md", ["**/*.md"]));
+  assert.ok(matchesAny("src/a\nb.ts", ["src/*.ts"]));
+  assert.ok(matchesAny("src/a\n.ts", ["src/a?.ts"]));
+  // A newline never lets a single star cross a slash.
+  assert.ok(!matchesAny("src/a\n/b.ts", ["src/*.ts"]));
+});
+
 test("model is what makes a reviewer independent", () => {
   assert.equal(modelOf("claude-code/opus-5.5"), "opus-5.5");
   assert.equal(modelOf("owner"), "owner");
