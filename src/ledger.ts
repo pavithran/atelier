@@ -109,6 +109,9 @@ export interface ProjectInit {
   // kinds it needs, for the inbox's undelivered-merge reminder.
   shipRuns?: string[];
   shipKinds?: string[];
+  // The command that regenerates the project's fixtures in a task's workspace
+  // after it merges main; null clears it (see ProjectPolicy.regenerate).
+  regenerate?: string | null;
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -119,6 +122,35 @@ export interface ProjectInit {
 }
 
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+
+// The steps a landing records (landEvent): taking the lease, merging main,
+// regenerating the project's fixtures, pushing, checking, the review, the
+// acceptance and the merge that lands the task.
+const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
+
+// What a land.* event may carry beside its duration, and as what: hashes and
+// actors, the commits that came from main, the files a conflict stopped on,
+// who resolved the step and how it ended.
+const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
+  head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
+  resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
+  reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
+};
+const LAND_JSON_MAX = 4000;
+
+function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data ?? {})) {
+    const kind = LAND_DATA[key];
+    if (!kind) throw new RuleError("bad_field", `${key} is not a field a landing step records`, 400);
+    if (kind === "string" && typeof value === "string") out[key] = value.slice(0, 500);
+    else if (kind === "boolean" && typeof value === "boolean") out[key] = value;
+    else if (kind === "strings" && Array.isArray(value) && value.length <= 200 && value.every((s) => typeof s === "string")) out[key] = value.slice(0, 200).map((s) => s.slice(0, 200));
+    else throw new RuleError("bad_field", `${key} must be ${kind === "strings" ? "a list of commit hashes or paths" : kind === "boolean" ? "true or false" : "text"}`, 400);
+  }
+  if (JSON.stringify(out).length > LAND_JSON_MAX) throw new RuleError("too_long", `a landing step records at most ${LAND_JSON_MAX} characters; shorten the lists`, 400);
+  return out;
+}
 
 // How many run reports the index returns: the most recent, for the reliability record.
 export const RUN_REPORTS = 1000;
@@ -163,6 +195,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
   const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
+  const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -177,6 +210,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(checkPaths.length ? { checkPaths } : {}),
       ...(shipRuns.length ? { shipRuns } : {}),
       ...(shipKinds.length ? { shipKinds } : {}),
+      ...(regenerate ? { regenerate } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -1161,6 +1195,56 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
+  // One landing at a time per project (atelier land, t187): while one land
+  // holds this lease no other landing of the project starts, so two sessions
+  // never race main. Like the merge's landing lease it has no expiry; land
+  // releases it when it ends, a later land of the same task takes it over to
+  // resume, and a lease whose task has closed no longer guards anything, so
+  // another landing may take it.
+  private projectLanding(): { item: string; holder: string; at: string } | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'landing-lease'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  readProjectLanding(): { item: string; holder: string; at: string } | null {
+    return this.projectLanding();
+  }
+
+  beginProjectLanding(id: string, actor: string): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    const item = this.item(id);
+    const held = this.projectLanding();
+    if (held && held.item !== id) {
+      const holder = this.item(held.item);
+      if (holder.state !== "merged" && holder.state !== "abandoned") {
+        const since = held.at.slice(0, 16).replace("T", " ");
+        throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project. Wait for it to finish, or run atelier land ${held.item} again to finish or release that landing`, 409);
+      }
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at: new Date().toISOString() }));
+    return item;
+  }
+
+  cancelProjectLanding(actor: string): { held: boolean } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
+    const held = this.projectLanding();
+    this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
+    return { held: !!held };
+  }
+
+  // One step of a landing (atelier land, t187): what the step was, how long
+  // it took and what it settled, recorded as a land.* event for the
+  // integration record (t186) to read the cost of landing a task.
+  landEvent(id: string, actor: string, step: string, ms: number, data: Record<string, unknown>, proved = false): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a landing's steps", 403);
+    if (!LAND_STEPS.has(step)) throw new RuleError("bad_step", `"${step}" is not a step of a landing; one of ${[...LAND_STEPS].join(", ")}`, 400);
+    if (!Number.isFinite(ms) || ms < 0 || ms > 86_400_000) throw new RuleError("bad_ms", "ms must be the step's duration in milliseconds, a day at most", 400);
+    const clean = cleanLandData(data);
+    const at = new Date().toISOString();
+    this.log(id, actor, `land.${step}`, { ms: Math.round(ms), ...clean }, at, proved);
+    return this.item(id);
+  }
+
   merged(id: string, actor: string, mergeCommit: string, observed: boolean, acceptedHead?: string | null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
     const item = this.item(id);
@@ -2031,12 +2115,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner?.runner ?? null, at, row.id);
     this.log(itemId, actor, "review.claimed", { head, runner: runner.runner }, at, proved);
-    const record = this.planRecord(item.plan!);
-    const approval = record.approval!;
-    const plan = this.approvedPlan(item.plan!, approval.hash);
-    const part = plan.parts.find((x) => x.key === item.partKey) ?? null;
+    // A part's claim carries the plan's account of it for the brief; an item
+    // outside a plan has none, and its need is read as the gate reads it.
+    const record = item.plan ? this.planRecord(item.plan) : null;
+    const plan = record?.approval ? this.approvedPlan(item.plan!, record.approval.hash) : null;
+    const part = plan?.parts.find((x) => x.key === item.partKey) ?? null;
     const need = reviewNeeded({
-      item, part: true, policy: this.project().policy,
+      item, part: item.kind === "part", policy: this.project().policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
       requests: [], now: new Date(at), owner: this.owner,
     });
@@ -2045,9 +2130,80 @@ export class Ledger extends DurableObject<Env> {
     return {
       item, head,
       need: need.needed ? need : null,
-      plan: part ? { goal: plan.goal, part } : null,
+      plan: part && plan ? { goal: plan.goal, part } : null,
       events: this.events(itemId), owner: this.owner,
     };
+  }
+
+  // A review request for a submitted item the gate needs reviewed, asked for
+  // by atelier land (t187) rather than a plan's tick: the reviewer is the one
+  // the owner names with --reviewer or is picked from the pool as the plan
+  // tick picks one for a part. A live request for the current head is
+  // returned as it stands, never duplicated, with the time the waiting
+  // started. `at` in the answer is where the caller counts new verdicts from.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
+    const item = this.item(id);
+    // A named reviewer is judged even when a request already stands, so a
+    // retry with a different name never silently keeps the wrong reviewer.
+    if (reviewer !== null) {
+      if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
+      if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
+        throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
+      }
+    }
+    const policy = this.project().policy;
+    const at = new Date().toISOString();
+    const need = reviewNeeded({
+      item, part: item.kind === "part", policy,
+      evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
+      requests: this.reviewRequests(id), now: new Date(at), owner: this.owner,
+    });
+    // The newest live request: an older one at this head is one whose claim
+    // lapsed, since a new request is made only when every earlier one has.
+    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
+    if (!need.needed) {
+      if (live) {
+        const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
+        const standing = dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : null;
+        if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
+          throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
+        }
+        return { needed: true, requested: false, reason: need.reason, at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
+      }
+      return { needed: false, reason: need.reason };
+    }
+    let chosen: string;
+    if (reviewer !== null) {
+      chosen = reviewer;
+    } else {
+      const pick = pickReviewer({
+        item, pool, policy, allowPaid: false,
+        previous: need.previousReviewer,
+        avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
+        owner: this.owner,
+      });
+      if (!pick.reviewer) {
+        throw new RuleError("no_reviewer", `no reviewer of another family than every contributor is in the pool: ${pick.unpicked}. Name one with atelier land ID --reviewer H/M, or add a model with atelier models add`, 409);
+      }
+      chosen = pick.reviewer.actor;
+    }
+    const slash = chosen.indexOf("/");
+    const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state) VALUES (?, ?, ?, ?, 'open')`, id, need.head, JSON.stringify(dispatch), null);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land" }, at, proved);
+    return { needed: true, requested: true, reason: need.reason, at, head: need.head, reviewer: chosen };
+  }
+
+  // When the newest review.requested event for a head was recorded, so a
+  // caller waiting on an existing request counts only verdicts after it.
+  private requestedAt(id: string, head: string): string | null {
+    const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.requested' ORDER BY seq DESC LIMIT 10`, id).toArray();
+    for (const row of rows) {
+      const data = JSON.parse(row.data as string);
+      if (data.head === head) return row.at as string;
+    }
+    return null;
   }
 
   // Marks the request for a head answered when a review is recorded at it.

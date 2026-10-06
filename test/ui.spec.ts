@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {renderInbox,renderItem,renderProject,renderHistory,type Detail} from '../src/ui';
+import {renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
 import type {ProjectRecord} from '../src/ledger';
 const head='a'.repeat(40),time='2026-10-03T12:00:00Z';
@@ -28,18 +28,19 @@ it('acceptance renders only after an independent approval and passing evidence; 
  expect(independent).toContain('Accept revision');expect(independent).not.toContain('Accept without an independent review');
  d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
 });
-it('the owner\'s override is shown with its reason, apart from the reviews, and only at its head',()=>{
- const diff={head,base:'b'.repeat(40),files:[],truncated:false};
- const reviewOverride={head,by:'pavi',reason:'No <b>other</b> family is available',at:time};
- const d=detail();d.item.reviewOverride=reviewOverride;d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[],overridden:reviewOverride};
- const html=renderItem(project,d,'PAVI',diff);
- expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the project owner's override, not a review");
- expect(html).toContain('you overrode the independent review: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('Accept revision');
- d.item.state='accepted';d.item.acceptedHead=head;
- expect(renderItem(project,d,'PAVI',diff)).toContain('You accepted it with the independent review overridden: No &lt;b&gt;other&lt;/b&gt; family is available.');
- const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
- expect(renderItem(project,moved,'PAVI',diff)).not.toContain('Review overridden');
-});
+ it('the owner\'s override is shown with its reason, apart from the reviews, and only at its head',()=>{
+  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+  const reviewOverride={head,by:'pavi',reason:'No <b>other</b> family is available',at:time};
+  const d=detail();d.item.reviewOverride=reviewOverride;d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[],overridden:reviewOverride};
+  const html=renderItem(project,d,'PAVI',diff);
+  expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the project owner's override, not a review");
+  // The brief says it once; the header's description is not drawn beside that brief (finding 7).
+  expect(html).toContain('The project owner overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('Accept revision');
+  d.item.state='accepted';d.item.acceptedHead=head;
+  expect(renderItem(project,d,'PAVI',diff)).toContain('The project owner overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');
+  const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
+  expect(renderItem(project,moved,'PAVI',diff)).not.toContain('Review overridden');
+ });
 it('an accepted revision offers its re-acceptance under the current policy, which a merge refused after a policy change asks for',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.item.state='accepted';d.item.acceptedHead=head;d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
@@ -54,7 +55,7 @@ it('an accepted revision offers its re-acceptance under the current policy, whic
 it('empty decisions, history, project creation and unavailable projects remain actionable',()=>{
  expect(renderInbox([],[])).toContain('Bring your first project');
  expect(renderInbox([], [project], 'PAVI', undefined, [{project,items:[],unavailable:true}])).toContain('list may be incomplete');
- expect(renderProject(project,[],[])).toContain('What should change?');
+ expect(renderProjectTasks(project,[])).toContain('What should change?');
  expect(renderHistory([{project,items:[]}])).toContain('Completed tasks will appear here');
 });
 
@@ -154,7 +155,7 @@ it('the flow route is served behind sign-in, under a policy that admits the font
  // Decisions and a task's page are live too; the public pages and the Studio carry no script and admit none.
  const decisions=await worker.fetch(new Request('https://atelier.test/decisions',{headers:{cookie:signedIn}}),testEnv);
  liveChecks(await decisions.text(),decisions.headers.get('content-security-policy')!);
- for(const path of ['/studio','/projects','/how']){
+ for(const path of ['/studio','/','/how']){
   const r=await worker.fetch(new Request(`https://atelier.test${path}`,{headers:{cookie:signedIn}}),testEnv);
   expect(r.status).toBe(200);
   expect(r.headers.get('content-security-policy')).not.toContain('script-src');
@@ -180,7 +181,8 @@ it('a page without a nonce carries no script tag, and one with a nonce carries e
 });
 
 // ── project titles ──
-import {cleanTitle,titleOf,renderProjects,renderStudio,renderLogin} from '../src/ui';
+import {cleanTitle,titleOf,renderStudio} from '../src/ui';
+import {renderLogin} from '../src/ui';
 it('a project title is one clean line, and the name stands in when there is none',()=>{
  expect(cleanTitle('  Atelier ')).toBe('Atelier');
  expect(cleanTitle('A\ntwo\u0007line')).toBe('A two line');
@@ -209,12 +211,13 @@ it('default ignorable characters in a title become spaces, and an invisible titl
 });
 it('pages call a project by its title and link it by its name',()=>{
  const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
- const list=renderProjects([{project:titled,items:[]}]);
+ const list=renderHome([{project:titled,items:[]}]);
  expect(list).toContain('&lt;Atelier&gt;');
  expect(list).toContain('href="/p/cloudflare-git"');
  const page=renderProject(titled,[],[]);
  expect(page).toContain('<h1>&lt;Atelier&gt;</h1>');
- expect(page).toContain('action="/ui/cloudflare-git/new"');
+ // The form that starts a task lives on the Tasks tab.
+ expect(renderProjectTasks(titled,[])).toContain('action="/ui/cloudflare-git/new"');
  const s=buildStory('cloudflare-git',[],[],'pavi',false,'Atelier');
  expect(s.title).toBe('Atelier');
  // A bench of the titled project: the lane names it by title, not by name.
@@ -367,7 +370,7 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:signedIn}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  expect(await page.text()).toContain('deepseek-chat');
 });
-it('the front door: visitors see the showcase, the owner sees Decisions only when something waits',async()=>{
+it('the front door: visitors see the showcase, the owner signs in to Home',async()=>{
  const TOKEN='door-test-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  const go=(path:string,extra:Record<string,string>={},signed=false)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:signedIn}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,...extra} as typeof env);
@@ -376,8 +379,8 @@ it('the front door: visitors see the showcase, the owner sees Decisions only whe
  expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
  expect((await go('/flow',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/login');
  const home=await go('/',{},true);
- expect(home.status).toBe(303);
- expect(home.headers.get('location')).toBe('https://atelier.test/flow');
+ expect(home.status).toBe(200);
+ expect(await home.text()).toContain('<title>Home · Atelier</title>');
  const decisions=await go('/decisions',{},true);
  expect(decisions.status).toBe(200);
  expect(await decisions.text()).toContain('<title>Decisions · Atelier</title>');
@@ -506,8 +509,7 @@ it('the task page draws its own thread above the brief, with its beads, and esca
  expect(thread).toContain('class="g-clock"');
  expect(thread).toContain('A &lt;b&gt;bold&lt;/b&gt; task');
  expect(thread).not.toContain('<b>bold</b>');
- expect(thread).toContain('<g class="g-note ask">');
- expect(html.match(/<svg class="graph/g)).toHaveLength(1);
+  expect(html.match(/<svg class="graph/g)).toHaveLength(1);
 });
 it('the thread is left off when the record holds no claim, and the note when the task is closed',()=>{
  const bare=detail();
@@ -636,8 +638,9 @@ it('Flow offers time and family filters that keep each other, and the showcase h
  expect(html).toContain('href="?since=1d&amp;family=openai"');
  expect(html).toContain('href="?since=7d"');
  expect(html).toMatch(/<a href="\?since=7d&amp;family=openai" aria-current="page"/);
- expect(html).toMatch(/class="replay" href="\/flow\?since=7d&amp;family=openai&amp;replay=[0-9a-z]+#p"/);
- expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).toMatch(/class="replay" href="\/flow\?replay=[0-9a-z]+#p"/);
+ // Replay is the scrubber the live script adds, not a second control beside it (finding 6).
+ expect(html).not.toContain('class="replay"');
+ expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).not.toContain('class="replay"');
  expect(renderShowcase([s],s.tally,'pavi','PAVI')).not.toContain('aria-label="Filters"');
 });
 
@@ -744,7 +747,7 @@ it('the comparison dates follow the owner\'s time zone',async()=>{
 
 // ── where a project stands ──
 async function standingFixture(over:Partial<{approval:string}>={}){
- const {buildStanding,renderProject}=await import('../src/ui');
+ const {buildStanding,renderProject,renderProjectSettings,renderProjectTasks}=await import('../src/ui');
  const p:ProjectRecord={...project,title:'Stand <ing>',policy:{...project.policy,...(over.approval?{approval:over.approval,eligible:['claude'],refuseOverlap:true}:{})}};
  const at=(m:number)=>`2026-10-04T10:${String(m).padStart(2,'0')}:00.000Z`;
  const base={fork:null,base:null,head:null,acceptedHead:null,createdAt:at(0),updatedAt:at(30),lastPushAt:null,scope:[]};
@@ -766,15 +769,16 @@ async function standingFixture(over:Partial<{approval:string}>={}){
  d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  const tasks=new Map<string,any[]>();
  for(const ev of evs as any[])tasks.set(ev.itemId,[...(tasks.get(ev.itemId)??[]),ev]);
- return {buildStanding,renderProject,p,items,evs,tasks,inbox,details:new Map([['t2',d]]),now:new Date('2026-10-05T12:00:00Z')};
+ return {buildStanding,renderProject,renderProjectSettings,renderProjectTasks,p,items,evs,tasks,inbox,details:new Map([['t2',d]]),now:new Date('2026-10-05T12:00:00Z')};
 }
-it('the project page leads with where it stands: held, waiting with a brief, queued, merged and handoff notes',async()=>{
+it('the Overview tab leads with where the project stands: waiting with a brief, queued, merged and handoff notes; who holds what is the Tasks tab',async()=>{
  const f=await standingFixture();
  const s=f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now);
  const html=f.renderProject(f.p,f.items,[],'PAVI',s);
- const sec=html.slice(html.indexOf('id="standing"'),html.indexOf('class="new-task"'));
- expect(html.indexOf('id="standing"')).toBeLessThan(html.indexOf('class="new-task"'));
- expect(sec).toContain('Held now');expect(sec).toContain('held by claude-code/opus-5.5 since 2026-10-04 10:02 UTC');
+ const sec=html.slice(html.indexOf('id="standing"'),html.indexOf('<details class="disclosure"'));
+ expect(html.indexOf('id="standing"')).toBeLessThan(html.indexOf('<details class="disclosure"'));
+ // The one list of who holds what is the Tasks tab's, not a second one here (finding 8).
+ expect(sec).not.toContain('Held now');
  expect(sec).toContain('Waiting on the owner');expect(sec).toContain('all checks observed passing · brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.');
  expect(sec).not.toContain('bad');expect(sec).toContain('Ready to accept');
  expect(sec).toContain('Queued for a runner');expect(sec).toContain('for home codex/gpt-6 · sent by pavi');
@@ -784,14 +788,21 @@ it('the project page leads with where it stands: held, waiting with a brief, que
  expect(sec).toContain('Handoff notes');expect(sec).toContain('codex/gpt-6 to claude-code/opus-5.5');
  expect(sec).toContain('atelier status --project example');
  expect(sec).not.toContain('ControlPlane');
+ const tasks=f.renderProjectTasks(f.p,f.items);
+ expect(tasks).toContain('claude-code/opus-5.5');expect(tasks).toContain('codex/gpt-6');
 });
-it('the standing section escapes everything a person or agent wrote',async()=>{
+it('the standing section and the Settings tab escape everything a person or agent wrote',async()=>{
  const f=await standingFixture({approval:'<b>PAVI</b>'});
  const s=f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now);
- const sec=f.renderProject(f.p,f.items,[],'PAVI',s).split('id="standing"')[1].split('class="new-task"')[0];
- for(const raw of ['<b>task</b>','<script>x</script>','<i>small</i>','<b>PAVI</b>','<u>summary</u>'])expect(sec).not.toContain(raw);
- for(const esc of ['Held &lt;b&gt;task&lt;/b&gt;','Read &lt;script&gt;x&lt;/script&gt; first','&lt;i&gt;small&lt;/i&gt;','ControlPlane policy, approved: &lt;b&gt;PAVI&lt;/b&gt;'])expect(sec).toContain(esc);
- expect(sec).toContain('Protected areas: src/**. Eligible agents: claude. Overlapping claims: refused.');
+ const page=f.renderProject(f.p,f.items,[],'PAVI',s);
+ const sec=page.split('id="standing"')[1].split('<details class="disclosure"')[0];
+ for(const raw of ['<b>task</b>','<script>x</script>','<i>small</i>','<b>PAVI</b>','<u>summary</u>'])expect(page).not.toContain(raw);
+ for(const esc of ['Read &lt;script&gt;x&lt;/script&gt; first','&lt;i&gt;small&lt;/i&gt;','Merged &lt;u&gt;summary&lt;/u&gt;'])expect(sec).toContain(esc);
+ // The ControlPlane policy the project records is drawn on the Settings tab, escaped.
+ expect(page).not.toContain('ControlPlane');
+ const settings=f.renderProjectSettings(f.p);
+ for(const esc of ['ControlPlane policy, approved: &lt;b&gt;PAVI&lt;/b&gt;','Protected areas: src/**. Eligible agents: claude. Overlapping claims: refused.'])expect(settings).toContain(esc);
+ expect(settings).not.toContain('<b>PAVI</b>');
 });
 it('the standing data lists the last five merges newest first, with the agent\'s summary, and empty parts are left out',async()=>{
  const f=await standingFixture();
@@ -803,7 +814,7 @@ it('the standing data lists the last five merges newest first, with the agent\'s
  expect(s.live.map((l)=>l.id)).toEqual(['t1','t2']);
  expect(s.handoffs.map((h)=>h.note)).toEqual(['Read <script>x</script> first']);
  const quiet=f.buildStanding(f.p,[],new Map(),300,[],new Map(),f.now);
- expect(f.renderProject(f.p,[],[],'PAVI',quiet)).toContain('Nothing is held, waiting, queued or recently merged.');
+ expect(f.renderProject(f.p,[],[],'PAVI',quiet)).toContain('Nothing is waiting, queued or recently merged.');
  expect(f.renderProject(f.p,[],[],'PAVI',quiet)).not.toContain('<h3>');
 });
 
@@ -819,7 +830,7 @@ it('a waiting task keeps the inbox\'s own reason, with the brief after it, and a
  expect(t2.kind).toBe('accept');expect(t2.kinds).toEqual(['accept','overlap']);
  expect(t2.reason).toBe('all checks observed passing; scope overlaps t9 (codex/gpt-6)');
  expect(t1.kind).toBe('stale');expect(t1.reason).toContain('hand it off or release it');expect(t1.brief).toBeNull();
- const sec=f.renderProject(f.p,f.items,[],'PAVI',s).split('id="standing"')[1].split('class="new-task"')[0];
+ const sec=f.renderProject(f.p,f.items,[],'PAVI',s).split('id="standing"')[1].split('<details class="disclosure"')[0];
  expect(sec).toContain('scope overlaps t9 (codex/gpt-6) · brief, accept: ');
  expect(sec).toContain('hand it off or release it');expect(sec).not.toContain('brief, wait');
 });
@@ -836,8 +847,8 @@ it('since when comes from the task\'s own claim or handoff, and a record that ca
  expect(s.live.find((l)=>l.id==='t1')!.since).toBeNull();
  expect(s.partial).toContain('t1: when it was taken is not shown, because its record is longer than the last 1 events read.');
  const html=f.renderProject(f.p,late as never,[],'PAVI',s);
- expect(html).toContain('Part of this record is not shown');expect(html).toContain('since when is not shown');
- expect(html.split('id="standing"')[1].split('class="new-task"')[0]).not.toContain('2026-10-09');
+ expect(html).toContain('Part of this record is not shown');expect(html).toContain('when it was taken is not shown');
+ expect(html.split('id="standing"')[1].split('<details class="disclosure"')[0]).not.toContain('2026-10-09');
  // A task whose record was not read at all says so.
  const unread=f.buildStanding(f.p,late as never,new Map(),300,[],new Map(),f.now);
  expect(unread.partial).toContain('t1: when it was taken is not shown, because its record was not read here.');
@@ -922,9 +933,9 @@ it('the framing is shown when any of it is set, escaped, and left out when none 
  const one=renderItem(project,gateOnly,'PAVI',null);expect(one).toContain('<dt>Next gate</dt>');expect(one).not.toContain('<dt>Non-goals</dt>');
   expect(renderItem(project,detail(),'PAVI',null)).not.toContain('How the task is framed');
 });
-// ── projects as cards, history as a timeline ──
-it('Projects draws a card per project with its tally, a two-week graph by family, and escapes the title',async()=>{
- const {renderProjects}=await import('../src/ui');
+// ── Home as the portfolio, history as a timeline ──
+it('Home draws a card per project with what waits, what runs, its two-week graph and its last merge, and what waits comes first',async()=>{
+ const {renderHome}=await import('../src/ui');
  const now=new Date('2026-10-06T14:30:00Z');
  const at=(h:number)=>new Date(now.getTime()-h*3600_000).toISOString();
  const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
@@ -936,20 +947,30 @@ it('Projects draws a card per project with its tally, a two-week graph by family
   {seq:4,itemId:'t3',at:at(2),actor:'claude-code/opus-5.5',kind:'item.claimed',data:{}},
   {seq:5,itemId:'t3',at:at(1),actor:'pavi',kind:'item.accepted',data:{head}},
  ].reverse();
- const html=renderProjects([{project:titled,items,events},{project:{...project,name:'gone'},items:[],unavailable:true}],'PAVI',now,'pavi');
+ const waiting=[{project:'cloudflare-git',itemId:'t2',title:'Open <i>thing</i>',kind:'assess' as const,reason:'a review is wanted',weight:80}];
+ const html=renderHome([{project:titled,items,events,waiting},{project:{...project,name:'gone'},items:[],unavailable:true}],'PAVI',now,'pavi');
  expect(html.match(/<li class="project-card/g)).toHaveLength(2);
+ expect(html).toContain('<h1>Home</h1>');
+ expect(html).toContain('href="/flow">the whole flow</a>');expect(html).toContain('href="/history">the timeline of merges</a>');
  expect(html).toContain('<h2>&lt;Atelier&gt;</h2>');expect(html).toContain('href="/p/cloudflare-git"');
- expect(html).toContain('<b>1</b>active');expect(html).toContain('<b>1</b>ready to start');expect(html).toContain('<b>1</b>merged');
+ expect(html).toContain('<b>1</b>waiting on you');expect(html).toContain('<b>1</b>running');expect(html).toContain('<b>1</b>ready to start');expect(html).toContain('<b>1</b>merged');
+ expect(html).toContain('Waiting on you');expect(html).toContain('href="/p/cloudflare-git/t2">Open &lt;i&gt;thing&lt;/i&gt;</a>');expect(html).not.toContain('<i>thing</i>');
+ expect(html).toContain('Running');expect(html).toContain('href="/p/cloudflare-git/t1"');
+ expect(html).toContain('Last merge: <a href="/p/cloudflare-git/t3">');
  expect(html.match(/<svg class="pulse-graph"/g)).toHaveLength(1);
  expect(html).toContain('style="fill:var(--m-openai)"');expect(html).toContain('style="fill:var(--m-anthropic)"');expect(html).toContain('style="fill:var(--m-owner)"');
  expect(html).toContain('3 moves by 2 agents and 1 decision in two weeks · last activity 1 h ago.');
  expect(html).toContain('most on 5 Oct');
  expect(html).toContain('Temporarily unavailable. Open to retry.');
  expect(html).toContain('class="legend-line"');
- const cut=renderProjects([{project:titled,items,events,cut:true}],'PAVI',now,'pavi');
+ // A project with something waiting is drawn before one without, whatever their names.
+ expect(html.indexOf('href="/p/cloudflare-git"')).toBeLessThan(html.indexOf('href="/p/gone"'));
+ const cut=renderHome([{project:titled,items,events,cut:true}],'PAVI',now,'pavi');
  expect(cut).toContain('from the most recent part of the record');
- const quiet=renderProjects([{project:titled,items:[]}],'PAVI',now,'pavi');
+ const quiet=renderHome([{project:titled,items:[]}],'PAVI',now,'pavi');
  expect(quiet).toContain('No moves in the last two weeks.');expect(quiet).toContain('aria-label="No moves in the last two weeks"');
+ expect(quiet).toContain('Nothing merged yet.');
+ expect(renderHome([],'PAVI',now,'pavi')).toContain('Start with one project');
 });
 it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
  const {renderHistory}=await import('../src/ui');
@@ -1007,6 +1028,11 @@ it('a Studio lane is banded and threaded in each holder\'s family colour, with t
  expect(html).toContain('<li class="lane" id="example-t1" style="--c:var(--m-zai)">');
  for(const m of ['m-claim','m-push','m-handoff'])expect(html).toContain(`class="${m}"`);
  expect(html).toContain('class="legend-line"');expect(html).toContain('dotted: ran locally');expect(html).toContain('>GPT<');expect(html).toContain('>GLM<');
+  // One row of the commonest marks under the family legend, the full table in the disclosure (finding 20).
+  expect(html).toContain('aria-label="The commonest marks"');
+  expect(html.match(/class="legend-line marks-legend"/g)).toHaveLength(1);
+  for(const m of ['Claimed','Pushed','Check passed in Cloudflare','Check failed','Submitted','Approved'])expect(html).toContain(`>${m}</li>`);
+  expect(html).toContain('What the marks mean');
  // A band that starts late is labelled to its left, so the label never runs past now.
  expect(html).toContain('dx="-8" y="22" text-anchor="end" class="span-label now"');
  expect(renderStudio({benches:[],from:at(0),to:at(10)},'PAVI',new Date(at(10)))).not.toContain('class="legend-line"');
@@ -1074,4 +1100,145 @@ it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing foc
  const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
  expect(wrong.status).toBe(401);
   expect(await wrong.text()).toContain('class="login-backdrop"');
+});
+
+// ── the site organised by project (t185) ──
+it('the navigation holds the owner\'s cross-project views in order, with Models and Usage under the account menu',()=>{
+ const html=renderHome([]);
+ const nav=html.split('<nav aria-label="Main navigation">')[1].split('</nav>')[0];
+ const labels=[...nav.matchAll(/<span>([^<]+)<\/span>/g)].map((m)=>m[1]);
+ expect(labels).toEqual(['Home','Decisions','Studio']);
+ expect(nav).toContain('href="/"');expect(nav).toContain('href="/decisions"');expect(nav).toContain('href="/studio"');
+ // Models and Usage are the account menu's, out of the work navigation.
+ expect(nav).not.toContain('/models');expect(nav).not.toContain('/usage');
+ const account=html.split('<details class="account">')[1].split('</details>')[0];
+ expect(account).toContain('<summary>Settings</summary>');
+ expect(account).toContain('href="/models"');expect(account).toContain('href="/usage"');
+ // A Models page opens the menu and marks its own link current.
+ const models=renderModels([],new Map(),'PAVI');
+ expect(models).toContain('<details class="account" open>');
+ expect(models.split('<details class="account" open>')[1]).toContain('<a href="/models" aria-current="page">Models</a>');
+});
+
+it('a project\'s area has its tabs on every page, with the page\'s own tab current',()=>{
+ const tabs=(html:string,open:string)=>html.split(`<nav class="repo-tabs proj-tabs" aria-label="example">`)[1]?.split('</nav>')[0]??'';
+ const names=(html:string)=>[...tabs(html,'').matchAll(/>([A-Za-z]+)<\/a>/g)].map((m)=>m[1]);
+ const over=renderProject(project,[],[],'PAVI');
+ expect(names(over)).toEqual(['Overview','Tasks','Flow','Plans','Code','Log','Ship','Settings']);
+ expect(tabs(over,'')).toContain('href="/p/example" aria-current="page">Overview');
+ expect(tabs(over,'')).toContain('href="/p/example/tasks">Tasks');
+ expect(tabs(over,'')).toContain('href="/p/example/flow">Flow');
+ expect(tabs(over,'')).toContain('href="/p/example/plans">Plans');
+ expect(tabs(over,'')).toContain('href="/p/example/code">Code');
+ expect(tabs(over,'')).toContain('href="/p/example/log">Log');
+ expect(tabs(over,'')).toContain('href="/p/example/ship">Ship');
+ expect(tabs(over,'')).toContain('href="/p/example/settings">Settings');
+ expect(tabs(renderProjectTasks(project,[]),'')).toContain('href="/p/example/tasks" aria-current="page">Tasks');
+ expect(tabs(renderProjectFlow(project,buildStory('example',[],[],'pavi'),'pavi'),'')).toContain('href="/p/example/flow" aria-current="page">Flow');
+ expect(tabs(renderProjectPlans(project,[]),'')).toContain('href="/p/example/plans" aria-current="page">Plans');
+ expect(tabs(renderProjectShip(project,''),'')).toContain('href="/p/example/ship" aria-current="page">Ship');
+ expect(tabs(renderProjectSettings(project),'')).toContain('href="/p/example/settings" aria-current="page">Settings');
+ // The area hangs from Home, and the task page sits inside it.
+ expect(over.split('<aside class="rail">')[1]).toContain('href="/" aria-current="page"');
+ const task=renderItem(project,detail(),'PAVI',null);
+ expect(tabs(task,'')).toContain('href="/p/example/tasks" aria-current="page">Tasks');
+ expect(task).toContain('<a href="/">Home</a>');
+});
+
+it('Tasks is one list of every task with state, holder and time; the Overview tab no longer repeats it',async()=>{
+ const {renderProjectTasks}=await import('../src/ui');
+ const base=detail().item;
+ const items=[
+  {...base,id:'t1',state:'open' as const,owner:null,updatedAt:'2026-10-06T10:00:00Z'},
+  {...base,id:'t2',state:'claimed' as const,owner:'codex/gpt-6',updatedAt:'2026-10-06T11:00:00Z'},
+  {...base,id:'t3',state:'submitted' as const,owner:'claude-code/opus-5.5',updatedAt:'2026-10-06T12:00:00Z'},
+  {...base,id:'t4',state:'merged' as const,owner:null,updatedAt:'2026-10-06T09:00:00Z'},
+ ];
+ const html=renderProjectTasks(project,items);
+ expect(html.match(/<ul class="task-list">/g)).toHaveLength(1);
+ expect(html.match(/<li>/g)?.length).toBeGreaterThanOrEqual(4);
+ const labels={t1:'Ready to start',t2:'Working',t3:'In review',t4:'Merged'};
+ for(const i of items){
+  expect(html).toContain(`href="/p/example/${i.id}"`);
+  expect(html).toContain(`<span class="tag ${i.state==='merged'?'go':''}">${labels[i.id as keyof typeof labels]}</span>`);
+  expect(html).toContain(i.owner??'No current owner');
+ }
+ // Live work before closed, newest first within each.
+ expect(html.indexOf('href="/p/example/t3"')).toBeLessThan(html.indexOf('href="/p/example/t2"'));
+ expect(html.indexOf('href="/p/example/t2"')).toBeLessThan(html.indexOf('href="/p/example/t4"'));
+ expect(html).not.toContain('Completed and closed');
+ // The Overview tab carries none of the old duplicate lists.
+ const over=renderProject(project,items,[],'PAVI');
+ for(const gone of ['Held now','<h2 class="section-title">Work</h2>','Create a task'])expect(over).not.toContain(gone);
+ expect(over).toContain('Ledger events');
+});
+
+it('a task with nothing pushed shows its scope and the dispatch box, not a review shape',()=>{
+ const d=detail();
+ d.item={...d.item,state:'open',owner:null,head:null,base:null,fork:null,lastPushAt:null};
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('Send to an agent');
+ expect(html).toContain('aria-label="Scope"');
+ expect(html).toContain('src/**');
+ expect(html).toContain('No revision pushed yet');
+ expect(html).toContain('Block this task');
+ for(const gone of ['id="changes"','id="checks"','id="brief"','id="thread"','required checks passed','Decision brief'])expect(html).not.toContain(gone);
+ // The framing still shows, and the page keeps its history.
+ d.item.nonGoals=['no CSS'];
+ const framed=renderItem(project,d,'PAVI',null);
+ expect(framed).toContain('How the task is framed');
+ expect(framed).toContain('Task history');
+});
+
+it('the error page keeps the owner\'s name, highlights nothing, and says Go back',()=>{
+ const html=renderError('Something <odd> happened.','/p/example','PAVI');
+ expect(html).toContain('<strong>PAVI</strong>');
+ expect(html).toContain('Something &lt;odd&gt; happened.');
+ expect(html).toContain('>Go back</a>');
+ // No link in the markup is current: the page does not know which page failed (finding 18).
+ expect(html).not.toMatch(/<a[^>]*aria-current="page"/);
+ expect(renderError('x')).not.toMatch(/<a[^>]*aria-current="page"/);
+ expect(renderError('x')).toContain('Project owner');
+});
+
+it('one line about Atelier serves both the rail and the sign-in headline',()=>{
+ const rail=renderProject(project,[],[],'PAVI');
+ expect(rail).toContain('<p>Many agents, one owner per task.</p>');
+ expect(renderLogin()).toContain('<h1>Many agents,<br>one owner per task.</h1>');
+});
+
+it('Plans draws each plan as one unit with its parts, their state and why each went to its agent',()=>{
+ const when='2026-10-06T12:00:00Z';
+ const route=(key:string,builder:string)=>({key,builder:{actor:builder,reasons:['Rank 1 of 3 eligible for feature work, score 0.72']},alternates:[{actor:'codex/gpt-6-astra',reasons:[]}],reviewer:{actor:'zcode/glm-5.3',reasons:[]},excluded:[],unrouted:null});
+ const planItem={...detail().item,id:'t5',title:'Ship the thing',state:'submitted' as const,kind:'plan' as const,head:'c'.repeat(40)};
+ const view={item:planItem,phase:'building',goal:'Ship <the> thing',scope:['src/**'],planner:'claude-code/opus-5.5',plannerReasons:['best at features'],
+  blocked:null,completedAt:null,proposal:null,plan:null,
+  approval:{hash:'4'.repeat(64),at:when,by:'pavi',allowPaid:false,limits:{maxParallel:3,attempts:2,maxJobs:12,deadline:when},deadline:'2026-10-08T12:00:00Z',jobsUsed:2},
+  parts:[
+   {id:'t6',key:'a',title:'Part <a> one',state:'submitted',owner:'claude-code/opus-5.5',head:'a'.repeat(40),acceptedHead:null,scope:['src/a/**'],dependsOn:[],dispatch:null,route:route('a','claude-code/opus-5.5'),attempts:[{actor:'codex/gpt-6-astra',outcome:'give-up' as const}],gate:{ready:true,blockers:[]},integration:null},
+   {id:'t7',key:'b',title:'Part two',state:'open',owner:null,head:null,acceptedHead:null,scope:[],dependsOn:[{key:'a',id:'t6'}],dispatch:{to:'home',agent:'zcode',model:'glm-5.3',by:'atelier/orchestrator',at:when,note:''},route:route('b','zcode/glm-5.3'),attempts:[],gate:null,integration:null},
+  ],
+  preview:null,integration:{integrationHead:null}};
+ const html=renderProjectPlans(project,[view as never],'PAVI');
+ expect(html).toContain('href="/p/example/t5">t5</a>');
+ expect(html).toContain('Ship &lt;the&gt; thing');
+ expect(html).toContain('built by claude-code/opus-5.5: Rank 1 of 3 eligible for feature work, score 0.72');
+ expect(html).toContain('reviewer zcode/glm-5.3, of another family');
+ expect(html).toContain('attempts: codex/gpt-6-astra released with no commit');
+ expect(html).toContain('queued for zcode/glm-5.3');
+ expect(html).toContain('depends on a (t6)');
+ expect(html).toContain('Approved by pavi');
+ expect(html).toContain('No part is integrated yet.');
+ expect(html).not.toContain('<the>');
+ // With no plans the tab says how to start one.
+ expect(renderProjectPlans(project,[])).toContain('No plans yet.');
+});
+
+it('a commit page marks the Log tab current and its crumb names the commit',()=>{
+ const c={hash:'11a7ee68'+'0'.repeat(32),treeHash:'b'.repeat(40),message:'m',author:{name:'A',email:'a@x'},parents:[],authoredAt:1759600000};
+ const commit=renderCommit({project,item:null,at:null},{commit:c,parent:null,files:[],truncated:false},'PAVI');
+ expect(commit).toContain('aria-label="example">');
+ expect(commit).toContain('href="/p/example/log" aria-current="page">Log');
+ expect(commit).toContain('/ Commit 11a7ee68</nav>');
+ expect(commit).not.toContain('href="/projects"');
 });
