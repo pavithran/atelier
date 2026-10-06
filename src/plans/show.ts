@@ -166,7 +166,7 @@ function nextSteps(v: PlanView, flag: string): string[] {
     }
     if (v.item.owner) return [`Waiting for ${v.item.owner} to post its proposal.`];
     return [
-      `Waiting for ${v.planner} to propose a plan. No runner takes a plan job yet; to plan by hand as ${v.planner}:`,
+      `Waiting for ${v.planner} to propose a plan; a runner that offers plan jobs takes it. To plan by hand as ${v.planner}:`,
       `  atelier claim ${id} --as ${v.planner} --runner home:NAME ${flag}`,
       `  atelier plan post ${id} FILE ${flag}`,
       `  atelier release ${id} ${flag}`,

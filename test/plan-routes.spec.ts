@@ -166,3 +166,99 @@ it("the owner approves by hash, reroutes and retries a part, and a stop revokes 
   expect(revoked).toEqual([[`${name}--${a.id}`, "token-a"]]);
   expect(await L.tokenId(a.id)).toBeNull();
 });
+
+// The job-brief route (docs/orchestrator.md, sections 2 and 3, step 7b): the
+// holder alone reads the brief the server wrote. A plan item's is the
+// planner's: the goal, the owner's note, the last refusal's errors and the
+// schema. A part's is jobBrief's: the spec, the checks, the dependencies as
+// they landed, and, once the part has been sent back, the findings and the
+// failing check's output.
+it("the planner reads its brief from job-brief, with the owner's note and the last refusal's errors", async () => {
+  const name = "plan-brief-planner";
+  await project(name);
+  const planner = await agentToken("claude-code/opus-5.5");
+  const other = await agentToken("codex/gpt-6-astra");
+  const res = await call("POST", `/projects/${name}/items`, "owner", { kind: "plan", goal: "Ship the feature", scope: ["src/**"], planner: "claude-code/opus-5.5" });
+  const { item } = await res.json() as { item: { id: string } };
+  await ledger(name).claim(item.id, "claude-code/opus-5.5", RUNNER);
+
+  const first = await call("GET", `/projects/${name}/items/${item.id}/job-brief`, null, undefined, planner);
+  expect(first.status).toBe(200);
+  const brief = await first.json() as { job: string; text: string; hash: string };
+  expect(brief.job).toBe("plan");
+  expect(brief.hash).toMatch(/^[a-f0-9]{64}$/);
+  for (const text of ["Plan " + item.id, "Ship the feature", "atelier.plan.v1", "plan file", "Commit nothing", "taskKind", "src/**"]) expect(brief.text).toContain(text);
+
+  // Only the holder: another agent's token is refused, and an ordinary task
+  // has no server brief at all.
+  const refused = await call("GET", `/projects/${name}/items/${item.id}/job-brief`, null, undefined, other);
+  expect([refused.status, ((await refused.json()) as { error: string }).error]).toEqual([403, "not_owner"]);
+  const task = await (await call("POST", `/projects/${name}/items`, "owner", { title: "Ordinary work" })).json() as { id: string };
+  expect((await call("GET", `/projects/${name}/items/${task.id}/job-brief`, "owner")).status).toBe(404);
+
+  // A revise and a refused proposal put the owner's note and the errors into
+  // the next brief, with which attempt this is.
+  await ledger(name).release(item.id, "claude-code/opus-5.5", "first try");
+  await call("POST", `/projects/${name}/items/${item.id}/plan/revise`, "owner", { note: "Split the work in two" });
+  await ledger(name).claim(item.id, "claude-code/opus-5.5", RUNNER);
+  await call("POST", `/projects/${name}/items/${item.id}/plan`, null, { ...doc(part("a")), extra: true }, planner);
+  await ledger(name).release(item.id, "claude-code/opus-5.5", "refused");
+  await ledger(name).claim(item.id, "claude-code/opus-5.5", RUNNER);
+  const second = await (await call("GET", `/projects/${name}/items/${item.id}/job-brief`, null, undefined, planner)).json() as { text: string };
+  for (const text of ["Split the work in two", "plan.extra: unknown field", "attempt 2 of 2"]) expect(second.text).toContain(text);
+});
+
+it("a part's builder reads its brief: the spec and checks, dependencies with landed heads, and rework with findings and failing output", async () => {
+  const name = "plan-brief-part";
+  const id = await started(name);
+  const L = ledger(name);
+  const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a"), part("b", { dependsOn: ["a"], scope: ["src/b/**"] })));
+  const hash = post.valid ? post.hash : "";
+  const view = await (await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash })).json() as PlanView;
+  const [a, b] = view.parts;
+  expect(b.dispatch).toBeNull(); // b waits for a
+
+  const actor = a.dispatch ? `${a.dispatch.agent}/${a.dispatch.model}` : "";
+  await L.claim(a.id, actor, RUNNER);
+  const builder = await agentToken(actor);
+  const planner = await agentToken("claude-code/opus-5.5");
+  const refused = await call("GET", `/projects/${name}/items/${a.id}/job-brief`, null, undefined, planner);
+  expect([refused.status, ((await refused.json()) as { error: string }).error]).toEqual([403, "not_owner"]);
+
+  const first = await (await call("GET", `/projects/${name}/items/${a.id}/job-brief`, null, undefined, builder)).json() as { job: string; text: string; hash: string };
+  expect(first.job).toBe("build");
+  expect(first.hash).toMatch(/^[a-f0-9]{64}$/);
+  for (const text of ["Build part `a`", "Ship the feature", "npm test", `Agent: ${actor}`, "This is attempt 1 at the part", "src/a/**", "It works"]) expect(first.text).toContain(text);
+
+  // Part a lands, and b's brief shows it as it landed, with its head.
+  const H1 = "1".repeat(40);
+  await L.setFork(a.id, `${name}--${a.id}`, H0, actor);
+  await L.recordPush(a.id, actor, H1, H1);
+  await L.addEvidence({ itemId: a.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: actor, at: new Date().toISOString(), changedPaths: ["src/a/one.ts"] });
+  await L.submit(a.id, actor);
+  await L.accept(a.id, "owner");
+  await L.merged(a.id, "owner", `merge-${a.id}`, true);
+  const bDispatch = (await L.item(b.id)).dispatch!;
+  const actorB = `${bDispatch.agent}/${bDispatch.model}`;
+  await L.claim(b.id, actorB, RUNNER);
+  const tokenB = await agentToken(actorB);
+  const build = await (await call("GET", `/projects/${name}/items/${b.id}/job-brief`, null, undefined, tokenB)).json() as { job: string; text: string };
+  expect(build.job).toBe("build");
+  for (const text of ["What this part builds on", "Part `a`", H1, `landed at ${H1.slice(0, 8)}`]) expect(build.text).toContain(text);
+
+  // A failing finish and a rejection with findings send b back: the next
+  // brief is rework, quoting both.
+  const H2 = "2".repeat(40);
+  await L.setFork(b.id, `${name}--${b.id}`, H1, actorB);
+  await L.recordPush(b.id, actorB, H2, H2);
+  await L.addEvidence({ itemId: b.id, claim: "npm test", grade: "observed", head: H2, passed: false, by: actorB, at: new Date().toISOString(), changedPaths: ["src/b/one.ts"], outputTail: "3 tests failed in src/b/one.ts" });
+  await L.addReview({ itemId: b.id, by: "codex/gpt-6-astra", head: H2, approve: false, note: "The loop never ends", at: new Date().toISOString(),
+    findings: [{ file: "src/b/one.ts", line: 12, severity: "blocking", text: "The loop never ends" }] } as never);
+  await L.release(b.id, actorB, "finish failed");
+  const again = (await L.item(b.id)).dispatch!;
+  expect(`${again.agent}/${again.model}`).toBe(actorB); // a failed finish retries the same actor
+  await L.claim(b.id, actorB, RUNNER);
+  const rework = await (await call("GET", `/projects/${name}/items/${b.id}/job-brief`, null, undefined, tokenB)).json() as { job: string; text: string };
+  expect(rework.job).toBe("rework");
+  for (const text of ["Rework part `b`", "This is attempt 2 at the part", "Rework: the review's findings", "The loop never ends", "src/b/one.ts:12", "Rework: the failing check", "3 tests failed in src/b/one.ts", "Build on them; do not rewrite or drop them"]) expect(rework.text).toContain(text);
+});
