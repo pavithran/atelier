@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { ceilingRefusal, fillTemplate, insertSection, isLink, leftovers, linkedPart, section, TEMPLATE } from "../cli/adopt.mjs";
+import { ceilingRefusal, fillTemplate, insertSection, isLink, leftovers, linkedPart, pasteScript, section, TEMPLATE } from "../cli/adopt.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 const template = readFileSync(TEMPLATE, "utf8");
@@ -122,6 +122,33 @@ test("any other command says the project moved into Atelier and exits 2", (t) =>
   assert.match(r.stderr, /frobnicate moved into Atelier/);
   assert.match(r.stderr, /atelier help/);
   assert.match(r.stderr, /atelier ops help/);
+});
+
+// The paste stub answers as the relay rule does: no command renders a paste,
+// the agent writes the envelope, and a handoff is no relay. Pinned word for
+// word, with its exit status, so the text cannot drift from the rule.
+test("the paste stub says no command renders a paste, that a handoff is no relay, and exits 2", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-paste-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stub = join(dir, "control-plane-paste");
+  writeFileSync(stub, pasteScript("weblog"), { mode: 0o755 });
+  assert.ok(pasteScript("weblog").startsWith("#!/bin/sh\n"));
+  for (const argv of [[], ["t1"], ["--to", "codex/gpt-6-astra"]]) {
+    const r = spawnSync(stub, argv, { encoding: "utf8" });
+    assert.equal(r.status, 2, argv.join(" "));
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, `control-plane-paste: no command renders a paste any more; this project works through Atelier.
+Write the relay envelope yourself, as the relay rule in AGENTS.md says: one complete fenced
+block with a language tag (bash for a command the owner runs, text for prose, a brief or an
+envelope), and save a copy under ~/Documents/ai-project-data/weblog/, never the portfolio root.
+\`atelier handoff\` transfers ownership of a task to another agent. It is not a relay and is
+never part of a paste request.
+`);
+  }
+  // The name goes into a quoted heredoc, so shell syntax in it is text.
+  const odd = join(dir, "odd");
+  writeFileSync(odd, pasteScript("a$&b `c` 'd'"), { mode: 0o755 });
+  assert.match(spawnSync(odd, [], { encoding: "utf8" }).stderr, /ai-project-data\/a\$&b `c` 'd'\//);
 });
 
 test("the project name is filled in as one shell word", () => {
@@ -392,7 +419,7 @@ test("adopt makes the move: one task, claimed as the current actor, three files 
   assert.ok(entry.startsWith("#!/bin/sh\n"));
   assert.ok(entry.includes("atelier_project='weblog'"));
   assert.ok(!entry.includes("__ATELIER_PROJECT__"));
-  assert.equal(f.read("bin/control-plane-paste").trimEnd().split("\n").length, 2);
+  assert.equal(f.read("bin/control-plane-paste"), pasteScript("weblog"));
   const agents = f.read("AGENTS.md");
   assert.ok(agents.startsWith(`# weblog\n\n## This project works through Atelier\n\n`), agents.slice(0, 120));
   assert.ok(agents.includes("`atelier done \"summary\"`"));
@@ -478,7 +505,7 @@ test("a dangling bin/control-plane-paste link is replaced too", async (t) => {
   assert.equal(r.status, 0, r.output);
   const at = join(f.workspace, "bin", "control-plane-paste");
   assert.ok(!lstatSync(at).isSymbolicLink(), "the dangling link is replaced by a regular file");
-  assert.match(f.read("bin/control-plane-paste"), /atelier handoff/);
+  assert.equal(f.read("bin/control-plane-paste"), pasteScript("weblog"));
   assert.match(f.workspaceGit("ls-tree", "HEAD", "bin/control-plane-paste"), /^100755/);
   assert.ok(!existsSync(join(f.outside, "gone")), "nothing is created where the link pointed");
   assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");

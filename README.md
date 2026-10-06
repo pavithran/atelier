@@ -294,8 +294,12 @@ move (an AGENTS.md that is a symlink is refused too, because the section is
 built from its text). It creates the task "Move NAME from ControlPlane to
 Atelier", claims it as `--as` (without it, as the current actor), and in the
 task's workspace it writes `bin/control-plane`, replaces
-`bin/control-plane-paste`, when the project has one, with two lines pointing
-handoffs at `atelier handoff`, and inserts the text `atelier guide` prints
+`bin/control-plane-paste`, when the project has one, with a script that says
+no command renders a paste any more, that the agent writes the relay
+envelope itself as the relay rule says (one fenced block with a language
+tag, a copy saved under `~/Documents/ai-project-data/<project>/`) and that
+`atelier handoff` transfers ownership and is not a relay, and exits 2; and
+it inserts the text `atelier guide` prints
 into `AGENTS.md`: right after its first heading, at the top when the file has
 no heading, and in place of the section it already carries, so adopting a
 project again cannot stack a second one. It commits those changes in the
