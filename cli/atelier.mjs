@@ -20,6 +20,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
+import { pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
@@ -1471,6 +1472,18 @@ const commands = {
         if (ownCommit) journal.save({mergeCommit:local,phase:'committed'});
         else {
           if(local!==journal.state.start) die('checkout moved during an interrupted merge; inspect the journal before retrying');
+          // Paths that differ only by letter case or Unicode form are one file
+          // on a Mac, so Git would write one over the other here and in every
+          // clone on a Mac. The baseline is shared, so this is refused on every
+          // platform, before the checkout changes. The tree checked is the
+          // merge's own, from merge-tree, which touches neither the index nor
+          // the work tree; it is the accepted tree where merge-tree cannot
+          // write one, as with a Git older than 2.38.
+          const merged=git(['merge-tree','--write-tree','--no-messages',local,target],{cwd,allowFail:true});
+          const mergedTree=merged.status<=1?merged.stdout.split('\n')[0]:'';
+          const tree=/^[0-9a-f]{40,64}$/.test(mergedTree)?mergedTree:target;
+          const clashes=pathCollisions(git(['ls-tree','-r','-z','--name-only','--full-tree',tree],{cwd,raw:true}).split('\0').filter(Boolean));
+          if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's owner must rename or remove all but one of each and submit a new revision`);}
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
           if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }

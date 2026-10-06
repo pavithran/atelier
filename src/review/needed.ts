@@ -175,6 +175,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     basis,
     changeClass: kind,
     changedPaths: [...view.changedPaths],
+    // Scope is matched as written, as gate() matches it.
     outOfScope: item.scope.length ? view.changedPaths.filter((p) => !matchesAny(p, item.scope)) : [],
     checks: view.checks,
     round,
