@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
 import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey } from "../cli/runner.mjs";
+import { helpText } from "../src/usage.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -604,8 +605,8 @@ test("a second interrupt exits immediately", async (t) => {
 });
 
 test("CLI help lists the runner command", () => {
-  const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
-  assert.match(source.slice(source.indexOf("  help() {")), /runner --name home:NAME \[--once\] \[--config PATH\]/);
+  // The help text is the table in src/usage.ts, which the CLI prints.
+  assert.match(helpText(), /runner --name home:NAME \[--once\] \[--config PATH\]/);
 });
 
 test("claim child failures release possible claims and retire the task after three failures", async (t) => {

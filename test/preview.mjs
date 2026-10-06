@@ -8,9 +8,10 @@ import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 
 const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
-await build({ entryPoints: ["src/ui.ts", "src/floor.ts"], bundle: true, platform: "node", format: "esm", loader: { ".css": "text" }, outdir: dir });
+await build({ entryPoints: ["src/ui.ts", "src/floor.ts", "src/how.ts"], bundle: true, platform: "node", format: "esm", loader: { ".css": "text" }, outdir: dir });
 const ui = await import(pathToFileURL(join(dir, "ui.js")));
 const { buildFloor } = await import(pathToFileURL(join(dir, "floor.js")));
+const { renderHow } = await import(pathToFileURL(join(dir, "how.js")));
 
 // Fixed revisions that look like real ones, so screenshots never show placeholders.
 const HEAD = "9621fac2436196a267f96ec81225c2cc3181512d";
@@ -95,6 +96,7 @@ const server = createServer((req, res) => {
   if (state === "long") d.item.title = "Review a project with a very long title, extensive agent output, and deeply nested files that must remain readable on a phone";
   let html;
   if (url.pathname === "/login") html = ui.renderLogin();
+  else if (url.pathname === "/how") html = renderHow();
   else if (url.pathname === "/studio") html = ui.renderStudio(state === "empty" ? { benches: [], from: floor.from, to: floor.to } : floor, "PAVI", now);
   else if (url.pathname === "/projects") html = ui.renderProjects([{ project, items }], "PAVI");
   else if (url.pathname === "/history") html = ui.renderHistory([{ project, items: [make("t5", "Add guarded cache cleanup", "merged", null)] }], "PAVI");

@@ -96,6 +96,21 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 <main id="main">${body}</main></body></html>`;
 }
 
+// The shell of the pages anyone can read: no rail, and no link into a signed-in
+// page. `main` is the inner HTML of <main>; `css` is appended after the site's.
+export function publicPage(o: { title: string; description: string; brand: string; nav: [label: string, url: string][]; mainClass: string; main: string; css?: string }): string {
+  const nav = o.nav.map(([label, url]) => `<a href="${url}">${e(label)}</a>`).join("");
+  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="${e(o.description)}">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="${FONTS}">
+<title>${e(o.title)}</title><style>${theme}\n${layout}${o.css ? `\n${o.css}` : ""}</style></head><body class="public">
+<header class="public-bar"><a class="brand" href="${o.brand}">Atelier</a><nav aria-label="Elsewhere">${nav}</nav></header>
+<main id="main" class="${o.mainClass}">${o.main}</main></body></html>`;
+}
+
 export interface Detail {
   ownerActor?: string;
   item: Item;
@@ -154,7 +169,7 @@ export function renderLogin(error?: string, showcase = false): string {
     <p class="meta">Use the token stored in your Keychain as <code>atelier.API_TOKEN</code>.</p>
     <button class="primary">Sign in</button>
   </form>
-  ${showcase ? '<p class="meta">Not the owner? <a href="/showcase">See the public showcase</a>.</p>' : ""}
+  <p class="meta">${showcase ? 'Not the owner? <a href="/showcase">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
 </section>`, "");
 }
 
@@ -491,15 +506,13 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   const body = shown.length
     ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0), cap(who))}${stages}${columns}`
     : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
-  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<meta name="description" content="Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="${FONTS}">
-<title>Atelier · public showcase</title><style>${theme}\n${layout}</style></head><body class="public">
-<header class="public-bar"><a class="brand" href="/showcase">Atelier</a><nav aria-label="Elsewhere"><a href="${REPO_URL}">Source on GitHub</a><a href="/login">Sign in</a></nav></header>
-<main id="main" class="page-width flow">
+  return publicPage({
+    title: "Atelier · public showcase",
+    description: "Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.",
+    brand: "/showcase",
+    nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
+    mainClass: "page-width flow",
+    main: `
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>${headline(total, who)}</h1>
@@ -510,7 +523,8 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   ${compareBlock(stories, imported, total, owner, who)}
   ${body}
   <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded.</p>
-</main></body></html>`;
+`,
+  });
 }
 
 // ── models ─────────────────────────────────────────────────────────────────
