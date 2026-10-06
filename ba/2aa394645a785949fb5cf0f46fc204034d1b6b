@@ -1,0 +1,14 @@
+atelier atelier/t177 "atelier gc removes no task workspace in practice (dry run on 2026-10-06: 0 removed). gcWorkspaceReason (src/rules.ts:674-684) keeps every item not merged, so abandoned items' workspaces stay forever (t105, t125, t171 now); and it keeps any workspace holding ignored files, which every workspace that ran its checks has (node_modules, worker-configuration.d.ts), so 34 of 35 merged workspaces with no changed or untracked files are kept. Remove an abandoned item's workspace when its HEAD is the last head Atelier recorded and nothing is changed or untracked; let files git ignores not count as unpublished work (refiled: t175 was closed by mistake when the orchestrator claimed its id for a test fix, merged as cb7271c; that merge does not touch gc)"
+accepted head d5d5b07481b9c7888e1473251517a5c69e91fc13
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T14:54:19.243Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T14:54:23.173Z
+REVIEW approve — antigravity/gemini-3.1-pro: gc removes clean workspaces of abandoned and merged tasks, ignoring git-ignored build output; refiled from t175.
+2026-10-06T14:26:46.496Z pavi item.created
+2026-10-06T14:42:21.010Z opencode/glm-5.3 item.claimed
+2026-10-06T14:42:24.389Z opencode/glm-5.3 fork.created
+2026-10-06T14:52:26.795Z opencode/glm-5.3 push.observed
+2026-10-06T14:54:20.453Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:54:24.409Z opencode/glm-5.3 evidence.observed
+2026-10-06T14:54:25.521Z opencode/glm-5.3 item.submitted
+2026-10-06T14:56:25.849Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:56:27.359Z pavi item.accepted
