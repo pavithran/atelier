@@ -66,6 +66,11 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "review ID --approve|--reject", about: "Records a verdict on the item's current head, with `--note` giving the reason. The rules say whose approval counts." },
     { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the item's open review request and gets the part, its brief's inputs and a read token for its fork." },
     { form: "review-release ID", about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it." },
+  ], [
+    { form: "read-token ID", about: "Reads a token for the item's own fork, with its head and base, for a job that clones it outside a task or a review." },
+    { form: "base-token ID", about: "Reads a token for the repository the item is measured against: the plan's fork for a part, the baseline otherwise." },
+    { form: "integrated ID --part KEY --merge-commit SHA", about: "The integrator reports a verified merge of one part onto the plan's branch; the server checks the commit against the branch before recording it." },
+    { form: "integration-failed ID --part KEY --reason TEXT", about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason." },
   ]] },
   { name: "Owner", lines: [[
     { form: "accept ID [--override-review REASON]", about: "The project owner accepts the item at its current head. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
@@ -109,7 +114,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Local", lines: [[
     { form: "gc [--project NAME] [--dry-run | --apply]", about: "Previews the local workspace and check clones that are safe to remove; `--apply` removes them. It never touches Artifacts or the project checkout." },
-    { form: "runner --name home:NAME [--once] [--config PATH]", about: "The home runner: polls the queue every 30 seconds, claims one eligible task and runs its configured harness in the claimed workspace. Each opencode run gets a data folder of its own beside the workspace, removed when the run ends, because opencode runs that share one deadlock on its database. When the harness commits, the runner runs `finish`. `--once` handles at most one task." },
+    { form: "runner --name home:NAME [--once] [--config PATH] [--integrate]", about: "The home runner: polls the queue every 30 seconds, claims one eligible task and runs its configured harness in the claimed workspace. Each opencode run gets a data folder of its own beside the workspace, removed when the run ends, because opencode runs that share one deadlock on its database. When the harness commits, the runner runs `finish`. `--integrate` runs no harness: it offers only the integrate and refresh jobs and merges each part onto its plan's branch as atelier/integrator. `--once` handles at most one task." },
   ], [
     { form: "runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]", aside: "what each home model's harness serves", about: "Reports which model each home harness actually served, from the records the harness keeps, and sends the result to the server as each model's status. `--probe` also sends one short prompt to each model that can be probed; `--dry-run` reports nothing." },
   ], [
@@ -160,12 +165,16 @@ export const COMMAND_USAGE: Record<string, string> = {
   check: `usage: atelier check [--sandbox | -- CMD]\n${LOCAL_CHECK}`,
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
-  runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
+  runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
   projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
   report: 'usage: atelier report [ID] "what you verified and how" [--item ID] [--project P]   (in a workspace, ID is its item unless --item or --project says otherwise)',
   review: "usage: atelier review ID --approve|--reject --note T [--head SHA] [--findings JSON]",
   "review-claim": "usage: atelier review-claim ID [--runner home:NAME]",
   "review-release": "usage: atelier review-release ID [--note T]",
+  "read-token": "usage: atelier read-token ID",
+  "base-token": "usage: atelier base-token ID",
+  integrated: "usage: atelier integrated ID --part KEY --merge-commit SHA",
+  "integration-failed": "usage: atelier integration-failed ID --part KEY --reason TEXT",
   plan: 'usage: atelier plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json] · plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT · plan reroute ID --to H/M · plan retry ID · plan stop ID [--note TEXT] · plan post ID FILE',
   approve: "usage: atelier approve ACTION --head SHA [--note T] [--expires 24h] [--project P]   (ACTION: deploy, install, push, paid-run, photos-writeback, or a kind the project's ship files name; --expires from 1m to 30d)",
   approvals: "usage: atelier approvals [--all] [--project P] · approvals withdraw ID [--note T] [--project P]",

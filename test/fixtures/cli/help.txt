@@ -7,6 +7,7 @@ Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--j
 Agents     start ID [--as H/M] · done "summary"
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report [ID] "…" [--item ID] · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject · review-claim ID [--runner home:NAME] · review-release ID
+           read-token ID · base-token ID · integrated ID --part KEY --merge-commit SHA · integration-failed ID --part KEY --reason TEXT
 Owner      accept ID [--override-review REASON] · merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok] · abandon ID
            approve ACTION --head SHA [--note T] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
            ship [--dry-run] [--push]
@@ -18,7 +19,7 @@ Models     models · models add ID --harness H --where home|cloud [--provider P]
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
-Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]
+Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH] [--integrate]
            runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
            runner --usage [--name home:NAME] [--dry-run] [--config PATH]   (each tool's windows, served models, costs and balances)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)

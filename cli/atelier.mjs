@@ -202,7 +202,7 @@ const FLAGS = {
   wrap: { next: false, found: false, push: true, "no-check": true, "allow-failing": true },
   token: { days: false, label: false },
   ops: {},
-  runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true },
+  runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"' },
   adopt: {},
@@ -222,6 +222,10 @@ const FLAGS = {
   review: { approve: true, reject: true, note: false, head: false, findings: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
+  "read-token": {},
+  "base-token": {},
+  integrated: { part: false, "merge-commit": false },
+  "integration-failed": { part: false, reason: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
@@ -1644,7 +1648,7 @@ const commands = {
       if (r.status !== 0) die(`${id}'s fork holds ${n} this workspace lacks:\n${missing}\nRebasing this workspace's commits onto them did not complete:\n${(r.stderr || r.stdout).trim()}\nFinish that (resolve conflicts and git rebase --continue; or commit or set aside uncommitted changes), then run atelier update again.`);
       console.log(`${id}: this workspace's commits now sit on the ${n} the fork held that it lacked:\n${missing}`);
     }
-    const t = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    const t = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
     if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, \`git rebase --continue\`, then \`atelier push --force\`.\n${r.stdout}${r.stderr}`);
@@ -1665,7 +1669,9 @@ const commands = {
     if (refused.length) die(`${refused.join(".\n")}.${args.rest?.length ? "" : `\nNothing was run. Ask ${OWNER_NAME} to replace the check with atelier init --check.`}`);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     if (!ws.head) die("nothing pushed yet");
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    // The base a part is measured against is its plan's fork, not the baseline
+    // (docs/orchestrator.md, section 5).
+    const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name);
     const policy = d.policy;
     // What a check could print and this command would then upload: the API
@@ -1759,7 +1765,7 @@ const commands = {
   async diff() {
     const name = project(), id = itemArg(), as = await actor(OWNER);
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
+    const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     const { dir } = cleanClone(ws.remote, ws.token, ws.head, null, name);
     try {
       git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
@@ -1796,6 +1802,35 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/review-release`, { note: args.note ?? "" }, as);
     console.log(`${id}'s review request released.`);
+  },
+
+  // Read-only access tokens the runner uses outside a task or review job: the
+  // item's own fork, or the repository it is measured against.
+  async "read-token"() {
+    const name = project(), id = itemArg(), as = await actor();
+    console.log(JSON.stringify(await call("POST", `${I(name, id)}/read-token`, {}, as)));
+  },
+
+  async "base-token"() {
+    const name = project(), id = itemArg(), as = await actor();
+    console.log(JSON.stringify(await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as)));
+  },
+
+  // The integrator's reports (docs/orchestrator.md, section 5). Both run as
+  // atelier/integrator through its token; the server verifies the merge commit.
+  async integrated() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integrated tP --part KEY --merge-commit SHA");
+    if (typeof args["merge-commit"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["merge-commit"])) die("--merge-commit needs the full merge commit hash");
+    const r = await call("POST", `${I(name, id)}/integrated`, { part: args.part, mergeCommit: args["merge-commit"] }, as);
+    console.log(JSON.stringify(r));
+  },
+
+  async "integration-failed"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT");
+    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "" }, as);
+    console.log(JSON.stringify(r));
   },
 
   async handoff() {
