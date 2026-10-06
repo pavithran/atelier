@@ -46,7 +46,7 @@ test("models frobnicate prints the usage and exits 1 without contacting the serv
 test("projects frobnicate prints its usage and exits 1 without contacting the server", () => {
   const r = run(["projects", "frobnicate"]);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /usage: atelier projects remove NAME/);
+  assert.match(r.stderr, /usage: atelier projects rename OLD NEW\n       atelier projects remove NAME \[--force\]/);
   assert.doesNotMatch(r.stderr, /no server|fetch failed|ECONNREFUSED|ENOTFOUND/);
 });
 test("session commands are listed and the guide teaches both boundaries", () => {
@@ -67,5 +67,5 @@ test("guide keeps the rule that the project checkout is never edited directly", 
 
 test("guide teaches filing, relay blocks and private saved copies", () => {
   const text = run(["guide"]).stdout;
-  for (const pattern of [/--project cloudflare-git/, /Lesson: /, /--found TEXT/, /fenced block/, /bash for a command/, /text for prose/, /~\/Documents\/ai-project-data\/<project>\//, /metadata only/]) assert.match(text, pattern);
+  for (const pattern of [/--project atelier/, /Lesson: /, /--found TEXT/, /fenced block/, /bash for a command/, /text for prose/, /~\/Documents\/ai-project-data\/<project>\//, /metadata only/]) assert.match(text, pattern);
 });
