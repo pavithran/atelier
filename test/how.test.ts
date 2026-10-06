@@ -58,7 +58,10 @@ test("a part marked built has its files and code; a part marked not built has no
 test("while the review code is marked as called by nothing, nothing outside it and its tests calls it", () => {
   const inside = join("src", "review") + sep;
   const imports = /(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\//;
-  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && imports.test(read(file)));
+  // The part brief (src/plans/brief.ts) shares the verdict's finding type and
+  // limits; it calls none of the review code, and nothing calls it yet either.
+  const sharesTypes = new Set([join("src", "plans", "brief.ts")]);
+  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
   assert.deepEqual(callers, [], "something now imports the review code: the page says nothing calls it");
   assert.ok(ORCHESTRATOR.find((p) => p.name === "Review requests and runner job" && !p.built));
   const command = ORCHESTRATOR.find((p) => p.name === "Plan routes and command")!;

@@ -37,9 +37,14 @@ function workspaceReason(dir, name, id, item, cwd) {
         git(dir, ["config", "--local", "atelier.item"]) !== id ||
         realpathSync(git(dir, ["rev-parse", "--show-toplevel"])) !== dir) return "workspace identity does not match";
     const head = git(dir, ["rev-parse", "HEAD"]);
-    const dirty = !!git(dir, ["status", "--porcelain", "--untracked-files=all", "--ignored", "--ignore-submodules=none"]);
-    const extraCommits = item?.acceptedHead && /^[a-f0-9]{40,64}$/.test(item.acceptedHead)
-      ? !!git(dir, ["rev-list", "--all", "--reflog", "--not", item.acceptedHead]) : true;
+    // Files git ignores (node_modules, generated types) are not unpublished
+    // work, so --ignored is absent and they do not hold a workspace.
+    const dirty = !!git(dir, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
+    // The head that proves nothing unpublished remains: the accepted head of a
+    // merge, the last head Atelier recorded for an abandoned item.
+    const boundary = item?.state === "abandoned" ? item?.head : item?.acceptedHead;
+    const extraCommits = boundary && /^[a-f0-9]{40,64}$/.test(boundary)
+      ? !!git(dir, ["rev-list", "--all", "--reflog", "--not", boundary]) : true;
     if (git(dir, ["worktree", "list", "--porcelain"]).split("\n").filter((s) => s.startsWith("worktree ")).length !== 1) return "has linked worktrees";
     return gcWorkspaceReason(item, head, dirty, extraCommits);
   } catch { return "Git inspection failed"; }
