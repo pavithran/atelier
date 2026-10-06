@@ -300,10 +300,15 @@ export class Ledger extends DurableObject<Env> {
     return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
   }
 
+  // Every request that names a project resolves it here, so the names table
+  // is read once, and the project list once, however many are registered.
   resolveProject(name: string): ProjectRef {
-    const key = this.keyOf(name);
-    const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => this.keyOf(n) === key);
-    return { name: registered ?? name, key, names: this.namesOf(key), registered: registered !== undefined, former: registered !== undefined && registered !== name };
+    const keys = new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string]));
+    const keyOf = (n: string) => keys.get(n) ?? n;
+    const key = keyOf(name);
+    const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => keyOf(n) === key);
+    const names = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)];
+    return { name: registered ?? name, key, names, registered: registered !== undefined, former: registered !== undefined && registered !== name };
   }
 
   // The project registered as `from`, or that `from` was a name of, answers
