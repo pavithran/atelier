@@ -37,8 +37,18 @@ only a list of tasks.
 - **Code** and **Log** carry a stripe per entry and per commit in the family
   of the agent the commit's message names, with that name in words beside
   it; an entry's stripe is the commit that last changed it.
-- **Sign in** stands over the public showcase's graph, dimmed, when the
-  owner shows projects publicly; the graph is the showcase's redacted one.
+- **The public showcase** is the owner's portfolio, read only: a card per
+  project the owner opted in, with its two weeks of activity as a bar per day
+  stacked by family, its tasks merged, sent back and in progress, and a few
+  task stories drawn as threads. An anonymised project is titled by a neutral
+  label from its kind and its stories by their kind of work; its name, task
+  titles, paths, commit messages, review notes, people and addresses are
+  left out on the server, before anything is rendered. Nothing is public
+  until the owner's setting says so, and a project may instead be shown
+  named.
+- **Sign in** stands over the portfolio's activity, dimmed and clipped to
+  the viewport, when the owner shows projects publicly; the graph is the
+  showcase's, anonymised as the setting says.
 - **Projects** is a card per project: its tally of tasks and the last two
   weeks of moves, a bar per day stacked by the family of the agent that made
   them, with the owner's decisions on top.

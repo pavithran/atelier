@@ -1,4 +1,4 @@
-atelier — one owner per item, observed evidence, the project owner decides.
+atelier — one owner per task, observed evidence, the project owner decides.
 
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
 Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
@@ -18,7 +18,8 @@ Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json
            plan post ID FILE
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
-Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local
+Projects   projects rename OLD NEW · projects remove NAME [--force] · showcase set NAME [--named|--anonymous] · showcase remove NAME · init --name NAME --rename-local
+           
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
 Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH] [--integrate]
            runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
