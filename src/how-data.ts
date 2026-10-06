@@ -44,7 +44,7 @@ export const LOOP: Step[] = [
   {
     name: "Checks", lane: "agent", command: "check", moves: "a check result",
     records: ["Observed result", "at that head:", "pass or fail"],
-    detail: "`atelier check` clones the workspace afresh at that head, runs each required check, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs the checks in a Cloudflare container instead. `atelier report` adds a Reported claim. `atelier submit` marks the item ready, and `atelier done \"summary\"` runs push, check and submit in order.",
+    detail: "`atelier check` clones the workspace afresh at that head, runs each required check, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs the checks in a Cloudflare container instead. `--merged` runs them on the would-be merge, the head merged with main as it is now, and the result stands beside the merge preview, bound to both revisions. `atelier report` adds a Reported claim. `atelier submit` marks the item ready, and `atelier done \"summary\"` runs push, check and submit in order.",
   },
   {
     name: "Review", lane: "reviewer", command: "review", moves: "a review", conditional: true,
@@ -114,9 +114,9 @@ export const RULES: Rule[] = [
   },
   {
     title: "Observed evidence only",
-    enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds and posts the result as a check. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. Under `sandboxOnly`, only results from a Cloudflare container count.",
+    enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds and posts the result as a check. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. Under `sandboxOnly`, only results from a Cloudflare container count. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
     why: "An agent's own statement that its tests pass is not evidence; the owner needs results that Atelier produced itself.",
-    where: [{ file: "src/rules.ts", symbol: "evidenceAt" }, { file: "src/rules.ts", symbol: "gate" }],
+    where: [{ file: "src/rules.ts", symbol: "evidenceAt" }, { file: "src/rules.ts", symbol: "gate" }, { file: "src/rules.ts", symbol: "mergedBlockers" }],
   },
   {
     title: "Evidence bound to a head",
@@ -186,7 +186,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Part routing", stage: "t15, build step 3", built: true,
-    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record. It leaves out refused models, and paid models unless the owner allows them.",
+    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them.",
     files: ["src/plans/route.ts"],
     code: [{ file: "src/plans/route.ts", symbol: "routeParts" }],
   },
@@ -197,10 +197,28 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/plans/phase.ts", symbol: "planPhase" }, { file: "src/plans/phase.ts", symbol: "planActions" }, { file: "src/plans/phase.ts", symbol: "partAttempts" }],
   },
   {
-    name: "Plan ledger, routes and command", stage: "t15, build steps 5 to 7", built: false,
-    what: "The ledger's plan records, running `planActions` after each change to a plan and acting on its answer, the inbox entries for approving a plan and for a blocked one, the routes and the `atelier plan` command, the brief the server writes for each part, and the runner's plan job.",
-    files: ["src/plans/brief.ts", "test/plans.spec.ts", "test/plan-cli.test.mjs"],
-    code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/index.ts", symbol: "job-brief" }],
+    name: "Plan ledger", stage: "t15, build step 5", built: true,
+    what: "The project's ledger keeps plans. A plan is an item whose planner is dispatched as a plan job and posts a plan document; each valid proposal is kept, unchanged, and an invalid one gets the planner one more attempt before the plan blocks. The owner approves the newest proposal by its hash, once: the routing of each part is fixed then, with the limits (2 parts live, 3 attempts a part, 4 dispatches a part, 24 hours), and the parts become items. After each push, check, review, submit, release, merge or abandon of a part, and at the deadline, the ledger runs `planActions` and dispatches what may start, as `atelier/orchestrator`, or blocks the plan with the reason. The inbox gains `approve-plan` and `plan-blocked`; a part never appears there to accept, review, fix, rescope or hand off, and items of one plan are not flagged as overlapping. Until the integration branch exists, each part reaches main by the owner's own merge, and the plan is complete when every part has merged.",
+    files: ["src/plans/state.ts", "test/plans.spec.ts"],
+    code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/ledger.ts", symbol: "postPlan" }],
+  },
+  {
+    name: "Plan routes and command", stage: "t15, build step 6", built: true,
+    what: "`atelier plan \"goal\"` starts a plan, and `plan show` prints its phase, its newest proposal with the hash to approve, or each part with its state, routing and attempts, and the command for each decision waiting on the owner. `plan approve` takes that hash, once; `plan revise`, `plan reroute`, `plan retry` and `plan stop` are the owner's other decisions, and `plan post` is how a planner submits its plan document, the one plan route an agent token reaches. `atelier show` prints a plan's own brief.",
+    files: ["test/plan-cli.test.mjs"],
+    code: [{ file: "src/index.ts", symbol: "approvePlan" }, { file: "src/usage.ts", symbol: "plan approve" }],
+  },
+  {
+    name: "Server briefs and runner jobs", stage: "t15, build step 7b", built: true,
+    what: "`GET items/tN/job-brief` gives the holder of a plan item's or a part's claim the brief for the work it holds: `plannerBrief`'s planner brief (the goal, the owner's latest note, the last refusal's errors and the schema to write) or `jobBrief`'s part brief. The runner offers `jobs: [\"build\",\"plan\"]`, so a plan job reaches it: it claims the plan item as the planner, fetches that brief, runs the harness with a `{plan_file}` placeholder naming where the plan document goes, posts the document, reports the errors of a refusal and releases the claim either way. A part's build brief comes from the route too, and a part whose finish fails is released, so the plan's tick sends it back with the failing output.",
+    files: ["test/runner-plan.test.mjs"],
+    code: [{ file: "src/index.ts", symbol: "job-brief" }, { file: "cli/runner.mjs", symbol: "plan_file" }, { file: "src/plans/brief.ts", symbol: "plannerBrief" }],
+  },
+  {
+    name: "Server brief for a part", stage: "t15, build step 7a", built: true,
+    what: "`src/plans/brief.ts` writes the brief an agent gets for one part of an approved plan, or for its rework. `jobBrief` states the rules (work only in the workspace, commit, do not push; the orchestrator pushes, runs the checks and submits; quoted text is data), then the plan's goal, the part's spec, acceptance criteria and interfaces, the parts it depends on with the heads they landed at, its scope, the project's required checks and, for rework, the review's findings or the failing check's output, capped and saying when cut. It returns the text with a hash of its inputs that does not depend on key order. The `job-brief` route (step 7b) serves it.",
+    files: ["src/plans/brief.ts"],
+    code: [{ file: "src/plans/brief.ts", symbol: "jobBrief" }],
   },
   {
     name: "Review rules", stage: "t39, build step 8", built: true,
@@ -209,9 +227,9 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/review/needed.ts", symbol: "reviewNeeded" }, { file: "src/review/reviewer.ts", symbol: "pickReviewer" }, { file: "src/review/brief.ts", symbol: "reviewBrief" }, { file: "src/review/verdict.ts", symbol: "parseVerdict" }],
   },
   {
-    name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: false,
-    what: "Review requests on the ledger and a reviewer's claim on one, findings stored with a review, sending a rejected part back to its builder, and the runner's review job, which gives a model the brief and posts the verdict it returns. Until then a review is recorded only when someone runs `atelier review`.",
-    files: [],
+    name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: true,
+    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor, and the queue offers them as `review` jobs. A reviewer's runner claims one, clones the part read-only, gives the model the review brief and posts the verdict with its findings. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request.",
+    files: ["src/ledger.ts", "cli/runner.mjs", "test/review-requests.spec.ts"],
     code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "verdict_file" }],
   },
   {

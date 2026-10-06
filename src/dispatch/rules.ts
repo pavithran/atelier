@@ -5,6 +5,7 @@
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
 import { RuleError, validActor, type Item } from "../rules.ts";
+import { assertLength, OWNER_TEXT_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
 export const RUNNER_KINDS: RunnerKind[] = ["cloud", "home"];
@@ -16,13 +17,20 @@ export interface Dispatch {
   by: string;
   at: string;
   note: string;
+  // A job other than building the item: "plan" asks the runner to write the
+  // plan item's plan document (docs/orchestrator.md, section 2). Absent for
+  // ordinary work.
+  job?: "plan";
 }
 
-// What a runner says it can run when it asks for work.
+// What a runner says it can run when it asks for work. `jobs` names the
+// jobs besides building that it runs; a dispatch for any other job is never
+// offered to it.
 export interface RunnerOffer {
   runner: string;          // "home:studio", "cloud:atelier"
   kind: RunnerKind;
   agents: { agent: string; models: string[] }[];
+  jobs?: string[];
 }
 
 export interface Assignment {
@@ -69,7 +77,11 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   const model = optional(input.model, "model");
   if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
   if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
-  return { to: to as Dispatch["to"], agent, model, by, at, note: String(input.note ?? "").slice(0, 500) };
+  // The note is the owner's and is stored with the dispatch for every runner
+  // to read, so one over its limit is refused, never cut.
+  const note = String(input.note ?? "");
+  assertLength(note, OWNER_TEXT_MAX, "the dispatch note");
+  return { to: to as Dispatch["to"], agent, model, by, at, note };
 }
 
 export function assertDispatchable(item: Item): void {
@@ -81,6 +93,7 @@ export function assertDispatchable(item: Item): void {
 // The agent and model a runner should use for a dispatch, or null if it cannot.
 export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
   if (d.to !== "any" && d.to !== offer.kind) return null;
+  if (d.job && !(offer.jobs ?? []).includes(d.job)) return null;
   for (const { agent, models } of offer.agents) {
     if (d.agent && agent !== d.agent) continue;
     const usable = models.filter((m) => claimable(agent, m));

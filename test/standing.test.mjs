@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { checkoutLine, formatStanding } from "../cli/atelier.mjs";
+import { agentRoute } from "../src/tokens.ts";
 
 const cli = resolve("cli/atelier.mjs");
 const standing = (over = {}) => ({
@@ -100,7 +101,7 @@ test("the checkout line for each way a checkout can be in or out of step", () =>
 // repository as the baseline, so the checkout comparison is real git.
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@x.test", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@x.test" } }).trim();
 
-async function run(t, setup, argv) {
+async function run(t, setup, argv, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-standing-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bare = join(dir, "baseline.git"), checkout = join(dir, "checkout");
@@ -111,16 +112,28 @@ async function run(t, setup, argv) {
   git(dir, "clone", "-q", "--bare", checkout, bare);
   const state = setup({ checkout, bare, dir }) ?? {};
   const seen = [];
+  // The standing and the baseline's head, as the Worker reads it from
+  // Artifacts. Any other route is refused: status reads, and mints nothing.
+  // An agent token (atl_...) is held to the Worker's own allowlist, so a
+  // route the CLI reads for an agent must be one agentRoute admits.
   const server = createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(req.url.endsWith("/standing") ? standing() : { remote: bare, token: "t" }));
+    const parts = req.url.replace(/^\/api\//, "").split("?")[0].split("/").map(decodeURIComponent);
+    const agent = (req.headers.authorization ?? "").startsWith("Bearer atl_");
+    let status = 200, body;
+    if (agent && !agentRoute(req.method, parts)) { status = 403; body = { error: "owner_token_required", detail: `${req.method} ${req.url} needs the owner token` }; }
+    else if (req.url === "/api/config") body = { actor: "codex/gpt-6-astra", ownerActor: "owner" };
+    else if (req.url.endsWith("/standing")) body = standing();
+    else if (req.url.endsWith("/baseline-head")) body = { head: git(dir, "--git-dir", bare, "rev-parse", "refs/heads/main") };
+    else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: { demo: { path: checkout, branch: "main", ...state.project } } }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
-    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
+    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...env },
   });
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const status = await new Promise((done) => child.on("close", done));
@@ -138,13 +151,21 @@ test("status --project --json prints the standing record and the checkout line f
   assert.equal(read.checkout.split("\n").length, 1);
 });
 
-test("status --project prints where it stands and says the checkout is in step", async (t) => {
+test("status --project prints where it stands and says the checkout is in step, reading only", async (t) => {
   const r = await run(t, () => null);
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /^Demo project \(demo\) as of /);
   assert.match(r.output, /Waiting on /);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*$/);
-  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "POST /api/projects/demo/baseline-token"]);
+  // The baseline's head is read from the server; no read token is minted.
+  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
+});
+
+test("status --project with an agent token reads the baseline's head through a route the allowlist admits", async (t) => {
+  const r = await run(t, () => null, undefined, { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*$/);
+  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
 });
 
 test("status --project says the checkout is out of step when the baseline has moved on", async (t) => {

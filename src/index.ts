@@ -3,23 +3,26 @@ import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions,
 import { itemDiff, measureWorkspace, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX } from "./text.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
+import { buildReliability, cleanDefect, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
+import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { planBrief } from "./plans/show.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { renderActions } from "./actions-page.ts";
@@ -425,6 +428,14 @@ function branchArg(value: unknown): string {
   return value;
 }
 
+// The approval a policy records, as init sends it: the owner's own text,
+// stored with the policy, so one over its limit is refused, never cut.
+function approvalArg(value: unknown): string | null {
+  const text = String(value ?? "");
+  assertLength(text, OWNER_TEXT_MAX, "the approval");
+  return text || null;
+}
+
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
@@ -530,6 +541,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
+  // Runs that stalled, timed out or were refused, which the ledger never
+  // sees: a runner reports each under its name, as it reports usage. The
+  // owner reads them, and each model's reliability across every project.
+  if (parts[0] === "runs" && parts.length === 1) {
+    const I = index(env);
+    if (m === "GET") return json(await I.runs());
+    if (m === "POST") {
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner", 400);
+      return json(await I.putRun(cleanRun(body, new Date().toISOString(), runner.runner)), 201);
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
+  if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
+    const { reliability, events, unread } = await trackRecords(env);
+    const res = json({ events, models: reliabilityJson(reliability) });
+    if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
+    return res;
+  }
   // The queue across every project. GET lists it for the owner; a runner POSTs
   // what it can run and gets back the tasks it may claim, with the name to claim under.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
@@ -537,7 +567,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
-      try { return (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item })); }
+      try {
+        const waiting = (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item }));
+        const reviews = (await ledgerOf(env, p).reviewWaiting()).map((item) => ({ project: p.name, item }));
+        return [...waiting, ...reviews];
+      }
       catch { unreadable.push(p.name); return []; }
     }));
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
@@ -593,7 +627,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
-      ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
+      ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
@@ -672,22 +706,44 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const p = await L.project();
     return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
   }
+  // The owner records which model served events recorded under another;
+  // without apply: true it only answers what matches.
+  if (parts[2] === "served" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    const { apply, ...selection } = cleanServed(body);
+    return json({ project, ...selection, ...(await L.annotateServed(selection, actor, apply)) });
+  }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
   if (parts[2] === "actions") {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
     return json(r.data, r.status);
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
-  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor), 201);
+  // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
+  // one (docs/orchestrator.md, section 2), for the owner alone, with the
+  // pool to choose its planner from.
+  if (parts.length === 3 && m === "POST" && body.kind === "plan") {
+    requireOwner(env, actor);
+    if (body.planner !== undefined && typeof body.planner !== "string") throw new RuleError("bad_actor", "planner must be harness/model", 400);
+    return json(await L.newPlan(body.goal, asStrings(body.scope, "scope"), actor, body.planner ?? null, await index(env).models()), 201);
+  }
+  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, itemFields(body)), 201);
   if (parts.length === 3 && m === "GET") return json(await L.items());
 
   const id = parts[3];
   const verb = parts[4];
   if (!verb && m === "GET") return json(await L.detail(id));
   if (verb === "brief" && parts.length === 5 && m === "GET") {
+    // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
+    const asked = await L.item(id);
+    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)) });
     const detail = await L.detail(id) as Detail;
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
+  // The brief for the item's holder: the planner's, for a plan item, or the
+  // part's (docs/orchestrator.md, sections 2 and 3). An agent token reaches
+  // it (agentRoute), and the Ledger gives it to the holder alone.
+  if (verb === "job-brief" && parts.length === 5 && m === "GET") return json(await L.jobBrief(id, actor));
   if (verb === "sandbox" && parts[5] && m === "GET") {
     // A run id is `${key}:${item}:${head}:${ms}`, and a project's key may
     // hold a colon (only new names are refused one), so the prefix alone can
@@ -705,6 +761,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
     return json(await itemDiff(env.ARTIFACTS, (await L.project()).repo, item.fork));
   }
+  // What atelier plan show reads, for a plan or any of its parts; with the
+  // pool, a plan not yet approved also shows the routing an approval would fix.
+  if (verb === "plan" && parts.length === 5 && m === "GET") return json(await L.planView(id, await index(env).models()));
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
@@ -780,6 +839,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (check && actor !== item.owner) {
         throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. To have Atelier run them, use atelier check ${id} --sandbox`, 403);
       }
+      // A merged check ran on the merge of the head with a main head the
+      // caller names; it needs a workspace to be measured against.
+      const merged = check && body.merged === true;
+      if (merged && !item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       // A claim (a check's command or a report's text) and a check's output
       // are stored as sent, so each over its limit is refused, not cut.
       const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
@@ -805,11 +868,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // caller is often the item's own agent, so body.changedPaths is never
       // read. The result itself (body.passed) is the caller's word, shown as
       // run on the caller's machine; sandboxOnly is the policy for projects
-      // that will not count it.
+      // that will not count it. Each row names main's head as Atelier reads
+      // it now; a merged check is bound to the main head it merged with,
+      // which must be a commit on main's line, and measures no paths.
       if (check && item.fork) {
-        const measured = await measureWorkspace(env.ARTIFACTS, (await L.project()).repo, item.fork);
+        const p = await L.project();
+        const measured = await measureWorkspace(env.ARTIFACTS, p.repo, item.fork);
         if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
-        e.changedPaths = measured.changedPaths;
+        e.changedPaths = merged ? null : measured.changedPaths;
+        if (measured.main) e.mainHead = measured.main;
+        if (merged) {
+          const mainHead = String(body.mainHead ?? "");
+          if (mainHead !== measured.main) {
+            using baseline = await env.ARTIFACTS.get(p.repo);
+            if (!/^[a-f0-9]{40,64}$/.test(mainHead) || !(await baseline.log({ limit: 1000 })).some((x) => x.hash === mainHead)) {
+              throw new RuleError("unknown_main", `${mainHead.slice(0, 8) || "the main head given"} is not a commit on main; run atelier check --merged again`, 409);
+            }
+          }
+          e.mainHead = mainHead;
+          e.merged = true;
+        }
       }
       // A check whose paths the change does not touch is recorded as not
       // applicable, with no result, only when the paths Atelier measured
@@ -838,6 +916,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const request: RunRequest = {
         runId, project: ref.key, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
+        ...(body.merged === true ? { merged: true } : {}),
       };
       if (p.policy.checkPaths?.length) request.checkPaths = p.policy.checkPaths;
       await L.setNotificationOrigin(id, c.url.origin);
@@ -849,6 +928,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.dispatch(id, actor, body));
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // The owner's framing of a task: agentRoute gives an agent token no edit
+    // route, and requireOwner refuses any other actor the owner token names.
+    case "edit":
+      requireOwner(env, actor);
+      return json(await L.editItem(id, actor, itemFields(body)));
+    // The holder or the owner blocks and unblocks; the Ledger checks which.
+    case "block":
+      return json(await L.block(id, actor, body.reason, !!c.token));
+    case "unblock":
+      return json(await L.unblock(id, actor, !!c.token));
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
@@ -857,8 +946,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
-      }, c.url.origin, !!c.token);
+        ...(body.findings !== undefined ? { findings: body.findings } : {}),
+      }, c.url.origin, !!c.token, "api");
       return json(await L.detail(id));
+    }
+    case "review-claim": {
+      const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
+      // The review job clones the part read-only, so the claim also carries a
+      // read token for the fork, as the read-token route mints one.
+      if (claim.item.fork) {
+        const t = await mint(env, claim.item.fork, "read", await projectBranch(env, await L.project()));
+        return json({ ...claim, readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch } });
+      }
+      return json(claim);
+    }
+    case "review-release": {
+      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
+      return json({ released: true });
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.
@@ -928,6 +1032,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       return json(await L.beginLanding(id, actor, String(body.head ?? "")));
     }
+    case "plan":
+      if (parts.length > 6) break;
+      return await planRoute(c, L, id, parts[5]);
     case "abandon": {
       requireOwner(env, actor);
       const note = String(body.note ?? "");
@@ -937,6 +1044,53 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await revoke(env, before.fork, oldToken);
       const item = await L.abandon(id, actor, note, oldToken);
       return json(item);
+    }
+    case "defect": {
+      requireOwner(env, actor);
+      const { note, foundIn } = cleanDefect(body);
+      return json(await L.traceDefect(id, actor, note, foundIn), 201);
+    }
+  }
+  throw new RuleError("not_found", "no such route", 404);
+}
+
+// The plan routes under POST items/tN/plan (docs/orchestrator.md, sections
+// 6 and 7). With no further word, the holder of the plan item's claim posts
+// its plan document as the body: this is how the planner submits, and the
+// one plan route an agent token reaches (agentRoute). The rest are the
+// owner's: approve the newest proposal by its hash, revise, reroute or retry
+// a planner or a part, and stop the plan. Stop revokes the write token of
+// each item it closes before closing them, as abandon does for one.
+async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: string | undefined): Promise<Response> {
+  const { env, actor, body } = c;
+  if (sub === undefined) {
+    const post = await L.postPlan(id, actor, body, !!c.token);
+    if (post.valid) return json({ ...post, next: `the owner reads it with atelier plan show ${id} and approves that hash; release the plan item when done` });
+    return json({ error: "invalid_plan", detail: `the plan was refused (attempt ${post.attempt} of ${post.attempts}): ${post.errors.join("; ")}`, ...post }, 422);
+  }
+  requireOwner(env, actor);
+  const note = body.note === undefined ? "" : typeof body.note === "string" ? body.note : null;
+  if (note === null) throw new RuleError("bad_note", "note must be text", 400);
+  switch (sub) {
+    case "approve": {
+      if (body.allowPaid !== undefined && typeof body.allowPaid !== "boolean") throw new RuleError("bad_allow_paid", "allowPaid must be true or false", 400);
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models());
+      return json(await L.planView(id));
+    }
+    case "revise":
+      await L.revisePlan(id, actor, body.note);
+      return json(await L.planView(id));
+    case "reroute":
+      await L.reroutePlan(id, actor, body.to);
+      return json(await L.planView(id));
+    case "retry":
+      await L.retryPlan(id, actor);
+      return json(await L.planView(id));
+    case "stop": {
+      const targets = await L.stopTargets(id, actor);
+      for (const t of targets) await revoke(env, t.fork, t.tokenId);
+      await L.stopPlan(id, actor, note, Object.fromEntries(targets.map((t) => [t.id, t.tokenId])));
+      return json(await L.planView(id));
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -964,21 +1118,30 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, projects] = await Promise.all([I.models(), I.projects()]);
-  // Each model's record is read from every project's most recent events;
-  // the page says how many, and which projects could not be read.
-  const unread: string[] = [];
-  const events = (await Promise.all(projects.map(async (p) => {
-    try { return (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[]; } catch { unread.push(titleOf(p)); return []; }
-  })));
+  const [entries, track] = await Promise.all([I.models(), trackRecords(env)]);
   const record = new Map<string, ActorRecord>();
-  for (const evs of events) {
-    for (const [actor, r] of buildRecord([...evs].sort((a, b) => a.seq - b.seq))) {
+  for (const { events } of track.sources) {
+    for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
       const k = record.get(actor);
       record.set(actor, k ? Object.fromEntries(Object.entries(k).map(([f, n]) => [f, n + r[f as keyof ActorRecord]])) as unknown as ActorRecord : r);
     }
   }
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, { events: MODEL_EVENTS, unread }), error ? 400 : 200);
+  const window = { events: track.events, unread: track.unread.map(titleOf) };
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
+}
+
+// Each model's record is read from every project's most recent events, and
+// its reliability from those and the runners' reports. The pages and the
+// API say how many events, and which projects could not be read.
+async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; events: number; unread: ProjectRecord[] }> {
+  const I = index(env);
+  const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
+  const unread: ProjectRecord[] = [];
+  const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
+    try { return { project: p.name, events: (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[] }; }
+    catch { unread.push(p); return null; }
+  }))).filter((s): s is ProjectEvents => s !== null);
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: MODEL_EVENTS, unread };
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -1063,8 +1226,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const r = parseRunner(typeof body.runner === "string" ? body.runner : null);
   if (!r) throw new RuleError("bad_runner", "say which runner is asking, e.g. home:studio", 400);
   const agents = Array.isArray(body.agents) ? body.agents : [];
+  // The jobs besides building that the runner runs, such as "plan".
+  const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
   return {
-    runner: r.runner, kind: r.kind,
+    runner: r.runner, kind: r.kind, jobs,
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };
       return typeof x.agent === "string" && Array.isArray(x.models)
@@ -1105,8 +1270,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "models" && (parts.length === 1 || (parts.length === 2 && req.method === "POST"))) return await modelsPage(c, parts[1]);
   if (parts[0] === "usage" && parts.length === 1 && req.method === "GET") {
     const I = index(env);
-    const [reports, alerts] = await Promise.all([I.usage(), I.usageAlerts()]);
-    return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env)));
+    const [reports, alerts, track] = await Promise.all([I.usage(), I.usageAlerts(), trackRecords(env)]);
+    const reliability = { models: track.reliability, events: track.events, unread: track.unread.map(titleOf) };
+    return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env), reliability));
   }
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
@@ -1158,10 +1324,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // independent review, its reason in the note.
     else if (verb === "override") await L.accept(id, owner, expected, note);
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
+    else if (verb === "block") await L.block(id, owner, note);
+    else if (verb === "unblock") await L.unblock(id, owner);
     else if (verb === "release") await L.release(id, owner, note, false, oldToken);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin);
+      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
     } else return html(renderError("Unknown action."), 400);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }

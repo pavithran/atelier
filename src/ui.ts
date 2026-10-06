@@ -19,6 +19,7 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
+import { reliabilityLine, roundsPerMerge, type Cause, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -29,8 +30,8 @@ import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./puls
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf,
-  type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, stateLabel, modelOf, modelKey,
+  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -147,10 +148,13 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
   accept: ["Ready to accept", "go"],
   merge: ["Ready to merge", "go"],
   assess: ["Review required", "ask"],
+  blocked: ["Blocked", "ask"],
   scope: ["Scope changed", "ask"],
   stale: ["Needs a handoff", "ask"],
   overlap: ["Overlapping work", "ask"],
   failing: ["Checks failed", "bad"],
+  "approve-plan": ["Plan to approve", "ask"],
+  "plan-blocked": ["Plan blocked", "bad"],
 };
 
 // ── where evidence came from ───────────────────────────────────────────────
@@ -224,8 +228,13 @@ function taskStory(project: string, d: Detail): Story | null {
 
 // A waiting decision as a card: the row that selects it, the brief in one line,
 // the task's thread in miniature with each review as an edge, and a link to the task page.
-function decisionCard(row: string, project: string, d: Detail): string {
-  const b = briefFor(d, d.events);
+// A plan's own entry (approve-plan, plan-blocked) carries its decision in its
+// reason, which the card shows in place of the item's brief: the brief reads
+// the plan item as a task, and knows nothing of its proposal or its parts.
+function decisionCard(row: string, project: string, d: Detail, lead?: InboxEntry): string {
+  const brief = briefFor(d, d.events);
+  const b = lead && (lead.kind === "approve-plan" || lead.kind === "plan-blocked")
+    ? { ...brief, recommendation: { verdict: "decide" as const, reason: lead.reason } } : brief;
   const owner = d.ownerActor ?? DEFAULT_OWNER;
   const story = taskStory(project, d);
   const thread = story
@@ -265,7 +274,7 @@ export function renderInbox(
     const row = `<a class="decision-row${current ? " selected" : ""}" href="${selectedHref(lead.project, lead.itemId)}"${current ? ' aria-current="true"' : ""}>
       ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a>`;
     const detail = details.get(`${lead.project}/${lead.itemId}`);
-    return detail ? decisionCard(row, lead.project, detail) : `<li>${row}</li>`;
+    return detail ? decisionCard(row, lead.project, detail, lead) : `<li>${row}</li>`;
   }).join("");
 
   const needs = new Set(entries.map((x) => `${x.project}/${x.itemId}`));
@@ -568,9 +577,12 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map()): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
+    // The entry's model across every project and harness, by modelKey; an
+    // alias the registry reads as another model shows as its own line.
+    const across = [...new Set(actors.map(modelKey))].flatMap((k) => reliability.get(k) ?? []);
     const r = actors.map((a) => record.get(a)).filter(Boolean).reduce((acc, x) => ({
       claimed: acc.claimed + x!.itemsClaimed, merges: acc.merges + x!.merges, pass: acc.pass + x!.checkPasses,
       fail: acc.fail + x!.checkFailures, back: acc.back + x!.reviewsRejected,
@@ -585,6 +597,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
   <p class="model-status">${status}</p>
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
+  ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
   <form method="post" action="/models/remove" class="inline"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
 </li>`;
@@ -600,6 +613,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
   ${group("home", "At home", "No home models yet. Add one served by your Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
+  ${reliabilitySection(reliability, ownerName, window)}
   <details class="new-task"${entries.length ? "" : " open"}><summary>Add a model</summary>
     <form method="post" action="/models/add" class="stack">
       <label>Model id, as the harness names it<input name="id" required maxlength="128" placeholder="gemini-3.1-pro, GLM-5.3-Flash-4_8bit"></label>
@@ -615,6 +629,57 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
     </form>
   </details>
 </div>`, "Models", ownerName);
+}
+
+// ── reliability ────────────────────────────────────────────────────────────
+// Each model's reliability across every project (src/models/reliability.ts),
+// on the Models page and the Usage page alike: one row per model that has
+// acted, pool or not, and under it the causes the record holds.
+
+const CAUSES_SHOWN = 5;
+
+function causeList(title: string, causes: Cause[]): string {
+  if (!causes.length) return "";
+  const rows = causes.slice(0, CAUSES_SHOWN).map((c) =>
+    `<li><span class="meta">${e(c.project)}${c.item ? `/${e(c.item)}` : ""} · ${e(c.by)} · ${e(when(c.at))}</span> ${e(c.note || "no note")}</li>`).join("");
+  const more = causes.length > CAUSES_SHOWN ? `<li class="meta">and ${causes.length - CAUSES_SHOWN} more</li>` : "";
+  return `<h4>${e(title)} · ${causes.length}</h4><ul class="usage-notes">${rows}${more}</ul>`;
+}
+
+function reliabilityRow(r: ModelReliability, who: string): string {
+  const rounds = roundsPerMerge(r);
+  const merges = !r.merged ? '<span class="meta">none merged</span>'
+    : rounds ? `${e(rounds)} each<span class="meta">over ${e(plural(r.mergedReviewed, "reviewed merge"))}${r.merged > r.mergedReviewed ? `, ${r.merged - r.mergedReviewed} merged without a model's review` : ""}</span>`
+    : `${e(plural(r.merged, "merge"))}<span class="meta">none reviewed by a model</span>`;
+  const owner = r.ownerApprovals;
+  const causes = [
+    causeList("Rejections of its work", r.rejections),
+    causeList("Defects traced to its work", r.defects),
+    causeList("Its approvals a defect contradicted", r.contradicted),
+    causeList("Runs reported", r.runCauses),
+  ].join("");
+  return `<tr><th scope="row"><code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")} · ${e(plural(r.projects.length, "project"))}</span></th>
+  <td class="num">${r.firstReviews ? `${r.approvedFirst} of ${r.firstReviews}` : '<span class="meta">none reviewed</span>'}</td>
+  <td class="num">${merges}</td>
+  <td class="num">${r.rejections.length}<span class="meta">${e(plural(r.defects.length, "defect"))} traced to its work</span></td>
+  <td class="num">${r.contradicted.length} of ${e(plural(r.approvals, "approval"))}<span class="meta">${e(plural(r.unfinishedReviews, "review"))} without a verdict</span></td>
+  <td class="num">${r.runs.stalled} stalled · ${r.runs["timed-out"]} timed out · ${r.runs.refused} refused</td>
+  <td class="num">${owner.page} by ${e(who)} on the page<span class="meta">${owner.api} through the API · ${owner.unrecorded} unrecorded</span></td>
+</tr>${causes ? `<tr class="causes"><td colspan="7"><details><summary>Causes for ${e(r.model)}</summary>${causes}</details></td></tr>` : ""}`;
+}
+
+export function reliabilitySection(models: Reliability, ownerName: string | null, window: { events: number; unread: string[] }): string {
+  const who = ownerName || "the owner";
+  const rows = [...models.values()];
+  const lead = `Each model's record across the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
+  return `<section class="reliability" aria-label="Reliability by model">
+  <h2 class="section-title">Reliability by model · ${rows.length}</h2>
+  <p class="meta">${lead}</p>
+  ${rows.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Model</th><th scope="col">Approved at first review</th><th scope="col">Review rounds to merge</th><th scope="col">Rejections</th><th scope="col">Approvals contradicted</th><th scope="col">Runs stalled, timed out, refused</th><th scope="col">Owner approvals of its work</th></tr></thead>
+    <tbody>${rows.map((r) => reliabilityRow(r, who)).join("")}</tbody>
+  </table>` : '<p class="empty">No model has acted yet.</p>'}
+</section>`;
 }
 
 // ── studio ─────────────────────────────────────────────────────────────────
@@ -1025,7 +1090,7 @@ const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", revie
 // The brief sits above the diff: what is decided, what the agent said, what the
 // record shows, and what it points to.
 function briefBlock(d: Detail): string {
-  if (!["claimed", "submitted", "accepted"].includes(d.item.state)) return "";
+  if (!["claimed", "submitted", "accepted", "blocked"].includes(d.item.state)) return "";
   const b = briefFor(d, d.events);
   const said = submission(d.events, d.item.id, d.item.head);
   const summary = said
@@ -1046,7 +1111,7 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
   const story = taskStory(p.name, d);
   if (!story) return "";
   const owner = d.ownerActor ?? DEFAULT_OWNER;
-  const b = ["claimed", "submitted", "accepted"].includes(d.item.state) ? briefFor(d, d.events) : null;
+  const b = ["claimed", "submitted", "accepted", "blocked"].includes(d.item.state) ? briefFor(d, d.events) : null;
   const note = b ? { verdict: b.recommendation.verdict, tone: VERDICT_TONE[b.recommendation.verdict] as "go" | "ask" | "bad", text: b.recommendation.reason } : undefined;
   return `<section class="review-section task-thread" id="thread" aria-label="This task's thread">
   <h3>Thread</h3>
@@ -1065,6 +1130,9 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   const action = (verb: string) => href("ui", p.name, item.id, verb);
   const revision = `<input type="hidden" name="head" value="${e(item.head ?? "")}">`;
   const evidenceVisible = !!diff && diff !== "unavailable" && diff.head === item.head;
+  // The checks on the would-be merge, read against main's head as the
+  // preview read it, so a run main has moved past is marked stale.
+  const mergedChecks = diff && diff !== "unavailable" && diff.main ? mergedChecksAt(d.policy, d.evidence, item.head, diff.main.head) : undefined;
 
   const reject = live && item.head
     ? `<details class="request-changes"><summary>Request changes</summary>
@@ -1129,16 +1197,43 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
         </form></details>`
     : "";
 
+  // A blocked task shows who blocked it, why, and the one way on; any task
+  // that is waiting, in progress or in review offers the block form.
+  const blockBox = item.state === "blocked" && item.blocked
+    ? `<div class="notice" role="status"><h3>Blocked by ${e(item.blocked.by)} ${when(item.blocked.at)}</h3>
+        <p>${e(item.blocked.reason)}</p>
+        <p class="meta">It keeps its owner and workspace, is skipped by runners and stuck detection, and cannot be pushed or submitted. Unblocking returns it to ${e(stateLabel[item.blocked.from].toLowerCase())}.</p>
+        <form method="post" action="${action("unblock")}">${revision}<button class="primary">Unblock</button></form></div>`
+    : live || item.state === "open"
+      ? `<details class="request-changes"><summary>Block this task</summary>
+        <form class="stack" method="post" action="${action("block")}">${revision}
+          <label>What is it waiting on?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>
+          <p class="meta">The task keeps its owner and workspace, leaves the runner queue and stuck detection, and cannot be submitted until it is unblocked.</p>
+          <button>Block</button>
+        </form></details>`
+      : "";
+
   const header = `<header class="review-header">
   <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
   <h2>${e(item.title)}</h2>
   <p class="review-description">${e(decision.detail)}</p>
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
-  <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}</div>
+  <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${merge}${reaccept}
   <p class="meta revision">Revision <code>${short(item.head)}</code>${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
+
+  // The owner's framing, set with atelier new or atelier edit: shown only
+  // when any of it is set, above the brief, where an agent or reviewer reads first.
+  const list = (entries: string[]) => `<ul>${entries.map((x) => `<li>${e(x)}</li>`).join("")}</ul>`;
+  const framing = item.nonGoals?.length || item.stopWhen?.length || item.nextGate
+    ? `<section class="review-section framing" id="framing" aria-label="How the task is framed"><h3>Framing</h3><dl>
+    ${item.nonGoals?.length ? `<dt>Non-goals</dt><dd>${list(item.nonGoals)}</dd>` : ""}
+    ${item.stopWhen?.length ? `<dt>Stop when</dt><dd>${list(item.stopWhen)}</dd>` : ""}
+    ${item.nextGate ? `<dt>Next gate</dt><dd>${e(item.nextGate)}</dd>` : ""}
+  </dl></section>`
+    : "";
 
   const scope = gate.outOfScope.length
     ? `<details class="notice"><summary>Scope changed · ${gate.outOfScope.length} file${gate.outOfScope.length === 1 ? "" : "s"}</summary>
@@ -1149,14 +1244,16 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     ? `<div class="notice"><h3>${gate.changeClass === "coordinated" ? "Coordinated change" : "Protected change"}</h3><p>${e(gate.requirement ? `${gate.requirement}.` : "These files affect protected behavior and need an approval from a model of another family than every contributor.")} Your own approval does not count as that review.</p></div>`
     : "";
 
+  // The head's own runs: a merged check ran on another tree and is shown
+  // beside the merge preview instead.
   const checkRows = view.checks.map((c) => {
     const last = d.evidence
-      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
+      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
       .sort((a, b) => a.at.localeCompare(b.at))
       .pop();
     const status = c.grade === "pending" ? tag("Waiting", "ask") : c.passed ? tag("Passed", "go") : tag("Failed", "bad");
     const where = c.grade === "observed" ? whereChip(c.where) : "";
-    const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && x.where !== "sandbox");
+    const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && x.where !== "sandbox");
     const detail = last
       ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}`
       : uncounted
@@ -1209,9 +1306,9 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     : "";
 
   return `${header}
-${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
+${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
-<section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
+<section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
   ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
@@ -1256,7 +1353,7 @@ export function renderFile(f: FileChange, open: boolean): string {
   return `<details class="file"${open ? " open" : ""}><summary><span class="tag ${tone}">${label}</span><code>${e(f.path)}</code>${counts}</summary>${body}</details>`;
 }
 
-function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null): string {
+function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null, merged?: MergedCheckView): string {
   if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
   if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
   if (!diff.files.length) return `<p class="empty">No changes: the workspace at <span class="mono">${short(diff.head)}</span> holds the same tree as main at <span class="mono">${short(diff.base)}</span>.</p>`;
@@ -1273,22 +1370,47 @@ function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string 
     ? ` Paths main changed since this task forked, and the workspace has not taken, are listed here as the workspace's changes until <code>atelier update</code> brings them in.`
     : "";
   return `${moved}<p class="meta">${summary}${behind}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
-${renderMainPreview(diff.main)}
+${renderMainPreview(diff.main, merged)}
 ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 }
 
-// Whether the task would merge into main as main is now. Read only; the merge
-// itself is still made by atelier merge.
-export function renderMainPreview(m: MainPreview | null | undefined): string {
+// Whether the task would merge into main as main is now, with the checks run
+// on that merge beside it. Read only; the merge itself is still made by
+// atelier merge.
+export function renderMainPreview(m: MainPreview | null | undefined, merged?: MergedCheckView): string {
   if (m === undefined) return "";
   if (m === null) return `<p class="meta">Whether this merges cleanly into main could not be read just now.</p>`;
   const plural = (n: number, w: string) => `${n.toLocaleString("en")} ${w}${n === 1 ? "" : "s"}`;
-  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date", "go")} Main has not moved since this task forked; it merges as it is.</p>`;
+  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date", "go")} Main has not moved since this task forked; it merges as it is.</p>${renderMergedChecks(merged, m, false)}`;
   const moved = `Main has moved ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} along its first-parent line since this task forked (a merge counts once), changing ${plural(m.merge.ours, "path")}`;
   if (m.merge.clean) {
     const shared = m.merge.both.length ? `; both sides changed ${plural(m.merge.both.length, "path")}, and the changes do not overlap` : "; none of them are paths this task changed";
-    return `<p class="merge-preview">${tag("Merges cleanly", "go")} ${moved}${shared}.</p>`;
+    return `<p class="merge-preview">${tag("Merges cleanly", "go")} ${moved}${shared}.</p>${renderMergedChecks(merged, m, true)}`;
   }
   const rows = m.merge.conflicts.map((c) => `<li><code>${e(c.path)}</code> <span class="meta">${e(c.reason)}</span></li>`).join("");
-  return `<div class="merge-preview">${tag(plural(m.merge.conflicts.length, "conflict"), "bad")} ${moved}. Merging now would stop at:<ul class="merge-conflicts">${rows}</ul><p class="meta">Bring main into the task's workspace and resolve these before accepting.</p></div>`;
+  return `<div class="merge-preview">${tag(plural(m.merge.conflicts.length, "conflict"), "bad")} ${moved}. Merging now would stop at:<ul class="merge-conflicts">${rows}</ul><p class="meta">Bring main into the task's workspace and resolve these before accepting.</p></div>${renderMergedChecks(merged, m, false)}`;
+}
+
+// The required checks run on the would-be merge: each one's latest run at
+// this revision, with the main head it merged with, marked stale once main
+// has moved past it. A merged check is shown, never required, except that a
+// failing one blocks acceptance when main moved after the revision's own
+// checks passed (see mergedBlockers in src/rules.ts), until a merged run
+// passes or the head moves; a later run of the revision's own checks does
+// not clear it. The readiness details then say so. `offer` names the command when no run exists yet and
+// main has moved, where the revision's own checks say nothing about the merge.
+function renderMergedChecks(merged: MergedCheckView | undefined, m: MainPreview, offer: boolean): string {
+  if (!merged || !merged.checks.length) return "";
+  if (!merged.run) {
+    return offer
+      ? `<p class="meta merge-checks">Checks on the merge: not run. <code>atelier check --merged</code> runs the required checks on the merge of this revision with main at <code>${short(m.head)}</code>, locally or with <code>--sandbox</code>.</p>`
+      : "";
+  }
+  const rows = merged.checks.map((c) => {
+    if (c.grade === "pending") return `<li>${tag("Not run", "ask")}<code>${e(c.claim)}</code></li>`;
+    const status = c.passed ? tag("Passed", "go") : tag("Failed", "bad");
+    const stale = c.stale ? ` ${tag("Stale", "ask")}<span class="meta">main is now at <code>${short(m.head)}</code>; run <code>atelier check --merged</code> again</span>` : "";
+    return `<li>${status}<code>${e(c.claim)}</code>${whereChip(c.where)}<span class="meta">with main at <code>${short(c.mainHead ?? null)}</code>${c.by ? ` · ${e(c.by)}` : ""}${c.at ? ` · ${when(c.at)}` : ""}</span>${stale}</li>`;
+  }).join("");
+  return `<div class="merge-checks"><p class="meta">Checks on the merge with main, at this revision:</p><ul class="merge-check-rows">${rows}</ul></div>`;
 }

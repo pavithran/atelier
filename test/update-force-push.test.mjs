@@ -130,6 +130,21 @@ test("update puts this workspace's own commits on the fork's head before the bas
   assert.equal(f.forkMain(), f.git(f.workspace, "rev-parse", "HEAD"));
 });
 
+test("update stopped on a conflict names the same push as a finished update", (t) => {
+  const f = fixture(t);
+  // The baseline and this workspace change base.txt differently.
+  const seed = join(f.dir, "seed");
+  f.commit(seed, "base.txt", "Main: base changed");
+  f.git(seed, "push", "-q", "origin", "main");
+  f.commit(f.workspace, "base.txt", "A: base changed");
+  const r = f.run(["update"]);
+  assert.notEqual(r.status, 0, "update went ahead through a conflict");
+  assert.match(r.stderr, /^atelier: rebase stopped on a conflict\. Resolve it, then git rebase --continue\. Push with: atelier push --force$/m);
+  assert.ok(existsSync(join(f.workspace, ".git", "rebase-merge")), "the rebase is left for the agent to finish");
+  assert.match(f.git(f.workspace, "ls-files", "-u"), /base\.txt/);
+  assert.deepEqual(f.pushes(), []);
+});
+
 test("push --force refuses to drop commits Atelier recorded, whatever the lease would allow", (t) => {
   const f = fixture(t);
   // The old claim's fetch alone: origin/main is H2, the workspace still ends at H1.
