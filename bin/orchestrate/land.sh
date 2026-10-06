@@ -4,8 +4,9 @@
 # when it approves, record the review, accept and merge in the registered
 # checkout, then type-check main. Run it through queue.sh, which merges main
 # into the task first and keeps landings one at a time. Exits 2 on a failed
-# check, 3 when the reviewer does not approve (its answer is in
-# .scratch/review-TASK.md), 7 when an atelier step fails. REVIEW_MODEL picks the reviewer (review.sh).
+# check, 3 when the reviewer does not approve, its rejection and findings
+# recorded on the task (its answer is in .scratch/review-TASK.md), 7 when an
+# atelier step fails. REVIEW_MODEL picks the reviewer (review.sh).
 # `atelier land` (task t187) does this inside Atelier; prefer it once the
 # server's version check allows (t190).
 set -u
@@ -28,9 +29,18 @@ case $model in gpt-oss*) reviewer=antigravity/gpt-oss-120b ;; *) reviewer=antigr
 answer="$W/.scratch/review-$t.md"
 rm -f "$answer"
 "${0:A:h}/review.sh" "$W" "$W/.scratch/review-$t" "$ctx" "$model" || { echo "$t: the review did not run"; exit 7; }
-{ grep -q "VERDICT: APPROVE" "$answer" && ! grep -q "VERDICT: REJECT" "$answer"; } || { echo "$t: $reviewer DID NOT APPROVE"; grep -v '^$' "$answer" | head -14; exit 3; }
+# The answer is read with Atelier's parser, and the verdict is recorded with
+# its findings whichever way it goes, so a rejection reaches the reliability
+# record and atelier finding can judge each finding later.
+parsed=$(node "${0:A:h}/verdict.mjs" "$answer")
+field() { node -e 'const p = JSON.parse(process.argv[1]); const v = p[process.argv[2]]; process.stdout.write(typeof v === "string" ? v : JSON.stringify(v ?? null))' "$parsed" "$1"; }
+if [ "$(field ok)" != "true" ]; then echo "$t: $reviewer's answer could not be read: $(field error)"; grep -v '^$' "$answer" | head -14; exit 3; fi
 cd "$M"
-step atelier review "$t" --as "$reviewer" --approve --note "$note"
+if [ "$(field verdict)" != "approve" ]; then
+  step atelier review "$t" --as "$reviewer" --reject --note "$(field summary)" --findings "$(field findings)"
+  echo "$t: $reviewer DID NOT APPROVE"; grep -v '^$' "$answer" | head -14; exit 3
+fi
+step atelier review "$t" --as "$reviewer" --approve --note "$note" --findings "$(field findings)"
 step atelier accept "$t"
 step atelier merge "$t"
 git log --oneline -1 | cut -c1-70
