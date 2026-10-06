@@ -7,7 +7,7 @@
 
 import { RuleError } from "../rules.ts";
 
-export type PoolFamily = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "other";
+export type PoolFamily = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "moonshot" | "xai" | "xiaomi" | "bytedance" | "cohere" | "other";
 export const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"] as const;
 export const PROVIDERS = ["ai-studio", "openai-compatible", "google", "deepseek", "openrouter", "anthropic", "openai", "subscription"] as const;
 export type PoolHarness = (typeof HARNESSES)[number];
@@ -48,6 +48,11 @@ const FAMILIES: [PoolFamily, RegExp][] = [
   ["minimax", /minimax/i],
   ["mistral", /mistral|codestral|devstral|magistral/i],
   ["meta", /^llama|meta-llama/i],
+  ["moonshot", /^kimi\b|moonshot/i],
+  ["xai", /^grok\b|x-?ai\b/i],
+  ["xiaomi", /^mimo\b|xiaomi/i],
+  ["bytedance", /^seed\b|bytedance|doubao/i],
+  ["cohere", /^command\b|cohere|^north\b/i],
 ];
 
 export function familyOf(model: string): PoolFamily {
