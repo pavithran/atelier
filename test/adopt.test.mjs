@@ -246,6 +246,43 @@ test("the leftovers are what ControlPlane still holds in the checkout", (t) => {
   ]);
 });
 
+// A capability's command is judged on the program each command in it runs:
+// a glob, a redirection and everything after the program are arguments, and
+// a chain, a pipeline or a shell's `-c` command line is split first.
+test("a capability's chains, pipelines, redirections and globs are judged on each command's program", (t) => {
+  const { dir } = checkout(t);
+  writeFileSync(join(dir, "docs/control-plane/work-item.v1.json"), JSON.stringify({ state: "reconciled" }));
+  rmSync(join(dir, "tools/control-plane"), { recursive: true });
+  for (const file of ["AGENTS.md", "CLAUDE.md", "GLM.md"]) writeFileSync(join(dir, file), "# weblog\n\nWork through Atelier.\n");
+  writeFileSync(join(dir, "docs/control-plane/project-adapter.v1.json"), JSON.stringify({
+    capabilities: {
+      // agent-lens's launchd capability: a glob copied, two loops and a
+      // pipeline, every program a bare word.
+      "launchd-install": { command: ["/bin/bash", "-c", "cp deploy/com.pavi.agentlens-*.plist ~/Library/LaunchAgents/ && for p in ~/Library/LaunchAgents/com.pavi.agentlens*.plist; do plutil -lint \"$p\"; done && for p in ~/Library/LaunchAgents/com.pavi.agentlens*.plist; do launchctl load \"$p\" 2>/dev/null || true; done && launchctl list | grep -c com.pavi.agentlens"] },
+      chain: "git status && deploy/ship.sh",
+      "or-chain": "tools/ship.py || true",
+      redirected: ">/dev/null tools/report.py",
+      pipeline: "tools/report.py 2> logs/err.txt | gzip -c > logs/report.gz",
+      filtered: "cat a.txt | tools/filter.py > out.txt",
+      conditional: "if [ -f x ]; then tools/ship.py; fi",
+      inline: "bash -lc 'tools/ship.py; python3 tools/count.py'",
+      glob: "rm -f build/*.log",
+      expanded: '"$HOME/tools/x.py" && ~/tools/y.py',
+      present: 'git fetch && "tools/has space.sh"',
+    },
+  }));
+  assert.deepEqual(leftovers(dir), [
+    'docs/control-plane/project-adapter.v1.json: capability "chain" runs deploy/ship.sh, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "or-chain" runs tools/ship.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "redirected" runs tools/report.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "pipeline" runs tools/report.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "filtered" runs tools/filter.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "conditional" runs tools/ship.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "inline" runs tools/ship.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "inline" runs tools/count.py, which does not exist',
+  ]);
+});
+
 // A project that has moved on: nothing is left over, and adopt says so.
 test("a settled project has no leftovers", (t) => {
   const { dir } = checkout(t);
