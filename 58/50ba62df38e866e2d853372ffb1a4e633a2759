@@ -1,0 +1,16 @@
+atelier atelier/t101 "atelier unwrap misses the project's handoff and unpublished commits: it reads only docs/STATE.md or STATE.md and prints nothing when neither exists, so in Atelier's own checkout (whose handoff is the 'Where work stands' section of the gitignored PROJECT.md) it missed the handoff; and it compares main only with the baseline, so it reported main in step while main was 2 commits ahead of GitHub, held back by 2 failing tests. Fix: say when no state file was found and where it looked; read PROJECT.md's handoff section as the state file when there is no STATE.md, and make wrap refresh the same file; report each owner remote's position (ahead/behind) beside the baseline line. Seen 2026-10-05 in PAVI's session in the atelier folder"
+accepted head 62c5fa95acdbb8962e3cb2111e6f21b3aaf8c84b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T00:18:37.112Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T00:18:39.543Z
+REVIEW approve — claude-code/sonnet-5.5: APPROVE. 56/56 tests pass, typecheck clean. unwrap stays read-only: the remote lines use rev-parse, remote and rev-list, all with --no-optional-locks; a content and mtime snapshot of tree and .git (stale index, packed refs) is unchanged. Hostile remote names print as text; every ref argument starts with refs/, no shell. Wrap's mtime check compares UTC instants; equal counts as unchanged; tracked files behave as before. Follow-up: behind and diverged read 'behind of' (cli/atelier.mjs:643-644); no test covers behind, diverged or in step.
+REVIEW approve — pavi: Owner approval after sonnet-5.5's review.
+2026-10-05T23:15:25.579Z pavi item.created
+2026-10-05T23:23:58.790Z opencode/glm-5.3 item.claimed
+2026-10-05T23:24:02.291Z opencode/glm-5.3 fork.created
+2026-10-06T00:17:25.170Z opencode/glm-5.3 push.observed
+2026-10-06T00:18:37.223Z opencode/glm-5.3 evidence.observed
+2026-10-06T00:18:39.618Z opencode/glm-5.3 evidence.observed
+2026-10-06T00:18:40.280Z opencode/glm-5.3 item.submitted
+2026-10-06T00:30:15.325Z claude-code/sonnet-5.5 review.approved
+2026-10-06T00:30:15.949Z pavi review.approved
+2026-10-06T00:30:16.550Z pavi item.accepted
