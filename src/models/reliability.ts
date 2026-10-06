@@ -28,7 +28,7 @@ import { SERVED, servedActor, servedBy } from "./served.ts";
 
 export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
-export const RUN_ROLES = ["build", "review"] as const;
+export const RUN_ROLES = ["build", "plan", "review"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
 // What a plan part is, as the plan names it (src/plans/schema.ts): the kind of
@@ -544,7 +544,7 @@ export function cleanRun(body: Record<string, unknown>, at: string, runner: stri
   const actor = str(body.actor).trim();
   if (!validActor(actor) || !actor.includes("/") || actor.startsWith("atelier/")) throw bad("actor must be the harness/model the runner ran, such as opencode/glm-5.3");
   const role = body.role === undefined ? "build" : str(body.role);
-  if (!RUN_ROLES.includes(role as RunRole)) throw bad("role must be build or review");
+  if (!RUN_ROLES.includes(role as RunRole)) throw bad("role must be build, plan or review");
   const outcome = str(body.outcome);
   if (!RUN_OUTCOMES.includes(outcome as RunOutcome)) throw bad(`outcome must be one of ${RUN_OUTCOMES.join(", ")}`);
   const project = body.project === undefined || body.project === null ? null : str(body.project).trim();

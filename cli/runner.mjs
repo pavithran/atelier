@@ -246,6 +246,25 @@ export async function checked(argv, options, executeChild = execute) {
   return result.output;
 }
 
+// Uncommitted work in a workspace is saved before a reset and clean wipe it,
+// so a stalled agent's draft is never lost: the next claim of a part resets
+// the same workspace. Untracked files are staged first, since `git stash
+// create` keeps only what the index tracks; a staging failure (a nested
+// repository with no commit, say) is logged and the tracked changes are still
+// saved. The stash commit is kept under refs/atelier/rescue/ID-TIMESTAMP,
+// which no reset or clean touches. `git(args)` runs git in the workspace and
+// returns its output. Returns the ref, or null when there was nothing to save.
+export async function rescueWork(cwd, git, log, now = new Date()) {
+  try { await git(["add", "--all"]); }
+  catch (error) { log(`untracked files could not be staged for rescue: ${error.message}`); }
+  const commit = (await git(["stash", "create"])).trim();
+  if (!commit) return null;
+  const ref = `refs/atelier/rescue/${basename(cwd)}-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+  await git(["update-ref", ref, commit]);
+  log(`uncommitted work saved as ${ref} before the workspace is reset`);
+  return ref;
+}
+
 // Dependencies keep the task lifecycle testable without a server or a harness.
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
@@ -348,8 +367,9 @@ export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 // take it.
 export async function runReview(assignment, config, name, io) {
   const { project, item, agent, model, actor } = assignment;
-  let brief, diffFile, workspace, verdictFile;
+  let brief, diffFile, workspace, verdictFile, claimedRequest = false, released = false;
   const release = async (reason) => {
+    released = true;
     try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason]); }
     catch (error) { io.log(`review release failed: ${error.message}`); }
   };
@@ -359,7 +379,10 @@ export async function runReview(assignment, config, name, io) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
     // Claim the request; the server returns the part, the brief's inputs and a
     // read token for the fork, so the part can be cloned read-only.
-    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    // From the claim on, any error releases the request (see the catch), so a
+    // failed review never holds the task for the claim's two hours.
+    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name])
+      .then((output) => { claimedRequest = true; return output; }));
     // A review clones into a folder of its own beside the task's workspace,
     // never into the builder's, and the folder is removed when the job ends.
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
@@ -377,7 +400,18 @@ export async function runReview(assignment, config, name, io) {
     diffFile = await io.writeDiff(workspace, diff);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
-    const result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, env);
+    // A review gets its own data folder for the length of the harness, as a
+    // build does (see OWN_DATA_HOME).
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    try {
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
     if (io.stopped()) throw new Error("interrupted");
     if (result.timedOut) {
       await release("harness timed out");
@@ -404,6 +438,7 @@ export async function runReview(assignment, config, name, io) {
     return { phase: "reviewed", verdict: parsed.verdict };
   } catch (error) {
     io.log(`failed: ${error.message}`);
+    if (claimedRequest && !released) await release(error.message);
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   } finally {
     if (brief) await io.removeBrief(brief);
@@ -423,10 +458,13 @@ export async function runIntegrate(assignment, config, name, io) {
   const dispatch = item.dispatch ?? {};
   const partKey = dispatch.part, partHead = dispatch.head, partId = dispatch.partId;
   const workspace = io.workspacePath(project, item.id);
+  let claimed = false, released = false;
   const release = async (reason) => {
+    released = true;
     try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", reason]); }
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
+  // Awaited where it is returned, so an error in it reaches the catch below.
   const fail = async (reason) => {
     await io.cli(["integration-failed", item.id, "--project", project, "--as", actor, "--part", partKey, "--reason", reason]);
     await release(reason);
@@ -439,13 +477,17 @@ export async function runIntegrate(assignment, config, name, io) {
       throw Object.assign(new Error("the queue returned an invalid integrate assignment"), { skipped: true });
     }
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    claimed = true;
+    // The merge starts from the branch as the fork holds it, so a merge whose
+    // push failed in an earlier run is not carried into this one.
+    await io.resetToRemote(workspace);
     const before = await io.head(workspace);
     const part = JSON.parse(await io.cli(["read-token", partId, "--project", project, "--as", actor]));
     await io.fetch(workspace, part.remote, part.token, partHead);
     const merged = await io.merge(workspace, partHead);
     if (merged.code !== 0) {
       await io.abortMerge(workspace);
-      return fail(`merge conflicted: ${merged.output || "the part conflicts with the plan's branch"}`);
+      return await fail(`merge conflicted: ${merged.output || "the part conflicts with the plan's branch"}`);
     }
     const mergeHead = await io.head(workspace);
     await io.push(workspace);
@@ -456,7 +498,7 @@ export async function runIntegrate(assignment, config, name, io) {
     catch (error) { checkOutput = error.message; }
     if (checkOutput) {
       await io.rollback(workspace, before);
-      return fail(`the plan's checks failed after the merge: ${checkOutput}`);
+      return await fail(`the plan's checks failed after the merge: ${checkOutput}`);
     }
     const result = JSON.parse(await io.cli(["integrated", item.id, "--project", project, "--as", actor, "--part", partKey, "--merge-commit", mergeHead]));
     if (result.allIntegrated) {
@@ -468,6 +510,8 @@ export async function runIntegrate(assignment, config, name, io) {
     return { phase: "integrated", part: partKey };
   } catch (error) {
     io.log(`failed: ${error.message}`);
+    // Any error after the claim gives the plan item back, so the job can run again.
+    if (claimed && !released) await release(error.message);
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   }
 }
@@ -478,7 +522,9 @@ export async function runIntegrate(assignment, config, name, io) {
 export async function runRefresh(assignment, config, name, io) {
   const { project, item, actor } = assignment;
   const workspace = io.workspacePath(project, item.id);
+  let claimed = false, released = false;
   const release = async (reason) => {
+    released = true;
     try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", reason]); }
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
@@ -488,6 +534,9 @@ export async function runRefresh(assignment, config, name, io) {
       throw Object.assign(new Error("the queue returned an invalid refresh assignment"), { skipped: true });
     }
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    claimed = true;
+    // As in runIntegrate: the merge starts from the branch as the fork holds it.
+    await io.resetToRemote(workspace);
     const base = JSON.parse(await io.cli(["base-token", item.id, "--project", project, "--as", actor]));
     await io.fetch(workspace, base.remote, base.token, base.defaultBranch);
     const merged = await io.merge(workspace, "FETCH_HEAD");
@@ -501,6 +550,7 @@ export async function runRefresh(assignment, config, name, io) {
     return { phase: "refreshed" };
   } catch (error) {
     io.log(`failed: ${error.message}`);
+    if (claimed && !released) await release(error.message);
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   }
 }
@@ -646,19 +696,28 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   for (const signal of signals) process.on(signal, stop);
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
+  // Resets a workspace to a commit and removes untracked files, saving any
+  // uncommitted work first (rescueWork).
+  const resetTo = async (cwd, target) => {
+    const git = (args) => checked(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
+    await rescueWork(cwd, git, (text) => io.log(text));
+    for (const args of [["reset", "--hard", target], ["clean", "-ffd"]]) await git(args);
+  };
   const io = {
     removeFile: (file) => rmSync(file, { force: true }),
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     workspacePath, log: line, stopped: () => controller.signal.aborted,
     cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-      ...(argv[0] === "release" && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+      ...((argv[0] === "release" || argv[0] === "review-release") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
-    reset: async (cwd) => {
-      for (const args of [["reset", "--hard", "HEAD"], ["clean", "-ffd"]]) {
-        await checked(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
-      }
+    reset: (cwd) => resetTo(cwd, "HEAD"),
+    // The integrate and refresh jobs' reset: to the fork's copy of the branch
+    // the claim names (atelier.branch), which the claim has just fetched.
+    resetToRemote: async (cwd) => {
+      const branch = (await checked(["git", "config", "--local", "atelier.branch"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild)).trim();
+      await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
     harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env }),
@@ -689,7 +748,10 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         const tasks = await queue(offer, controller.signal);
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
-        for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
+        // Review jobs come first, in the queue's order, then the rest in
+        // theirs, so a review atelier land waits on is not held behind builds.
+        const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
+        for (const task of ordered.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
@@ -708,7 +770,9 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
           const outcome = runOutcome(state);
           if (outcome && reportRun) {
             try {
-              await reportRun({ actor: task.actor, role: "build", outcome, project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
+              // The report names the job that ran: a plan, a review, or a build.
+              const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : "build";
+              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }
