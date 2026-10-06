@@ -257,11 +257,38 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
   throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
 }
 
-async function mint(env: Env, repo: string, scope: "read" | "write") {
+// The branch Atelier reads in a project's baseline and in every fork of it:
+// the one init registered. headOf reads a repository's HEAD, and a fork
+// copies the baseline's HEAD, which init created naming that branch. A
+// fork's own repository info is never asked: Artifacts can report a branch
+// there that HEAD does not name, and a fork of a master baseline reports
+// main. A record without a branch falls back to the baseline's info, which
+// init set when it created the baseline.
+async function projectBranch(env: Env, p: ProjectRecord): Promise<string> {
+  if (p.branch) return p.branch;
+  using base = await env.ARTIFACTS.get(p.repo);
+  return (await base.info()).defaultBranch;
+}
+
+// A branch name as init sends it: one Git would accept for a branch (the
+// rules of git check-ref-format), so the name a workspace is told to push
+// to is a plain ref, never an option.
+const BAD_REF = /[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|^[-./]|\/\.|[./]$|\.lock(\/|$)/;
+function branchArg(value: unknown): string {
+  if (typeof value !== "string" || !value || value.length > 200 || value === "@" || BAD_REF.test(value)) {
+    throw new RuleError("bad_branch", "the default branch must be a branch name, such as main or master", 400);
+  }
+  return value;
+}
+
+// A token for one repository. `branch` is the project's branch, from
+// projectBranch, returned with the token so the caller pushes and fetches
+// the branch Atelier reads.
+async function mint(env: Env, repo: string, scope: "read" | "write", branch: string) {
   using r = await env.ARTIFACTS.get(repo);
   const info = await r.info();
   const t = await r.createToken(scope, scope === "write" ? WRITE_TTL : READ_TTL);
-  return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: info.defaultBranch };
+  return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
 }
 
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
@@ -368,8 +395,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       throw new RuleError("bad_title", "the title must be a string: omit it to keep the current one, or pass \"\" to clear it", 400);
     }
     const has = (k: string) => body[k] !== undefined;
+    const branch = has("defaultBranch") ? branchArg(body.defaultBranch) : undefined;
     const init: ProjectInit = {
       name: project, repo, reset: body.reset === true,
+      ...(branch ? { branch } : {}),
       ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected) } : {}),
@@ -381,13 +410,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("approval") ? { approval: body.approval ? String(body.approval).slice(0, 500) : null } : {}),
     };
     try {
-      await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: body.defaultBranch ?? "main" });
+      await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: branch ?? "main" });
+      // A baseline created without a branch named was created on main.
+      init.branch ??= "main";
     } catch (err) {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
     const record = await L.initProject(init, actor);
     await index(env).registerProject(record);
-    return json({ project: record, baseline: await mint(env, repo, "write") });
+    return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
@@ -446,7 +477,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
-    return json(await mint(env, (await L.project()).repo, scope));
+    const p = await L.project();
+    return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope), actor), 201);
@@ -490,10 +522,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         }
       }
       // Re-claiming rotates the token: one live write token per item, ever.
+      // The workspace and the baseline are both given the project's branch:
+      // the fork's HEAD names it, and headOf reads HEAD.
       await revoke(env, fork, await L.tokenId(id));
-      const w = await mint(env, fork!, "write");
+      const branch = await projectBranch(env, p);
+      const w = await mint(env, fork!, "write", branch);
       await L.setToken(id, w.tokenId);
-      const b = await mint(env, p.repo, "read");
+      const b = await mint(env, p.repo, "read", branch);
       return json({
         item: await L.item(id),
         workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
@@ -503,7 +538,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "read-token": {
       const item = await L.item(id);
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
-      const t = await mint(env, item.fork, "read");
+      const t = await mint(env, item.fork, "read", await projectBranch(env, await L.project()));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
     }
     case "push": {
@@ -935,9 +970,8 @@ export default {
             const L = ledgerOf(env, project);
             const item = (await L.items()).find(i=>i.fork===notice.repo);
             if (!item || ["merged","abandoned"].includes(item.state)) continue;
-            using repo = await env.ARTIFACTS.get(notice.repo);
-            const info = await repo.info();
-            if (notice.ref !== `refs/heads/${info.defaultBranch}`) break;
+            // Only a push to the project's branch moves the head headOf reads.
+            if (notice.ref !== `refs/heads/${await projectBranch(env, project)}`) break;
             const current = await headOf(env,notice.repo);
             if (current) { const recorded = await L.observePush(item.id,current,item.head); if (!["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation"); }
             break;
