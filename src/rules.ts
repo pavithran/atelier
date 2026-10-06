@@ -536,57 +536,119 @@ const RECIPES: Record<string, { files: string[]; included: string; file: string[
   just: { files: ["justfile", "Justfile", ".justfile"], included: "**/*.just", file: ["-f", "--justfile"], dir: ["-d", "--working-directory"] },
 };
 
+// Words a shell puts before a command, and wrappers that run the command
+// after them: skipped to find the command, with each wrapper's own options
+// (those that take a value are listed) and, for timeout, its duration.
+const SHELL_WORDS = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "time", "exec", "command", "builtin", "nohup"]);
+const WRAPPERS: Record<string, { valued: string[]; args?: number }> = {
+  env: { valued: ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"] },
+  "/usr/bin/env": { valued: ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"] },
+  "cross-env": { valued: [] },
+  sudo: { valued: ["-u", "-g", "-h", "-p", "-r", "-t", "-U", "-C", "-D", "-R", "-T"] },
+  doas: { valued: ["-u", "-C"] },
+  nice: { valued: ["-n", "--adjustment"] },
+  timeout: { valued: ["-s", "-k", "--signal", "--kill-after"], args: 1 },
+  "xvfb-run": { valued: ["-s", "-e", "-f", "-p", "-n", "-w", "--server-args", "--error-file", "--auth-file", "--server-num", "--wait"] },
+};
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
 export function checkFiles(checks: string[]): string[] {
   const files = new Set<string>();
   // A path inside the repository, as Git names it.
   const inside = (path: string) => !path.startsWith("/") && !path.startsWith("../") && path !== "..";
   const add = (path: string) => { if (inside(path)) files.add(path.replace(/^\.\//, "")); };
+  const assignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
   // The value of one of the named options at words[i]: the word after it, or
   // what follows = in the option itself; null when words[i] is none of them.
   const option = (words: string[], i: number, names: string[]): string | null => {
     const [name, inline] = words[i].split(/=(.*)/s);
     return names.includes(name) ? inline ?? words[i + 1] ?? null : null;
   };
+  // The index of the command word from `from` on: past environment
+  // assignments, the shell's own words and wrappers with their options.
+  const commandAt = (words: string[], from: number): number => {
+    for (let i = from; i < words.length; i++) {
+      const word = words[i];
+      if (assignment(word) || SHELL_WORDS.has(word)) continue;
+      const wrapper = WRAPPERS[word];
+      if (!wrapper) return i;
+      let args = wrapper.args ?? 0;
+      while (i + 1 < words.length) {
+        const next = words[i + 1];
+        if (next.startsWith("-")) { i += wrapper.valued.includes(next) && !next.includes("=") ? 2 : 1; }
+        else if (args > 0) { i++; args--; }
+        else break;
+      }
+    }
+    return -1;
+  };
+  // Every command position of a segment: its command, and the command of
+  // the string a shell's -c runs, through the same wrappers.
+  const commands = (words: string[]): number[] => {
+    const out: number[] = [];
+    for (let at = commandAt(words, 0); at !== -1; ) {
+      out.push(at);
+      if (!SHELLS.has(words[at])) break;
+      let inner = -1;
+      for (let j = at + 1; j < words.length; j++) {
+        const w = words[j];
+        if (!w.startsWith("-")) break;
+        if (!w.startsWith("--") && w.includes("c")) { inner = j + 1; break; }
+        if (w === "-o") j++;
+      }
+      at = inner === -1 ? -1 : commandAt(words, inner);
+    }
+    return out;
+  };
+  // The manager's files, and the same under the directory its --prefix, -C,
+  // --dir or --cwd option names, where it then reads them.
+  const managerFiles = (words: string[], at: number, manager: string) => {
+    for (const file of PACKAGE_MANAGERS[manager]) files.add(file);
+    for (let i = at + 1; i < words.length; i++) {
+      const dir = option(words, i, ["--prefix", "-C", "--dir", "--cwd"]);
+      if (dir !== null && inside(dir)) for (const file of PACKAGE_MANAGERS[manager]) add(`${dir.replace(/\/?$/, "/")}${file}`);
+    }
+  };
   for (const cmd of checks) {
-    // Each command of a line, as the shell separates them.
-    for (const segment of cmd.split(/[;&|()]+/)) {
+    // Each command of a line, as the shell separates them, a newline included.
+    for (const segment of cmd.split(/[;&|()\n\r]+/)) {
       const words = segment.split(/[\s<>"'`]+/).filter(Boolean);
-      // The command word: the first that is not an environment assignment.
-      const at = words.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
-      if (at === -1) continue;
-      const command = words[at], rest = words.slice(at + 1);
+      // A path run directly, in any command position: bin/check, scripts/verify.
+      for (const at of commands(words)) if (words[at].includes("/")) add(words[at]);
+      // A runner's name counts wherever it stands in the line, as a wrapper, a
+      // shell's -c string or shell syntax may put it anywhere: a word that is
+      // one errs toward protecting what it runs.
       words.forEach((word, i) => {
         const prev = words[i - 1];
         if (word.startsWith("-")) return;
         if (word.startsWith("./") || /\.sh$/.test(word) || (prev && INTERPRETERS.has(prev) && /[./]/.test(word))) add(word);
-      });
-      // A path run directly: bin/check, scripts/verify.
-      if (command.includes("/")) add(command);
-      for (const file of [...(PACKAGE_MANAGERS[command] ?? []), ...(BUILD_TOOLS[command] ?? [])]) files.add(file);
-      if (command === "deno" && rest[0] === "task") ["deno.json", "deno.jsonc"].forEach((file) => files.add(file));
-      // npx, bunx and a package manager's dlx, exec or x run a local binary by
-      // its name, resolved through the manager's own files.
-      const viaManager = command in PACKAGE_MANAGERS && ["dlx", "exec", "x"].includes(rest[0]);
-      if (command === "npx" || command === "bunx" || viaManager) {
-        for (const file of PACKAGE_MANAGERS[command === "npx" ? "npm" : command === "bunx" ? "bun" : command]) files.add(file);
-        const args = rest.slice(viaManager ? 1 : 0);
-        let i = 0;
-        while (i < args.length && args[i].startsWith("-")) i += ["-p", "--package", "-c", "--call"].includes(args[i]) ? 2 : 1;
-        // The binary's name: a scoped package's own name, without a version.
-        const bin = args[i]?.split("/").pop()?.replace(/(?!^)@.*$/, "");
-        if (bin && !args[i].startsWith(".")) files.add(`node_modules/.bin/${bin}`);
-      }
-      const recipe = RECIPES[command];
-      if (recipe) {
-        let dir = "", named: string | null = null;
-        for (let i = at + 1; i < words.length; i++) {
-          const d = option(words, i, recipe.dir), f = option(words, i, recipe.file);
-          if (d !== null) dir = d.replace(/\/?$/, "/");
-          if (f !== null) named = f;
+        if (word in PACKAGE_MANAGERS) managerFiles(words, i, word);
+        for (const file of BUILD_TOOLS[word] ?? []) files.add(file);
+        if (word === "deno" && words[i + 1] === "task") ["deno.json", "deno.jsonc"].forEach((file) => files.add(file));
+        // npx, bunx and a package manager's dlx, exec or x run a local binary
+        // by its name, resolved through the manager's own files.
+        const viaManager = prev in PACKAGE_MANAGERS && ["dlx", "exec", "x"].includes(word);
+        if (word === "npx" || word === "bunx" || viaManager) {
+          const manager = word === "npx" ? "npm" : word === "bunx" ? "bun" : prev;
+          for (const file of PACKAGE_MANAGERS[manager]) files.add(file);
+          let j = i + 1;
+          while (j < words.length && words[j].startsWith("-")) j += ["-p", "--package", "-c", "--call"].includes(words[j]) ? 2 : 1;
+          // The binary's name: a scoped package's own name, without a version.
+          const bin = words[j]?.split("/").pop()?.replace(/(?!^)@.*$/, "");
+          if (bin && !words[j].startsWith(".")) files.add(`node_modules/.bin/${bin}`);
         }
-        if (inside(dir)) for (const file of named !== null ? [named] : recipe.files) add(file.startsWith("/") ? file : dir + file);
-        files.add(recipe.included);
-      }
+        const recipe = RECIPES[word];
+        if (recipe) {
+          let dir = "", named: string | null = null;
+          for (let j = i + 1; j < words.length; j++) {
+            const d = option(words, j, recipe.dir), f = option(words, j, recipe.file);
+            if (d !== null) dir = d.replace(/\/?$/, "/");
+            if (f !== null) named = f;
+          }
+          if (inside(dir)) for (const file of named !== null ? [named] : recipe.files) add(file.startsWith("/") ? file : dir + file);
+          files.add(recipe.included);
+        }
+      });
     }
   }
   return [...files].sort();

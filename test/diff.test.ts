@@ -198,18 +198,18 @@ test("a deep tree where every file at every level changed holds a page per ances
   assert.equal(truncated, true);
   assert.equal(files.length, 60);
   const held = (deepest - start) / 1e6;
-  assert.ok(held < 16, `${held.toFixed(1)} MB held at the deepest level; one page per ancestor is under 2 MB`);
+  assert.ok(held < 24, `${held.toFixed(1)} MB held at the deepest level; one page per ancestor is about 11 MB, every entry about 52 MB`);
 });
 
 test("a level with more changed entries than its page is read again past them, so empty directories past the page never hide a change", async () => {
-  // With three files to list, a page is four entries. Ten added empty
-  // directories come first: the first two pages list nothing, and the diff
-  // still finds the files after them, in order, and still says it is cut.
+  // A page is a thousand entries. 1,002 added empty directories come first:
+  // the first page lists nothing, and the diff still finds the files after
+  // them, in order, and still says it is cut at three.
   const empty = "e".repeat(40);
   const trees: Record<string, Entry[]> = {
     base: [],
     head: [
-      ...Array.from({ length: 10 }, (_, i) => ({ name: `d${i}`, mode: "40000", hash: empty, type: "tree" })),
+      ...Array.from({ length: 1_002 }, (_, i) => ({ name: `d${String(i).padStart(4, "0")}`, mode: "40000", hash: empty, type: "tree" })),
       ...Array.from({ length: 5 }, (_, i) => ({ name: `f${i}`, mode: "100644", hash: `${i}`.repeat(40), type: "blob" })),
     ],
     [empty]: [],
@@ -219,7 +219,16 @@ test("a level with more changed entries than its page is read again past them, s
   const { files, truncated } = await treeDiff(r, "base", "head", { files: 3, blobBytes: 1e6, diffLines: 1e6, treeReads: 1e6, context: 3 });
   assert.deepEqual(files.map((f) => f.path), ["f0", "f1", "f2"]);
   assert.equal(truncated, true);
-  assert.ok(levelReads > 1, "the level is read again for the entries past its page, not held whole");
+  assert.equal(levelReads, 2, "the level is read again for the entries past its page, not held whole");
+  // The page keeps its size as the list nears its cap: a level of 3,000
+  // empty directories and then the files is read once per page, not once
+  // per entry left under the cap.
+  const near: Record<string, Entry[]> = { ...trees, head: [...Array.from({ length: 3_000 }, (_, i) => ({ name: `d${String(i).padStart(4, "0")}`, mode: "40000", hash: empty, type: "tree" })), ...trees.head.slice(1_002)] };
+  levelReads = 0;
+  const nearReader: Reader = { tree: async (h) => { if (h === "head") levelReads++; return near[h] ?? null; }, blob: r.blob };
+  const cut = await treeDiff(nearReader, "base", "head", { files: 3, blobBytes: 1e6, diffLines: 1e6, treeReads: 1e6, context: 3 });
+  assert.deepEqual(cut.files.map((f) => f.path), ["f0", "f1", "f2"]);
+  assert.equal(levelReads, 4);
   // The protected-path list sees every path, past a page of a thousand
   // entries that list nothing.
   const many: Record<string, Entry[]> = {

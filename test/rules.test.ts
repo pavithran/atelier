@@ -192,6 +192,34 @@ test("what a runner executes is protected: make and just recipes, npx's binary, 
   assert.equal(changeClass(["node_modules/.bin/vitest"], { checks: ["npx vitest run"], protected: [] }), "protected");
 });
 
+test("a runner's name counts anywhere in a check line: through wrappers, a shell's -c string, shell syntax and a newline", () => {
+  // Each form reaches npm, so each protects package.json; the check cannot
+  // be weakened by wrapping the runner. The forms that protect nothing are
+  // collected, so a failure names every one.
+  const unprotected = (forms: string[], file: (files: string[]) => boolean) => forms.filter((form) => !file(checkFiles([form])));
+  assert.deepEqual(unprotected([
+    "env CI=1 npm test", "sh -c 'npm test'", "bash -c \"npm run check\"", "time npm test", "timeout 600 npm test", "timeout -k 5 600 npm test",
+    "exec npm test", "command npm test", "sudo npm test", "sudo -u app npm test", "nice -n 10 npm test", "cross-env CI=1 npm test", "xvfb-run -a npm test",
+    "/usr/bin/env npm test", "if npm test; then :; fi", "! npm test", "{ npm test; }", "echo start\nnpm test", "nohup npm test", "bash -euo pipefail -c 'npm test'",
+  ], (files) => files.includes("package.json")), []);
+  assert.deepEqual(unprotected(["env make check", "sh -c \"make check\"", "timeout 600 make check", "echo start\nmake check"], (files) => files.includes("Makefile")), []);
+  assert.deepEqual(unprotected(["sh -c 'just check'"], (files) => files.includes("justfile")), []);
+  assert.deepEqual(unprotected(["env cargo test"], (files) => files.includes("**/Cargo.toml")), []);
+  assert.deepEqual(unprotected(["sudo npx vitest run"], (files) => files.includes("node_modules/.bin/vitest")), []);
+  // A path run directly counts in every command position the wrappers and shells lead to.
+  assert.deepEqual(unprotected(
+    ["env CI=1 bin/check", "sh -c 'bin/check'", "timeout 600 bin/check", "if bin/check; then :; fi", "echo start\nbin/check", "bash -c 'env CI=1 scripts/verify'"],
+    (files) => files.some((f) => f === "bin/check" || f === "scripts/verify"),
+  ), []);
+  // A manager told where its project is reads that directory's files too.
+  assert.ok(checkFiles(["npm --prefix packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["npm -C packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["pnpm -C packages/app test"]).includes("packages/app/.pnpmfile.cjs"));
+  assert.ok(checkFiles(["pnpm --dir=packages/app test"]).includes("packages/app/package.json"));
+  assert.ok(checkFiles(["yarn --cwd packages/app test"]).includes("packages/app/.yarnrc.yml"));
+  assert.ok(checkFiles(["npm --prefix packages/app test"]).includes("package.json"));
+});
+
 test("files named by a check are protected: an item cannot weaken its own grader", () => {
   assert.deepEqual(checkFiles(["./check.sh", "npm test", "node scripts/verify.mjs --strict", "pytest -q tests/"]), [".npmrc", "check.sh", "package.json", "scripts/verify.mjs"]);
   assert.deepEqual(checkFiles(["grep -q export src/a.ts"]), []);

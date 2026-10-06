@@ -207,15 +207,16 @@ async function changedPage(r: Reader, base: string | null, head: string | null, 
 }
 
 async function changedLeaves(r: Reader, base: string | null, head: string | null, prefix: string, out: [Leaf | null, Leaf | null][], cap: number) {
-  // A level holds one page of its changed entries while the diff descends:
-  // as many as can still be listed (one more than the cap's remainder, so a
-  // cut is still seen as one) and never more than RETAINED, so a deep tree
-  // where every file at every level changed holds a page per ancestor rather
-  // than each ancestor's whole directory. When entries remain past the page,
-  // the level is read again and continues from the next one: an entry that
-  // lists nothing, such as an added empty directory, never hides a later one.
+  // A level holds one page of RETAINED changed entries while the diff
+  // descends, so a deep tree where every file at every level changed holds a
+  // page per ancestor rather than each ancestor's whole directory. When
+  // entries remain past the page, the level is read again and continues from
+  // the next one: an entry that lists nothing, such as an added empty
+  // directory, never hides a later one. The page is the same size however
+  // close the list is to its cap, so a level is read at most once per page
+  // rather than once per entry as the cap nears.
   for (let done = 0; out.length <= cap; ) {
-    const { page, total } = await changedPage(r, base, head, done, Math.min(RETAINED, cap - out.length + 1));
+    const { page, total } = await changedPage(r, base, head, done, RETAINED);
     done += page.length;
     for (const [l, rt, name] of page) {
       if (out.length > cap) return;

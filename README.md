@@ -160,7 +160,11 @@ yarn, `bunfig.toml` for bun); the manifests build tools run code from
 (`Cargo.toml` and `build.rs` for cargo, `Package.swift` for swift, the
 project and workspace for xcodebuild, `deno.json` for `deno task`); and the
 local binary `npx`, `bunx`, `pnpm dlx` or `yarn exec` would run, under
-`node_modules/.bin/`. An item therefore
+`node_modules/.bin/`. A runner's name counts wherever it stands in the
+check's line: behind `env`, `time`, `timeout`, `sudo`, `nice`, `cross-env`
+or `xvfb-run`, inside a shell's `-c` string, after `if` or `!`, or on a
+later line; and a manager given `--prefix`, `-C`, `--dir` or `--cwd` reads
+its files under that directory too. An item therefore
 cannot quietly weaken the check that grades it. Files a check only reads, such
 as the code under test, are not protected, and nor is test configuration such
 as `vitest.config.ts` unless the project protects it. Protected paths match
