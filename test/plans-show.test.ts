@@ -22,11 +22,11 @@ const proposed: PlanView = {
   item, phase: "proposed", goal: "Ship the feature", scope: ["src/**"], planner: "claude-code/opus-5.5", plannerReasons: [],
   blocked: null, completedAt: null, proposal: { hash: HASH, by: "claude-code/opus-5.5", at: AT, count: 2, answered: true },
   plan: { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [doc("a"), doc("b", { dependsOn: ["a"] })] },
-  approval: null, parts: [], preview: [route("a", "claude-code/opus-5.5"), { ...route("b", "claude-code/opus-5.5"), reviewer: null, unrouted: "no reviewer of another family" }], integration: null,
+  approval: null, parts: [], preview: [route("a", "claude-code/opus-5.5"), { ...route("b", "claude-code/opus-5.5"), reviewer: null, unrouted: "no reviewer of another family" }], integration: { integrationHead: null },
 };
 const part = (id: string, key: string, change: Partial<PlanPartView> = {}): PlanPartView => ({
   id, key, title: `Part ${key}`, state: "open", owner: null, head: null, acceptedHead: null, scope: [`src/${key}/**`], dependsOn: [],
-  dispatch: null, route: route(key, "claude-code/opus-5.5"), attempts: [], gate: null, ...change,
+  dispatch: null, route: route(key, "claude-code/opus-5.5"), attempts: [], gate: null, integration: null, ...change,
 });
 const approval = { hash: HASH, at: AT, by: "owner", allowPaid: false, limits: limitsFor(3, false), deadline: "2026-10-07T12:00:00.000Z", jobsUsed: 3 };
 const building: PlanView = {
@@ -69,7 +69,7 @@ test("once approved, plan show gives each part's state, routing, attempts and th
     "  t4  c  queued for zcode/glm-5.3  Part c",
     "      builder claude-code/opus-5.5: Rank 1 of 3 eligible for feature work, score 0",
     "      alternates codex/gpt-6-astra",
-    "The plan's integration branch, its combined checks and its mergeability with main are not built yet: each part reaches main by its own merge.",
+    "No part is integrated yet; the integration branch still sits at the commit the plan forked from.",
     "1 part waits on you; each line above gives its command.",
   ]) assert.ok(lines.includes(line), line);
   const blocked = planText({ ...building, phase: "blocked", blocked: "part c has reached 3 attempts" }, "demo").split("\n");

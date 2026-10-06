@@ -239,9 +239,9 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/plans/integrate.ts", symbol: "integrationBlockers" }, { file: "src/plans/integrate.ts", symbol: "verifyIntegration" }, { file: "src/plans/integrate.ts", symbol: "rollbackFor" }, { file: "src/plans/integrate.ts", symbol: "planGate" }],
   },
   {
-    name: "Integration jobs", stage: "t16, build steps 12 to 14", built: false,
-    what: "Measuring each part against its plan's fork instead of the baseline, the routes the integrator reports to, the mergeability check before each merge, marking the parts merged when the plan merges, and the runner's `--integrate` job, which merges each part into the plan's branch, runs the checks there and rolls back a failure. Until then nothing merges parts into a plan's branch.",
-    files: [],
+    name: "Integration jobs", stage: "t16, build steps 12 to 14", built: true,
+    what: "Each part forks from its plan's fork and is measured against it, never the baseline (`baseRepoOf` in src/plans/integrate.ts and the `base-token` route), so a part reports only its own files. The integrator, a reserved actor reached only through its token, claims the plan item's integrate job, merges the part onto the plan's branch, runs the plan's checks, and posts `integrated` or `integration-failed`, both verified against the branch's log by the Worker. `planGate` adds its blockers to the plan item's gate, and `Ledger.merged` marks the parts merged with `{via: tP}` when the plan lands. The runner's `--integrate` merges each part with `--no-ff` and rolls the branch back when the checks fail or the merge conflicts, and its refresh job merges the baseline into the plan's fork.",
+    files: ["test/integration.spec.ts"],
     code: [{ file: "src/index.ts", symbol: "base-token" }, { file: "src/index.ts", symbol: "integration-failed" }, { file: "cli/runner.mjs", symbol: "integrate" }],
   },
 ];
