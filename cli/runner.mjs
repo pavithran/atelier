@@ -317,7 +317,7 @@ export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 // take it.
 export async function runReview(assignment, config, name, io) {
   const { project, item, agent, model, actor } = assignment;
-  let brief, diffFile;
+  let brief, diffFile, workspace, verdictFile;
   const release = async (reason) => {
     try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason]); }
     catch (error) { io.log(`review release failed: ${error.message}`); }
@@ -329,7 +329,9 @@ export async function runReview(assignment, config, name, io) {
     // Claim the request; the server returns the part, the brief's inputs and a
     // read token for the fork, so the part can be cloned read-only.
     const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
-    const workspace = io.workspacePath(project, item.id);
+    // A review clones into a folder of its own beside the task's workspace,
+    // never into the builder's, and the folder is removed when the job ends.
+    workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
     await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
     if (io.stopped()) throw new Error("interrupted");
     const diff = await io.diff(workspace, claimed.item.base, claimed.head);
@@ -342,7 +344,7 @@ export async function runReview(assignment, config, name, io) {
     });
     brief = await io.brief(workspace, text);
     diffFile = await io.writeDiff(workspace, diff);
-    const verdictFile = io.verdictPath(workspace);
+    verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     const result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, env);
     if (io.stopped()) throw new Error("interrupted");
@@ -375,6 +377,8 @@ export async function runReview(assignment, config, name, io) {
   } finally {
     if (brief) await io.removeBrief(brief);
     if (diffFile) io.removeDiff(diffFile);
+    if (verdictFile) io.removeFile?.(verdictFile);
+    if (workspace) io.removeTree?.(workspace);
   }
 }
 
@@ -421,6 +425,8 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   const io = {
+    removeFile: (file) => rmSync(file, { force: true }),
+    removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     workspacePath, log: line, stopped: () => controller.signal.aborted,
     cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, claim: argv[0] === "claim",
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,

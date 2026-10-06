@@ -112,7 +112,7 @@ it("a review request is claimed once, by the routed reviewer, and a stale head i
   // Once claimed, there is no open request left to claim again.
   await refusal(L.claimReview(partId, GPT, RUNNER), "no_review", /no open review request/);
   expect(await reviewWaiting(L)).toEqual([]);
-  // A push moves the head; the old request's claim is refused as stale.
+  // A push moves the head: the old request is answered, so none is left to claim.
   await L.claim(partId, claim.item.owner!, RUNNER);
   const head2 = "b".repeat(40);
   await L.recordPush(partId, claim.item.owner!, head2, head2);
