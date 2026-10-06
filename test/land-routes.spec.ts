@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
+import worker from "../src/index.ts";
+import { ROUTE_LEVEL } from "../src/route-level.ts";
 import type { Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
@@ -9,8 +11,10 @@ import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.
 // Ledger (one landing at a time, refused with who holds it and since when, a
 // closed task's lease no longer guards anything), the review request for an
 // ordinary task outside a plan (routed to a named reviewer or picked from the
-// pool, claimable, answered by a verdict), and the land.* events that record
-// each step's duration for the integration record (t186).
+// pool, claimable, answered by a verdict), the land.* events that record
+// each step's duration for the integration record (t186), and GET /api/version
+// answering without a token, since the commit of a public repository and a
+// route level are not secret and a session checks them before it signs in.
 
 const H0 = "0".repeat(40);
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
@@ -145,4 +149,12 @@ it("the landing's steps are recorded as land.* events with their duration, and a
   await refusal(L.landEvent(id, "owner", "merge", -5, {}), "bad_ms", /duration in milliseconds/);
   await refusal(L.landEvent(id, "owner", "merge", 5, { nonsense: true }), "bad_field", /nonsense is not a field/);
   await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the project owner records/);
+});
+
+it("GET /api/version answers without a token, and every other /api route still needs one", async () => {
+  const noToken = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
+  const version = await worker.fetch(new Request("https://atelier.test/api/version"), noToken);
+  expect(version.status).toBe(200);
+  expect(await version.json()).toMatchObject({ routeLevel: ROUTE_LEVEL });
+  expect((await worker.fetch(new Request("https://atelier.test/api/projects"), noToken)).status).toBe(401);
 });
