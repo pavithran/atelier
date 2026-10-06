@@ -785,6 +785,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
       assertLength(claim, CLAIM_MAX, check ? "the check's command" : "the report");
       if (check) assertLength(outputTail, OUTPUT_MAX, "the check's output");
+      // A merged run names the main head the check merged this head with; a
+      // plain run carries none (mergedBlockers in src/rules.ts).
+      const merged = body.merged;
+      if (check && merged !== undefined && (typeof merged !== "string" || !/^[a-f0-9]{40,64}$/.test(merged))) {
+        throw new RuleError("bad_merged", "merged names the main head the check ran merged with, 40 or 64 hex digits, or is left out for a run at the head itself", 400);
+      }
       const e: Evidence = {
         itemId: id,
         claim,
@@ -794,6 +800,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         by: actor,
         at: new Date().toISOString(),
         ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
+        ...(check && merged ? { merged } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // Atelier counts no result from a command that is never read-only.

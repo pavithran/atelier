@@ -156,11 +156,16 @@ test("init imports a ControlPlane adapter's change_rules as the paths each check
   assert.ok(r.stdout.includes("ControlPlane change rules also require diff-check (`git diff --check`), which no registered check runs; add one with --check to require it."), r.stdout);
 });
 
-test("an init that names no checks sets the paths of the registered ones from the adapter", (t) => {
+test("decision 2026-10-06: a re-init that names no check does not narrow the paths its checks apply to", (t) => {
   const f = initFixture(t, { checks: [CHECK], checkPaths: [{ command: CHECK, paths: ["old/**"] }] });
   const r = f.run("init", "--approval", "Pavi, today");
   assert.equal(r.status, 0, r.stderr);
   const put = f.requests().find((q) => q.method === "PUT");
   assert.equal(put.body.checks, undefined);
-  assert.deepEqual(put.body.checkPaths, [{ command: CHECK, paths: ["src/**", "astro.config.**"] }]);
+  assert.equal(put.body.checkPaths, undefined, "the recorded paths stand; the re-init sends none");
+  assert.ok(r.stdout.includes(`Warning: ControlPlane's change rules would set \`${CHECK}\` to apply only when the change touches src/**, astro.config.**; as registered it applies to old/** only, and a re-init does not narrow a check's coverage. Take the rules with atelier init --reset.\n`), r.stdout);
+  // An init that names the checks still takes the rules as the adapter holds them.
+  const named = f.run("init", "--check", CHECK, "--approval", "Pavi, today");
+  assert.equal(named.status, 0, named.stderr);
+  assert.deepEqual(f.requests().filter((q) => q.method === "PUT").at(-1).body.checkPaths, [{ command: CHECK, paths: ["src/**", "astro.config.**"] }]);
 });
