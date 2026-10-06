@@ -239,7 +239,7 @@ Reaching any limit blocks the plan; it never continues silently.
 4. **The tick, dispatch half.** `src/plans/phase.ts`. Built. Acceptance: scenario tests for dependencies, the parallel limit, retries and blocking.
 5. **Ledger and rules.** `src/ledger.ts` and `src/rules.ts` changes (new columns and table; `newPlan`, `postPlan`, `approvePlan`, `dispatchPart`, the tick hook; inbox kinds; same-plan overlap). Test: `test/plans.spec.ts`.
 6. **Routes and CLI.** `src/index.ts`, `cli/atelier.mjs`. Tests: `routes.spec.ts`, `test/plan-cli.test.mjs`.
-7. **Server briefs and runner jobs.** 7a: `src/plans/brief.ts`. 7b: in `cli/runner.mjs`, the plan job, the `{plan_file}` placeholder, releasing on finish failure, and the scrubbed environment.
+7. **Server briefs and runner jobs.** 7a: `src/plans/brief.ts`, `test/plans-brief.test.ts`. Built. Acceptance: each section appears only with its input; findings and failing output are capped and say when they are cut; the hash of the inputs does not depend on key order; rework carries the findings. 7b: in `cli/runner.mjs`, the plan job, the `{plan_file}` placeholder, releasing on finish failure, and the scrubbed environment.
 
 **t39: Automatic cross-family review**
 
