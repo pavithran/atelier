@@ -138,8 +138,9 @@ In detail:
 | `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](src/rules.ts):
-every required check observed passing at the current head; the changed paths
-observed; no rejection at that head; and, if a protected path changed, an
+every required check that applies to the change observed passing at the
+current head (see [Checks that apply to some paths](#checks-that-apply-to-some-paths));
+the changed paths observed; no rejection at that head; and, if a protected path changed, an
 approval at that head from a model of another family than every recorded
 contributor's, or the project owner's override of that review. A model's
 family is read from its name ([`src/models/pool.ts`](src/models/pool.ts)), and
@@ -213,6 +214,11 @@ merged.
   refused when the policy says `overlapping_claims: refuse`. Protected paths
   include execution policy patterns, adapter surfaces, maintenance paths,
   agent instructions, ControlPlane files and the files that run checks.
+  The adapter's capability classes declare checks read-only (see
+  [Check classes](#check-classes)), and its `change_rules` set the paths
+  each check applies to (see
+  [Checks that apply to some paths](#checks-that-apply-to-some-paths)); init
+  sets both, and `sync` and `merge` leave them as init set them.
   Atelier never writes these policy files.
 - `claude-code/*` maps to `claude`, `codex/*` to `codex`, and `zcode/*`
   and `opencode/glm*` to `glm`. `antigravity/*` maps to `antigravity` for a
@@ -373,6 +379,41 @@ the item's code: an item could rewrite `package.json`'s `test` script, which
 is why the files a check executes are protected (see How it works) and why
 untrusted code belongs in the sandbox, which has no credentials and reaches
 only the npm registry.
+
+## Checks that apply to some paths
+
+A required check may apply only when an item changes a path its globs match,
+as ControlPlane's `change_rules` said which checks a change needs. The gate
+requires such a check exactly when one of the item's changed paths, measured
+by the Worker against main's head, matches its globs, whatever the letter
+case or Unicode form, so a variant spelling of a path still needs the check.
+Otherwise the check is not applicable: the task page lists it as such, the
+decision brief counts it, and it never blocks. Until the changed paths are
+measured, a check with globs may apply, so it waits like any other.
+
+`atelier check` measures the changed paths in its clean clone against
+main's head and does not run a check whose globs none of them match. It
+records the check as not applicable instead, and the Worker accepts that
+record only when the paths it measures itself from Artifacts show the same;
+otherwise it refuses, saying which changed path the check applies to, and
+the check must be run. The record carries no result and measures the
+changed paths, so a change that no check applies to can still be accepted.
+A check run in a Cloudflare container is handled the same way, and when no
+check applies no container is started. A command given after
+`atelier check --` always runs.
+
+`atelier init` takes the globs from a ControlPlane project's
+`project-adapter.v1.json`. A change rule requires capabilities when a
+changed path matches its patterns. A registered check runs a capability when
+every command the capability runs is one of the check's, word for word, so
+`npm ci && npm run check && npm test` runs the capabilities `npm run check`
+and `npm test`. Such a check applies where any rule requiring a capability
+it runs applies; a check that runs none applies to every change. ControlPlane
+matched patterns as Python's `fnmatch` does, where `*` crosses directories,
+so each `*` is recorded as `**`. Init's summary prints each check's globs
+and names any capability a rule requires that no registered check runs, and
+`atelier status --project NAME` and the project page show the globs. An
+adapter without change rules leaves every check applying to every change.
 
 ## What is enforced and what is trusted
 

@@ -4,7 +4,7 @@ import { itemDiff, measureWorkspace, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage } from "./ledger.ts";
-import { parseDeclarations, refusalOf, refusalText } from "./checks.ts";
+import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
@@ -544,6 +544,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
+      ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
@@ -742,6 +743,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
         e.changedPaths = measured.changedPaths;
       }
+      // A check whose paths the change does not touch is recorded as not
+      // applicable, with no result, only when the paths Atelier measured
+      // here show it.
+      if (check && body.notApplicable === true) {
+        const why = appliesReason((await L.project()).policy, e.claim, item.fork ? e.changedPaths ?? null : null);
+        if (why) throw new RuleError("check_applies", why, 409);
+        e.passed = null;
+        e.notApplicable = true;
+      }
       await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
     }
@@ -761,6 +771,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         runId, project: ref.key, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
       };
+      if (p.policy.checkPaths?.length) request.checkPaths = p.policy.checkPaths;
       await L.setNotificationOrigin(id, c.url.origin);
       if (c.token) await L.recordSandboxRequest(id, actor, runId);
       const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);

@@ -8,7 +8,7 @@ import {
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
 } from "./rules";
 import { cleanSummary } from "./brief";
-import { settleCheckClasses, type CheckDeclaration } from "./checks.ts";
+import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -71,6 +71,7 @@ export interface ProjectInit {
   title?: string | null;
   checks?: string[];
   checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
+  checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -102,6 +103,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   // An init that names the checks must show each one read-only; one that
   // does not keeps their classes and may declare the undeclared ones.
   const checkClasses = settleCheckClasses(checks, i.checkClasses, p?.checkClasses, i.checks !== undefined);
+  const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -113,6 +115,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),
       checks,
       ...(checkClasses.length ? { checkClasses } : {}),
+      ...(checkPaths.length ? { checkPaths } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -719,7 +722,8 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
-    this.log(e.itemId, e.by, `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, proved);
+    // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
   }
 
