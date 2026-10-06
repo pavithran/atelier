@@ -1,0 +1,29 @@
+atelier atelier/t162 "Check capability classes (from ControlPlane, PAVI's decision 2026-10-05): a registered check must be declared read-only, and init and the check sandbox refuse one that deploys, installs, publishes, pushes or spends (f88 nearly made npx wrangler deploy a check); show each check's class"
+accepted head 15c612b0146430226b6035a07cba758500e1eba0
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T14:28:34.676Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T14:28:45.509Z
+REVIEW approve — antigravity/gemini-3.1-pro: Check classes and path-conditioned checks, merged with main. t163 lands here; its earlier closing note naming 4a96d1a was wrong.
+2026-10-06T12:43:34.323Z pavi item.created
+2026-10-06T12:59:01.932Z claude-code/opus-5.5 item.claimed
+2026-10-06T12:59:04.974Z claude-code/opus-5.5 fork.created
+2026-10-06T14:05:21.468Z claude-code/opus-5.5 push.observed
+2026-10-06T14:06:51.406Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:06:54.378Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:06:55.231Z claude-code/opus-5.5 item.submitted
+2026-10-06T14:09:56.271Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:09:57.197Z pavi item.accepted
+2026-10-06T14:10:21.474Z claude-code/opus-5.5 push.observed
+2026-10-06T14:12:02.723Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:12:06.336Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:12:07.053Z claude-code/opus-5.5 item.submitted
+2026-10-06T14:15:42.411Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:15:43.364Z pavi item.accepted
+2026-10-06T14:16:27.996Z claude-code/opus-5.5 push.observed
+2026-10-06T14:18:06.448Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:18:09.774Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:27:01.124Z claude-code/opus-5.5 push.observed
+2026-10-06T14:28:43.141Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:28:45.967Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:28:46.675Z claude-code/opus-5.5 item.submitted
+2026-10-06T14:31:48.690Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:31:49.401Z pavi item.accepted
