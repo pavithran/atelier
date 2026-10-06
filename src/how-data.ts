@@ -5,8 +5,8 @@
 //
 // test/how.test.ts keeps this honest. Every rule names the function that
 // enforces it and the test finds that name in that file; every orchestrator
-// part says whether it is built, and the test checks the files and the
-// commands that answer says so.
+// part says whether it is built, and the test checks its files, the code it
+// names and the commands against that answer.
 
 export type Lane = "owner" | "agent" | "reviewer";
 
@@ -59,7 +59,7 @@ export const LOOP: Step[] = [
   {
     name: "Merge", lane: "owner", command: "merge", moves: "a merge commit",
     records: ["Merge commit", "found on the", "baseline"],
-    detail: "In the project checkout the owner runs `atelier merge t3`. It fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing to the project's own remotes and deploying remain separate decisions.",
+    detail: "In the project checkout the owner runs `atelier merge t3`. It fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the project's branch to the baseline. Pushing to the project's own remotes and deploying remain separate decisions.",
   },
 ];
 
@@ -73,7 +73,7 @@ export interface Term { term: string; meaning: string }
 
 export const TERMS: Term[] = [
   { term: "Item", meaning: "One piece of work: a title, a scope of the paths it intends to touch and, once claimed, an owner. The web pages call it a task." },
-  { term: "Baseline", meaning: "Atelier's copy of the project's main branch, held in an Artifacts repository." },
+  { term: "Baseline", meaning: "Atelier's copy of the project's branch, the one `atelier init` registered (often `main`), held in an Artifacts repository." },
   { term: "Workspace", meaning: "An item's own fork of the baseline, also an Artifacts repository. Only the item's owner holds a write token for it." },
   { term: "Head", meaning: "The latest commit in a workspace. Results, reviews and acceptance each name the head they apply to." },
   { term: "Observed", meaning: "A required check's result, recorded against the head Atelier read from Artifacts, from a run on a clean clone of that head." },
@@ -165,6 +165,10 @@ export interface Part {
   what: string;
   // Built: each file must exist. Not built: each must not.
   files: string[];
+  // Code that shows the part is there. Built: each symbol is in its file.
+  // Not built: none is, so wiring a part into existing files fails the test
+  // until the page says it is built.
+  code: { file: string; symbol: string }[];
 }
 
 export const ORCHESTRATOR: Part[] = [
@@ -172,30 +176,54 @@ export const ORCHESTRATOR: Part[] = [
     name: "Plan schema and content hash", stage: "t15, build step 1", built: true,
     what: "`src/plans/schema.ts` parses a plan document, refuses unknown fields and over-long text, and hashes the plan. The hash is what an approval will bind to.",
     files: ["src/plans/schema.ts"],
+    code: [{ file: "src/plans/schema.ts", symbol: "planHash" }],
   },
   {
     name: "Plan validation", stage: "t15, build step 2", built: true,
     what: "`src/plans/validate.ts` checks that part keys are unique, that there are at most 12 parts, that dependencies have no cycle, that parts with overlapping scopes are ordered, and that interface parts depend only on interface parts.",
     files: ["src/plans/validate.ts"],
+    code: [{ file: "src/plans/validate.ts", symbol: "validatePlan" }],
   },
   {
     name: "Part routing", stage: "t15, build step 3", built: true,
     what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record. It leaves out refused models, and paid models unless the owner allows them.",
     files: ["src/plans/route.ts"],
+    code: [{ file: "src/plans/route.ts", symbol: "routeParts" }],
   },
   {
-    name: "Planning and dispatch", stage: "t15, build steps 4 to 7", built: false,
-    what: "The tick that dispatches ready parts, the ledger and rules changes, the `atelier plan` command and its routes, and the server-written briefs and runner jobs. Nothing calls the plan code yet: there is no plan command, no route and no ledger table.",
-    files: ["src/plans/phase.ts", "src/plans/brief.ts"],
+    name: "Dispatch decisions", stage: "t15, build step 4", built: true,
+    what: "`src/plans/phase.ts` decides, from plain data, which parts to dispatch and to whom. `planPhase` derives a plan's state: planning, proposed, building, blocked, ready, accepted, merged or abandoned. `planActions` dispatches parts in plan order while fewer than `maxParallel` (2 by default) are live, each once every part it depends on has merged. `partAttempts` counts attempts from the event log. A builder gets two, so one that gives up twice, or fails a finish and then its retry, is replaced by the next alternate. The plan blocks when a part reaches three attempts or has no alternate left, when a part depends on an abandoned one, or at the deadline or the budget cap.",
+    files: ["src/plans/phase.ts"],
+    code: [{ file: "src/plans/phase.ts", symbol: "planPhase" }, { file: "src/plans/phase.ts", symbol: "planActions" }, { file: "src/plans/phase.ts", symbol: "partAttempts" }],
   },
   {
-    name: "Automatic review", stage: "t39, build steps 8 to 10", built: false,
-    what: "Every submitted part would be reviewed by a model of another family, without the owner arranging it, and a rejection with blocking findings would go back to the builder.",
-    files: ["src/review"],
+    name: "Plan ledger, routes and command", stage: "t15, build steps 5 to 7", built: false,
+    what: "The ledger's plan records, running `planActions` after each change to a plan and acting on its answer, the inbox entries for approving a plan and for a blocked one, the routes and the `atelier plan` command, the brief the server writes for each part, and the runner's plan job.",
+    files: ["src/plans/brief.ts", "test/plans.spec.ts", "test/plan-cli.test.mjs"],
+    code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/index.ts", symbol: "job-brief" }],
   },
   {
-    name: "Integration branch per plan", stage: "t16, build steps 11 to 14", built: false,
-    what: "Parts would be merged into one branch for the plan, with the checks run on the combination, before the owner accepts the plan as a whole.",
+    name: "Review rules", stage: "t39, build step 8", built: true,
+    what: "`src/review/` decides when a submission gets an automatic review, and how the review is asked for and read. `reviewNeeded` asks for one once every required check is observed passing at the head and the changed paths are measured, unless that head already has an approval that suffices, a rejection awaiting rework or an open request. Every part of a plan is reviewed; any other item only when the gate needs an independent review. `pickReviewer` takes a model whose family is recognised and differs from every contributor's, available, not refused and paid only when allowed, and names each model it passed over and why. `reviewBrief` writes what the reviewer reads, fencing quoted text so it cannot pose as instructions. `parseVerdict` reads the reply and refuses one that states no verdict, states both, or gives findings that contradict its verdict; a rejection needs a blocking finding.",
+    files: ["src/review/needed.ts", "src/review/reviewer.ts", "src/review/brief.ts", "src/review/verdict.ts"],
+    code: [{ file: "src/review/needed.ts", symbol: "reviewNeeded" }, { file: "src/review/reviewer.ts", symbol: "pickReviewer" }, { file: "src/review/brief.ts", symbol: "reviewBrief" }, { file: "src/review/verdict.ts", symbol: "parseVerdict" }],
+  },
+  {
+    name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: false,
+    what: "Review requests on the ledger and a reviewer's claim on one, findings stored with a review, sending a rejected part back to its builder, and the runner's review job, which gives a model the brief and posts the verdict it returns. Until then a review is recorded only when someone runs `atelier review`.",
+    files: [],
+    code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "verdict_file" }],
+  },
+  {
+    name: "Integration rules", stage: "t16, build step 11", built: true,
+    what: "`src/plans/integrate.ts` holds the rules for merging parts into a plan's branch. `integrationBlockers` lets a part in only when it is submitted, every part it depends on has landed, and its head carries an approval from another model family or the owner. `verifyIntegration` accepts the integrator's merge commit only when it has exactly two parents, sits on the branch's first-parent line, and merges the part's head onto the integration head, the branch's head as the ledger last recorded it. `rollbackFor` says how a failed integration is undone, and refuses when that would discard commits it did not make. `planGate` adds to the plan item's gate: every part integrated or abandoned before integration, at least one integrated, each integrated part approved at the head that was integrated, and the branch's head at the integration head.",
     files: ["src/plans/integrate.ts"],
+    code: [{ file: "src/plans/integrate.ts", symbol: "integrationBlockers" }, { file: "src/plans/integrate.ts", symbol: "verifyIntegration" }, { file: "src/plans/integrate.ts", symbol: "rollbackFor" }, { file: "src/plans/integrate.ts", symbol: "planGate" }],
+  },
+  {
+    name: "Integration jobs", stage: "t16, build steps 12 to 14", built: false,
+    what: "Measuring each part against its plan's fork instead of the baseline, the routes the integrator reports to, the mergeability check before each merge, marking the parts merged when the plan merges, and the runner's `--integrate` job, which merges each part into the plan's branch, runs the checks there and rolls back a failure. Until then nothing merges parts into a plan's branch.",
+    files: [],
+    code: [{ file: "src/index.ts", symbol: "base-token" }, { file: "src/index.ts", symbol: "integration-failed" }, { file: "cli/runner.mjs", symbol: "integrate" }],
   },
 ];
