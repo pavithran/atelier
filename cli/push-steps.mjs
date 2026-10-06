@@ -36,11 +36,13 @@ const said = (result, token) => {
 };
 const indent = (text) => text.split("\n").map((line) => `  ${line}`).join("\n");
 
-// The commit the baseline's branch names, or null when it has none or cannot
-// be read (the push that follows says why).
+// The commit the baseline's branch names as { tip }, with a tip of null when
+// the baseline has no such branch, or { error } with Git's account when the
+// baseline cannot be read.
 function baselineTip(git, cwd, remote, token, branch) {
   const r = git(["ls-remote", remote, `refs/heads/${branch}`], { cwd, token, allowFail: true });
-  return r.status === 0 ? /^([0-9a-f]{40,64})\s/.exec(r.stdout)?.[1] ?? null : null;
+  if (r.status !== 0) return { error: said(r, token) || `git ls-remote exited with status ${r.status}` };
+  return { tip: /^([0-9a-f]{40,64})\s/.exec(r.stdout)?.[1] ?? null };
 }
 
 // Pushes `branch` to the baseline's branch of the same name. A push refused
@@ -48,7 +50,11 @@ function baselineTip(git, cwd, remote, token, branch) {
 // steps cannot help (the history is no longer than one step, or the
 // baseline's branch is not an ancestor of the checkout's), throws with Git's
 // message. A step that fails throws with the commit the baseline then holds.
-// `git` is the CLI's helper; `say` prints a line of progress.
+// A push reported as failed after the baseline took it (a timeout that came
+// after the last byte) counts as pushed. `git` is the CLI's helper; `say`
+// prints a line of progress. Every push, the steps too, runs the checkout's
+// pre-push hook: a refusal by that hook can read like one for size or time,
+// and the steps must not carry the history past it.
 export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_STEP }) {
   const whole = ["push", "--quiet", "--recurse-submodules=no", remote, `${branch}:${branch}`];
   const first = git(whole, { cwd, token, allowFail: true });
@@ -57,8 +63,14 @@ export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_
   const failed = new Error(`git ${whole.join(" ")} failed:\n${refusal}`);
   if (!refusedForSize(refusal)) throw failed;
 
-  const held = baselineTip(git, cwd, remote, token, branch);
+  const read = baselineTip(git, cwd, remote, token, branch);
+  if (read.error) throw new Error(`${failed.message}\nThe baseline's ${branch} could not be read afterwards, so the steps cannot start from what it holds. git said:\n${indent(read.error)}`);
+  const held = read.tip;
   const head = git(["rev-parse", "--verify", `${branch}^{commit}`], { cwd });
+  if (held === head) {
+    say(`The push was reported as failed, but the baseline holds ${branch} at ${head.slice(0, 8)}: nothing is left to push.`);
+    return;
+  }
   const ancestor = (older, newer) => git(["merge-base", "--is-ancestor", older, newer], { cwd, allowFail: true }).status === 0;
   if (held && !ancestor(held, head)) throw failed;
 
@@ -75,25 +87,27 @@ export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_
 
   const count = (commit) => Number(git(["rev-list", "--first-parent", "--count", commit], { cwd }));
   const total = count(head);
-  say(`The baseline refused ${branch}'s history in one push:\n${indent(refusal)}`);
+  say(`The push of ${branch}'s history in one piece was refused:\n${indent(refusal)}`);
   say(held
     ? `The baseline already holds ${branch} up to commit ${count(held)} of ${total} (${held.slice(0, 8)}). Pushing the rest of the first-parent history in ${steps.length} steps of about ${step} commits, oldest first.`
     : `Pushing the first-parent history of ${branch}, ${total} commits, in ${steps.length} steps of about ${step} commits, oldest first.`);
 
   let reached = held;
   for (const [i, commit] of steps.entries()) {
-    // A pre-push hook has seen this history in the push above, once; it is
-    // not run again for every step.
-    const r = git(["push", "--quiet", "--no-verify", "--recurse-submodules=no", remote, `${commit}:refs/heads/${branch}`], { cwd, token, allowFail: true });
+    const r = git(["push", "--quiet", "--recurse-submodules=no", remote, `${commit}:refs/heads/${branch}`], { cwd, token, allowFail: true });
     const position = count(commit);
     if (r.status !== 0) {
-      throw new Error([
-        `the push for step ${i + 1} of ${steps.length} (commit ${position} of ${total} on ${branch}'s first-parent line) failed.`,
-        reached
-          ? `The baseline holds ${branch} up to commit ${count(reached)} of ${total}: ${reached}.\nRun atelier init again, with the same options, to resume from there.`
-          : `The baseline holds none of ${branch}'s history yet.\nRun atelier init again, with the same options, to try from the first step.`,
-        `git said:\n${indent(said(r, token))}`,
-      ].join("\n"));
+      const now = baselineTip(git, cwd, remote, token, branch);
+      if (now.tip !== commit) {
+        throw new Error([
+          `the push for step ${i + 1} of ${steps.length} (commit ${position} of ${total} on ${branch}'s first-parent line) failed.`,
+          reached
+            ? `The baseline holds ${branch} up to commit ${count(reached)} of ${total}: ${reached}.\nRun atelier init again, with the same options, to resume from there.`
+            : `The baseline holds none of ${branch}'s history yet.\nRun atelier init again, with the same options, to try from the first step.`,
+          ...(now.error ? [`Reading the baseline's ${branch} afterwards failed too, so this may be less than it holds. git said:\n${indent(now.error)}`] : []),
+          `git said:\n${indent(said(r, token))}`,
+        ].join("\n"));
+      }
     }
     reached = commit;
     say(`Step ${i + 1} of ${steps.length}: the baseline holds ${branch} up to commit ${position} of ${total} (${commit.slice(0, 8)}).`);
