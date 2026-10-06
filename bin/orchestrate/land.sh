@@ -10,7 +10,7 @@
 # server's version check allows (t190).
 set -u
 source "${0:A:h}/lib.sh"
-t=$1 ctx=$2 note=$3
+t=$1 ctx=${2:A} note=$3
 W=$(workspace_of "$ATELIER_PROJECT" "$t")
 M=$(checkout_of "$ATELIER_PROJECT") || exit 1
 cd "$W" || exit 1
@@ -18,13 +18,16 @@ cd "$W" || exit 1
 # landing, and a check run that reports no PASS line counts as failed.
 step() { local o; o=$("$@" 2>&1) || { echo "$t: $1 $2 failed:"; echo "$o" | tail -5; exit 7; }; echo "$o" | tail -1; }
 step atelier push
-out=$(atelier check 2>&1 | grep -E "PASS|FAIL"); echo "$out"
-{ echo "$out" | grep -q PASS && ! echo "$out" | grep -q FAIL; } || { echo "$t: CHECK FAILED"; exit 2; }
+checked=$(atelier check 2>&1); code=$?
+out=$(echo "$checked" | grep -E "PASS|FAIL"); echo "$out"
+{ [ $code -eq 0 ] && echo "$out" | grep -q PASS && ! echo "$out" | grep -q FAIL; } || { echo "$t: CHECK FAILED"; echo "$checked" | tail -3; exit 2; }
 step atelier submit --summary "Merged with main; checks pass."
 model=${REVIEW_MODEL:-gemini-3.1-pro-high}
 case $model in gpt-oss*) reviewer=antigravity/gpt-oss-120b ;; *) reviewer=antigravity/gemini-3.1-pro ;; esac
-"${0:A:h}/review.sh" "$W" "$W/.scratch/review-$t" "$ctx" "$model"
+# A previous run's answer must never stand in for this one.
 answer="$W/.scratch/review-$t.md"
+rm -f "$answer"
+"${0:A:h}/review.sh" "$W" "$W/.scratch/review-$t" "$ctx" "$model" || { echo "$t: the review did not run"; exit 7; }
 { grep -q "VERDICT: APPROVE" "$answer" && ! grep -q "VERDICT: REJECT" "$answer"; } || { echo "$t: $reviewer DID NOT APPROVE"; grep -v '^$' "$answer" | head -14; exit 3; }
 cd "$M"
 step atelier review "$t" --as "$reviewer" --approve --note "$note"

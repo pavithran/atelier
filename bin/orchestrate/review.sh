@@ -10,7 +10,7 @@
 # REVIEW_BAR overrides what may block.
 set -eu
 source "${0:A:h}/lib.sh"
-ws=${1:A} out=$2 ctx=$3 model=${4:-gemini-3.1-pro-high}
+ws=${1:A} out=${2:A} ctx=${3:A} model=${4:-gemini-3.1-pro-high}
 project=$(project_of "$ws")
 main=${MAIN_REPO:-$(checkout_of "$project")}
 bar=${REVIEW_BAR:-"reject only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; anything else is non-blocking. A claim in a commit message that the code does not support is a correctness defect. Decisions the project owner made are not defects."}
@@ -50,7 +50,7 @@ HEAD
   echo "## Commits (newest first)"; echo
   git log --format='commit %h%n%B' "$base"..HEAD; echo
   echo "## The diff against the fork point"; echo
-  echo '```diff'; git diff "$base" HEAD; echo '```'
+  echo '````diff'; git diff "$base" HEAD; echo '````'
 } > "$out.prompt.md"
 ( cd "$clone/repo" && agy -p "$(cat "$out.prompt.md")" --model "$model" --dangerously-skip-permissions --sandbox --output-format json --print-timeout 2400s > "$out.json" 2>"$out.err" ) || true
 python3 - "$out.json" "$out.md" <<'PY'
