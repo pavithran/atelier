@@ -1,0 +1,16 @@
+atelier atelier/t153 "Security pass 2 (gpt-6-astra, confirmed by opus-5.5; report work/atelier/t105/.scratch/verify/security2.md): medium: atelier merge runs hooks an accepted head carries when the checkout's hooks folder is inside the repository (ourai's scripts/hooks), and they stay active; low: symlinks in the merged tree make the landing receipt write outside the checkout (and a symlinked template leaks a project_id into the baseline). Before the checkout changes, refuse to land when the accepted diff touches a hook or filter script the checkout's git config points to, or holds a symlink on the receipt paths; core.hooksPath=/dev/null alone does not stop config-defined hooks on Git 2.54"
+accepted head afada30b4f4070902baaa5449a059cc4971e3cf5
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T04:54:44.635Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T04:54:46.724Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. merge-tree runs first in the object database; touchedExecutables checks the accepted change against every path the owner's git configuration runs (case folded, symlinks resolved, relative and .. paths flattened, chained commands parsed) before git merge touches the tree; landing receipts refuse symlinks; merge, cancel and sync run with hooks off through the environment, leaving the owner's own configuration intact.
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T04:28:40.934Z pavi item.created
+2026-10-06T04:28:46.475Z claude-code/opus-5.5 item.claimed
+2026-10-06T04:28:49.839Z claude-code/opus-5.5 fork.created
+2026-10-06T04:53:22.386Z claude-code/opus-5.5 push.observed
+2026-10-06T04:54:44.838Z claude-code/opus-5.5 evidence.observed
+2026-10-06T04:54:46.858Z claude-code/opus-5.5 evidence.observed
+2026-10-06T04:54:47.439Z claude-code/opus-5.5 item.submitted
+2026-10-06T04:58:27.358Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T04:58:28.005Z pavi review.approved
+2026-10-06T04:58:28.472Z pavi item.accepted
