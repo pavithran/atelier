@@ -833,14 +833,19 @@ export function repoName(project: string, itemId?: string): string {
 }
 
 // Local cache cleanup requires proof that no unpublished work will be lost.
+// A merged item's proof is its accepted head; an abandoned item, which never
+// merges, is proved by the last head Atelier recorded for it, so its workspace
+// goes only when it still sits at that head with nothing else in it.
 export function gcWorkspaceReason(
-  item: Pick<Item, "state" | "acceptedHead"> | undefined,
+  item: Pick<Item, "state" | "head" | "acceptedHead"> | undefined,
   head: string, dirty: boolean, extraCommits: boolean,
 ): string | null {
-  if (item?.state !== "merged") return "item is not confirmed merged";
-  if (!item.acceptedHead || head !== item.acceptedHead) return "HEAD is not the merged head";
-  if (dirty) return "contains changed, untracked or ignored files";
-  if (extraCommits) return "contains commits outside the merged history";
+  if (item?.state !== "merged" && item?.state !== "abandoned") return "item is neither merged nor abandoned";
+  const abandoned = item!.state === "abandoned";
+  const proof = abandoned ? item!.head : item!.acceptedHead;
+  if (!proof || head !== proof) return abandoned ? "HEAD is not the last head Atelier recorded" : "HEAD is not the merged head";
+  if (dirty) return "contains changed or untracked files";
+  if (extraCommits) return abandoned ? "contains commits outside the recorded history" : "contains commits outside the merged history";
   return null;
 }
 

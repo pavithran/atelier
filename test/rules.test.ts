@@ -274,11 +274,17 @@ test("overlapping claims are refused when the project says so, and only then", (
   assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
 
-test("gc removes only clean workspaces at their confirmed merged head", async () => {
+test("gc removes clean workspaces at a head that proves nothing is unpublished", async () => {
   const { gcWorkspaceReason } = await import("../src/rules.ts");
   assert.equal(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, false), null);
-  for (const state of ["open", "claimed", "submitted", "accepted", "abandoned"] as const) {
-    assert.match(gcWorkspaceReason(item({ state, acceptedHead: H1 }), H1, false, false)!, /not confirmed merged/);
+  // An abandoned item never merges; the last head Atelier recorded is its proof.
+  assert.equal(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, false), null);
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, true, false));
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, true));
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: H2 }), H1, false, false));
+  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: null }), H1, false, false));
+  for (const state of ["open", "claimed", "submitted", "accepted"] as const) {
+    assert.match(gcWorkspaceReason(item({ state, acceptedHead: H1 }), H1, false, false)!, /neither merged nor abandoned/);
   }
   assert.ok(gcWorkspaceReason(undefined, H1, false, false));
   assert.ok(gcWorkspaceReason(item({ state: "merged" }), H1, false, false));
