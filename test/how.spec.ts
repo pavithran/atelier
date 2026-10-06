@@ -119,9 +119,22 @@ it("the How page and the showcase draw where Atelier runs, layer by layer", asyn
   const pages: [string, string][] = [["/how", (await page()).body], ["/showcase", renderShowcase([], undefined as never, "pavi", "PAVI")]];
   for (const [path, body] of pages) {
     expect(body, path).toContain('class="lay-fig"');
-    expect(body, path).toContain("The CLI is the one path to Cloudflare");
+    expect(body, path).toContain("normally reach Cloudflare through the CLI");
+    expect(body, path).toContain("its token limits what it can do");
+    expect(body, path).not.toContain("one path to Cloudflare");
+    expect(body, path).not.toContain("internet off;");
+    expect(body, path).toContain("reaches only the npm registry, read-only");
     expect(body, path).toContain(">Check container<");
-    expect(body, path).toContain(">with --sandbox; internet off<");
+    expect(body, path).toContain(">npm registry only, read-only<");
   }
   expect(pages[0][1].indexOf('id="where-it-runs"')).toBeLessThan(pages[0][1].indexOf('id="the-loop"'));
+});
+
+it("the rules say who produces a check result, which routes a token opens and what acceptance needs (t216)", () => {
+  const rule = (title: string) => RULES.find((r) => r.title === title)!;
+  expect(rule("Observed evidence only").why).toContain("local Observed result is posted by the machine that ran it");
+  expect(rule("Observed evidence only").why).toContain("only a container result is produced by Atelier itself");
+  const tokens = rule("Tokens scoped to an actor").enforced;
+  for (const route of ["block", "unblock", "queue", "sandbox", "plan", "integrated", "integration-failed"]) expect(tokens).toContain(`\`${route}\``);
+  expect(rule("Owner acceptance and merge").enforced).toContain("the task is in the submitted state");
 });
