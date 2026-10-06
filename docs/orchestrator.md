@@ -1,13 +1,15 @@
 # Orchestrator design
 
-Steps 1 to 6, 8 and 11 of the build sequence (section 8) are built. Steps 1
-to 4, 8 and 11 are pure functions in `src/plans/` and `src/review/`. Step 5
-puts plans in the project's Ledger: proposals, approval, the parts and the
-tick that dispatches them. Step 6 gives them routes and the `atelier plan`
-command. The review and integration code is still called by nothing but its
-tests. Steps 7, 9, 10 and 12 to 14 are not built: no runner takes a plan job,
-so a planner posts its plan by hand, and each part's runner gets the brief
-any task gets.
+Steps 1 to 6, 8, 9, 10 and 11 of the build sequence (section 8) are built.
+Steps 1 to 4, 8 and 11 are pure functions in `src/plans/` and `src/review/`.
+Step 5 puts plans in the project's Ledger: proposals, approval, the parts and
+the tick that dispatches them. Step 6 gives them routes and the `atelier plan`
+command. Steps 9 and 10 add automatic cross-family review: the Ledger's tick
+asks a review request for each submitted part, and a reviewer's runner answers
+it with findings and the rework transition. The integration code is still
+called by nothing but its tests. Steps 7 and 12 to 14 are not built: no runner
+takes a plan job, so a planner posts its plan by hand, and each part's runner
+gets the brief any task gets.
 
 Where a section describes something not built, it is the design, not a
 claim that the routes, storage, commands or runner jobs exist. Where the
@@ -267,8 +269,8 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 **t39: Automatic cross-family review**
 
 8. **Review rules.** `src/review/` with `reviewNeeded`, `pickReviewer`, `parseVerdict` and `reviewBrief`. Built.
-9. **Ledger side.** Review requests, review claims, findings, the rework transition, and review jobs in the queue.
-10. **Runner review job.**
+9. **Ledger side.** Review requests, review claims, findings, the rework transition, and review jobs in the queue. Built: the `review_requests` table, `reviewTick`, `claimReview` and `releaseReview` in `src/ledger.ts`, the `review-claim` and `review-release` routes, `findings` on `Review`, and the `review.rework` event `phase.ts` reads as a failed finish. Test: `test/review-requests.spec.ts`.
+10. **Runner review job.** Built: `runReview` in `cli/runner.mjs`, the `{diff_file}` and `{verdict_file}` placeholders, and the `review` job in the runner's queue offer. Test: `test/review-runner.test.mjs`.
 
 **t16: Integration branch per plan**
 
