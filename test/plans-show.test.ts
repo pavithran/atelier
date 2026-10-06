@@ -48,7 +48,7 @@ test("before approval, plan show prints the proposal's parts, the routing an app
     `Approve this split: atelier plan approve t1 --hash ${HASH} --project demo`,
     '  or send it back: atelier plan revise t1 --note "what to change" --project demo',
   ]) assert.ok(text.split("\n").includes(line), line);
-  // A revise not yet answered waits for the planner; with no runner for plan jobs, the text says how to plan by hand.
+  // A revise not yet answered waits for the planner; the text still says how to plan by hand.
   const asked = planText({ ...proposed, proposal: { ...proposed.proposal!, answered: false } }, "demo").split("\n");
   assert.ok(asked.includes("  atelier claim t1 --as claude-code/opus-5.5 --runner home:NAME --project demo"));
   assert.ok(!asked.some((l) => l.startsWith("Approve this split")));

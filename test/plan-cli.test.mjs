@@ -70,14 +70,14 @@ async function fixture(t) {
   return { root, run, requests };
 }
 
-test("plan \"goal\" starts a plan as the owner with its scope and planner, and says how a plan is posted until a runner takes plan jobs", async (t) => {
+test("plan \"goal\" starts a plan as the owner with its scope and planner, and says how a plan is posted by hand", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["plan", "Ship", "the", "feature", "--scope", "src/**", "--scope", "docs/**", "--planner", PLANNER]);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(f.requests, [{ method: "POST", path: "/api/projects/proj/items", actor: "owner", body: { kind: "plan", goal: "Ship the feature", scope: ["src/**", "docs/**"], planner: PLANNER } }]);
   assert.equal(r.stdout.split("\n")[0], "t1 is a plan for: Ship the feature");
   assert.match(r.stdout, /Planner: claude-code\/opus-5\.5\. Named by the project owner/);
-  assert.match(r.stdout, /No runner takes a plan job yet: to plan by hand, claim t1 as claude-code\/opus-5\.5 with --runner home:NAME, then atelier plan post t1 FILE\./);
+  assert.match(r.stdout, /a runner that offers plan jobs takes it\. To plan by hand, claim t1 as claude-code\/opus-5\.5 with --runner home:NAME, then atelier plan post t1 FILE\./);
   // Refused before any request: no goal, a planner that is not harness/model, a bare scope.
   for (const argv of [["plan"], ["plan", "Ship", "--planner", "opus"], ["plan", "Ship", "--scope", "--planner", PLANNER]]) {
     const refused = await f.run(argv);
