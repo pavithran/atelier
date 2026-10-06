@@ -1,0 +1,16 @@
+atelier atelier/t112 "Orchestrator step 11 (t16): integration rules as pure functions in src/plans/integrate.ts (the integrated state, planGate, integration verification) with tests; see docs/orchestrator.md sections 5 and 8"
+accepted head b7a6894ea7aba186194cf3415dc2141cb6ea63d9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T01:02:01.854Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T01:02:04.520Z
+REVIEW approve — opencode/glm-5.3: APPROVE. verifyIntegration requires exactly two parents, the first the integration head and the second the part head, on the first-parent line; octopus, swapped, off-line and skipping merges refused. planGate judges approvals at the integrated head, blocks unintegrated parts, abandoned dependencies and a moved plan head. rollbackFor restores only from this integration's own merge. Contributors match gate(). Pure. 10 adversarial probes held; 16 mutations each killed.
+REVIEW approve — pavi: Owner approval after GLM-5.3's review.
+2026-10-06T00:45:46.238Z pavi item.created
+2026-10-06T00:45:56.682Z claude-code/opus-5.5 item.claimed
+2026-10-06T00:46:00.409Z claude-code/opus-5.5 fork.created
+2026-10-06T01:00:51.663Z claude-code/opus-5.5 push.observed
+2026-10-06T01:02:02.350Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:02:04.631Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:02:05.298Z claude-code/opus-5.5 item.submitted
+2026-10-06T01:16:47.086Z opencode/glm-5.3 review.approved
+2026-10-06T01:16:47.687Z pavi review.approved
+2026-10-06T01:16:48.397Z pavi item.accepted
