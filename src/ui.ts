@@ -832,7 +832,8 @@ function taskRows(p: ProjectRecord, items: Item[]): string {
     ${tag(stateLabel[i.state], i.state === "merged" ? "go" : "")}<time class="meta">${when(i.updatedAt)}</time>${icon("arrow")}</a></li>`).join("")}</ul>`;
 }
 
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing): string {
+// `actions` is the protected-actions section, drawn by src/actions-page.ts.
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing, actions = ""): string {
   const closed = (i: Item) => i.state === "merged" || i.state === "abandoned";
   const live = items.filter((i) => !closed(i));
   const done = items.filter(closed);
@@ -860,6 +861,7 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
   <h2 class="section-title">Work</h2>
   ${live.length ? taskRows(p, live) : '<p class="empty">No active tasks. Create one above.</p>'}
   ${done.length ? `<details class="disclosure"><summary>Completed and closed · ${done.length}</summary>${taskRows(p, done)}</details>` : ""}
+  ${actions}
   <details class="disclosure"><summary>Project policy</summary>${policy}</details>
   <details class="disclosure"><summary>Activity</summary>${eventTable(events, true)}</details>
 </div>`, "Projects", ownerName);
