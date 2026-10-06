@@ -249,6 +249,23 @@ test("a reported check an observed check contradicted counts against the reporte
   assert.equal(opus.outOfScope, 1);
 });
 
+test("an approval starts no rework timer, and the owner's out-of-scope submission opens no model row", () => {
+  const events = history(
+    ["t1", OPUS, "item.claimed"],
+    ["t1", OPUS, "item.submitted", { head: H1 }],
+    ["t1", GPT, "review.approved", { head: H1 }],
+    ["t1", OPUS, "item.submitted", { head: H2 }],
+    ["t2", OWNER, "item.created", { title: "x", scope: ["src/**"] }],
+    ["t2", OWNER, "item.claimed"],
+    ["t2", "atelier/sandbox", "evidence.observed", { head: H3, claim: "npm test", passed: true, changedPaths: ["docs/a.md"] }],
+    ["t2", OWNER, "item.submitted", { head: H3 }],
+  );
+  const rel = buildReliability([{ project: "a", events }], [], OWNER);
+  assert.equal(one(rel, "opus-5.5").timings.rework, null);
+  assert.equal(rel.has(OWNER), false);
+  assert.ok([...rel.values()].every((r) => r.outOfScope === 0));
+});
+
 test("a push that folded a moved main into the fork counts an integration, attributed to its pusher", () => {
   const events = history(
     ["t1", OPUS, "item.claimed"],

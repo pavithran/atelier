@@ -336,10 +336,10 @@ function replay(
       // scope the task named, count once per submission.
       const measured = measuredPaths.get(item);
       const scope = scopeOf.get(item) ?? [];
-      if (scope.length && measured && measured.head === head && measured.paths.some((p) => !matchesAny(p, scope))) {
-        const built = get(holder.serving, project);
-        built.outOfScope++;
-        binOf(holder.serving, k).outOfScope++;
+      const author = agentOnly(holder.serving);
+      if (author && scope.length && measured && measured.head === head && measured.paths.some((p) => !matchesAny(p, scope))) {
+        get(author, project).outOfScope++;
+        binOf(author, k).outOfScope++;
       }
       const rework = reworkFrom.get(item);
       if (rework) {
@@ -385,8 +385,12 @@ function replay(
         reviewer.approvals++;
         approvedAt.set(item, [...(approvedAt.get(item) ?? []), { reviewer: actor, head }]);
         binOf(actor, k).approvals++;
-      } else reviewer.rejectionsGiven++;
-      if (builder) reworkFrom.set(item, { at: event.at, model: builder });
+      } else {
+        reviewer.rejectionsGiven++;
+        // Rework runs from a rejection to the next submission; an approval
+        // asks for none.
+        if (builder) reworkFrom.set(item, { at: event.at, model: builder });
+      }
       const claim = claimAt.get(item);
       if (claim && !verdictSeen.has(item)) {
         verdictSeen.add(item);
