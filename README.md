@@ -1403,6 +1403,56 @@ The browser provides this local command after acceptance. It does not run a
 network-accessible local executor. Deployment and pushing the project branch
 to its own remotes remain separate decisions.
 
+## Landing a task whole
+
+`atelier land t9` runs the whole second half in one command, for the project
+owner in the registered checkout: it merges main into the task's workspace,
+regenerates the project's fixtures when its policy declares how, pushes, runs
+the required checks, submits, waits for the independent review the gate
+needs, then accepts and merges. It replaces the queueing a project owner did
+by hand, one landing at a time, and it takes a lease on the server to keep
+that order: while one landing runs, another landing in the same project is
+refused with who holds the lease and since when. The lease is released when
+the landing ends, on success or failure alike; a landing stopped partway can
+be resumed by running `atelier land t9` again, which takes its own lease
+back, and a lease whose task has merged or was abandoned no longer guards
+anything.
+
+The steps in between:
+
+1. The server must run a main commit this CLI can see. `GET /api/version`
+   reports the commit the server was deployed from (`npm run deploy` records
+   it), and a landing whose CLI is newer than the server refuses before it
+   starts, saying to deploy, since the server may lack the routes the
+   landing needs.
+2. Main is fetched into the task's workspace and merged with `--no-ff`. On
+   conflicts the landing stops, leaves the merge in the workspace for the
+   owner to resolve, and names the files. After resolving and committing,
+   `atelier land t9` again picks up from the push.
+3. When the project's policy declares a `regenerate` command
+   (`atelier init --regenerate "CMD"`), it runs in the workspace like a check
+   runs, and what it changes is committed before the push, so generated
+   fixtures are current with both lines before the checks see them. The
+   landing adds no typecheck of its own: the project's required checks are
+   the whole gate, and they run through `atelier check` in a clean clone of
+   the pushed head.
+4. If the gate needs an independent review, the landing asks the server for
+   one through the review-request routes: the reviewer is the one named with
+   `--reviewer H/M`, or a model of another family than every contributor
+   picked from the pool, and the landing polls for the verdict, refusing to
+   go on after a rejection or a timeout (the request stays open and the task
+   stays submitted). `--no-review` skips the waiting and leaves the task
+   submitted for the owner to settle by hand.
+5. The landing accepts and merges through the CLI's own `accept` and `merge`
+   commands, each run as this CLI's child, so their checks and their
+   journals behave exactly as when the owner runs them.
+
+Each step, its duration and what it settled are recorded on the task as
+`land.*` events (the commits that came from main, the files a conflict
+stopped on and who resolved it, the reviewer and the verdict), so the cost
+of integrating a task can be read from the ledger. `--dry-run` prints the
+steps and the refusals without changing anything.
+
 ## Ship and protected actions
 
 Merging lands accepted work in the owner's checkout and on the baseline. An
