@@ -16,11 +16,15 @@
 // task page, which only the signed-in owner reaches, or through the API with
 // the owner token, as the orchestrator records them. An approval recorded
 // before the ledger kept the two apart is counted as unrecorded.
+//
+// An event the owner annotated as served by another model (src/models/served.ts)
+// counts under that model, as buildRecord counts it.
 
 import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, redactKeys, type PoolFamily } from "./pool.ts";
 import { modelKey, RuleError, sameActor, validActor } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
+import { SERVED, servedActor, servedBy } from "./served.ts";
 
 export const RUN_OUTCOMES = ["stalled", "timed-out", "refused"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
@@ -121,6 +125,7 @@ export function buildReliability(projects: readonly ProjectEvents[], runs: reado
 // only once a claim or handoff has named the holder, as buildRecord does.
 function replay(project: string, events: readonly LedgerEvent[], owner: string, get: (actor: string, project?: string) => ModelReliability): void {
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
+  const served = servedBy(sorted);
   // The holder as recorded, which its own later events name, and the actor
   // its work is counted under.
   const holders = new Map<string, { recorded: string; serving: string }>();
@@ -134,11 +139,11 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
 
   for (const event of sorted) {
     const { itemId: item, kind, data } = event;
-    if (item === null) continue;
-    const actor = event.actor;
+    if (item === null || kind === SERVED) continue;
+    const actor = servedActor(event, served);
     const holder = holders.get(item);
     if (kind === "item.claimed") {
-      holders.set(item, { recorded: actor, serving: actor });
+      holders.set(item, { recorded: event.actor, serving: actor });
       get(actor, project);
       continue;
     }
@@ -153,8 +158,8 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
       continue;
     }
     // The holder's own action: its work from here on is counted under the
-    // actor that recorded it.
-    if (holder && sameActor(actor, holder.recorded)) holder.serving = actor;
+    // model that served this action.
+    if (holder && sameActor(event.actor, holder.recorded)) holder.serving = served.has(event.seq) ? actor : holder.recorded;
     const head = str(data.head);
     if (kind === "item.submitted" && holder) {
       const heads = builtAt.get(item) ?? new Map<string, string>();

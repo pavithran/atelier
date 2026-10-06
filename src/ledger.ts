@@ -12,6 +12,7 @@ import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
+import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -918,6 +919,24 @@ export class Ledger extends DurableObject<Env> {
     }
     this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) });
     return item;
+  }
+
+  // The owner records which model served events recorded under another
+  // (src/models/served.ts): one event.served for each matching event that
+  // no annotation already says this model served. The annotated events
+  // never change. Without `apply` nothing is written, and the answer says
+  // what matches and what would be annotated.
+  annotateServed(sel: ServedSelection, actor: string, apply: boolean): { matched: ServedMatch[]; pending: number; annotated: number; applied: boolean } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records which model served an event", 403);
+    this.project();
+    const events = this.sql.exec(`SELECT * FROM events WHERE (at >= ? AND at < ?) OR kind = ? ORDER BY seq`, sel.from, sel.to, SERVED).toArray()
+      .map((r) => ({ seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string, actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }));
+    const { matched, pending } = matchServed(events, sel);
+    if (matched.length > SERVED_LIMIT) {
+      throw new RuleError("too_many_events", `${matched.length} events match, more than the ${SERVED_LIMIT} one request may annotate; name the tasks or narrow the window`, 400);
+    }
+    if (apply) for (const m of pending) this.log(m.itemId, actor, SERVED, { seq: m.seq, recorded: m.actor, served: sel.served, ...(sel.note ? { note: sel.note } : {}) });
+    return { matched, pending: pending.length, annotated: apply ? pending.length : 0, applied: apply };
   }
 
   evidenceFor(id: string): Evidence[] {

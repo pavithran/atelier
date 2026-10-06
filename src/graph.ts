@@ -9,6 +9,7 @@ import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
+import { withServed } from "./models/served.ts";
 import { shortStamp, stamp } from "./time.ts";
 
 export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
@@ -118,7 +119,9 @@ export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: s
 export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
   const R = !!opts.redact;
   const you = opts.ownerLabel ?? "You";
-  const sortedEvs = [...events].sort((a, b) => a.seq - b.seq);
+  // An event the owner annotated as served by another model is drawn and
+  // counted under that model; the annotations are not drawn.
+  const sortedEvs = withServed(events).sort((a, b) => a.seq - b.seq);
   const keptItems = new Set<string>();
   let filterActive = false;
   if (opts.since || opts.family) {

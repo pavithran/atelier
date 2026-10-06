@@ -8,6 +8,7 @@ Agents     start ID [--as H/M] · done "summary"
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report [ID] "…" [--item ID] · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
 Owner      accept ID [--override-review REASON] · merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok] · abandon ID · defect ID --note TEXT [--found-in ID]
+           served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--apply]
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
 Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local

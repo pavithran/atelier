@@ -28,6 +28,13 @@ globalThis.fetch = async (url, options = {}) => {
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
   else if (method === "POST" && path.endsWith("/items/t9/defect")) data = { id: "t9", state: "merged", acceptedHead: ${JSON.stringify(HEAD)} };
   else if (method === "POST" && path.endsWith("/items/t8/defect")) { status = 409; data = { error: "not_accepted", detail: "t8 is not accepted at any revision" }; }
+  else if (method === "POST" && path.endsWith("/served")) {
+    const matched = [
+      { seq: 12, itemId: "t2", kind: "item.claimed", at: "2026-10-04T16:05:00.000Z", actor: "zcode/glm-5.3", served: null },
+      { seq: 15, itemId: "t2", kind: "push.observed", at: "2026-10-04T16:30:00.000Z", actor: "zcode/glm-5.3", served: "deepseek-flash" },
+    ];
+    data = { project: "atelier", served: body.served, recorded: body.recorded, from: "2026-10-04T16:00:00.000Z", to: "2026-10-05T20:17:00.000Z", items: body.items ?? null, matched, pending: 1, annotated: body.apply ? 1 : 0, applied: body.apply };
+  }
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 };
 `);
@@ -65,4 +72,40 @@ test("t109: defect sends the note and the task it was found in to the defect rou
   const refused = f.run(["defect", "t8", "--project", "demo", "--note", "x"]);
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /not_accepted: t8 is not accepted at any revision/);
+});
+
+// t95: the owner records which model served events recorded under another.
+test("t95: served needs the model, --recorded, --from and --to, and asks nothing of the server without them", (t) => {
+  const f = fixture(t);
+  const full = ["deepseek-flash", "--recorded", "zcode/glm-5.3", "--from", "2026-10-04T16:00:00Z", "--to", "2026-10-05T20:17:00Z"];
+  for (const args of [full.slice(1), full.slice(0, 5), full.slice(0, 3).concat(full.slice(5)), [...full.slice(0, 5), "--to"]]) {
+    f.clear();
+    const r = f.run(["served", ...args, "--project", "atelier"]);
+    assert.equal(r.status, 1, args.join(" "));
+    assert.match(r.stderr, /usage: atelier served MODEL --recorded HARNESS\/MODEL --from TIME --to TIME|--to needs a value/, args.join(" "));
+    assert.deepEqual(f.requests().filter((q) => q.path !== "/api/config"), [], args.join(" "));
+  }
+});
+
+test("t95: served lists the matches and records nothing without --apply; with it, it annotates and says under which actor they count", (t) => {
+  const f = fixture(t);
+  const args = ["served", "deepseek-flash", "--recorded", "zcode/glm-5.3", "--from", "2026-10-04T16:00:00Z", "--to", "2026-10-05T20:17:00Z", "--project", "atelier", "--item", "t2", "--item", "t11", "--note", "per model_usage"];
+  const dry = f.run(args);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(dry.stdout, [
+    "2 events on atelier recorded as zcode/glm-5.3 from 2026-10-04T16:00:00.000Z to 2026-10-05T20:17:00.000Z, in t2 t11:",
+    "  t2  #12  item.claimed  2026-10-04T16:05:00.000Z",
+    "  t2  #15  push.observed  2026-10-04T16:30:00.000Z  annotated as served by deepseek-flash",
+    "Nothing was recorded. To annotate 1 as served by deepseek-flash, run this again with --apply.",
+    "",
+  ].join("\n"));
+  assert.deepEqual(f.requests().find((q) => q.method === "POST"), {
+    method: "POST", path: "/api/projects/atelier/served", actor: "owner",
+    body: { served: "deepseek-flash", recorded: "zcode/glm-5.3", from: "2026-10-04T16:00:00Z", to: "2026-10-05T20:17:00Z", items: ["t2", "t11"], note: "per model_usage", apply: false },
+  });
+  f.clear();
+  const applied = f.run([...args, "--apply"]);
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.match(applied.stdout, /\nAnnotated 1 as served by deepseek-flash; 1 already were\. The records count them under zcode\/deepseek-flash\.\n$/);
+  assert.equal(f.requests().find((q) => q.method === "POST").body.apply, true);
 });

@@ -981,6 +981,25 @@ runs stalled, timed out or refused), with one of each added so a model
 with no record sits at one half. The project's own track record and the
 registry's evidence still decide the score.
 
+A harness can serve another model than the one its events name: zcode
+follows its app's provider settings, and served deepseek-flash while its
+events said glm-5.3. The owner records what served them:
+
+```text
+atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
+```
+
+It lists the events recorded under `--recorded` from `--from` up to `--to`
+on the tasks `--item` names, or on every task, and records nothing; with
+`--apply` it adds an annotation of its own, an `event.served` event, for
+each one not already annotated as served by that model. The annotated
+event never changes, and the latest annotation of an event is the one that
+counts, so a mistaken one is corrected by another. The track record, the
+reliability record, the Models page and the graph count an annotated event
+under the served model in the recorded harness, here `zcode/deepseek-flash`.
+`bin/annotate-t95` holds the commands that correct the record for task t95;
+the owner runs it, first without `--apply`.
+
 ## Usage, limits and balances
 
 The Usage page (`/usage`) shows where each tool stands, as the home runners

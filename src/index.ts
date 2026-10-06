@@ -13,6 +13,7 @@ import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildReliability, cleanDefect, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
+import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
@@ -641,6 +642,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (scope === "write") requireOwner(env, actor);
     const p = await L.project();
     return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
+  }
+  // The owner records which model served events recorded under another;
+  // without apply: true it only answers what matches.
+  if (parts[2] === "served" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    const { apply, ...selection } = cleanServed(body);
+    return json({ project, ...selection, ...(await L.annotateServed(selection, actor, apply)) });
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor), 201);
