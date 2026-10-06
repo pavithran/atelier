@@ -35,7 +35,9 @@ const workspace = value("workspace");
 // backticks inside it (at least four), so nothing in the diff can close the
 // fence, then a sentence the reviewer follows in the workspace.
 const diff = readFileSync(diffFile, "utf8").replace(/\n+$/, "");
-const fence = "`".repeat(Math.max(4, ...[...diff.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+let longest = 3;
+for (const m of diff.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
+const fence = "`".repeat(longest + 1);
 const prompt = [
   readFileSync(briefFile, "utf8").replace(/\n+$/, ""),
   "",

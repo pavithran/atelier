@@ -60,6 +60,12 @@ test("a diff larger than an argument can hold passes on standard input, fenced p
   assert.ok(stdin.length > 2 * 1024 * 1024);
 });
 
+test("a diff with very many runs of backticks still gets its fence", (t) => {
+  const { verdict, result } = review(t, { diffText: "`a".repeat(400_000) + "\n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(verdict, "utf8"), "...VERDICT: APPROVE...");
+});
+
 test("the adapter maps gpt-oss-120b and passes any other model id through", (t) => {
   for (const [model, mapped] of [["gpt-oss-120b", "gpt-oss-120b-medium"], ["some-other-id", "some-other-id"]]) {
     const { log, result } = review(t, { model });
