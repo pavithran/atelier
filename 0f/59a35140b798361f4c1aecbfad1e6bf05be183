@@ -1,0 +1,15 @@
+atelier atelier/t189 "Recognise more model families for the gate, routing and pages: moonshot (Kimi), xai (Grok), xiaomi (MiMo), bytedance (Seed), cohere (North), alongside the existing ones, each with a colour token in light and dark that reads beside the others (src/models/pool.ts familyOf, src/theme.css, the legend); OpenRouter model ids (vendor/model) map to their vendor's family"
+accepted head 41c0318de3c8ccfd399565d5a1324ee82dc04b5f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T19:29:53.120Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T19:29:56.517Z
+REVIEW approve — antigravity/gemini-3.1-pro: Five more model families for the gate, routing and pages
+2026-10-06T18:09:24.268Z pavi item.created
+2026-10-06T18:09:24.860Z opencode/xiaomi-mimo-v2.6-pro item.claimed
+2026-10-06T18:09:29.521Z opencode/xiaomi-mimo-v2.6-pro fork.created
+2026-10-06T19:06:55.359Z opencode/xiaomi-mimo-v2.6-pro item.handoff
+2026-10-06T19:27:53.312Z opencode/deepseek-v4-pro push.observed
+2026-10-06T19:29:53.612Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T19:29:56.828Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T19:29:57.689Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T19:33:26.091Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T19:33:26.917Z pavi item.accepted
