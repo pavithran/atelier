@@ -33,6 +33,7 @@ import { collectCache, markerPath } from "./gc.mjs";
 import { formatStatus } from "./status.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
+import { planText } from "../src/plans/show.ts";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -226,6 +227,8 @@ const FLAGS = {
   dispatch: { to: false, agent: false, model: false, note: false },
   undispatch: {},
   queue: {},
+  // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
+  plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
   models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
   projects: { force: true },
@@ -237,6 +240,8 @@ const FLAGS = {
   help: {},
 };
 const REST = new Set(["check"]);
+// The flags each plan subcommand takes; "" is a new plan's.
+const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], stop: ["note"], post: [] };
 const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
 
 export function parseArgs(argv, switches = SWITCHES) {
@@ -2025,6 +2030,79 @@ const commands = {
     for (const { project, item } of queued) {
       const d = item.dispatch;
       console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}  ${item.title}`);
+    }
+  },
+
+  // The project owner's plans (docs/orchestrator.md, section 6). The word
+  // after plan names a subcommand when it is one; otherwise the words are
+  // the goal of a new plan. `plan post` is for the holder of the plan item's
+  // claim, the planner, and runs as that actor; the rest are the owner's.
+  async plan() {
+    const words = args._.slice(1);
+    const sub = Object.hasOwn(PLAN_FLAGS, words[0]) ? words[0] : null;
+    const form = sub ? `plan ${sub}` : "plan";
+    for (const flag of Object.keys(args.multi)) {
+      if (!["project", "as", ...(PLAN_FLAGS[sub ?? ""] ?? [])].includes(flag)) die(`${form} does not take --${flag}; see atelier plan --help`);
+    }
+    const name = project(), flag = `--project ${name}`;
+    if (!sub) {
+      const goal = words.join(" ").trim();
+      if (!goal) die(COMMAND_USAGE.plan);
+      if (args.planner !== undefined && !/^[^/\s]+\/[^/\s]+$/.test(args.planner)) die("--planner needs harness/model, such as claude-code/opus-5.5");
+      const scope = listArg("scope", "plan");
+      const r = await call("POST", `${P(name)}/items`, { kind: "plan", goal, scope, ...(args.planner ? { planner: args.planner } : {}) }, OWNER);
+      console.log(`${r.item.id} is a plan for: ${flat(goal)}`);
+      console.log(`Planner: ${r.planner}. ${flat(r.reasons[0] ?? "")}`);
+      console.log(`The plan job waits in the queue for ${r.planner}. No runner takes a plan job yet: to plan by hand, claim ${r.item.id} as ${r.planner} with --runner home:NAME, then atelier plan post ${r.item.id} FILE. When a proposal arrives, read it with atelier plan show ${r.item.id} ${flag}.`);
+      return;
+    }
+    const id = words[1];
+    if (!id || words.length > (sub === "post" ? 3 : 2)) die(COMMAND_USAGE.plan);
+    if (sub === "show") {
+      const view = await call("GET", `${I(name, id)}/plan`, undefined, await actor(OWNER));
+      return console.log(args.json ? JSON.stringify(view, null, 2) : planText(view, name));
+    }
+    if (sub === "post") {
+      const file = words[2] ?? die("atelier plan post ID FILE: name the file that holds the plan document");
+      let document;
+      try { document = JSON.parse(readFileSync(file, "utf8")); } catch (error) { die(`${file} is not a JSON plan document: ${error.message}`); }
+      const r = await call("POST", `${I(name, id)}/plan`, document, await actor());
+      console.log(`Proposed ${r.parts} part${r.parts === 1 ? "" : "s"} for ${id} as ${r.hash}.`);
+      console.log(`The owner reads it with atelier plan show ${id} and approves that hash. Release your claim: atelier release ${id} ${flag}`);
+      return;
+    }
+    if (sub === "approve") {
+      if (typeof args.hash !== "string" || !/^[a-f0-9]{64}$/.test(args.hash)) die(`--hash needs the full hash atelier plan show ${id} prints: atelier plan approve ${id} --hash HASH`);
+      const view = await call("POST", `${I(name, id)}/plan/approve`, { hash: args.hash, allowPaid: args["allow-paid"] === true }, OWNER);
+      const queued = view.parts.filter((p) => p.dispatch && p.state === "open");
+      console.log(`${id} is approved at ${args.hash.slice(0, 12)}: ${view.parts.map((p) => `${p.id} ${p.key}`).join(", ")}.`);
+      console.log(queued.length ? `Queued now: ${queued.map((p) => `${p.id} for ${p.dispatch.agent}/${p.dispatch.model}`).join(", ")}.` : "Nothing could start yet.");
+      console.log(`Follow it with atelier plan show ${id} ${flag}`);
+      return;
+    }
+    if (sub === "revise") {
+      if (typeof args.note !== "string" || !args.note.trim()) die(`--note needs text: atelier plan revise ${id} --note "what to change"`);
+      const view = await call("POST", `${I(name, id)}/plan/revise`, { note: args.note }, OWNER);
+      console.log(`${id} is back in the queue for its planner, ${view.planner}, with your note. Its next proposal comes to your inbox.`);
+      return;
+    }
+    if (sub === "reroute") {
+      if (typeof args.to !== "string" || !args.to.trim()) die(`--to needs harness/model: atelier plan reroute ${id} --to claude-code/opus-5.5`);
+      const view = await call("POST", `${I(name, id)}/plan/reroute`, { to: args.to }, OWNER);
+      const part = view.parts.find((p) => p.id === id);
+      console.log(part ? `${id} is built by ${args.to} from now on; ${part.dispatch && part.state === "open" ? "it is queued for it" : `it is ${part.state}, and the plan dispatches it when it may start`}.` : `${id}'s planner is now ${view.planner}, and the plan job is queued for it.`);
+      return;
+    }
+    if (sub === "retry") {
+      const view = await call("POST", `${I(name, id)}/plan/retry`, {}, OWNER);
+      const part = view.parts.find((p) => p.id === id);
+      console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
+      return;
+    }
+    if (sub === "stop") {
+      const view = await call("POST", `${I(name, id)}/plan/stop`, { note: args.note ?? "" }, OWNER);
+      const closed = [view.item, ...view.parts].filter((i) => i.state === "abandoned").map((i) => i.id);
+      console.log(`${id} is stopped: ${closed.join(", ")} ${closed.length === 1 ? "is" : "are"} abandoned, and their write tokens revoked. History and evidence stay. A new plan may start.`);
     }
   },
 

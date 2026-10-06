@@ -19,6 +19,7 @@ import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
 } from "./plans/state.ts";
+import type { PlanView } from "./plans/show.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -1210,7 +1211,7 @@ export class Ledger extends DurableObject<Env> {
   // part with its state, routing, attempts and, when submitted or accepted,
   // its gate. With the pool, a plan not yet approved also shows the routing
   // an approval would fix now, without paid models. Nothing here is written.
-  planView(id: string, pool: ModelEntry[] | null = null) {
+  planView(id: string, pool: ModelEntry[] | null = null): PlanView {
     const asked = this.item(id);
     const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
     if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404);

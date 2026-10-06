@@ -1,11 +1,13 @@
 # Orchestrator design
 
-Steps 1 to 5, 8 and 11 of the build sequence (section 8) are built. Steps 1
+Steps 1 to 6, 8 and 11 of the build sequence (section 8) are built. Steps 1
 to 4, 8 and 11 are pure functions in `src/plans/` and `src/review/`. Step 5
 puts plans in the project's Ledger: proposals, approval, the parts and the
-tick that dispatches them. The review and integration code is still called
-by nothing but its tests. Steps 6, 7, 9, 10 and 12 to 14 are not built: plans
-have no routes or command yet, and no runner takes a plan job.
+tick that dispatches them. Step 6 gives them routes and the `atelier plan`
+command. The review and integration code is still called by nothing but its
+tests. Steps 7, 9, 10 and 12 to 14 are not built: no runner takes a plan job,
+so a planner posts its plan by hand, and each part's runner gets the brief
+any task gets.
 
 Where a section describes something not built, it is the design, not a
 claim that the routes, storage, commands or runner jobs exist. Where the
@@ -19,7 +21,7 @@ when the design was written.
 A plan is an item with `kind = "plan"`. That gives it everything an item already has: one owner at a time, a fork, evidence, the gate, `accept`, and `atelier merge`.
 
 - **The plan item's fork is the integration branch.** Parts are ordinary items that point to a parent plan.
-- **Orchestration.** A pure function, `planActions(state)`, returns a list of actions. The project's Ledger runs it at the end of `submit`, `addEvidence`, `addReview`, `release` and `recordPush`, and on a Durable Object alarm for timeouts.
+- **Orchestration.** A pure function, `planActions(state)`, returns a list of actions. The project's Ledger runs it at the end of `submit`, `addEvidence`, `addReview`, `release` and `recordPush` (and of `merged` and `abandon`, section 3), and on a Durable Object alarm for timeouts.
 - **Serialization.** The project's Durable Object serializes plan transitions. External work must be checked against the current plan revision before its result is recorded.
 
 ## 1. Data model
@@ -35,7 +37,7 @@ A plan is an item with `kind = "plan"`. That gives it everything an item already
 - It stores the approval in the plan's record (`hash`, `at`, `allowPaid`, the limits, the deadline, the part items and each part's routing) and logs `plan.approved`.
 - It is refused while a part has no builder, or no reviewer of another family, under `routeParts`: approving such a plan would only block it. The owner adds models to the pool, or approves with `allowPaid`, and approves the same hash again.
 - A new proposal before approval makes the older hash impossible to approve, just as a push withdraws acceptance.
-- After approval, new proposals are refused. Changing the split means abandoning the plan.
+- After approval, new proposals are refused. Changing the split means stopping the plan (`plan stop`) and starting another.
 
 **Plan states.** A pure `planPhase()` derives them: planning → proposed → building ⇄ blocked → ready (the plan item is submitted) → accepted → merged, or abandoned. Only the reason for `blocked` is stored.
 
@@ -207,8 +209,17 @@ A failed integration attempts to restore its previous head.
 | `atelier plan show tP [--json]` | Phase, hash, parts (dependencies, scope, actor and reason, state, attempts), integration head, combined checks, mergeability with main, budget used |
 | `atelier plan approve tP --hash H [--allow-paid]` | Approve the split, once |
 | `atelier plan revise tP --note …` | Send it back to the planner, before approval only |
-| `atelier plan reroute tN --to a/m`, `plan retry tN`, `plan stop tP` | Decisions for a blocked plan |
+| `atelier plan reroute tN --to a/m`, `plan retry tN`, `plan stop tP [--note …]` | Decisions for a blocked plan |
+| `atelier plan post tP FILE` | The planner, holding the plan item's claim, posts its plan document |
 | `atelier merge tP --head H [--override-review "reason"]` | Accept and land the whole plan; section 5 says when the override is needed |
+
+**What is built.** `src/index.ts` and `cli/atelier.mjs` (step 6):
+- A plan starts through `POST items` with `{kind: "plan", goal, scope, planner}`, so t43 refuses it to agent tokens as it refuses any new item.
+- `GET items/tN/plan` is `plan show`: the Ledger's `planView`, for a plan or any of its parts. Before approval it carries the routing an approval would fix now, without paid models. The integration head, combined checks and mergeability with main are not built (t16), and the command says so; the budget used is the part dispatches against `maxJobs`, since spend is not recorded.
+- `POST items/tP/plan` takes the plan document as its body. A refused document answers 422 `invalid_plan`, with every error and which of the planner's two attempts it was.
+- `POST items/tN/plan/approve`, `revise`, `reroute`, `retry` and `stop` are the owner's. `reroute` and `retry` also take the plan item before approval, for its planner. `stop` revokes the write token of every item it closes before closing them, as `abandon` does for one, and closes them in one transaction.
+- `GET items/tP/brief` gives a plan item's own brief (`planBrief` in `src/plans/show.ts`), which `atelier show tP` and `atelier inbox` print. `plan show` prints from the same view (`planText`).
+- A runner's queue offer may list `jobs`, such as `["plan"]`; until step 7's runner does, no runner is offered a plan job.
 
 **Inbox.** Two new kinds: `approve-plan` (weight 95) and `plan-blocked` (weight 85). The plan item's `accept` and `merge` entries work as today. `approve-plan` appears once the newest proposal answers the owner's latest revise, reroute or retry; `plan-blocked` gives the reason and the decisions open.
 - Parts never appear as accept, assess, failing, scope or stale entries. An accepted part still appears as a `merge` entry. Until t16 the owner accepts and merges each part, and learns which are ready from the plan's view (`planView`, read by `atelier plan show`), not from the inbox.
@@ -223,7 +234,7 @@ A failed integration attempts to restore its previous head.
 **Tokens (t43).**
 - t43 binds each token to one actor and filters queue offers by it. So a runner holds one agent token per actor it offers, named by Keychain entry in `runner.json`.
 - The planner, reviewers and the integrator each have their own token. The owner token never sits on a runner.
-- Routes to add to t43's allowlist: `plan` post (for the plan item's current holder only), `review-claim`, `job-brief` and `base-token`; `integrated` and `integration-failed` for the integrator only.
+- Routes to add to t43's allowlist: `plan` post (for the plan item's current holder only), `review-claim`, `job-brief` and `base-token`; `integrated` and `integration-failed` for the integrator only. `plan` post is added (`agentRoute` in `src/tokens.ts`), and the Ledger takes it only from the holder; every other plan route, `GET items/tN/plan` included, stays owner-only. The others are added with the steps that build their routes (7, 9, 12 and 13).
 - **Conflict to settle:** t43 refuses `POST models/ID/status` for agent tokens, but runners use it to report model status. Either allow it with the runner header, or drop status reporting.
 
 **Harness environment.** `execute()` in `cli/runner.mjs` spawns the harness with the runner's inherited environment. It should pass a scrubbed one, without `ATELIER_TOKEN`. A harness with shell access can still reach the Keychain; agent tokens limit what such a leak can do.
@@ -250,8 +261,8 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 3. **Part routing.** `src/plans/route.ts`, `test/plans-route.test.ts`. Built. Acceptance: the reviewer is from another family; refused and paid models are excluded; governed roles are respected.
 4. **The tick, dispatch half.** `src/plans/phase.ts`. Built. Acceptance: scenario tests for dependencies, the parallel limit, retries and blocking.
 5. **Ledger and rules.** `src/ledger.ts` and `src/rules.ts` changes (new columns and table; `newPlan`, `postPlan`, `approvePlan`, `dispatchPart`, the tick hook; inbox kinds; same-plan overlap). Test: `test/plans.spec.ts`. Built, with the pure parts in `src/plans/state.ts` and `test/plans-state.test.ts`, and the owner's decisions (`revisePlan`, `reroutePlan`, `retryPlan`, `stopPlan`) and `planView` that step 6's routes call.
-6. **Routes and CLI.** `src/index.ts`, `cli/atelier.mjs`. Tests: `routes.spec.ts`, `test/plan-cli.test.mjs`.
-7. **Server briefs and runner jobs.** 7a: `src/plans/brief.ts`. 7b: in `cli/runner.mjs`, the plan job, the `{plan_file}` placeholder, releasing on finish failure, and the scrubbed environment.
+6. **Routes and CLI.** `src/index.ts`, `cli/atelier.mjs`. Tests: `routes.spec.ts`, `test/plan-cli.test.mjs`. Built, with the routes tested in `test/plan-routes.spec.ts` and the plan's text and brief in `test/plans-show.test.ts`.
+7. **Server briefs and runner jobs.** 7a: `src/plans/brief.ts`. 7b: in `cli/runner.mjs`, the plan job, the `{plan_file}` placeholder, releasing on finish failure, and the scrubbed environment. What steps 5 and 6 leave for it: a plan job's `Dispatch` carries `job: "plan"`, and a runner is offered one only when its queue offer lists `jobs: ["plan"]`; the runner claims the plan item as the planner, posts the document to `POST items/tP/plan` (a 422 lists the errors) and releases; the planner's brief reads the goal from `planView`, and the errors and the owner's notes from the plan item's `plan.invalid` and `plan.revised` events; a part's brief reads its spec from the approved document in `planView`.
 
 **t39: Automatic cross-family review**
 
