@@ -1338,6 +1338,13 @@ const commands = {
     if (args.discover === true) return discoverModels();
     if (args.usage === true) return reportUsage();
     const { runRunner } = await import("./runner.mjs");
+    // The runner's own server calls for plan jobs and parts, as the queue's:
+    // fetches under the runner's token, naming the assignment's actor. They
+    // throw rather than die, so the runner's loop decides what a failure
+    // means; a 422 from posting a plan is a result the runner reports, not an
+    // error thrown here.
+    const auth = (actor) => ({ authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, "content-type": "application/json" });
+    const readJson = async (res) => { try { return await res.json(); } catch { return null; } };
     try {
       await runRunner(args, {
         workspacePath,
@@ -1352,6 +1359,27 @@ const commands = {
           const incomplete = res.headers.get("x-atelier-incomplete");
           if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
           return res.json();
+        },
+        async jobBrief(project, id, actor) {
+          await resolveTokenActor();
+          let res;
+          try {
+            res = await fetch(server() + `/api${I(project, id)}/job-brief`, { headers: auth(actor), signal: AbortSignal.timeout(30_000) });
+          } catch (error) { throw Object.assign(new Error(`the job brief could not be read: ${error.message}`), { infrastructure: true }); }
+          const data = await readJson(res);
+          if (!res.ok) throw Object.assign(new Error(`the job brief could not be read: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
+          return data;
+        },
+        async postPlan(project, id, actor, text) {
+          await resolveTokenActor();
+          let res;
+          try {
+            res = await fetch(server() + `/api${I(project, id)}/plan`, { method: "POST", headers: auth(actor), body: text, signal: AbortSignal.timeout(60_000) });
+          } catch (error) { throw Object.assign(new Error(`the plan could not be posted: ${error.message}`), { infrastructure: true }); }
+          const data = await readJson(res);
+          if (res.status === 422 && data && data.valid === false) return data;
+          if (!res.ok) throw Object.assign(new Error(`the plan could not be posted: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
+          return data;
         },
         // A run that stalled, timed out or was refused goes to the run
         // reports, under the runner's name, as a model's status does.
@@ -2430,7 +2458,7 @@ const commands = {
       const r = await call("POST", `${P(name)}/items`, { kind: "plan", goal, scope, ...(args.planner ? { planner: args.planner } : {}) }, OWNER);
       console.log(`${r.item.id} is a plan for: ${flat(goal)}`);
       console.log(`Planner: ${r.planner}. ${flat(r.reasons[0] ?? "")}`);
-      console.log(`The plan job waits in the queue for ${r.planner}. No runner takes a plan job yet: to plan by hand, claim ${r.item.id} as ${r.planner} with --runner home:NAME, then atelier plan post ${r.item.id} FILE. When a proposal arrives, read it with atelier plan show ${r.item.id} ${flag}.`);
+      console.log(`The plan job waits in the queue for ${r.planner}; a runner that offers plan jobs takes it. To plan by hand, claim ${r.item.id} as ${r.planner} with --runner home:NAME, then atelier plan post ${r.item.id} FILE. When a proposal arrives, read it with atelier plan show ${r.item.id} ${flag}.`);
       return;
     }
     const id = words[1];
