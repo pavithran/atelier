@@ -75,8 +75,8 @@ it("keeps the diagram's text between 11 and 13 pixels at drawn scale", async () 
 
 it("marks each orchestrator part built or not built yet, as the data says", async () => {
   const { body } = await page();
-  expect(body.match(/>Built<\/span>/g)).toHaveLength(ORCHESTRATOR.filter((p) => p.built).length);
-  expect(body.match(/>Not built yet<\/span>/g)).toHaveLength(ORCHESTRATOR.filter((p) => !p.built).length);
+  expect(body.match(/>Built<\/span>/g) ?? []).toHaveLength(ORCHESTRATOR.filter((p) => p.built).length);
+  expect(body.match(/>Not built yet<\/span>/g) ?? []).toHaveLength(ORCHESTRATOR.filter((p) => !p.built).length);
   for (const part of ORCHESTRATOR) expect(body).toContain(escapeText(part.name));
 });
 

@@ -59,7 +59,7 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
     let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox } };
     if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" } };
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
-    if (path.endsWith("/read-token") || path.endsWith("/baseline-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
+    if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
     if (path.endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title }];
     if (path.endsWith("/sandbox")) data = { runId: "run" };

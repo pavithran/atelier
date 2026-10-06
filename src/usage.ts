@@ -70,6 +70,11 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "review ID --approve|--reject [--note TEXT] [--head SHA] [--findings JSON]", about: "Records a verdict on the item's current head, with `--note` giving the reason. `--head` names the revision the verdict is for, and the server refuses one for any head but the current. `--findings` attaches a reviewer's structured findings. The rules say whose approval counts." },
     { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the item's open review request and gets the part, its brief's inputs and a read token for its fork." },
     { form: "review-release ID [--note T]", about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it." },
+  ], [
+    { form: "read-token ID", about: "Reads a token for the item's own fork, with its head and base, for a job that clones it outside a task or a review." },
+    { form: "base-token ID", about: "Reads a token for the repository the item is measured against: the plan's fork for a part, the baseline otherwise." },
+    { form: "integrated ID --part KEY --merge-commit SHA", about: "The integrator reports a verified merge of one part onto the plan's branch; the server checks the commit against the branch before recording it." },
+    { form: "integration-failed ID --part KEY --reason TEXT", about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason." },
   ]] },
   { name: "Owner", lines: [[
     { form: "accept ID [--head SHA] [--override-review REASON]", about: "The project owner accepts the item at its current head; `--head` names that head, and any other is refused. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
@@ -116,7 +121,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Local", lines: [[
     { form: "gc [--project NAME] [--dry-run | --apply]", about: "Previews the local workspace and check clones that are safe to remove; `--apply` removes them. It never touches Artifacts or the project checkout." },
-    { form: "runner --name home:NAME [--once] [--config PATH]", about: "The home runner: polls the queue every 30 seconds, claims one eligible task and runs its configured harness in the claimed workspace. Each opencode run gets a data folder of its own beside the workspace, removed when the run ends, because opencode runs that share one deadlock on its database. When the harness commits, the runner runs `finish`. `--once` handles at most one task." },
+    { form: "runner --name home:NAME [--once] [--config PATH] [--integrate]", about: "The home runner: polls the queue every 30 seconds, claims one eligible task and runs its configured harness in the claimed workspace. Each opencode run gets a data folder of its own beside the workspace, removed when the run ends, because opencode runs that share one deadlock on its database. When the harness commits, the runner runs `finish`. `--integrate` runs no harness: it offers only the integrate and refresh jobs and merges each part onto its plan's branch as atelier/integrator. `--once` handles at most one task." },
   ], [
     { form: "runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]", aside: "what each home model's harness serves", about: "Reports which model each home harness actually served, from the records the harness keeps, and sends the result to the server as each model's status. `--probe` also sends one short prompt to each model that can be probed; `--dry-run` reports nothing." },
   ], [
@@ -329,6 +334,22 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     flags: { "--note TEXT": "why the review request is let go; kept with the event" },
     example: 'atelier review-release t3 --note "The harness wrote no verdict" --project demo',
   },
+  "read-token": { example: "atelier read-token t3 --project demo" },
+  "base-token": { example: "atelier base-token t3 --project demo" },
+  integrated: {
+    flags: {
+      "--part KEY": "the part that was merged; required",
+      "--merge-commit SHA": "the full hash of the merge commit on the plan's branch; required",
+    },
+    example: "atelier integrated t3 --part t4 --merge-commit 0123456789abcdef0123456789abcdef01234567 --project demo",
+  },
+  "integration-failed": {
+    flags: {
+      "--part KEY": "the part whose merge failed; required",
+      "--reason TEXT": "why the merge failed; sent to the part's builder with the rework",
+    },
+    example: 'atelier integration-failed t3 --part t4 --reason "Conflict in src/api.ts" --project demo',
+  },
   defect: {
     flags: {
       "--note TEXT": "what is wrong; required",
@@ -420,6 +441,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--name home:NAME": "this runner's name; home: and this machine's host name unless given",
       "--once": "handles at most one task, then exits",
       "--config PATH": "the runner config file; runner.json in the config folder unless given",
+      "--integrate": "runs no harness; offers only the integrate and refresh jobs and merges each part onto its plan's branch",
       "--discover": "reports which model each home harness served, as each model's status",
       "--probe": "with --discover, also sends one short prompt to each model that can be probed",
       "--dry-run": "prints what would be reported and reports nothing",
