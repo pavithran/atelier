@@ -1,0 +1,16 @@
+atelier atelier/t152 "Audit t105 site and docs fixes (fable-5.1's findings, all 12 confirmed by gemini-3.1-pro; report in work/atelier/t105/.scratch/audit/site-and-docs.md): blocking, the Flow page and public showcase say the owner's approval satisfies a protected-path review (src/ui.ts:448), and docs/orchestrator.md says steps 4 to 14 are not built though 4, 8 and 11 are; follow-ups, orchestrator sections 5 and 6 merge --approve, README's 'no runner ships yet', the t43 sessions note, demo.md's identity and review-rule claims and diagram, README's harness list (Antigravity), exit code 2, theme=dark, and the help footer's switch wording"
+accepted head 42c496ad857bd723a1fecd7f19eb8df9fb253ef3
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T04:35:47.492Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T04:35:49.930Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. README, docs/demo.md, docs/orchestrator.md and src/ui.ts now state the other-family rule, that the owner's approval never counts and the recorded override; steps 1 to 4, 8 and 11 marked built; atelier runner named as the home runner; agent tokens prove their actor; exit code 2 for a failed check; switches take only true or false. Nothing true removed, nothing false introduced.
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T04:24:27.318Z pavi item.created
+2026-10-06T04:24:39.847Z claude-code/opus-5.5 item.claimed
+2026-10-06T04:24:44.608Z claude-code/opus-5.5 fork.created
+2026-10-06T04:34:26.895Z claude-code/opus-5.5 push.observed
+2026-10-06T04:35:48.070Z claude-code/opus-5.5 evidence.observed
+2026-10-06T04:35:50.107Z claude-code/opus-5.5 evidence.observed
+2026-10-06T04:35:50.695Z claude-code/opus-5.5 item.submitted
+2026-10-06T04:38:39.101Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T04:38:39.596Z pavi review.approved
+2026-10-06T04:38:40.089Z pavi item.accepted
