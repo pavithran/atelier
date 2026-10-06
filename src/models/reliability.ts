@@ -22,14 +22,68 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, redactKeys, type PoolFamily } from "./pool.ts";
-import { modelKey, RuleError, sameActor, validActor } from "../rules.ts";
+import { matchesAny, modelKey, RuleError, sameActor, validActor } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { SERVED, servedActor, servedBy } from "./served.ts";
 
-export const RUN_OUTCOMES = ["stalled", "timed-out", "refused"] as const;
+export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 export const RUN_ROLES = ["build", "review"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
+
+// What a plan part is, as the plan names it (src/plans/schema.ts): the kind of
+// work an item was asked to do. An item that is no part of a plan has none, so
+// its kind of work is unknown.
+export type WorkKind = "interface" | "build" | "tests" | "docs" | "unknown";
+export const WORK_KINDS: readonly WorkKind[] = ["interface", "build", "tests", "docs", "unknown"];
+
+// The verdict the owner recorded on one review finding: the finding was right
+// and a fix followed (confirmed), was right and is fixed (fixed), or was wrong
+// (refuted). Precision is the share of the adjudicated findings that were not
+// refuted: confirmed and fixed together over all three.
+export type FindingVerdict = "confirmed" | "refuted" | "fixed";
+export const FINDING_VERDICTS: readonly FindingVerdict[] = ["confirmed", "refuted", "fixed"];
+
+// A task's wall-clock timings, in seconds, per model. Each entry is one task
+// the model built; the Models page shows the median of each list.
+export interface Timings {
+  claimToPush: number[];      // claim to its first push
+  claimToSubmit: number[];    // claim to submission
+  claimToVerdict: number[];   // claim to the first review by another model
+  claimToMerge: number[];     // claim to the merge
+  rework: number[];           // a rejection to the next submission
+}
+
+// The measures of one kind of work, for the comparison on the Models page and
+// in GET /api/reliability. Medians are null when no task of the kind was timed.
+export interface KindMeasures {
+  kind: WorkKind;
+  items: number;
+  findingsConfirmed: number;  // the reviewer's findings the owner confirmed or marked fixed
+  findingsRefuted: number;    // those the owner refuted
+  approvals: number;          // its approvals of this kind of work
+  contradicted: number;       // of those, a defect was later traced to the revision
+  timings: { claimToPush: number | null; claimToSubmit: number | null; claimToVerdict: number | null; claimToMerge: number | null; rework: number | null };
+  checkMismatches: number;    // reported checks an observed check contradicted at the same head
+  outOfScope: number;         // submissions whose changed paths ran outside the task's scope
+  runs: Record<RunOutcome, number>;
+  integrations: number;       // pushes that folded a moved main into the task's fork
+}
+
+// The raw accumulation of one kind of work, filled as the events are replayed
+// and turned into KindMeasures once the whole record is known.
+interface KindBin {
+  items: Set<string>;
+  findingsConfirmed: number;
+  findingsRefuted: number;
+  approvals: number;
+  contradicted: number;
+  checkMismatches: number;
+  outOfScope: number;
+  runs: Record<RunOutcome, number>;
+  integrations: number;
+  timings: Timings;
+}
 
 // A run that ended without a result the ledger could record, as the runner
 // that ran it reports it: the harness made nothing and stopped (stalled),
@@ -70,6 +124,19 @@ export interface ModelReliability {
   approvals: number;
   rejectionsGiven: number;
   contradicted: Cause[];          // its approvals of a revision a defect was later traced to
+  // The owner's verdicts on its review findings: precision.
+  findingsConfirmed: number;      // findings the owner confirmed or marked fixed
+  findingsRefuted: number;        // findings the owner refuted
+  findingVerdicts: Cause[];       // each verdict, who recorded it and the note
+  // Its tasks' wall-clock timings, medians over the tasks it built.
+  timings: { claimToPush: number | null; claimToSubmit: number | null; claimToVerdict: number | null; claimToMerge: number | null; rework: number | null };
+  // Builder honesty.
+  checkMismatches: number;        // reported checks an observed check contradicted at the same head
+  outOfScope: number;             // submissions whose changed paths ran outside the task's scope
+  // Integration cost: pushes that folded a moved main into the task's fork.
+  integrations: Cause[];          // who pushed each, with the task
+  // The same measures by kind of work, for the comparison table.
+  kinds: KindMeasures[];
   // Runs the runners reported.
   runs: Record<RunOutcome, number>;
   unfinishedReviews: number;      // review runs among them: reviews that never reached a verdict
@@ -79,16 +146,33 @@ export interface ModelReliability {
 export type Reliability = ReadonlyMap<string, ModelReliability>;
 export interface ProjectEvents { project: string; events: readonly LedgerEvent[] }
 
+const emptyRuns = (): Record<RunOutcome, number> => ({ stalled: 0, "timed-out": 0, refused: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+
 const empty = (model: string): ModelReliability => ({
   model, family: familyOf(model), actors: [], projects: [],
   firstReviews: 0, approvedFirst: 0, merged: 0, mergedReviewed: 0, rounds: 0, rejections: [], defects: [],
   ownerApprovals: { page: 0, api: 0, unrecorded: 0 },
   approvals: 0, rejectionsGiven: 0, contradicted: [],
-  runs: { stalled: 0, "timed-out": 0, refused: 0 }, unfinishedReviews: 0, runCauses: [],
+  findingsConfirmed: 0, findingsRefuted: 0, findingVerdicts: [],
+  timings: { claimToPush: null, claimToSubmit: null, claimToVerdict: null, claimToMerge: null, rework: null },
+  checkMismatches: 0, outOfScope: 0, integrations: [],
+  kinds: [],
+  runs: emptyRuns(), unfinishedReviews: 0, runCauses: [],
 });
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const newestFirst = (a: Cause, b: Cause) => b.at.localeCompare(a.at);
+
+// The median of a list of seconds, or null when nothing was timed.
+function median(xs: number[]): number | null {
+  if (!xs.length) return null;
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// How many runs a model had in all, for the tie-breaker's against side.
+export const runTotal = (r: ModelReliability): number => Object.values(r.runs).reduce((a, b) => a + b, 0);
 
 // An agent: harness/model, not Atelier's own recorder and not the owner.
 function isAgent(actor: string, owner: string): boolean {
@@ -97,6 +181,8 @@ function isAgent(actor: string, owner: string): boolean {
 
 export function buildReliability(projects: readonly ProjectEvents[], runs: readonly RunReport[], owner: string): Reliability {
   const records = new Map<string, ModelReliability>();
+  const times = new Map<string, Timings>();
+  const bins = new Map<string, Map<WorkKind, KindBin>>();
   const get = (actor: string, project?: string): ModelReliability => {
     const key = modelKey(actor);
     let r = records.get(key);
@@ -105,27 +191,80 @@ export function buildReliability(projects: readonly ProjectEvents[], runs: reado
     if (project && !r.projects.includes(project)) r.projects.push(project);
     return r;
   };
-  for (const { project, events } of projects) replay(project, events, owner, get);
+  const timesOf = (model: string): Timings => {
+    const key = modelKey(model);
+    let t = times.get(key);
+    if (!t) times.set(key, (t = { claimToPush: [], claimToSubmit: [], claimToVerdict: [], claimToMerge: [], rework: [] }));
+    return t;
+  };
+  const binOf = (model: string, kind: WorkKind): KindBin => {
+    const key = modelKey(model);
+    let m = bins.get(key);
+    if (!m) bins.set(key, (m = new Map()));
+    let b = m.get(kind);
+    if (!b) m.set(kind, (b = { items: new Set(), findingsConfirmed: 0, findingsRefuted: 0, approvals: 0, contradicted: 0, checkMismatches: 0, outOfScope: 0, runs: emptyRuns(), integrations: 0, timings: { claimToPush: [], claimToSubmit: [], claimToVerdict: [], claimToMerge: [], rework: [] } }));
+    return b;
+  };
+  // A duration, in seconds, both for the model's aggregate medians and for
+  // the kind of work it ran on.
+  const recordTiming = (model: string, kind: WorkKind, field: keyof Timings, seconds: number) => {
+    timesOf(model)[field].push(seconds);
+    binOf(model, kind).timings[field].push(seconds);
+  };
+  // Each project's item-to-kind mapping, so run reports can be bucketed by the
+  // kind of work the item was.
+  const kindsByProject = new Map<string, Map<string, WorkKind>>();
+  for (const { project, events } of projects) kindsByProject.set(project, replay(project, events, owner, get, binOf, recordTiming));
   for (const run of runs) {
     if (!isAgent(run.actor, owner)) continue;
     const r = get(run.actor, run.project ?? undefined);
     r.runs[run.outcome]++;
     if (run.role === "review") r.unfinishedReviews++;
     r.runCauses.push({ project: run.project ?? "", item: run.item, by: run.runner, note: `${run.role} run ${run.outcome}${run.detail ? `: ${run.detail}` : ""}`, at: run.at });
+    if (run.project && run.item) binOf(run.actor, kindsByProject.get(run.project)?.get(run.item) ?? "unknown").runs[run.outcome]++;
   }
   for (const r of records.values()) {
-    for (const list of [r.rejections, r.defects, r.contradicted, r.runCauses]) list.sort(newestFirst);
+    for (const list of [r.rejections, r.defects, r.contradicted, r.runCauses, r.findingVerdicts, r.integrations]) list.sort(newestFirst);
     r.actors.sort();
     r.projects.sort();
+    const t = times.get(r.model);
+    if (t) r.timings = {
+      claimToPush: median(t.claimToPush), claimToSubmit: median(t.claimToSubmit), claimToVerdict: median(t.claimToVerdict),
+      claimToMerge: median(t.claimToMerge), rework: median(t.rework),
+    };
+    const modelBins = bins.get(r.model);
+    r.kinds = modelBins ? [...modelBins.entries()].map(([kind, b]) => ({
+      kind, items: b.items.size, findingsConfirmed: b.findingsConfirmed, findingsRefuted: b.findingsRefuted,
+      approvals: b.approvals, contradicted: b.contradicted,
+      timings: {
+        claimToPush: median(b.timings.claimToPush), claimToSubmit: median(b.timings.claimToSubmit), claimToVerdict: median(b.timings.claimToVerdict),
+        claimToMerge: median(b.timings.claimToMerge), rework: median(b.timings.rework),
+      },
+      checkMismatches: b.checkMismatches, outOfScope: b.outOfScope, runs: b.runs, integrations: b.integrations,
+    })).sort((a, b) => WORK_KINDS.indexOf(a.kind) - WORK_KINDS.indexOf(b.kind)) : [];
   }
   return new Map([...records].sort(([a], [b]) => a.localeCompare(b)));
 }
 
+// What a part's kind of work is, from its creation event; an ordinary task or
+// a plan has none, so unknown.
+const workKindOf = (data: Record<string, unknown>): WorkKind => (typeof data.partKind === "string" && WORK_KINDS.slice(0, 4).includes(data.partKind as WorkKind) ? (data.partKind as WorkKind) : "unknown");
+
 // One project's events in sequence. A partial history attributes an outcome
 // only once a claim or handoff has named the holder, as buildRecord does.
-function replay(project: string, events: readonly LedgerEvent[], owner: string, get: (actor: string, project?: string) => ModelReliability): void {
+// Returns each item's kind of work, for the run reports to bucket by.
+function replay(
+  project: string,
+  events: readonly LedgerEvent[],
+  owner: string,
+  get: (actor: string, project?: string) => ModelReliability,
+  binOf: (model: string, kind: WorkKind) => KindBin,
+  recordTiming: (model: string, kind: WorkKind, field: keyof Timings, seconds: number) => void,
+): Map<string, WorkKind> {
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
   const served = servedBy(sorted);
+  const kindOf = new Map<string, WorkKind>();
+  const scopeOf = new Map<string, string[]>();
   // The holder as recorded, which its own later events name, and the actor
   // its work is counted under.
   const holders = new Map<string, { recorded: string; serving: string }>();
@@ -135,20 +274,37 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
   const approvedAt = new Map<string, { reviewer: string; head: string }[]>();
   const firstReview = new Set<string>();                       // item and builder model already counted
   const ownerSeen = new Set<string>();                         // item and revision the owner approved
+  // Timing state, one task at a time.
+  const claimAt = new Map<string, { at: string; model: string }>();
+  const pushed = new Set<string>(), submitted = new Set<string>(), verdictSeen = new Set<string>(), merged = new Set<string>();
+  const reworkFrom = new Map<string, { at: string; model: string }>();
+  const measuredPaths = new Map<string, { head: string; paths: string[] }>();
+  const observedChecks = new Map<string, Map<string, boolean>>();   // item: "head claim" -> observed passed
+  const reportedChecks = new Map<string, Map<string, { passed: boolean; actor: string }>>();
   // Work the owner did is not a model's: a builder that is not an agent is
   // treated as no builder, so it opens no row and earns no credit or blame.
   const agentOnly = (a: string | undefined) => (a !== undefined && isAgent(a, owner) ? a : undefined);
   const builderOf = (item: string, head: string) => agentOnly(builtAt.get(item)?.get(head) ?? holders.get(item)?.serving ?? lastBuilder.get(item));
+  const seconds = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / 1000;
 
   for (const event of sorted) {
     const { itemId: item, kind, data } = event;
     if (item === null || kind === SERVED) continue;
     const actor = servedActor(event, served);
     const holder = holders.get(item);
+    if (kind === "item.created") {
+      kindOf.set(item, workKindOf(data));
+      if (Array.isArray(data.scope)) scopeOf.set(item, data.scope.filter((s) => typeof s === "string"));
+      continue;
+    }
     if (kind === "item.claimed") {
       holders.set(item, { recorded: event.actor, serving: actor });
       // The owner taking a task is not a model's work, so it opens no row.
-      if (isAgent(actor, owner)) get(actor, project);
+      if (isAgent(actor, owner)) {
+        get(actor, project);
+        binOf(actor, kindOf.get(item) ?? "unknown").items.add(item);
+        if (!claimAt.has(item)) claimAt.set(item, { at: event.at, model: actor });
+      }
       continue;
     }
     if (kind === "item.handoff") {
@@ -165,11 +321,47 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
     // model that served this action.
     if (holder && sameActor(event.actor, holder.recorded)) holder.serving = served.has(event.seq) ? actor : holder.recorded;
     const head = str(data.head);
+    const k = kindOf.get(item) ?? "unknown";
     if (kind === "item.submitted" && holder) {
       const heads = builtAt.get(item) ?? new Map<string, string>();
       heads.set(head, holder.serving);
       builtAt.set(item, heads);
       lastBuilder.set(item, holder.serving);
+      const claim = claimAt.get(item);
+      if (claim && !submitted.has(item)) {
+        submitted.add(item);
+        recordTiming(claim.model, k, "claimToSubmit", seconds(claim.at, event.at));
+      }
+      // Out of scope: the changed paths measured at this head, outside the
+      // scope the task named, count once per submission.
+      const measured = measuredPaths.get(item);
+      const scope = scopeOf.get(item) ?? [];
+      const author = agentOnly(holder.serving);
+      if (author && scope.length && measured && measured.head === head && measured.paths.some((p) => !matchesAny(p, scope))) {
+        get(author, project).outOfScope++;
+        binOf(author, k).outOfScope++;
+      }
+      const rework = reworkFrom.get(item);
+      if (rework) {
+        recordTiming(rework.model, k, "rework", seconds(rework.at, event.at));
+        reworkFrom.delete(item);
+      }
+    } else if (kind === "push.observed") {
+      const claim = claimAt.get(item);
+      if (claim && !pushed.has(item)) {
+        pushed.add(item);
+        recordTiming(claim.model, k, "claimToPush", seconds(claim.at, event.at));
+      }
+      // A push that folded a moved main into the fork, as `atelier update`
+      // rebases onto the baseline: the integration cost of the task.
+      if (str(data.rebasedFrom)) {
+        const pusher = agentOnly(holder?.serving ?? lastBuilder.get(item));
+        if (pusher) {
+          const r = get(pusher, project);
+          r.integrations.push({ project, item, by: pusher, note: `rebased ${str(data.rebasedFrom).slice(0, 8)} onto ${head.slice(0, 8)}`, at: event.at });
+          binOf(pusher, k).integrations++;
+        }
+      }
     } else if (kind === "review.approved" || kind === "review.rejected") {
       const approve = kind === "review.approved";
       const builder = builderOf(item, head);
@@ -181,7 +373,10 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
           const recorded = data.via;
           const via: OwnerChannel = recorded === "page" || recorded === "api" ? recorded : "unrecorded";
           get(builder, project).ownerApprovals[via]++;
-        } else get(builder, project).rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
+        } else {
+          get(builder, project).rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
+          reworkFrom.set(item, { at: event.at, model: builder });
+        }
         continue;
       }
       if (!isAgent(actor, owner)) continue;
@@ -189,7 +384,18 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
       if (approve) {
         reviewer.approvals++;
         approvedAt.set(item, [...(approvedAt.get(item) ?? []), { reviewer: actor, head }]);
-      } else reviewer.rejectionsGiven++;
+        binOf(actor, k).approvals++;
+      } else {
+        reviewer.rejectionsGiven++;
+        // Rework runs from a rejection to the next submission; an approval
+        // asks for none.
+        if (builder) reworkFrom.set(item, { at: event.at, model: builder });
+      }
+      const claim = claimAt.get(item);
+      if (claim && !verdictSeen.has(item)) {
+        verdictSeen.add(item);
+        recordTiming(claim.model, k, "claimToVerdict", seconds(claim.at, event.at));
+      }
       if (!builder) continue;
       const built = get(builder, project);
       const first = `${item} ${modelKey(builder)}`;
@@ -212,6 +418,11 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
         r.mergedReviewed++;
         r.rounds += rounds;
       }
+      const claim = claimAt.get(item);
+      if (claim && !merged.has(item)) {
+        merged.add(item);
+        recordTiming(claim.model, k, "claimToMerge", seconds(claim.at, event.at));
+      }
     } else if (kind === "item.defect") {
       // A defect the owner traced to the accepted revision: it counts against
       // the model that built that revision, and against every model that
@@ -219,9 +430,62 @@ function replay(project: string, events: readonly LedgerEvent[], owner: string, 
       const cause = { project, item, by: actor, note: str(data.note), at: event.at };
       const builder = builderOf(item, head);
       if (builder) get(builder, project).defects.push(cause);
-      for (const a of approvedAt.get(item) ?? []) if (a.head === head) get(a.reviewer, project).contradicted.push(cause);
+      for (const a of approvedAt.get(item) ?? []) {
+        if (a.head === head) {
+          get(a.reviewer, project).contradicted.push(cause);
+          binOf(a.reviewer, k).contradicted++;
+        }
+      }
+    } else if (kind === "review.finding") {
+      // The owner's verdict on one of a review's findings, counted under the
+      // reviewer that wrote the finding.
+      const by = str(data.by);
+      if (!isAgent(by, owner)) continue;
+      const verdict = str(data.verdict) as FindingVerdict;
+      if (!FINDING_VERDICTS.includes(verdict)) continue;
+      const r = get(by, project);
+      if (verdict === "refuted") {
+        r.findingsRefuted++;
+        binOf(by, k).findingsRefuted++;
+      } else {
+        r.findingsConfirmed++;
+        binOf(by, k).findingsConfirmed++;
+      }
+      r.findingVerdicts.push({ project, item, by: actor, note: `${verdict}${str(data.note) ? `: ${str(data.note)}` : ""}`, at: event.at });
+    } else if (kind === "evidence.observed" || kind === "evidence.reported") {
+      // Honesty: a reported check whose passed value an observed check at the
+      // same head and claim contradicts. The reported side carries the blame.
+      const claim = str(data.claim);
+      if (claim && typeof data.passed === "boolean") {
+        const key = `${head} ${claim}`;
+        if (kind === "evidence.observed") {
+          const seen = observedChecks.get(item) ?? new Map<string, boolean>();
+          seen.set(key, data.passed);
+          observedChecks.set(item, seen);
+          const reported = reportedChecks.get(item)?.get(key);
+          if (reported && reported.passed !== data.passed && isAgent(reported.actor, owner)) {
+            get(reported.actor, project).checkMismatches++;
+            binOf(reported.actor, k).checkMismatches++;
+          }
+        } else {
+          const seen = reportedChecks.get(item) ?? new Map<string, { passed: boolean; actor: string }>();
+          seen.set(key, { passed: data.passed, actor });
+          reportedChecks.set(item, seen);
+          const observed = observedChecks.get(item)?.get(key);
+          if (observed !== undefined && observed !== data.passed && isAgent(actor, owner)) {
+            get(actor, project).checkMismatches++;
+            binOf(actor, k).checkMismatches++;
+          }
+        }
+        // Observed checks record what the item actually changed, for the
+        // out-of-scope measure at submission.
+        if (kind === "evidence.observed" && Array.isArray(data.changedPaths)) {
+          measuredPaths.set(item, { head, paths: data.changedPaths.filter((p) => typeof p === "string") });
+        }
+      }
     }
   }
+  return kindOf;
 }
 
 // ── the tie-breaker routing reads ──────────────────────────────────────────
@@ -235,7 +499,7 @@ export interface Outcomes { good: number; bad: number }
 export function outcomesOf(r: ModelReliability): Outcomes {
   return {
     good: r.approvedFirst + r.merged,
-    bad: r.rejections.length + r.defects.length + r.contradicted.length + r.runs.stalled + r.runs["timed-out"] + r.runs.refused,
+    bad: r.rejections.length + r.defects.length + r.contradicted.length + runTotal(r),
   };
 }
 
@@ -282,7 +546,7 @@ export function cleanRun(body: Record<string, unknown>, at: string, runner: stri
   const role = body.role === undefined ? "build" : str(body.role);
   if (!RUN_ROLES.includes(role as RunRole)) throw bad("role must be build or review");
   const outcome = str(body.outcome);
-  if (!RUN_OUTCOMES.includes(outcome as RunOutcome)) throw bad("outcome must be stalled, timed-out or refused");
+  if (!RUN_OUTCOMES.includes(outcome as RunOutcome)) throw bad(`outcome must be one of ${RUN_OUTCOMES.join(", ")}`);
   const project = body.project === undefined || body.project === null ? null : str(body.project).trim();
   if (project !== null && !PROJECT.test(project)) throw bad("project must be a project's name");
   const item = body.item === undefined || body.item === null ? null : str(body.item).trim();
@@ -309,3 +573,23 @@ export function cleanDefect(body: Record<string, unknown>): { note: string; foun
 
 // The record as JSON: one entry per model, in model order.
 export const reliabilityJson = (r: Reliability) => [...r.values()];
+
+// ── finding verdicts ────────────────────────────────────────────────────────
+
+const HEAD = /^[a-f0-9]{40,64}$/;
+
+// What recording a verdict on one review finding asks for: the head the
+// review was made at, the finding's position in that review's findings (one
+// based), the verdict and an optional note. The Ledger resolves the reviewer
+// and the finding itself from the review, so the caller names only where it
+// sits.
+export function cleanFinding(body: Record<string, unknown>): { head: string; index: number; verdict: FindingVerdict; note: string } {
+  const head = str(body.head);
+  if (!HEAD.test(head)) throw new RuleError("bad_finding", "--head must be the full revision the review was made at", 400);
+  const index = body.index;
+  if (typeof index !== "number" || !Number.isInteger(index) || index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
+  const verdict = str(body.verdict);
+  if (!FINDING_VERDICTS.includes(verdict as FindingVerdict)) throw new RuleError("bad_finding", `--verdict must be one of ${FINDING_VERDICTS.join(", ")}`, 400);
+  const note = str(body.note).replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+  return { head, index, verdict: verdict as FindingVerdict, note };
+}
