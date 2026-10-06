@@ -1017,6 +1017,16 @@ uncommitted Git merge, inspect `git status` and resolve or abort that merge
 before retrying. The journal preserves the original revision and starting
 commit. Never remove it to bypass a mismatch.
 
+`atelier merge t9 --cancel` ends a landing. It keeps an unpublished merge
+commit in the checkout unless `--discard-local` is given, and then puts the
+branch back on the commit where the merge began. Once the merge is on the
+baseline it refuses, with or without `--discard-local`, and the checkout
+keeps the merge: the journal says so once the push has returned, and for a
+push that reached the baseline just before the process stopped, the
+baseline's history, which the cancel fetches and Git reads in full, says so.
+Rerun `atelier merge t9` to record it. A merge the server has already
+recorded leaves only the journal, which the cancel removes.
+
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under
 it is picked up where it was left: the next `atelier merge`, `merge --cancel`
