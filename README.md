@@ -902,8 +902,10 @@ without signing in. It shows the projects the owner names, as the Flow page
 draws them: each task's thread,
 who held it, its checks, reviews and decisions, and the tally. It leaves out
 what anyone wrote (review notes, reports, check commands and closing notes),
-the diffs, every form and every link into the signed-in pages. Nothing is
-shown until the owner names a project:
+the diffs, every form and every link into the signed-in pages. Every email
+address goes too: from task and project titles, and from the agent names read
+from commit trailers in the history before Atelier, where a name that is only
+an address is not taken. Nothing is shown until the owner names a project:
 
 ```text
 printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
