@@ -14,6 +14,7 @@ export interface ModelEvidence {
 
 export interface ModelProfile {
   id: string;
+  aliases?: readonly string[];   // other names harnesses give this same model, such as a vendor's API id
   displayName: string;
   family: Family;
   harnesses: readonly Harness[]; // empty when no harness assignment was supplied
@@ -72,8 +73,8 @@ export const MODEL_PROFILES: readonly ModelProfile[] = [
     evidence: [qualification("long-context", "Long-context qualification only: 262K to 1M windows, substantive values correct")],
     notes: [...home.notes, "Context window per server config."],
   },
-  { ...cloud, id: "opus-5.5", displayName: "opus-5.5", family: "anthropic", harnesses: ["claude-code"], evidence: [prior] },
-  { ...cloud, id: "sonnet-5.5", displayName: "sonnet-5.5", family: "anthropic", harnesses: ["claude-code"], evidence: [prior] },
+  { ...cloud, id: "opus-5.5", aliases: ["claude-opus-5-5"], displayName: "opus-5.5", family: "anthropic", harnesses: ["claude-code"], evidence: [prior] },
+  { ...cloud, id: "sonnet-5.5", aliases: ["claude-sonnet-5-5"], displayName: "sonnet-5.5", family: "anthropic", harnesses: ["claude-code"], evidence: [prior] },
   { ...cloud, id: "gpt-6-astra", displayName: "gpt-6-astra", family: "openai", harnesses: ["codex"], evidence: [prior] },
   { ...cloud, id: "glm-5.3", displayName: "glm-5.3", family: "zai", harnesses: ["zcode"], evidence: [prior] },
 ];

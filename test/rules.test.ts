@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelOf,
+  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertEligible, checkFiles, overlappingLive, parseRuleError, repoName, RuleError, scopesOverlap, validActor,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
@@ -36,6 +36,19 @@ test("globs: ** crosses directories, * does not", () => {
 test("model is what makes a reviewer independent", () => {
   assert.equal(modelOf("claude-code/opus-5.5"), "opus-5.5");
   assert.equal(modelOf("owner"), "owner");
+});
+
+test("models compare without letter case or profile, and by the registry's id for a name it knows", () => {
+  assert.equal(modelKey("opencode/GLM-5.3:studio-fast"), "glm-5.3");
+  assert.equal(modelKey("antigravity/Claude-Opus-5-5"), "opus-5.5");
+  assert.equal(modelKey("claude-code/claude-sonnet-5-5:fast"), "sonnet-5.5");
+  assert.equal(modelKey("opencode/Qwen3-Coder-Next-4bit:studio-code"), "qwen3-coder-next-4bit");
+  assert.equal(modelKey("opencode/GLM-5.3-Flash-4_8bit"), "glm-5.3-flash-4_8bit");
+  assert.equal(modelKey("owner"), "owner");
+  assert.ok(sameActor("claude-code/opus-5.5", "Claude-Code/OPUS-5.5:fast"));
+  assert.ok(sameActor("claude-code/opus-5.5", "claude-code/claude-opus-5-5"));
+  assert.ok(!sameActor("claude-code/opus-5.5", "codex/opus-5.5"));
+  assert.ok(!sameActor("claude-code/opus-5.5", "claude-code/sonnet-5.5"));
 });
 
 test("one owner: a second actor cannot claim an owned item", () => {
@@ -332,7 +345,7 @@ test("policy parsing rejects malformed roles and execution rules", () => {
   for (const value of [null, {}, { ...governed.execution, allowed_classes: ["unknown"] }, { ...governed.execution, direct: { enabled: "true", allowed_path_patterns: [] } }]) assert.throws(() => parseExecution(value), /400\|bad_policy/);
 });
 
-test("ungoverned gates retain exact-model independence and owner review", () => {
+test("ungoverned gates count another model, or the owner, as independent", () => {
   assert.equal(gate(item(), policy, [pass()], []).ready, true);
   assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("claude-code/sonnet-5.5")]).ready, true);
   assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("owner")]).ready, true);
@@ -420,6 +433,38 @@ test("holders remain contributors when Git pushes precede observation", () => {
     assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
     assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
   }
+});
+
+// Audit t105, finding F4: in a project without ControlPlane policy files the
+// same model counted as its own independent reviewer under a profile suffix,
+// another letter case or another name for it.
+test("a contributor's model under another letter case, profile or registered name is not independent of it", () => {
+  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const studio = item({ owner: "opencode/glm-5.3:studio-code", pushActors: ["opencode/glm-5.3:studio-code"] });
+  for (const by of ["opencode/glm-5.3:studio-fast", "zcode/GLM-5.3", "opencode/glm-5.3"]) {
+    assert.deepEqual([by, gate(studio, policy, touching, [review(by)]).ready], [by, false]);
+  }
+  for (const by of ["codex/Opus-5.5", "codex/opus-5.5", "antigravity/claude-opus-5-5", "opencode/OPUS-5.5:local"]) {
+    assert.deepEqual([by, gate(item(), policy, touching, [review(by)]).needsAssessor], [by, true]);
+  }
+  // Another model still counts, including another model of the same family.
+  assert.equal(gate(studio, policy, touching, [review("opencode/GLM-5.3-Flash-4_8bit")]).ready, true);
+  assert.equal(gate(item(), policy, touching, [review("codex/gpt-6-astra")]).ready, true);
+
+  // Governed, coordinated: another spelling of a contributor is that
+  // contributor; the same model in another harness is another agent.
+  const coordinated = [pass({ changedPaths: ["src/a.ts"] })];
+  assert.equal(gate(item(), governed, coordinated, [review("Claude-Code/OPUS-5.5:fast")]).ready, false);
+  assert.equal(gate(item(), governed, coordinated, [review("claude-code/claude-opus-5-5")]).ready, false);
+  assert.equal(gate(item(), governed, coordinated, [review("codex/opus-5.5")]).ready, true);
+
+  // Governed, protected: a profile suffix never changes a model's family, nor
+  // the agent its review is counted for.
+  const anyAssessor: ProjectPolicy = { ...governed, agents: { ...governed.agents!, gemini: { available: true, eligible_roles: ["assessor"] } } };
+  const qwen = item({ owner: "opencode/qwen3-coder:studio-code", pushActors: ["opencode/qwen3-coder:studio-code"] });
+  assert.equal(agentOf("opencode/qwen3.8-27b:google-eval", anyAssessor.agents!), "qwen");
+  assert.equal(gate(qwen, anyAssessor, touching, [review("opencode/qwen3.8-27b:google-eval")]).ready, false);
+  assert.equal(gate(qwen, anyAssessor, touching, [review("codex/gpt-6-astra")]).ready, true);
 });
 
 test("review independence includes every contributor after a handoff", () => {

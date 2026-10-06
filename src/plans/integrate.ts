@@ -18,7 +18,7 @@
 
 import { familyOf } from "../models/pool.ts";
 import {
-  countingReviews, DEFAULT_OWNER, evidenceAt, gate, modelOf, validActor,
+  countingReviews, DEFAULT_OWNER, evidenceAt, gate, modelKey, sameActor, validActor,
   type Evidence, type Gate, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "../rules.ts";
 
@@ -78,10 +78,10 @@ const named = (part: Pick<Part, "key" | "id">) => `part ${part.key} (${part.id})
 // protected change. A builder never counts as its own reviewer.
 function otherFamily(reviewer: string, contributors: readonly string[]): boolean {
   if (!validActor(reviewer) || !reviewer.includes("/")) return false;
-  const family = familyOf(modelOf(reviewer));
+  const family = familyOf(modelKey(reviewer));
   return family !== "other" && contributors.every((actor) => {
-    const theirs = familyOf(modelOf(actor));
-    return actor !== reviewer && theirs !== "other" && theirs !== family;
+    const theirs = familyOf(modelKey(actor));
+    return !sameActor(actor, reviewer) && theirs !== "other" && theirs !== family;
   });
 }
 

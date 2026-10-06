@@ -84,6 +84,13 @@ test("refused and paid-per-token models are excluded; allowPaid and the spend ca
   has(one([gpt, opus]).builder, /No per-token cost \(subscription\)/);
 });
 
+test("a profile suffix never makes a reviewer look like another family than the builder", () => {
+  const r = one([coder, entry("Qwen3.8-27B-6bit:google-eval", { harness: "opencode", where: "home", provider: "ai-studio" })]);
+  assert.equal(r.builder!.actor, "opencode/Qwen3-Coder-Next-4bit:studio-code");
+  assert.equal(r.reviewer, null);
+  assert.equal(r.unrouted, "no reviewer of another family than qwen (opencode/Qwen3-Coder-Next-4bit:studio-code): opencode/Qwen3.8-27B-6bit:google-eval (same family, qwen)");
+});
+
 test("a governed policy keeps executors as builders and assessors as reviewers", () => {
   const governed: ProjectPolicy = { ...policy, agents: {
     claude: { available: true, eligible_roles: ["executor"] },

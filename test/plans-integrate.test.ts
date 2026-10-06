@@ -95,6 +95,9 @@ test("integration needs an approval from another model family at the part's head
   const handed = part("a", { owner: REVIEWER, pushActors: [BUILDER, REVIEWER] });
   assert.deepEqual(blocked([review(handed, REVIEWER)], handed), none);
   assert.deepEqual(blocked([review(handed, "zcode/glm-5.3")], handed), []);
+  // A profile suffix never changes a model's family.
+  const qwen = part("a", { owner: "opencode/qwen3-coder:studio-code", pushActors: ["opencode/qwen3-coder:studio-code"] });
+  assert.deepEqual(blocked([review(qwen, "opencode/qwen3.8-27b:google-eval")], qwen), none);
   // A counting rejection at the head blocks beside an approval; the latest review from each reviewer counts.
   assert.deepEqual(blocked([review(a), review(a, SAME_FAMILY, false)]), ["part a (t2) was rejected at aaaaaaaa by claude-code/sonnet-5.5: breaks the API"]);
   assert.deepEqual(blocked([{ ...review(a, REVIEWER, false), at: "2026-10-05T11:00:00.000Z" }, review(a)]), []);

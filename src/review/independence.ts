@@ -8,15 +8,15 @@
 // model, or a different agent).
 
 import { familyOf, type PoolFamily } from "../models/pool.ts";
-import { modelOf, type Item } from "../rules.ts";
+import { modelKey, type Item } from "../rules.ts";
 
 export function contributorsOf(item: Pick<Item, "owner" | "pushActors">): string[] {
   return [...new Set([...(item.pushActors ?? []), ...(item.owner ? [item.owner] : [])])];
 }
 
-// The family the gate reads from an actor: its model's name, never the
-// harness and never a family an owner typed into the pool.
-export const actorFamily = (actor: string): PoolFamily => familyOf(modelOf(actor));
+// The family the gate reads from an actor: its model's name by modelKey,
+// never the harness, a profile suffix or a family an owner typed into the pool.
+export const actorFamily = (actor: string): PoolFamily => familyOf(modelKey(actor));
 
 export const describeContributors = (contributors: readonly string[]): string =>
   contributors.map((c) => `${c} (${actorFamily(c)})`).join(", ");
