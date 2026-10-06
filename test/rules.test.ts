@@ -609,7 +609,10 @@ test("an ungoverned gate asks for a review when claude.md stands in for CLAUDE.m
   const observed = defaults.checks.map((claim) => pass({ claim, changedPaths: ["claude.md"] }));
   const g = gate(held, defaults, observed, []);
   assert.deepEqual({ ready: g.ready, needsAssessor: g.needsAssessor }, { ready: false, needsAssessor: true });
-  assert.equal(gate(held, defaults, observed, [review("owner")]).ready, true);
+  // As for CLAUDE.md itself (decision 2026-10-06): the owner's approval is not
+  // the review, and another family's approval is.
+  assert.equal(gate(held, defaults, observed, [review("owner")]).ready, false);
+  assert.equal(gate(held, defaults, observed, [review("codex/gpt-6-astra")]).ready, true);
 });
 
 test("item scopes and the direct allow-list are matched as written", () => {

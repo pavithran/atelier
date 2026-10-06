@@ -53,6 +53,12 @@ test("decision 2026-10-06: a bare, empty or blank --override-review is refused b
     assert.match(r.stderr, /--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"/);
     assert.deepEqual(f.requests().filter((q) => q.path !== "/api/config"), [], flag.join(" "));
   }
+  // merge takes the flag too, and refuses a bare one with its own form.
+  f.clear();
+  const bare = f.run(["merge", "t9", "--project", "demo", "--head", HEAD, "--override-review"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"/);
+  assert.deepEqual(f.requests().filter((q) => q.path !== "/api/config"), []);
   // merge records an override only while accepting a revision, so it needs --head.
   f.clear();
   const merge = f.run(["merge", "t9", "--project", "demo", "--override-review", "No other family"]);
