@@ -19,6 +19,11 @@ test("state precedence and dated or named handoffs", () => {
   assert.equal(stateFile(["STATE.md"]), "STATE.md");
   assert.deepEqual(handoffNotes("Read docs/HANDOFF-2026-09-01.md", ["docs/HANDOFF-2026-09-01.md", "docs/handoffs/2026-10-04.md", "docs/handoffs/2026-10-06.md", "docs/handoffs/undated.md", "docs/handoffs/../2026-10-07.md"], "2026-10-05T12:00:00Z"), ["docs/handoffs/2026-10-06.md", "docs/HANDOFF-2026-09-01.md"]);
 });
+test("PROJECT.md is the state file only when neither STATE file exists", () => {
+  assert.equal(stateFile(["PROJECT.md"]), "PROJECT.md");
+  assert.equal(stateFile(["STATE.md", "PROJECT.md"]), "STATE.md");
+  assert.equal(stateFile(["docs/STATE.md", "STATE.md", "PROJECT.md"]), "docs/STATE.md");
+});
 test("staleness needs a file, previous head and unchanged contents", () => {
   assert.match(staleState("STATE.md", input.head, true), /Refresh STATE.md/);
   assert.equal(staleState("STATE.md", input.head, false), "");
