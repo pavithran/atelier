@@ -140,7 +140,11 @@ A harness that exits nonzero, or runs past `taskTimeoutMs`, fails the job.
 The runner ends the harness's whole process group when it finishes.
 
 Here is a generic wrapper for a harness whose command is `my-agent`, which
-takes a model and a prompt on its command line and prints its answer:
+takes a model on its command line, reads its prompt on standard input and
+prints its answer. A brief and a diff can be large, and the operating system
+caps the total size of a command's arguments, so pass the prompt on standard
+input where the harness accepts it, and on the command line only where it
+does not:
 
 ```sh
 #!/bin/sh
@@ -150,22 +154,19 @@ model=$1 brief=$2 ws=$3 plan=${4:-undefined} diff=${5:-undefined} verdict=${6:-u
 cd "$ws"
 if [ "$verdict" != undefined ]; then
   # Review: answer in Atelier's reply format, written outside the workspace.
-  prompt="$(cat "$brief")
-
-The change under review:
-$(cat "$diff")
-
-Edit nothing. End with VERDICT, SUMMARY and FINDING lines."
-  my-agent --model "$model" "$prompt" < /dev/null > "$verdict"
+  {
+    cat "$brief"
+    printf '\nThe change under review:\n'
+    cat "$diff"
+    printf '\nEdit nothing. End with VERDICT, SUMMARY and FINDING lines.\n'
+  } | my-agent --model "$model" > "$verdict"
   exit $?
 fi
 rules="Work only in $ws. Commit your work here, ending the message with: Agent: my-agent/$model. Do not push. Run no atelier command."
 if [ "$plan" != undefined ]; then
   rules="$rules This is a plan job: write the plan as JSON to ${plan#"$ws"/} and commit nothing."
 fi
-exec my-agent --model "$model" "$rules
-
-$(cat "$brief")" < /dev/null
+{ printf '%s\n\n' "$rules"; cat "$brief"; } | my-agent --model "$model"
 ```
 
 Keys stay out of the config and out of the wrapper above. A harness that
@@ -189,8 +190,10 @@ atelier runner --name home:mac-2
 
 The name must be `home:` followed by letters, digits, dots, underscores or
 hyphens. Both read the same config unless you give one a `--config PATH` of
-its own, which is how to make the second serve only reviews (a config whose
-`jobs` lists `"review"`).
+its own. A runner always offers builds and plans; `jobs` only adds to them (it
+is how a runner takes reviews). To keep a runner for reviews in practice, give
+its agents only the reviewer models in a config file of its own, and start it
+with that `--config PATH`.
 
 A plan's approved parts merge onto the plan's branch only through a separate
 process, the integrator, which no other runner does:
@@ -263,7 +266,10 @@ claimed, `failed:` and `released:` lines with the reason, and `reviewed:` or
 `plan posted:` on success. `launchctl print gui/$(id -u)/zone.atelier.runner`
 shows whether launchd considers the job loaded and its last exit status.
 Stopping with `bootout` sends the runner a termination signal, and it ends
-its harness and releases its claim before exiting.
+its harness's processes before exiting. Once task t213 is in, a review job
+that ends on any error, a stop included, also releases its claim so another
+reviewer can take it; before t213, a stopped review job keeps its claim until
+it lapses after two hours.
 
 ## What the agents may and may not do
 
