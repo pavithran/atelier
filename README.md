@@ -77,7 +77,7 @@ No policy at HEAD means no ceiling.
 
 Before closing, file defects in Atelier or project tooling as tasks in the
 project they belong to with `atelier new "…" --project NAME`. Atelier defects
-belong to `--project cloudflare-git`. File a lesson worth keeping the same way
+belong to `--project atelier`. File a lesson worth keeping the same way
 with a title starting `Lesson: `. Repeatable `--found TEXT` files tasks in the
 current project and records their IDs in the note.
 
@@ -900,7 +900,7 @@ the diffs, every form and every link into the signed-in pages. Nothing is
 shown until the owner names a project:
 
 ```text
-printf 'cloudflare-git' | npx wrangler secret put SHOWCASE
+printf 'atelier' | npx wrangler secret put SHOWCASE
 ```
 
 `SHOWCASE` takes project names separated by commas; deleting it hides the
