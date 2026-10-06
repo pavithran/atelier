@@ -14,12 +14,13 @@ import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type 
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
-import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
+import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
-import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
+import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { renderActions } from "./actions-page.ts";
 
@@ -72,16 +73,11 @@ async function liveShowcase(env: Env): Promise<ProjectRecord[]> {
   return [...new Set(names.map((name) => projectNamed(registered, name)).filter((p): p is ProjectRecord => p !== undefined))];
 }
 
-// The public page, read without signing in. It reads only the named projects,
-// builds their stories redacted, and may be cached for a minute.
-async function showcase(env: Env, url: URL): Promise<Response> {
-  // Read index membership before using a cached page. Removed projects must
-  // not remain visible through a previously cached showcase.
-  const projects = await liveShowcase(env);
-  const names = projects.map((p) => p.name);
-  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
-  const hit = await caches.default.match(key);
-  if (hit) return hit;
+// The showcased projects' stories, redacted (graph.ts), with each project's
+// record and where its history before Atelier ends: what the showcase
+// draws, and what the sign-in page draws dimmed behind its form. A project
+// that cannot be read is left out, and the caller sees fewer stories than projects.
+async function publicStories(env: Env, projects: ProjectRecord[]): Promise<{ stories: Story[]; records: ProjectRecord[]; cutoffs: Map<string, number | null> }> {
   const owner = ownerActor(env);
   const cutoffs = new Map<string, number | null>();
   const records: ProjectRecord[] = [];
@@ -96,13 +92,51 @@ async function showcase(env: Env, url: URL): Promise<Response> {
       return buildStory(name, items, events, owner, events.length >= STORY_EVENTS, titleOf(project), { redact: true, ownerLabel: ownerName(env) || "The owner" });
     } catch { return null; }
   }))).filter((s): s is NonNullable<typeof s> => s !== null);
+  return { stories, records, cutoffs };
+}
+
+// The public page, read without signing in. It reads only the named projects,
+// builds their stories redacted, and may be cached for a minute.
+async function showcase(env: Env, url: URL): Promise<Response> {
+  // Read index membership before using a cached page. Removed projects must
+  // not remain visible through a previously cached showcase.
+  const projects = await liveShowcase(env);
+  const names = projects.map((p) => p.name);
   if (!names.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
+  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  const owner = ownerActor(env);
+  const { stories, records, cutoffs } = await publicStories(env, projects);
   const imported = await importedAll(env, records, cutoffs);
   const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), stories.length < names.length, imported));
   res.headers.set("cache-control", "public, max-age=60");
   // A copy the cache refuses is not an error: the page is still served.
   await caches.default.put(key, res.clone()).catch(() => undefined);
   return res;
+}
+
+// The sign-in page. When the owner shows projects publicly, their stories
+// are drawn dimmed behind the form, redacted as the showcase draws them.
+async function loginPage(env: Env, error?: string, status = 200): Promise<Response> {
+  const shown = await liveShowcase(env).catch(() => []);
+  const backdrop = shown.length
+    ? { stories: await backdropStories(env, shown), owner: ownerActor(env), who: ownerName(env) || "The owner" }
+    : undefined;
+  return html(renderLogin(error, shown.length > 0, backdrop), status);
+}
+
+// The backdrop's stories, cached for a minute as the showcase page is: the
+// sign-in page is open to anyone, so a request to it must not cost a read
+// of every showcased project's record. The key names the projects shown and
+// the owner's label, which the stories carry.
+async function backdropStories(env: Env, projects: ProjectRecord[]): Promise<Story[]> {
+  const key = new Request(`https://atelier.internal/login-stories?projects=${encodeURIComponent(JSON.stringify(projects.map((p) => p.name)))}&who=${encodeURIComponent(ownerName(env) ?? "")}`);
+  const hit = await caches.default.match(key).catch(() => undefined);
+  if (hit) return (await hit.json()) as Story[];
+  const { stories } = await publicStories(env, projects);
+  await caches.default.put(key, new Response(JSON.stringify(stories), { headers: { "cache-control": "max-age=60" } })).catch(() => undefined);
+  return stories;
 }
 
 // Each project's imported history, read once per baseline head and format:
@@ -215,7 +249,9 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentT
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
-const html = (body: string, status = 200) =>
+// A page that carries the live script was rendered with the request's nonce;
+// the policy names the same nonce, and no other script runs (src/live.ts).
+const html = (body: string, status = 200, nonce?: string) =>
   new Response(body, {
     status,
     headers: {
@@ -224,9 +260,12 @@ const html = (body: string, status = 200) =>
       "cache-control": "no-store",
       "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; form-action 'self'; base-uri 'none'",
+      "content-security-policy": csp(nonce),
     },
   });
+
+// How often a live page refreshes itself, in seconds.
+const LIVE_REFRESH = 15;
 
 // A project's Ledger is the Durable Object named after its key: the name it
 // was created with, which a rename keeps. Routes that take a project name
@@ -986,7 +1025,12 @@ async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Pro
   }
   const node = await walk(s, head.treeHash, path);
   if (!node || node.kind === "other") return notFound("That path");
-  if (node.kind === "tree") return html(renderTree(w, head, path, node, ownerName(env)));
+  if (node.kind === "tree") {
+    // The stripes: which commit last changed each entry, within a read
+    // budget. The listing is still served when that cannot be read.
+    const touched = await lastChanges(s, head.hash, path).catch(() => null);
+    return html(renderTree(w, head, path, node, ownerName(env), touched));
+  }
   const bytes = await s.file(node.hash, FILE_LIMIT);
   return bytes ? html(renderBlob(w, head, path, viewFile(bytes), ownerName(env), node.type === "symlink")) : notFound("That file");
 }
@@ -1055,6 +1099,9 @@ async function verifyRevision(env: Env, key: string, id: string, expected: strin
 
 async function ui(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req } = c;
+  // One nonce per request, for the pages that carry the live script.
+  const nonce = newNonce();
+  const live = { nonce, refresh: LIVE_REFRESH };
   if (parts[0] === "models" && (parts.length === 1 || (parts.length === 2 && req.method === "POST"))) return await modelsPage(c, parts[1]);
   if (parts[0] === "usage" && parts.length === 1 && req.method === "GET") {
     const I = index(env);
@@ -1125,10 +1172,22 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       try { return {project, items: await ledgerOf(env, project).items()}; }
       catch { return {project, items: [], unavailable: true}; }
     }));
-    if (parts[0] === "projects") return html(renderProjects(views, ownerName(env)));
-    if (parts[0] === "history") return html(renderHistory(views, ownerName(env)));
-    // The floor reads each project's recent events; a project that cannot be read is left off it.
     const now = new Date();
+    // Projects and History read each project's recent record: the cards count
+    // the last two weeks of moves from it, and the timeline finds who held
+    // each task when it merged. A project whose record cannot be read is
+    // listed as unavailable.
+    if (parts[0] === "projects" || parts[0] === "history") {
+      const read: ProjectView[] = await Promise.all(views.map(async (v) => {
+        if (v.unavailable) return v;
+        try {
+          const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+          return { ...v, events, cut: events.length >= STORY_EVENTS };
+        } catch { return { ...v, unavailable: true }; }
+      }));
+      return html(parts[0] === "projects" ? renderProjects(read, ownerName(env), now, ownerActor(env)) : renderHistory(read, ownerName(env), ownerActor(env)));
+    }
+    // The floor reads each project's recent events; a project that cannot be read is left off it.
     const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
       try { return { ...v, events: (await ledgerOf(env, v.project).events(undefined, 400)) as unknown as LedgerEvent[] }; }
@@ -1173,9 +1232,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
           .sort((a, b) => (b.moments.at(-1)?.at ?? "").localeCompare(a.moments.at(-1)?.at ?? ""));
       const incomplete = views.some((v) => v.unavailable) || stories.length < floorViews.length;
       const imported = await importedAll(env, floorViews.map((v) => v.project), cutoffs);
-      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent));
+      return html(renderFlow(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), incomplete, imported, sinceParam, familyAllowed, familiesPresent, live), 200, nonce);
     }
-    if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects));
+    if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects, owner));
     const lists = await Promise.all(views.map(async v => {
       if (v.unavailable) return [];
       try { return await ledgerOf(env, v.project).inbox(new Date().toISOString()); }
@@ -1208,7 +1267,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     }));
     const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
     const latest = busiest && !selected ? await story(busiest) : null;
-    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details));
+    return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, nonce);
   }
   if (parts[0] === "p" && parts.length >= 2) {
     const ref = await resolveProject(env, parts[1]);
@@ -1228,7 +1287,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 3) {
       const p = await L.project();
       const item = await L.item(parts[2]);
-      return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork)));
+      return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork), live), 200, nonce);
     }
   }
   return html("Not found.", 404);
@@ -1271,16 +1330,20 @@ export default {
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
       if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
+      // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
+      if (url.pathname === "/live.js" && req.method === "GET") {
+        return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });
+      }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
       if (url.pathname === "/how" && req.method === "GET") { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
       if (url.pathname === "/login") {
         if (req.method === "POST") {
           const token = String((await req.formData()).get("token") ?? "");
           const want = serverToken(env);
-          if (!want || !sameString(token, want)) return html(renderLogin("That token is not this server's."), 401);
+          if (!want || !sameString(token, want)) return await loginPage(env, "That token is not this server's.", 401);
           return new Response(null, { status: 303, headers: { location: "/", "set-cookie": await startSession(env, Date.now()) } });
         }
-        return html(renderLogin(undefined, (await liveShowcase(env).catch(() => [])).length > 0));
+        return await loginPage(env);
       }
       // Sign out: a form in every signed-in page's rail. The Origin check is
       // the one every owner form makes, so another site cannot end a session.

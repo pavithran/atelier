@@ -119,7 +119,21 @@ it('a cut record says so where the graph rests',()=>{
  expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:partial,owner:'pavi'}))
   .toContain('the most recent part of the record');
 });
-it('the flow route is served behind sign-in, under a policy that allows only the fonts',async()=>{
+// A live page: the policy names one nonce, every script tag carries it and
+// loads only Atelier's own script, and the next request gets another nonce.
+const NONCE=/'nonce-([A-Za-z0-9+/=]+)'/;
+function liveChecks(html:string,csp:string){
+ const nonce=NONCE.exec(csp)?.[1];
+ expect(nonce,csp).toBeTruthy();
+ expect(nonce!.length).toBeGreaterThanOrEqual(20);
+ expect(csp).toContain(`script-src 'nonce-${nonce}'`);expect(csp).toContain("connect-src 'self'");expect(csp).toContain("default-src 'none'");
+ const tags=html.match(/<script\b[^>]*>/g)??[];
+ expect(tags.length).toBeGreaterThan(0);
+ for(const t of tags){expect(t).toContain(`nonce="${nonce}"`);expect(t).toContain('src="/live.js"');}
+ expect(html).not.toMatch(/<script\b[^>]*>[^<]/);
+ return nonce!;
+}
+it('the flow route is served behind sign-in, under a policy that admits the fonts and the live script by its nonce',async()=>{
  const TOKEN='flow-test-token';
  const testEnv={...env,ATELIER_TOKEN:TOKEN} as typeof env;
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
@@ -127,15 +141,46 @@ it('the flow route is served behind sign-in, under a policy that allows only the
  expect(out.status).not.toBe(200);
  const res=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:signedIn}}),testEnv);
  expect(res.status).toBe(200);
- expect(await res.text()).toContain('<title>Flow · Atelier</title>');
+ const html=await res.text();
+ expect(html).toContain('<title>Flow · Atelier</title>');
  const csp=res.headers.get('content-security-policy')!;
- expect(csp).toContain("default-src 'none'");
  expect(csp).toContain('font-src https://fonts.gstatic.com');
- expect(csp).not.toContain('script-src');
+ expect(html).toContain('<main id="main" data-live-refresh="15">');
+ expect(html).toContain('class="meta live-note" hidden');
+ const first=liveChecks(html,csp);
+ const again=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:signedIn}}),testEnv);
+ const second=liveChecks(await again.text(),again.headers.get('content-security-policy')!);
+ expect(second).not.toBe(first);
+ // Decisions and a task's page are live too; the public pages and the Studio carry no script and admit none.
+ const decisions=await worker.fetch(new Request('https://atelier.test/decisions',{headers:{cookie:signedIn}}),testEnv);
+ liveChecks(await decisions.text(),decisions.headers.get('content-security-policy')!);
+ for(const path of ['/studio','/projects','/how']){
+  const r=await worker.fetch(new Request(`https://atelier.test${path}`,{headers:{cookie:signedIn}}),testEnv);
+  expect(r.status).toBe(200);
+  expect(r.headers.get('content-security-policy')).not.toContain('script-src');
+  expect(await r.text()).not.toContain('<script');
+ }
+ const js=await worker.fetch(new Request('https://atelier.test/live.js'),testEnv);
+ expect(js.status).toBe(200);expect(js.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+ const script=await js.text();
+ expect(script).toContain('data-live-refresh');
+ // The revision rule's functions arrive as plain JavaScript, whatever bundled the Worker.
+ expect(script).toMatch(/function headsIn\(html\s*\)/);expect(script).toMatch(/function decideRefresh\(current\s*,\s*fetched\s*,\s*dirty\s*\)/);
+ expect(script).not.toMatch(/: string|RegExpExecArray/);
+});
+it('a page without a nonce carries no script tag, and one with a nonce carries exactly the live script',()=>{
+ const s=story();
+ expect(renderFlow([s],s.tally,'pavi','PAVI')).not.toContain('<script');
+ const live=renderFlow([s],s.tally,'pavi','PAVI',false,new Map(),'all',undefined,[],{nonce:'abc+/=',refresh:15});
+ expect(live).toContain('<script nonce="abc+/=" src="/live.js" defer></script>');
+ expect(live.match(/<script/g)).toHaveLength(1);
+ expect(live).toContain('it refreshes every 15 seconds.');
+ const noRefresh=renderItem(project,detail(),'PAVI',null,{nonce:'abc'});
+ expect(noRefresh).toContain('<script nonce="abc"');expect(noRefresh).not.toContain('data-live-refresh');expect(noRefresh).not.toContain('class="meta live-note"');
 });
 
 // ── project titles ──
-import {cleanTitle,titleOf,renderProjects,renderStudio} from '../src/ui';
+import {cleanTitle,titleOf,renderProjects,renderStudio,renderLogin} from '../src/ui';
 it('a project title is one clean line, and the name stands in when there is none',()=>{
  expect(cleanTitle('  Atelier ')).toBe('Atelier');
  expect(cleanTitle('A\ntwo\u0007line')).toBe('A two line');
@@ -816,4 +861,158 @@ it('the standing page shows the newest session with escaped reported text', asyn
  expect(html).toContain('&lt;script&gt;session&lt;/script&gt;');
  expect(html).not.toContain('<script>session');
  expect(html).toContain('Reported: npm test: failed');
+});
+
+// ── projects as cards, history as a timeline ──
+it('Projects draws a card per project with its tally, a two-week graph by family, and escapes the title',async()=>{
+ const {renderProjects}=await import('../src/ui');
+ const now=new Date('2026-10-06T14:30:00Z');
+ const at=(h:number)=>new Date(now.getTime()-h*3600_000).toISOString();
+ const titled={...project,name:'cloudflare-git',title:'<Atelier>'};
+ const items=[{...detail().item,id:'t1',state:'claimed' as const},{...detail().item,id:'t2',state:'open' as const},{...detail().item,id:'t3',state:'merged' as const}];
+ const events=[
+  {seq:1,itemId:'t1',at:at(30),actor:'codex/gpt-6',kind:'item.claimed',data:{}},
+  {seq:2,itemId:'t1',at:at(29),actor:'codex/gpt-6',kind:'push.observed',data:{head}},
+  {seq:3,itemId:'t1',at:at(28),actor:'atelier/sandbox',kind:'evidence.observed',data:{claim:'npm test',passed:true,where:'sandbox'}},
+  {seq:4,itemId:'t3',at:at(2),actor:'claude-code/opus-5.5',kind:'item.claimed',data:{}},
+  {seq:5,itemId:'t3',at:at(1),actor:'pavi',kind:'item.accepted',data:{head}},
+ ].reverse();
+ const html=renderProjects([{project:titled,items,events},{project:{...project,name:'gone'},items:[],unavailable:true}],'PAVI',now,'pavi');
+ expect(html.match(/<li class="project-card/g)).toHaveLength(2);
+ expect(html).toContain('<h2>&lt;Atelier&gt;</h2>');expect(html).toContain('href="/p/cloudflare-git"');
+ expect(html).toContain('<b>1</b>active');expect(html).toContain('<b>1</b>ready to start');expect(html).toContain('<b>1</b>merged');
+ expect(html.match(/<svg class="pulse-graph"/g)).toHaveLength(1);
+ expect(html).toContain('style="fill:var(--m-openai)"');expect(html).toContain('style="fill:var(--m-anthropic)"');expect(html).toContain('style="fill:var(--m-owner)"');
+ expect(html).toContain('3 moves by 2 agents and 1 decision in two weeks · last activity 1 h ago.');
+ expect(html).toContain('most on 5 Oct');
+ expect(html).toContain('Temporarily unavailable. Open to retry.');
+ expect(html).toContain('class="legend-line"');
+ const cut=renderProjects([{project:titled,items,events,cut:true}],'PAVI',now,'pavi');
+ expect(cut).toContain('from the most recent part of the record');
+ const quiet=renderProjects([{project:titled,items:[]}],'PAVI',now,'pavi');
+ expect(quiet).toContain('No moves in the last two weeks.');expect(quiet).toContain('aria-label="No moves in the last two weeks"');
+});
+it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
+ const {renderHistory}=await import('../src/ui');
+ const at=(d:number,h:number)=>`2026-10-0${d}T${String(h).padStart(2,'0')}:00:00.000Z`;
+ const base={...detail().item,owner:null,acceptedHead:head};
+ const items=[
+  {...base,id:'t1',title:'Merged <b>one</b>',state:'merged' as const,updatedAt:at(5,10)},
+  {...base,id:'t2',title:'Merged two',state:'merged' as const,updatedAt:at(4,9)},
+  {...base,id:'t3',title:'Dropped',state:'abandoned' as const,updatedAt:at(4,8)},
+  {...base,id:'t4',title:'Still working',state:'claimed' as const,owner:'codex/gpt-6'},
+ ];
+ const events=[
+  {seq:1,itemId:'t1',at:at(5,8),actor:'codex/gpt-5.5',kind:'item.claimed',data:{}},
+  {seq:2,itemId:'t1',at:at(5,9),actor:'pavi',kind:'item.handoff',data:{from:'codex/gpt-5.5',to:'claude-code/opus-5.5'}},
+  {seq:3,itemId:'t1',at:at(5,10),actor:'pavi',kind:'item.merged',data:{mergeCommit:'c'.repeat(40),head}},
+  {seq:4,itemId:'t2',at:at(4,7),actor:'zcode/glm-5.3',kind:'item.claimed',data:{}},
+  {seq:5,itemId:'t2',at:at(4,9),actor:'pavi',kind:'item.merged',data:{mergeCommit:'d'.repeat(40),head}},
+  {seq:6,itemId:'t3',at:at(4,8),actor:'pavi',kind:'item.abandoned',data:{note:'no'}},
+ ].reverse();
+ const html=renderHistory([{project:{...project,title:'Example <i>x</i>'},items,events}],'PAVI','pavi');
+ expect(html).toContain('2 tasks merged and 1 closed across 1 project');
+ expect(html).toContain('class="merge-timeline"');
+ expect(html.match(/class="timeline-day"/g)).toHaveLength(2);
+ expect(html).toContain('<h2>Monday 5 Oct 2026</h2>');expect(html).toContain('<h2>Sunday 4 Oct 2026</h2>');
+ expect(html.indexOf('href="/p/example/t1"')).toBeLessThan(html.indexOf('href="/p/example/t2"'));
+ expect(html).toContain('Merged &lt;b&gt;one&lt;/b&gt;');expect(html).not.toContain('<b>one</b>');
+ expect(html).toContain('Example &lt;i&gt;x&lt;/i&gt; · t1 · opus-5.5 · merged as cccccccc');
+ expect(html).toContain('style="--c:var(--m-anthropic)" title="merged while held by claude-code/opus-5.5"');
+ expect(html).toContain('style="--c:var(--m-zai)"');
+ expect(html).toContain('class="merge-row closed"');expect(html).toContain('class="family-mark unknown"');
+ expect(html).toContain('closed without merging');expect(html).toContain('<span class="tag ">Closed</span>');
+ expect(html).toContain('href="/p/example/t1"');expect(html).not.toContain('href="/p/example/t4"');
+ expect(html).toContain('<time datetime="2026-10-05T10:00:00.000Z">10:00 UTC</time>');
+ expect(html).toContain('class="cap-key"');
+ expect(renderHistory([{project,items:[]}],'PAVI','pavi')).not.toContain('class="legend-line"');
+});
+
+// ── Studio lanes in Flow's language, stripes by family, and sign-in over the showcase ──
+it('a Studio lane is banded and threaded in each holder\'s family colour, with the marks and a breathing head',()=>{
+ const base={id:'t1',title:'Lane',scope:[],state:'claimed' as const,owner:'opencode/glm-5.3-flash',fork:'example--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
+ const at=(m:number)=>`2026-10-03T12:${String(m).padStart(2,'0')}:00.000Z`;
+ const events=[
+  {seq:1,itemId:'t1',at:at(0),actor:'codex/gpt-6',kind:'item.claimed',data:{}},
+  {seq:2,itemId:'t1',at:at(2),actor:'codex/gpt-6',kind:'push.observed',data:{head}},
+  {seq:3,itemId:'t1',at:at(9),actor:'pavi',kind:'item.handoff',data:{from:'codex/gpt-6',to:'opencode/glm-5.3-flash'}},
+  {seq:4,itemId:'t1',at:at(9),actor:'opencode/glm-5.3-flash',kind:'item.claimed',data:{}},
+ ];
+ const floor=buildFloor([{project,items:[base],events}],new Date(at(10)));
+ const html=renderStudio(floor,'PAVI',new Date(at(10)),false,[project],'pavi');
+ expect(html).toContain('class="span-past" style="--c:var(--m-openai)"');
+ expect(html).toContain('class="span-now" style="--c:var(--m-zai)"');
+ expect(html).toContain('class="g-thread g-lane" style="--c:var(--m-openai)"');
+ expect(html).toContain('class="g-thread g-lane local" style="--c:var(--m-zai)"');
+ expect(html).toContain('<circle class="g-head" cx="100%"');expect(html).toContain('<g class="g-task live">');
+ expect(html).toContain('<li class="lane" id="example-t1" style="--c:var(--m-zai)">');
+ for(const m of ['m-claim','m-push','m-handoff'])expect(html).toContain(`class="${m}"`);
+ expect(html).toContain('class="legend-line"');expect(html).toContain('dotted: ran locally');expect(html).toContain('>GPT<');expect(html).toContain('>GLM<');
+ // A band that starts late is labelled to its left, so the label never runs past now.
+ expect(html).toContain('dx="-8" y="22" text-anchor="end" class="span-label now"');
+ expect(renderStudio({benches:[],from:at(0),to:at(10)},'PAVI',new Date(at(10)))).not.toContain('class="legend-line"');
+});
+it('Code and Log carry a stripe per entry and per commit in the family the commit names, with the name in words',async()=>{
+ const {renderTree,renderLog,renderCommit,commitFamily}=await import('../src/browse/view');
+ const c=(id:string,message:string)=>({hash:id.repeat(40),treeHash:'b'.repeat(40),message,author:{name:'<A>',email:'a@x'},parents:[],authoredAt:1759600000});
+ const fable=c('1','Subject\n\nAgent: claude-code/fable-5.1'),gpt=c('2','Other\n\nCo-Authored-By: GPT-6 Astra <n@x>'),none=c('3','Plain <b>subject</b>');
+ expect(commitFamily(fable)).toEqual({label:'fable-5.1',colour:'var(--m-anthropic)'});
+ expect(commitFamily(gpt)).toEqual({label:'gpt-6-astra',colour:'var(--m-openai)'});
+ expect(commitFamily(none)).toEqual({label:'no agent named',colour:'var(--text-dim)'});
+ const w={project,item:null,at:null};
+ const node={kind:'tree' as const,hash:'d'.repeat(40),entries:[{name:'src',type:'tree',mode:'40000',hash:'e'.repeat(40)},{name:'<x>.ts',type:'blob',mode:'100644',hash:'f'.repeat(40)},{name:'old.md',type:'blob',mode:'100644',hash:'0'.repeat(40)}],total:3};
+ const touched={by:new Map([['src',fable],['<x>.ts',gpt]]),examined:60,complete:false};
+ const tree=renderTree(w,fable,[],node,'PAVI',touched);
+ expect(tree).toContain('<li class="dir striped"><i class="stripe" style="--c:var(--m-anthropic)" aria-hidden="true"></i>');
+ expect(tree).toContain('fable-5.1 · <a class="mono" href="/p/example/commit/'+'1'.repeat(40)+'">11111111</a>');
+ expect(tree).toContain('gpt-6-astra · <a class="mono"');
+ expect(tree).toContain('<i class="stripe none" aria-hidden="true"></i><span class="entry"><a href="/p/example/code/old.md">old.md</a></span><span class="meta touch">not changed in the commits read</span>');
+ expect(tree).toContain('among the last 60 commits on the first-parent line');
+ expect(tree).toContain('&lt;x&gt;.ts');
+ const plain=renderTree(w,fable,[],node,'PAVI');
+ expect(plain).not.toContain('class="stripe');expect(plain).not.toContain(' striped"');expect(plain).toContain('<li class="dir"><span class="entry"><a href="/p/example/code/src">src/</a></span></li>');
+ expect(renderTree(w,fable,[],node,'PAVI',null)).toContain('could not be read just now');
+ expect(renderTree(w,fable,[],node,'PAVI',{by:new Map(),examined:0,complete:false})).toContain('too deep or too busy');
+ const log=renderLog(w,fable,[fable,gpt,none],0,false,'PAVI');
+ expect(log).toContain('<li><i class="stripe" style="--c:var(--m-anthropic)" aria-hidden="true"></i><a class="mono"');
+ expect(log).toContain('<span class="meta">gpt-6-astra · &lt;A&gt; · ');
+ expect(log).toContain('<li><i class="stripe" style="--c:var(--text-dim)" aria-hidden="true"></i>');
+ expect(log).toContain('no agent named · &lt;A&gt;');expect(log).not.toContain('<b>subject</b>');
+ const commit=renderCommit(w,{commit:fable,parent:null,files:[],truncated:false},'PAVI');
+ expect(commit).toContain('<section class="commit-head" style="--c:var(--m-anthropic)">');
+ expect(commit).toContain(' · fable-5.1 · &lt;A&gt; · ');
+});
+it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing focusable or private in it',async()=>{
+ const s=buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
+  ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','claude-code/opus-5.5','review.rejected',{note:'secret reviewer note'}),
+  ev(3,'t1','pavi','item.accepted'),ev(4,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
+ const html=renderLogin(undefined,true,{stories:[s],owner:'pavi',who:'PAVI'});
+ expect(html).toContain('<section class="login over-graph"><div class="login-backdrop" aria-hidden="true"><svg class="graph"');
+ expect(html).not.toContain('tabindex="0"');expect(html).not.toContain('href="/p/');expect(html).not.toContain('secret reviewer note');
+ expect(html).toContain('<a href="/showcase">See the public showcase</a>');
+ expect(html).toContain('<form method="post" action="/login" class="login-form">');
+ const bare=buildStory('bare',[],[],'pavi',false,'Bare',{redact:true});
+ expect(renderLogin(undefined,true,{stories:[bare],owner:'pavi',who:'PAVI'})).not.toContain('class="login-backdrop"');
+ expect(renderLogin()).not.toContain('class="login-backdrop"');
+ expect(renderLogin('That token is not this server\'s.',false)).toContain('role="alert"');
+ // The route: with a showcased project that has work, the graph is drawn; without one, it is not.
+ const record={name:'backdrop',repo:'backdrop',title:'Backdrop',policy:{checks:[],protected:[]},createdAt:time};
+ const L=env.LEDGER.get(env.LEDGER.idFromName('project:backdrop'));
+ await L.setProject(record,'owner');
+ await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
+ await L.newItem('Shown work',[],'owner');await L.claim('t1','codex/gpt-6');
+ const shown=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ expect(shown.status).toBe(200);
+ const body=await shown.text();
+ expect(body).toContain('class="login-backdrop"');expect(body).toContain('Shown work');expect(body).not.toContain('href="/p/');
+ // The stories are cached for a minute, as the showcase is: work taken since does not reach the open page until then.
+ await L.newItem('Later work',[],'owner');await L.claim('t2','codex/gpt-6');
+ const again=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ const cached=await again.text();
+ expect(cached).toContain('Shown work');expect(cached).not.toContain('Later work');
+ const plain=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x'} as typeof env);
+ expect(await plain.text()).not.toContain('class="login-backdrop"');
+ const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ expect(wrong.status).toBe(401);
+ expect(await wrong.text()).toContain('class="login-backdrop"');
 });

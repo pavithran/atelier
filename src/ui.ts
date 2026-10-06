@@ -1,6 +1,8 @@
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
-// Server-rendered pages. No scripts: every action is a plain form post, and the
-// Studio refreshes itself with a meta refresh, so the CSP can forbid script.
+// Server-rendered pages. Every action is a plain form post and every page
+// reads fully without script; the Studio refreshes itself with a meta
+// refresh. A page given a `Live` nonce also carries Atelier's own script,
+// which refreshes and animates it and nothing more (src/live.ts).
 // Colours, type, spacing and radii come from the portfolio theme (theme.css);
 // layout.css only arranges them.
 
@@ -17,9 +19,15 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
-import { clockTime, dayOf, shortStamp, stamp, zoneLabel } from "./time";
+import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
-import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
+import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
+
+// A page that carries the live script (src/live.ts): the request's nonce,
+// which the script tag and the policy both name, and how often the page
+// refreshes itself, in seconds, or nothing for the scrubber alone.
+export interface Live { nonce: string; refresh?: number }
 import {
   DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
@@ -79,9 +87,16 @@ const NAV: [string, string, string][] = [
 const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
 // `signedIn` draws the sign-out form in the rail; the sign-in page has none.
-export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true): string {
+// `live` adds the script under its nonce; with a refresh, <main> says how
+// often, and a note the script reveals says when this copy was drawn.
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
+  const liveAttr = live?.refresh ? ` data-live-refresh="${live.refresh}"` : "";
+  const liveNote = live?.refresh
+    ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live: this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</p>`
+    : "";
+  const script = live ? `\n<script nonce="${e(live.nonce)}" src="/live.js" defer></script>` : "";
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
@@ -96,7 +111,7 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
   <p>Many agents, one owner per task.<br>Decisions with evidence.</p>${signedIn ? `
   <form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : ""}</div>
 </aside>
-<main id="main">${body}</main></body></html>`;
+<main id="main"${liveAttr}>${liveNote}${body}</main>${script}</body></html>`;
 }
 
 // The shell of the pages anyone can read: no rail, and no link into a signed-in
@@ -124,7 +139,9 @@ export interface Detail {
   events: LedgerEvent[];
 }
 export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean }
-export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean }
+// `events` is the project's recent record, newest first, when the page reads
+// it (Projects and History); `cut` says it was read up to a limit.
+export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean; events?: LedgerEvent[]; cut?: boolean }
 
 const KIND: Record<InboxEntry["kind"], [string, string]> = {
   accept: ["Ready to accept", "go"],
@@ -160,8 +177,16 @@ function trustLine(checks: { grade: string; passed: boolean | null; where?: "san
 
 // ── sign in ────────────────────────────────────────────────────────────────
 
-export function renderLogin(error?: string, showcase = false): string {
-  return page("Sign in", `<section class="login">
+// `backdrop` draws the public showcase's stories dimmed behind the form:
+// the same redacted stories the showcase page draws, so nothing private is
+// on the sign-in page. They are decoration here, hidden from assistive
+// technology, and no mark in them takes focus.
+export function renderLogin(error?: string, showcase = false, backdrop?: { stories: Story[]; owner: string; who: string }): string {
+  const drawn = backdrop?.stories.filter((s) => s.threads.length) ?? [];
+  const graph = drawn.length
+    ? `<div class="login-backdrop" aria-hidden="true">${drawn.map((s) => drawStory(s, backdrop!.owner, { replaySeconds: 12, ownerLabel: backdrop!.who })).join("").replace(/ tabindex="0"/g, "")}</div>`
+    : "";
+  return page("Sign in", `<section class="login${graph ? " over-graph" : ""}">${graph}
   <h1>Many agents.<br>One decision at a time.</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
@@ -225,6 +250,7 @@ export function renderInbox(
   queued: { project: ProjectRecord; item: Item }[] = [],
   latest?: { story: Story; owner: string },
   details: Map<string, Detail> = new Map(),
+  live?: Live,
 ): string {
   const names = titleMap(projects);
   const groups = new Map<string, InboxEntry[]>();
@@ -269,7 +295,7 @@ export function renderInbox(
     : latest?.story.threads.length
       ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
-  return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName);
+  return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
 
 // ── flow ───────────────────────────────────────────────────────────────────
@@ -281,10 +307,12 @@ const taskHref = (project: string) => (th: { id: string }) => href("p", project,
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
+const LOCAL_KEY = '<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran locally</li>';
+
 function legendLine(vendors: Vendor[], hasLocal: boolean, who = "You"): string {
   const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v) || v === "owner")
     .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
-  const local = hasLocal ? `<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran locally</li>` : "";
+  const local = hasLocal ? LOCAL_KEY : "";
   return `<ul class="legend-line" aria-label="Colours"><li><i style="--c:var(--main-line)"></i>main</li>${items.join("")}${local}<li><i style="--c:var(--fault)"></i>sent back</li><li class="meta">times in ${e(zoneLabel())}</li></ul>`;
 }
 
@@ -355,7 +383,11 @@ const noTasks = (s: Story) => !s.threads.length && !s.tally.planned && !s.partia
 // years only when the two ends fall in different years.
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 function dayLabel(at: string | number, year: boolean): string {
-  const [y, m, d] = dayOf(at).split("-").map(Number);
+  return keyLabel(dayOf(at), year);
+}
+// The same label from a day already in the owner's zone, "2026-10-05".
+function keyLabel(key: string, year: boolean): string {
+  const [y, m, d] = key.split("-").map(Number);
   return `${d} ${MONTHS[m - 1]}${year ? ` ${y}` : ""}`;
 }
 export function spanLabel(from: number, to: number): string {
@@ -460,7 +492,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
   return { stages, columns, shown };
 }
 
-export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), sinceParam = "all", familyParam?: string, familiesPresent: string[] = []): string {
+export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), sinceParam = "all", familyParam?: string, familiesPresent: string[] = [], live?: Live): string {
   const t = drawnTotal(stories);
   // Replay keeps the filters in force, so it replays what is shown.
   const filtered = [sinceParam !== "all" ? `since=${e(sinceParam)}` : "", familyParam ? `family=${e(familyParam)}` : ""].filter(Boolean).join("&amp;");
@@ -492,7 +524,7 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
   ${filters}
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
   ${body}
-</div>`, "Flow", ownerName);
+</div>`, "Flow", ownerName, 0, true, live);
 }
 
 // ── showcase ───────────────────────────────────────────────────────────────
@@ -622,16 +654,26 @@ function markShape(kind: MarkKind): string {
 const TRACK_H = 76;
 const MID = 40;
 
-// One lane: a band per holder (the current one tinted), the shared axis, and a
-// mark for every recorded event, staggered where marks crowd together.
-function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): string {
+// One lane, drawn as the Flow graph draws a thread: a band per holder and
+// the thread along the shared axis, both in the holder's family colour (a
+// local run dotted), so a handoff is a change of band and colour; a mark for
+// every recorded event, staggered where marks crowd together; and the
+// current holder's band and thread running to the now line, where the head
+// breathes.
+function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>, owner: string): string {
   const pct = (at: string) => position(at, floor) * 100;
-  const spans = b.spans.map((sp, i) => {
+  const colour = (actor: string) => `var(--m-${vendorFor(actor, owner)})`;
+  const spans = b.spans.map((sp) => {
     const x = pct(sp.from), w = Math.max(0.6, pct(sp.to ?? now.toISOString()) - x);
     const current = sp.to === null;
     const label = splitActor(sp.holder).model;
-    return `<rect x="${x.toFixed(2)}%" y="8" width="${w.toFixed(2)}%" height="${TRACK_H - 16}" rx="6" class="${current ? "span-now" : i % 2 ? "span-past alt" : "span-past"}"><title>${e(sp.holder)} held it from ${e(clock(sp.from))}${sp.to ? ` to ${e(clock(sp.to))}` : " until now"}</title></rect>
-      <text x="${x.toFixed(2)}%" dx="8" y="22" class="span-label${current ? " now" : ""}">${e(label)}</text>`;
+    const c = colour(sp.holder);
+    // A band that starts in the last fifth of the axis is too short for its
+    // label, which then sits to the left of the band instead of running past now.
+    const before = x > 80;
+    return `<rect x="${x.toFixed(2)}%" y="8" width="${w.toFixed(2)}%" height="${TRACK_H - 16}" rx="6" class="${current ? "span-now" : "span-past"}" style="--c:${c}"><title>${e(sp.holder)} held it from ${e(clock(sp.from))}${sp.to ? ` to ${e(clock(sp.to))}` : " until now"}</title></rect>
+      <line x1="${x.toFixed(2)}%" y1="${MID}" x2="${(x + w).toFixed(2)}%" y2="${MID}" class="g-thread g-lane${isLocalRun(sp.holder) ? " local" : ""}" style="--c:${c}"/>
+      <text x="${x.toFixed(2)}%" dx="${before ? -8 : 8}" y="22"${before ? ' text-anchor="end"' : ""} class="span-label${current ? " now" : ""}" style="--c:${c}">${e(label)}</text>`;
   }).join("");
   const xs = b.marks.map((m) => position(m.at, floor));
   const dy = staggers(xs);
@@ -642,7 +684,7 @@ function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): s
     ? `<p class="chain" aria-label="Held by, in order">${b.chain.map((a) => `<span title="${e(a)}">${e(splitActor(a).model || a)}</span>`).join('<span aria-hidden="true"> → </span>')}</p>`
     : "";
   const tone = b.item.state === "accepted" ? "go" : b.item.state === "submitted" ? "ask" : "";
-  return `<li class="lane" id="${e(b.project)}-${e(b.item.id)}">
+  return `<li class="lane" id="${e(b.project)}-${e(b.item.id)}" style="--c:${colour(b.agent)}">
   <div class="bench">
     <p class="who"><strong>${e(b.model)}</strong><span class="meta">${e(b.harness || "agent")}</span></p>
     <p class="task"><a href="${href("p", b.project, b.item.id)}">${e(b.item.title)}</a></p>
@@ -651,25 +693,30 @@ function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>): s
   </div>
   <div class="track">
     <svg class="track-svg" width="100%" height="${TRACK_H}" role="img" aria-label="${e(`${b.marks.length} recorded events for ${b.item.id}, held by ${b.chain.map(modelOf).join(", then ")}; latest: ${last ? `${MARK_NAMES[last.kind]} ${ago(last.at, now)}` : "none"}`)}">
-      ${spans}
+      <g class="g-task live">
       <line x1="0" y1="${MID}" x2="100%" y2="${MID}" class="axis"/>
+      ${spans}
       <line x1="100%" y1="4" x2="100%" y2="${TRACK_H - 4}" class="now-line"/>
       ${marks}
+      <circle class="g-head" cx="100%" cy="${MID}" r="4.5" style="--c:${colour(b.agent)}"><title>${e(b.agent)} holds it now</title></circle>
+      </g>
     </svg>
     <p class="meta latest">${last ? `<strong>${e(MARK_NAMES[last.kind])}</strong> · ${e(last.label)} · ${e(ago(last.at, now))}` : "No activity recorded yet."}</p>
   </div>
 </li>`;
 }
 
-export function renderStudio(floor: Floor, ownerName: string | null = null, now = new Date(), unavailable = false, projects: ProjectRecord[] = []): string {
+export function renderStudio(floor: Floor, ownerName: string | null = null, now = new Date(), unavailable = false, projects: ProjectRecord[] = [], owner = DEFAULT_OWNER): string {
   const titles = titleMap(projects);
   const agents = new Set(floor.benches.map((b) => b.agent)).size;
+  const vendors = [...new Set(floor.benches.flatMap((b) => b.chain.map((a) => vendorFor(a, owner))))];
+  const hasLocal = floor.benches.some((b) => b.chain.some(isLocalRun));
   const legend = (Object.keys(MARK_NAMES) as MarkKind[]).map((k) =>
     `<li><svg width="24" height="24" aria-hidden="true"><svg x="12" y="12" overflow="visible" class="mark">${markShape(k)}</svg></svg>${e(MARK_NAMES[k])}</li>`).join("");
   const mid = new Date((Date.parse(floor.from) + Date.parse(floor.to)) / 2).toISOString();
   const body = floor.benches.length
-    ? `<div class="axis-labels" aria-hidden="true"><span>${e(clock(floor.from))}</span><span>${e(clock(mid))}</span><span>now</span></div>
-<ol class="lanes">${floor.benches.map((b) => lane(b, floor, now, titles)).join("")}</ol>`
+    ? `${familyLegend(vendors, "You", hasLocal ? LOCAL_KEY : "")}<div class="axis-labels" aria-hidden="true"><span>${e(clock(floor.from))}</span><span>${e(clock(mid))}</span><span>now</span></div>
+<ol class="lanes">${floor.benches.map((b) => lane(b, floor, now, titles, owner)).join("")}</ol>`
     : `<div class="empty"><h3>The floor is quiet.</h3><p>When an agent claims a task, its bench appears here with every push, check and handoff as it happens.</p></div>`;
   return page("Studio", `<div class="studio">
   <header><h1>Studio</h1>
@@ -681,18 +728,75 @@ export function renderStudio(floor: Floor, ownerName: string | null = null, now 
 }
 
 // ── projects and history ───────────────────────────────────────────────────
+// Projects are cards: each with its tally and the last two weeks of moves, a
+// bar per day stacked by the family of the agent that made them. History is
+// the timeline of merges and closures across projects, each marked in the
+// family of the agent that held the task when it ended. Both are counted by
+// pulse.ts from the Ledger's events; nothing is estimated.
 
-export function renderProjects(views: ProjectView[], ownerName: string | null = null): string {
-  const list = views.map(({ project, items, unavailable }) => {
+const r1 = (n: number) => Math.round(n * 10) / 10;
+
+// The families present, in the fixed order, with the zone the page's times are in.
+function familyLegend(vendors: Vendor[], who = "You", extra = ""): string {
+  const items = VENDOR_NAMES.filter(([v]) => vendors.includes(v))
+    .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(v === "owner" ? who : label)}</li>`);
+  return `<ul class="legend-line" aria-label="Colours">${items.join("")}${extra}<li class="meta">times in ${e(zoneLabel())}</li></ul>`;
+}
+
+const PULSE_W = 20, PULSE_BAR = 14, PULSE_H = 86, PULSE_TOP = 6, PULSE_BASE = 68;
+
+// Two weeks of moves, one bar per day, each stacked by family with the
+// owner's decisions on top; a day with nothing is a tick on the baseline.
+// Every bar says in its title what it counts, and the drawing says its total.
+function pulseGraph(p: Pulse): string {
+  const W = PULSE_W * p.days.length;
+  const peak = Math.max(1, ...p.days.map((d) => d.moves + d.decisions));
+  const scale = (n: number) => (n / peak) * (PULSE_BASE - PULSE_TOP);
+  const bars = p.days.map((d, i) => {
+    const x = i * PULSE_W + (PULSE_W - PULSE_BAR) / 2;
+    if (!d.moves && !d.decisions) return `<rect class="none" x="${x}" y="${PULSE_BASE - 2}" width="${PULSE_BAR}" height="2" rx="1"><title>${e(keyLabel(d.day, false))}: nothing recorded</title></rect>`;
+    const parts: [Vendor, string, number][] = VENDOR_NAMES.filter(([v]) => v !== "owner" && d.byVendor[v]).map(([v, label]) => [v, label, d.byVendor[v]!]);
+    if (d.decisions) parts.push(["owner", "you", d.decisions]);
+    let y = PULSE_BASE;
+    const stack = parts.map(([v, , n]) => {
+      const h = Math.max(2, scale(n));
+      y -= h;
+      return `<rect x="${x}" y="${r1(y)}" width="${PULSE_BAR}" height="${r1(h)}" style="fill:var(--m-${v})"/>`;
+    }).join("");
+    const said = parts.map(([v, label, n]) => (v === "owner" ? `${plural(n, "decision")} by you` : `${n} ${label}`)).join(", ");
+    return `<g><title>${e(`${keyLabel(d.day, false)}: ${plural(d.moves, "move")} (${said})`)}</title>${stack}</g>`;
+  }).join("");
+  const busiest = p.days.reduce((a, b) => (b.moves + b.decisions > a.moves + a.decisions ? b : a));
+  const label = p.moves || p.decisions
+    ? `Moves per day over the last two weeks: ${p.moves} by agents and ${plural(p.decisions, "decision")} by you, most on ${keyLabel(busiest.day, false)}`
+    : "No moves in the last two weeks";
+  return `<svg class="pulse-graph" viewBox="0 0 ${W} ${PULSE_H}" role="img" aria-label="${e(label)}">
+    <line class="baseline" x1="0" x2="${W}" y1="${PULSE_BASE + 0.5}" y2="${PULSE_BASE + 0.5}"/>${bars}
+    <text x="4" y="${PULSE_H - 3}">${e(keyLabel(p.days[0].day, false))}</text><text x="${W - 4}" y="${PULSE_H - 3}" text-anchor="end">${e(keyLabel(p.days[p.days.length - 1].day, false))}</text>
+  </svg>`;
+}
+
+export function renderProjects(views: ProjectView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER): string {
+  const vendors = new Set<Vendor>();
+  const cards = views.map(({ project, items, unavailable, events, cut }) => {
     const count = (states: string[]) => items.filter((i) => states.includes(i.state)).length;
-    const summary = unavailable
-      ? "Temporarily unavailable. Open to retry."
-      : `${count(["claimed", "submitted", "accepted"])} active · ${count(["open"])} ready to start · ${count(["merged"])} merged`;
-    return `<li><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2><p>${summary}</p>${icon("arrow")}</a></li>`;
+    const p = buildPulse(events ?? [], owner, now, !!cut);
+    for (const v of Object.keys(p.byVendor) as Vendor[]) vendors.add(v);
+    if (p.decisions) vendors.add("owner");
+    const tally = `<p class="card-tally"><span><b>${count(["claimed", "submitted", "accepted"])}</b>active</span><span><b>${count(["open"])}</b>ready to start</span><span><b>${count(["merged"])}</b>merged</span></p>`;
+    const last = p.lastAt ? ` · last activity ${e(ago(p.lastAt, now))}` : "";
+    const line = p.moves || p.decisions
+      ? `${plural(p.moves, "move")} by ${plural(p.agents.length, "agent")} and ${plural(p.decisions, "decision")} in two weeks${p.cut ? ", from the most recent part of the record" : ""}${last}.`
+      : `No moves in the last two weeks${last}.`;
+    const body = unavailable
+      ? '<p class="meta">Temporarily unavailable. Open to retry.</p>'
+      : `${tally}${pulseGraph(p)}<p class="meta">${line}</p>`;
+    return `<li class="project-card${unavailable ? " unavailable" : ""}"><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2>${body}</a></li>`;
   }).join("");
   return page("Projects", `<div class="page-width">
-  <header><h1>Projects</h1><p class="lead">Work in motion, with a clear owner for every task.</p></header>
-  <ul class="project-list">${list}</ul>
+  <header><h1>Projects</h1><p class="lead">Work in motion, with a clear owner for every task. Each card counts the last ${PULSE_DAYS} days of moves, a bar per day, in the colour of the family that made them.</p></header>
+  ${views.length ? familyLegend([...vendors]) : ""}
+  <ul class="project-cards">${cards}</ul>
   ${!views.length ? '<div class="empty"><h2>Start with one project.</h2><p>Run <code>atelier init</code> in its local checkout. It will appear here.</p></div>' : ""}
 </div>`, "Projects", ownerName);
 }
@@ -872,18 +976,29 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
 </div>`, "Projects", ownerName);
 }
 
-export function renderHistory(views: ProjectView[], ownerName: string | null = null): string {
-  const completed = views
-    .flatMap(({ project, items }) => items.filter((i) => i.state === "merged" || i.state === "abandoned").map((item) => ({ project, item })))
-    .sort((a, b) => b.item.updatedAt.localeCompare(a.item.updatedAt));
-  const rows = completed.map(({ project, item }) => `<li><a href="${href("p", project.name, item.id)}">
-    <span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.id)}</span></span>
-    ${tag(stateLabel[item.state], item.state === "merged" ? "go" : "")}<time class="meta">${when(item.updatedAt)}</time>${icon("arrow")}</a></li>`).join("");
+export function renderHistory(views: ProjectView[], ownerName: string | null = null, owner = DEFAULT_OWNER): string {
+  const entries = buildTimeline(views.map((v) => ({ project: v.project, items: v.items, events: v.events ?? [] })), owner);
+  const merged = entries.filter((x) => x.ending === "merged").length, closed = entries.length - merged;
+  const projects = new Set(entries.map((x) => x.project.name)).size;
+  const vendors = [...new Set(entries.map((x) => x.vendor).filter((v): v is Vendor => v !== null))];
+  const days = byDay(entries).map(({ day, entries: list }) => `<li class="timeline-day"><h2>${e(`${weekdayOf(list[0].at)} ${keyLabel(day, true)}`)}</h2><ol>${list.map((x) => {
+    const model = x.holder ? splitActor(x.holder).model || x.holder : null;
+    const mark = x.vendor
+      ? `<i class="family-mark" style="--c:var(--m-${x.vendor})" title="${e(`${x.ending} while held by ${x.holder}`)}"></i>`
+      : '<i class="family-mark unknown" title="who held it is not in the record read"></i>';
+    const detail = [titleOf(x.project), x.item.id, model ?? "holder not in the record read", x.ending === "merged" ? (x.commit ? `merged as ${x.commit.slice(0, 8)}` : "merged") : "closed without merging"];
+    return `<li class="merge-row ${x.ending}"><a href="${href("p", x.project.name, x.item.id)}">${mark}<time datetime="${e(x.at)}">${e(clock(x.at))}</time><span><strong>${e(x.item.title)}</strong><span class="meta">${detail.map(e).join(" · ")}</span></span>${tag(x.ending === "merged" ? "Merged" : "Closed", x.ending === "merged" ? "go" : "")}</a></li>`;
+  }).join("")}</ol></li>`).join("");
+  const lead = entries.length
+    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each mark is the family of the agent that held the task when it ended.`
+    : "Finished work, with its evidence intact.";
+  const capKey = closed ? '<li><i class="cap-key"></i>closed without merging</li>' : "";
   return page("History", `<div class="page-width">
-  <header><h1>History</h1><p class="lead">Finished work, with its evidence intact.</p></header>
+  <header><h1>History</h1><p class="lead">${lead}</p></header>
   ${views.some((v) => v.unavailable) ? '<p class="error">Some project history is unavailable. Refresh to retry.</p>' : ""}
-  <ul class="task-list">${rows}</ul>
-  ${!completed.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
+  ${entries.length ? familyLegend(vendors, "You", capKey) : ""}
+  <ol class="merge-timeline">${days}</ol>
+  ${!entries.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
 </div>`, "History", ownerName);
 }
 
@@ -897,12 +1012,12 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 
 // ── a task ─────────────────────────────────────────────────────────────────
 
-export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null): string {
+export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   const closed = d.item.state === "merged" || d.item.state === "abandoned";
   return page(d.item.title, `<div class="page-width">
   <nav class="breadcrumbs"><a href="/decisions">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
-</div>`, closed ? "History" : "Decisions", ownerName);
+</div>`, closed ? "History" : "Decisions", ownerName, 0, true, live);
 }
 
 const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad", none: "" };
