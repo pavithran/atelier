@@ -22,8 +22,8 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
-import { pathCollisions } from "../src/rules.ts";
-import { adapterClasses, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
+import { checkApplies, pathCollisions } from "../src/rules.ts";
+import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
@@ -623,16 +623,20 @@ function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git(["clone", "--quiet", remote, dir], { token });
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
-  let changed;
+  let changed, againstMain;
   if (baseline) {
     git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token });
+    // Every path on which the head differs from main's head, as the Worker
+    // measures it (againstMain in src/diff.ts): which checks apply is read from these.
+    const main = git(["diff", "--no-renames", "--name-only", "-z", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
+    if (main.status === 0) againstMain = main.stdout.split("\0").filter(Boolean);
     const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true });
     if (mb.status === 0) {
       const diff = git(["diff", "--no-renames", "--name-only", "-z", mb.stdout.trim(), "HEAD"], { cwd: dir, allowFail: true });
       if (diff.status === 0) changed = diff.stdout.split("\0").filter(Boolean);
     }
   }
-  return { dir, changed };
+  return { dir, changed, againstMain };
 }
 
 // Runs one check with checkEnv's variables and returns its output with every
@@ -807,13 +811,14 @@ async function checkInSandbox() {
     await new Promise((ok) => setTimeout(ok, 5000));
   }
   for (const r of state.results ?? []) {
+    if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}  (not run: this change touches none of the paths it applies to)`); continue; }
     console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}  (${r.seconds}s, in Cloudflare)`);
     if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
   }
   if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (state.results.some((r) => !r.passed)) {
+  if (state.results.some((r) => r.passed === false)) {
     if (doneStep) die("required checks failed", 2);
     process.exit(2);
   }
@@ -842,7 +847,7 @@ export function formatStanding(s, ownerName = "the project owner") {
   if (s.controlPlane) {
     lines.push("", `ControlPlane policy, approved: ${flat(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(flat).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(flat).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.`);
   }
-  group("Checks", (s.checks ?? []).map((c) => `${flat(c.command)}  ${flat(c.text)}`));
+  group("Checks", (s.checks ?? []).map((c) => `${flat(c.command)}  ${flat(c.text)}${c.paths?.length ? `; applies only when the change touches ${c.paths.map(flat).join(", ")}` : ""}`));
   return lines.join("\n");
 }
 
@@ -1394,6 +1399,10 @@ const commands = {
     const owned = declaring === undefined ? [] : needing.map((command) => ({ command, by: "owner", note: declaring.trim() }));
     if (declaring !== undefined && !owned.length) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
     if (fromAdapter.declarations.length || owned.length) policy.checkClasses = [...fromAdapter.declarations, ...owned];
+    // The adapter's change_rules say which checks apply to which paths; a
+    // ControlPlane project's adapter always sets them, as it sets protected paths.
+    const fromRules = cp?.adapter ? adapterCheckPaths(cp.adapter, classed) : null;
+    if (fromRules) policy.checkPaths = fromRules.paths;
     if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
     if (cp) {
       policy.eligible = cp.eligible ?? [];
@@ -1444,7 +1453,8 @@ const commands = {
       : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
     if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
     console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
-    for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}`);
+    for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
+    if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
@@ -1636,7 +1646,8 @@ const commands = {
     const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
     if (!ws.head) die("nothing pushed yet");
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const { dir, changed } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+    const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+    const policy = d.policy;
     // What a check could print and this command would then upload: the API
     // token, the read tokens for the fork and the baseline, and the write
     // token in the workspace's Git settings.
@@ -1644,6 +1655,16 @@ const commands = {
     let failed = 0, recorded;
     try {
       for (const cmd of cmds) {
+        // A registered check whose paths this change does not touch is not
+        // run. It is recorded as not applicable, which the Worker accepts only
+        // when the paths it measures itself show the same.
+        if (!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false) {
+          const n = await call("POST", `${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
+          const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
+          if (row) recorded = row.changedPaths;
+          console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
+          continue;
+        }
         const r = await runCheck(cmd, dir, secrets);
         // The Worker measures the changed paths from Artifacts and ignores this
         // list, which is sent only so a deployment without that measurement

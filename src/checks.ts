@@ -1,4 +1,4 @@
-import { RuleError, type ProjectPolicy } from "./rules.ts";
+import { matchesFolded, RuleError, type CheckPaths, type ProjectPolicy } from "./rules.ts";
 
 // What a registered check may do. Atelier runs a check in a clean clone of an
 // item's head, on an agent's machine or in a Cloudflare container, whenever
@@ -859,4 +859,104 @@ export function adapterClasses(adapter: unknown, checks: string[]): { declaratio
     else refusals.push({ command, text: refusalText(command, `is ControlPlane capability ${cap.name}, of class ${cap.actionClass || "none given"}`) });
   }
   return { declarations, refusals };
+}
+
+// ── checks that apply to some paths ────────────────────────────────────────
+
+// A check may apply only when an item changes a path its globs match; the
+// gate requires it exactly then (checkApplies and evidenceAt in rules.ts).
+
+export function parseCheckPaths(value: unknown): CheckPaths[] {
+  const bad = () => new RuleError("bad_check_paths", "checkPaths must be a list of { command, paths }, each naming a check and a list of path globs with something in each", 400);
+  if (!Array.isArray(value)) throw bad();
+  return value.map((c) => {
+    if (!c || typeof c !== "object" || typeof c.command !== "string" || !c.command.trim() || !Array.isArray(c.paths) || !c.paths.length
+      || c.paths.some((p: unknown) => typeof p !== "string" || !p.trim())) throw bad();
+    return { command: c.command.trim(), paths: c.paths.map((p: string) => p.trim()) };
+  });
+}
+
+// The paths recorded for a project's checks after an init: the ones the init
+// gives, each for a registered check, or else the ones recorded before for
+// the checks still registered.
+export function settleCheckPaths(checks: string[], given: CheckPaths[] | undefined, current: CheckPaths[] | undefined): CheckPaths[] {
+  if (!given) return (current ?? []).filter((c) => checks.includes(c.command));
+  const stray = given.filter((c) => !checks.includes(c.command));
+  if (stray.length) {
+    throw new RuleError("bad_check_paths", `${stray.map((c) => `\`${c.command}\``).join(", ")} ${stray.length === 1 ? "is" : "are"} not a registered check; give a check's paths in the init that names it with --check`, 400);
+  }
+  return given;
+}
+
+// Why a check cannot be recorded as not applicable at a head, from the
+// changed paths Atelier measured there; null when it can.
+export function appliesReason(policy: Pick<ProjectPolicy, "checkPaths">, command: string, changed: string[] | null): string | null {
+  const paths = policy.checkPaths?.find((c) => c.command === command)?.paths;
+  if (!paths?.length) return `\`${command}\` applies to every change; run it`;
+  if (changed === null) return `the changed paths are not measured, so \`${command}\` cannot be shown not to apply; run it`;
+  const touched = changed.find((p) => matchesFolded(p, paths));
+  return touched ? `\`${command}\` applies to this change, which touches ${touched}; run it` : null;
+}
+
+// Where a check applies, in words.
+export function appliesText(policy: Pick<ProjectPolicy, "checkPaths">, command: string): string {
+  const paths = policy.checkPaths?.find((c) => c.command === command)?.paths;
+  return paths?.length ? `applies only when the change touches ${paths.join(", ")}` : "applies to every change";
+}
+
+// ControlPlane matches its patterns as Python's fnmatch does, where `*`
+// crosses directories. Atelier's `*` stops at a slash and `**` crosses one,
+// so each `*` is written `**`: `*.md` covers docs/a.md, as it did there.
+export function fromFnmatch(pattern: string): string {
+  return pattern.replace(/\*+/g, "**");
+}
+
+interface ChangeRule { patterns: string[]; requires: string[] }
+
+function changeRules(adapter: unknown): ChangeRule[] {
+  const rules = (adapter as { change_rules?: unknown } | null)?.change_rules;
+  if (!Array.isArray(rules)) return [];
+  return rules.flatMap((r) => {
+    const rule = r as { patterns?: unknown; requires?: unknown } | null;
+    const patterns = Array.isArray(rule?.patterns) ? rule.patterns.filter((p): p is string => typeof p === "string" && !!p.trim()) : [];
+    const requires = Array.isArray(rule?.requires) ? rule.requires.filter((n): n is string => typeof n === "string") : [];
+    return patterns.length && requires.length ? [{ patterns, requires }] : [];
+  });
+}
+
+// The commands a capability runs: the script it hands to `sh -c`, or its argv as one command.
+function capabilityCommands(cap: Capability): string[][] | null {
+  const [head, flag, script] = cap.command;
+  if (SHELLS.has(toolName(head)) && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(flag ?? "") && script !== undefined) return simpleCommands(script);
+  return [cap.command];
+}
+
+// What a ControlPlane adapter's change_rules say of each check. A rule
+// requires its capabilities when an item changes a path its patterns match.
+// A check runs a capability when every command the capability runs is one of
+// the check's, word for word, so `npm ci && npm test` runs `npm test`. A check
+// that runs a capability some rule requires applies exactly when one of
+// those rules matches; one that runs none applies to every change. `unrun`
+// names each capability a rule requires that no check runs.
+export function adapterCheckPaths(adapter: unknown, checks: string[]): { paths: CheckPaths[]; unrun: { name: string; command: string }[] } {
+  const caps = new Map(adapterCapabilities(adapter).map((c) => [c.name, c]));
+  const rules = changeRules(adapter);
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((w, i) => w === b[i]);
+  const ran = new Set<string>();
+  const paths: CheckPaths[] = [];
+  for (const command of checks) {
+    const own = simpleCommands(command);
+    if (!own) continue;
+    const runs = (cap: Capability) => { const cmds = capabilityCommands(cap); return !!cmds?.length && cmds.every((c) => own.some((d) => same(c, d))); };
+    const globs = new Set<string>();
+    for (const rule of rules) {
+      const run = rule.requires.filter((name) => caps.has(name) && runs(caps.get(name)!));
+      run.forEach((name) => ran.add(name));
+      if (run.length) rule.patterns.forEach((p) => globs.add(fromFnmatch(p)));
+    }
+    if (globs.size) paths.push({ command, paths: [...globs] });
+  }
+  const unrun = [...new Set(rules.flatMap((r) => r.requires))].filter((name) => caps.has(name) && !ran.has(name))
+    .map((name) => ({ name, command: caps.get(name)!.command.join(" ") }));
+  return { paths, unrun };
 }

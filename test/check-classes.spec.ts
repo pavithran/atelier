@@ -81,10 +81,10 @@ it("a project's existing checks keep running: an init that names no checks keeps
   expect(retitled.status, await retitled.clone().text()).toBe(200);
   expect((await L.project()).policy).toMatchObject({ checks: ["npm ci && npm test", "./scripts/verify.sh"], checkClasses: [{ command: "npm ci && npm test", by: "command" }] });
   // The standing says which is which.
-  const standing = await (await call("GET", "/projects/classes-legacy/standing", "codex/gpt-6-astra")).json() as { checks: { command: string; class: string; text: string }[] };
+  const standing = await (await call("GET", "/projects/classes-legacy/standing", "codex/gpt-6-astra")).json() as { checks: { command: string; class: string; text: string; paths: string[] | null }[] };
   expect(standing.checks).toEqual([
-    { command: "npm ci && npm test", class: "read-only", text: "read-only, a known build or test command" },
-    { command: "./scripts/verify.sh", class: "undeclared", text: expect.stringMatching(/^undeclared: .*--declare-read-only/) },
+    { command: "npm ci && npm test", class: "read-only", text: "read-only, a known build or test command", paths: null },
+    { command: "./scripts/verify.sh", class: "undeclared", text: expect.stringMatching(/^undeclared: .*--declare-read-only/), paths: null },
   ]);
   // A declaration for a registered check is recorded; one for a command the project lacks is refused.
   expect((await call("PUT", "/projects/classes-legacy", "owner", { checkClasses: [{ command: "./other.sh", by: "owner", note: "n" }] })).status).toBe(400);

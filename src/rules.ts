@@ -57,6 +57,9 @@ export interface Evidence {
   // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
   // Worker's own code can record "sandbox"; anything posted to the API is "runner".
   where?: "sandbox" | "runner";
+  // An observed record that the check does not apply at this head: its paths
+  // match none of the changed paths Atelier measured. It carries no result.
+  notApplicable?: boolean;
 }
 
 export interface Review {
@@ -81,11 +84,18 @@ export interface ExecutionPolicy {
   protected_path_patterns: string[];
 }
 
+// A check that applies only when an item changes a path its globs match.
+export interface CheckPaths {
+  command: string;
+  paths: string[];
+}
+
 export interface ProjectPolicy {
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
+  checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
@@ -475,10 +485,26 @@ export function assertOwner(item: Item, actor: string): void {
   }
 }
 
-// The evidence picture at one head: every required check is observed-pass,
-// observed-fail, or pending; reports are listed but never satisfy a check.
+// Whether a required check applies to a change. A check without paths
+// applies to every change. One with paths applies exactly when a changed
+// path matches one of them, whatever the letter case or Unicode form
+// (matchesFolded), so a variant spelling of a path still needs the check.
+// Null while the changed paths are not yet measured.
+export function checkApplies(policy: Pick<ProjectPolicy, "checkPaths">, command: string, changed: string[] | null): boolean | null {
+  const paths = policy.checkPaths?.find((c) => c.command === command)?.paths;
+  if (!paths?.length) return true;
+  if (changed === null) return null;
+  return changed.some((p) => matchesFolded(p, paths));
+}
+
+// The evidence picture at one head: every required check that applies, or
+// may apply while the changed paths are unmeasured, is observed-pass,
+// observed-fail, or pending; a check whose paths the change does not touch is
+// listed as not applicable and never blocks. Reports are listed but never
+// satisfy a check.
 export interface EvidenceView {
   checks: { claim: string; grade: Grade; passed: boolean | null; where?: "sandbox" | "runner" }[];
+  notApplicable: string[];
   reports: Evidence[];
   changedPaths: string[] | null;  // null until an observed check has measured them
 }
@@ -488,19 +514,22 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
   // Under sandboxOnly, a check run on someone's machine is still shown but does not count.
   const counts = (e: Evidence) => e.grade === "observed" && (!policy.sandboxOnly || e.where === "sandbox");
   const latest = (claim: string) =>
-    atHead.filter((e) => counts(e) && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
-  const checks = policy.checks.map((claim) => {
+    atHead.filter((e) => counts(e) && !e.notApplicable && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
+    Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
+  const changedPaths = measured?.changedPaths ?? null;
+  const applies = (claim: string) => checkApplies(policy, claim, changedPaths) !== false;
+  const checks = policy.checks.filter(applies).map((claim) => {
     const e = latest(claim);
     return e
       ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner" }
       : { claim, grade: "pending" as Grade, passed: null };
   });
-  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
-    Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   return {
     checks,
+    notApplicable: policy.checks.filter((claim) => !applies(claim)),
     reports: atHead.filter((e) => e.grade === "reported"),
-    changedPaths: measured?.changedPaths ?? null,
+    changedPaths,
   };
 }
 
