@@ -988,6 +988,10 @@ and the plan is complete once every part has merged.
 [docs/orchestrator.md](docs/orchestrator.md) holds the design and says which
 of its steps are built.
 
+A session that runs Atelier for a project, filing tasks, briefing agents,
+landing their work and judging reviews, should read
+[docs/orchestrating.md](docs/orchestrating.md) first.
+
 ## Home runner
 
 `atelier runner` polls the queue every 30 seconds, claims one eligible task,
