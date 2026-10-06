@@ -1,0 +1,16 @@
+atelier atelier/t126 "Security (found by opus-5.5 while fixing t116): the fork point used to measure a workspace's changed paths is taken from the fork's own main history, which the agent controls; an agent can build a merge that makes an older baseline commit the fork point, so a revert of a protected file through that merge is never measured (only README.md measured while AGENTS.md goes from v2 back to v1). Affects the evidence route (after t116), the sandbox runner and the diff view; measure against the baseline's current head or the item's recorded base, not a fork-chosen merge base"
+accepted head a2213bb5b108d57ce2090a378e7cb9d4fa3dcd9d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T02:27:21.985Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T02:27:24.661Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. againstMain measures the head tree against main's current head tree, ignoring any history the agent builds; pairReader reads objects from fork or baseline so a stale fork needs no update; the evidence route and the sandbox runner both use it, and no fork-chosen merge base feeds the gate; a workspace behind main only asks for more review; tests reproduce the crafted merge.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T01:53:42.112Z pavi item.created
+2026-10-06T02:00:51.318Z claude-code/fable-5.1 item.claimed
+2026-10-06T02:00:54.016Z claude-code/fable-5.1 fork.created
+2026-10-06T02:25:59.208Z claude-code/fable-5.1 push.observed
+2026-10-06T02:27:22.459Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:27:24.912Z claude-code/fable-5.1 evidence.observed
+2026-10-06T02:27:25.597Z claude-code/fable-5.1 item.submitted
+2026-10-06T02:32:25.123Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:32:25.678Z pavi review.approved
+2026-10-06T02:32:26.228Z pavi item.accepted
