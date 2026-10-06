@@ -16,6 +16,8 @@ import { FILE_LIMIT, cleanPath, commitChanges, logPage, pathHistory, repoSource,
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, VENDOR_NAMES } from "./graph";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
+import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
+import { renderUsage } from "./usage/page.ts";
 
 export { CheckRunner, Egress, Ledger };
 
@@ -38,7 +40,15 @@ function sameString(a: string, b: string): boolean {
   return diff === 0;
 }
 
-type Settings = { CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string; TIMEZONE?: string };
+type Settings = {
+  CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string; TIMEZONE?: string;
+  // The usage alert thresholds (src/usage/report.ts); each a number, "off", or unset for the default.
+  USAGE_WEEKLY_PERCENT?: string; USAGE_WINDOW_PERCENT?: string; USAGE_DAILY_SPEND?: string; USAGE_BALANCE_FLOOR?: string;
+};
+
+function thresholds(env: Env): Thresholds {
+  return thresholdsFrom(env as unknown as Record<string, string | undefined>);
+}
 
 // The projects the owner shows publicly at /showcase, by name, comma-separated
 // in the SHOWCASE setting. Unset shows nothing.
@@ -346,6 +356,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
       return json(await I.setModelStatus(id, cleanStatus(body, new Date().toISOString(), runner.runner), runner.kind));
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
+  // Usage, limits and balances. A runner reports one tool at a time under
+  // its name, as it reports a model's status: the owner token, and the
+  // runner named in X-Atelier-Runner. The owner reads every report, the
+  // thresholds in force and the alerts in force.
+  if (parts[0] === "usage") {
+    const I = index(env);
+    if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts() });
+    if (parts.length === 2 && m === "POST") {
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a usage report names its runner in X-Atelier-Runner", 400);
+      return json(await I.putUsage(cleanReport(parts[1], body, new Date().toISOString(), runner.runner), thresholds(env), c.url.origin));
     }
     throw new RuleError("not_found", "no such route", 404);
   }
@@ -810,6 +834,11 @@ async function verifyRevision(env: Env, key: string, id: string, expected: strin
 async function ui(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req } = c;
   if (parts[0] === "models" && (parts.length === 1 || (parts.length === 2 && req.method === "POST"))) return await modelsPage(c, parts[1]);
+  if (parts[0] === "usage" && parts.length === 1 && req.method === "GET") {
+    const I = index(env);
+    const [reports, alerts] = await Promise.all([I.usage(), I.usageAlerts()]);
+    return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env)));
+  }
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
     if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);
