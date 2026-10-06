@@ -521,14 +521,19 @@ test("holders remain contributors when Git pushes precede observation", () => {
     assert.ok(contributors.includes("codex/gpt-6"));
     assert.ok(contributors.includes("claude-code/opus-5.5"));
     assert.ok(contributors.includes("opencode/glm-5.3"));
+    // Task t94: after a release, the push observed while nobody held the
+    // item was counted under the name the Ledger logs it with,
+    // atelier/events, a contributor of no recognised family, so no
+    // reviewer could be shown to be of another family. Every holder is
+    // already listed, and the push is attributed to none.
+    assert.deepEqual(contributors, ["codex/gpt-6", "claude-code/opus-5.5", "opencode/glm-5.3"]);
     const held = item({ pushActors: contributors });
     const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
     assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
-    // After a release, the push observed while nobody held the item is
-    // recorded as atelier/events: a contributor whose family is not
-    // recognised, so no reviewer can be shown to be of another family.
-    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, kind === "item.handoff");
+    assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
   }
+  // A push seen before anyone claimed the item is attributed to nobody.
+  assert.deepEqual(pushActors([{ kind: "push.observed", actor: "atelier/events", data: {} }]), []);
 });
 
 // Audit t105, finding F4: in a project without ControlPlane policy files the

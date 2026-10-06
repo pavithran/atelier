@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { fillTemplate, insertSection, isLink, leftovers, linkedPart, section, TEMPLATE } from "../cli/adopt.mjs";
+import { ceilingRefusal, fillTemplate, insertSection, isLink, leftovers, linkedPart, pasteScript, section, TEMPLATE } from "../cli/adopt.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 const template = readFileSync(TEMPLATE, "utf8");
@@ -122,6 +122,33 @@ test("any other command says the project moved into Atelier and exits 2", (t) =>
   assert.match(r.stderr, /frobnicate moved into Atelier/);
   assert.match(r.stderr, /atelier help/);
   assert.match(r.stderr, /atelier ops help/);
+});
+
+// The paste stub answers as the relay rule does: no command renders a paste,
+// the agent writes the envelope, and a handoff is no relay. Pinned word for
+// word, with its exit status, so the text cannot drift from the rule.
+test("the paste stub says no command renders a paste, that a handoff is no relay, and exits 2", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-paste-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stub = join(dir, "control-plane-paste");
+  writeFileSync(stub, pasteScript("weblog"), { mode: 0o755 });
+  assert.ok(pasteScript("weblog").startsWith("#!/bin/sh\n"));
+  for (const argv of [[], ["t1"], ["--to", "codex/gpt-6-astra"]]) {
+    const r = spawnSync(stub, argv, { encoding: "utf8" });
+    assert.equal(r.status, 2, argv.join(" "));
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, `control-plane-paste: no command renders a paste any more; this project works through Atelier.
+Write the relay envelope yourself, as the relay rule in AGENTS.md says: one complete fenced
+block with a language tag (bash for a command the owner runs, text for prose, a brief or an
+envelope), and save a copy under ~/Documents/ai-project-data/weblog/, never the portfolio root.
+\`atelier handoff\` transfers ownership of a task to another agent. It is not a relay and is
+never part of a paste request.
+`);
+  }
+  // The name goes into a quoted heredoc, so shell syntax in it is text.
+  const odd = join(dir, "odd");
+  writeFileSync(odd, pasteScript("a$&b `c` 'd'"), { mode: 0o755 });
+  assert.match(spawnSync(odd, [], { encoding: "utf8" }).stderr, /ai-project-data\/a\$&b `c` 'd'\//);
 });
 
 test("the project name is filled in as one shell word", () => {
@@ -246,6 +273,43 @@ test("the leftovers are what ControlPlane still holds in the checkout", (t) => {
   ]);
 });
 
+// A capability's command is judged on the program each command in it runs:
+// a glob, a redirection and everything after the program are arguments, and
+// a chain, a pipeline or a shell's `-c` command line is split first.
+test("a capability's chains, pipelines, redirections and globs are judged on each command's program", (t) => {
+  const { dir } = checkout(t);
+  writeFileSync(join(dir, "docs/control-plane/work-item.v1.json"), JSON.stringify({ state: "reconciled" }));
+  rmSync(join(dir, "tools/control-plane"), { recursive: true });
+  for (const file of ["AGENTS.md", "CLAUDE.md", "GLM.md"]) writeFileSync(join(dir, file), "# weblog\n\nWork through Atelier.\n");
+  writeFileSync(join(dir, "docs/control-plane/project-adapter.v1.json"), JSON.stringify({
+    capabilities: {
+      // agent-lens's launchd capability: a glob copied, two loops and a
+      // pipeline, every program a bare word.
+      "launchd-install": { command: ["/bin/bash", "-c", "cp deploy/com.pavi.agentlens-*.plist ~/Library/LaunchAgents/ && for p in ~/Library/LaunchAgents/com.pavi.agentlens*.plist; do plutil -lint \"$p\"; done && for p in ~/Library/LaunchAgents/com.pavi.agentlens*.plist; do launchctl load \"$p\" 2>/dev/null || true; done && launchctl list | grep -c com.pavi.agentlens"] },
+      chain: "git status && deploy/ship.sh",
+      "or-chain": "tools/ship.py || true",
+      redirected: ">/dev/null tools/report.py",
+      pipeline: "tools/report.py 2> logs/err.txt | gzip -c > logs/report.gz",
+      filtered: "cat a.txt | tools/filter.py > out.txt",
+      conditional: "if [ -f x ]; then tools/ship.py; fi",
+      inline: "bash -lc 'tools/ship.py; python3 tools/count.py'",
+      glob: "rm -f build/*.log",
+      expanded: '"$HOME/tools/x.py" && ~/tools/y.py',
+      present: 'git fetch && "tools/has space.sh"',
+    },
+  }));
+  assert.deepEqual(leftovers(dir), [
+    'docs/control-plane/project-adapter.v1.json: capability "chain" runs deploy/ship.sh, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "or-chain" runs tools/ship.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "redirected" runs tools/report.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "pipeline" runs tools/report.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "filtered" runs tools/filter.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "conditional" runs tools/ship.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "inline" runs tools/ship.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "inline" runs tools/count.py, which does not exist',
+  ]);
+});
+
 // A project that has moved on: nothing is left over, and adopt says so.
 test("a settled project has no leftovers", (t) => {
   const { dir } = checkout(t);
@@ -260,11 +324,16 @@ test("a settled project has no leftovers", (t) => {
 
 // `outside` is a directory beside the checkout and the workspace, for files a
 // symlink may point at: `files` writes them, `links` turns a checkout path
-// into a symlink to one.
-async function fixture(t, { registered = true, paste = true, agents = AGENTS, files = {}, links = {} } = {}) {
+// into a symlink to one. `held` writes more files into the checkout itself,
+// and `policy` is what the fake server records as the project's policy.
+async function fixture(t, { registered = true, paste = true, agents = AGENTS, files = {}, links = {}, held = {}, policy = {} } = {}) {
   const { root, dir } = checkout(t, { paste });
   if (agents === null) rmSync(join(dir, "AGENTS.md"), { force: true });
   else if (agents !== AGENTS) writeFileSync(join(dir, "AGENTS.md"), agents);
+  for (const [path, text] of Object.entries(held)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
   const outside = join(root, "outside");
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(outside, path)), { recursive: true });
@@ -290,7 +359,8 @@ async function fixture(t, { registered = true, paste = true, agents = AGENTS, fi
     let raw = ""; for await (const chunk of req) raw += chunk;
     posts.push({ url: req.url, method: req.method, as: req.headers["x-atelier-actor"], body: raw ? JSON.parse(raw) : null });
     let data = {};
-    if (req.url.endsWith("/items")) data = latest = { ...item, id: `t${++minted}` };
+    if (req.method === "GET" && req.url === "/api/projects/weblog") data = { project: { name: "weblog", policy }, items: [], events: [] };
+    else if (req.url.endsWith("/items")) data = latest = { ...item, id: `t${++minted}` };
     else if (req.url.endsWith("/claim")) data = { item: latest, workspace: { remote: dir, token: "fake", expiresAt: "tomorrow", defaultBranch: "main" } };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
@@ -349,7 +419,7 @@ test("adopt makes the move: one task, claimed as the current actor, three files 
   assert.ok(entry.startsWith("#!/bin/sh\n"));
   assert.ok(entry.includes("atelier_project='weblog'"));
   assert.ok(!entry.includes("__ATELIER_PROJECT__"));
-  assert.equal(f.read("bin/control-plane-paste").trimEnd().split("\n").length, 2);
+  assert.equal(f.read("bin/control-plane-paste"), pasteScript("weblog"));
   const agents = f.read("AGENTS.md");
   assert.ok(agents.startsWith(`# weblog\n\n## This project works through Atelier\n\n`), agents.slice(0, 120));
   assert.ok(agents.includes("`atelier done \"summary\"`"));
@@ -435,7 +505,7 @@ test("a dangling bin/control-plane-paste link is replaced too", async (t) => {
   assert.equal(r.status, 0, r.output);
   const at = join(f.workspace, "bin", "control-plane-paste");
   assert.ok(!lstatSync(at).isSymbolicLink(), "the dangling link is replaced by a regular file");
-  assert.match(f.read("bin/control-plane-paste"), /atelier handoff/);
+  assert.equal(f.read("bin/control-plane-paste"), pasteScript("weblog"));
   assert.match(f.workspaceGit("ls-tree", "HEAD", "bin/control-plane-paste"), /^100755/);
   assert.ok(!existsSync(join(f.outside, "gone")), "nothing is created where the link pointed");
   assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");
@@ -499,6 +569,23 @@ test("adopt refuses an unregistered project and a dirty checkout", async (t) => 
 
 // ── checks that refuse run before the task exists ──────────────────────────
 
+test("an agent the project's policy does not admit is refused before the task exists", async (t) => {
+  const f = await fixture(t, { policy: { eligible: ["claude"] } });
+  const before = tree(f.dir);
+  const r = await f.run(["adopt", "--project", "weblog"]);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /zcode is not an eligible agent here \(eligible: claude\)/);
+  assert.match(r.stderr, /The move was not started; run it as an eligible agent: atelier adopt --project weblog --as HARNESS\/MODEL/);
+  assert.deepEqual(f.posts.map((p) => [p.method, p.url]), [["GET", "/api/projects/weblog"]], "the policy is read; no task, no claim");
+  assert.ok(!existsSync(f.workspace), "no workspace was made");
+  assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");
+
+  // The project owner is admitted whatever the list says, as at a claim.
+  const owner = await f.run(["adopt", "--project", "weblog", "--as", "owner"]);
+  assert.equal(owner.status, 0, owner.output);
+  assert.equal(f.posts.find((p) => p.url.endsWith("/claim")).as, "owner");
+});
+
 test("an AGENTS.md that cannot be read refuses the move before the task exists", async (t) => {
   const f = await fixture(t, { agents: null });
   const r = await f.run(["adopt", "--project", "weblog"]);
@@ -516,6 +603,55 @@ test("an AGENTS.md with no heading gets the section at the top", async (t) => {
   const agents = f.read("AGENTS.md");
   assert.ok(agents.startsWith("## This project works through Atelier\n"), agents.slice(0, 60));
   assert.ok(agents.endsWith(prose), "every line of the file is kept");
+});
+
+// ── the project's context ceiling ──────────────────────────────────────────
+
+const BUDGET = "docs/control-plane/context-budget.v1.json";
+const budget = (ceiling) => JSON.stringify({
+  schema_version: 1, kind: "control-plane.context-budget", advisory: true, drift_multiple: 3,
+  surfaces: [{ path: "AGENTS.md", baseline_lines: 1, required: true, ceiling_lines: ceiling }, { path: "docs/STATE.md", baseline_lines: 26, required: false }],
+}, null, 2) + "\n";
+
+test("the files the move writes are measured against the project's context ceiling", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-ceiling-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = [{ path: "bin/control-plane", text: "#!/bin/sh\n" }, { path: "AGENTS.md", text: "# weblog\n\n## This project works through Atelier\n\nLine.\n" }];
+  assert.equal(ceilingRefusal(root, files), null, "no policy, no ceiling");
+  mkdirSync(join(root, "docs/control-plane"), { recursive: true });
+  writeFileSync(join(root, BUDGET), budget(5));
+  assert.equal(ceilingRefusal(root, files), null, "five lines fit a ceiling of five");
+  writeFileSync(join(root, BUDGET), budget(4));
+  assert.equal(ceilingRefusal(root, files),
+    `AGENTS.md would be 5 lines after the move, 1 over its ceiling of 4 in ${BUDGET}, and atelier wrap refuses a file over its ceiling. Shorten AGENTS.md in the checkout (move history to docs/history/), commit, then run atelier adopt again.`);
+  // A surface with no ceiling sets none; a file the policy does not name is not measured.
+  writeFileSync(join(root, BUDGET), budget(undefined));
+  assert.equal(ceilingRefusal(root, files), null);
+  writeFileSync(join(root, BUDGET), "{");
+  assert.match(ceilingRefusal(root, files), /context-budget\.v1\.json is not a valid context budget policy .*run atelier adopt again/);
+});
+
+test("a move past the project's context ceiling is refused before the task exists", async (t) => {
+  const f = await fixture(t, { held: { [BUDGET]: budget(20) } });
+  const before = tree(f.dir);
+  const r = await f.run(["adopt", "--project", "weblog"]);
+  assert.equal(r.status, 1, r.stdout);
+  const counted = /AGENTS\.md would be (\d+) lines after the move, (\d+) over its ceiling of 20 in docs\/control-plane\/context-budget\.v1\.json/.exec(r.stderr);
+  assert.ok(counted, r.stderr);
+  assert.ok(Number(counted[1]) > 20);
+  assert.equal(Number(counted[1]) - 20, Number(counted[2]));
+  assert.match(r.stderr, /Shorten AGENTS\.md in the checkout/);
+  assert.deepEqual(f.posts, [], "no task, no claim");
+  assert.ok(!existsSync(f.workspace), "no workspace was made");
+  assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");
+});
+
+test("a move under the ceiling goes ahead and leaves the policy as it is", async (t) => {
+  const f = await fixture(t, { held: { [BUDGET]: budget(500) } });
+  const r = await f.run(["adopt", "--project", "weblog"]);
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.read(BUDGET), budget(500));
+  assert.deepEqual(f.workspaceGit("show", "--name-only", "--format=", "HEAD").split("\n").sort(), ["AGENTS.md", "bin/control-plane", "bin/control-plane-paste"]);
 });
 
 for (const typed of ["pickup-card", "unwrap"]) test(`${typed} refuses extra arguments with one line that names ${typed}`, (t) => {
