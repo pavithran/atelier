@@ -48,7 +48,8 @@ test("a part marked built has its files and code; a part marked not built has no
       assert.equal(found, part.built, `${marked}, but ${symbol} is ${part.built ? "not" : "now"} in ${file}`);
     }
   }
-  assert.ok(ORCHESTRATOR.some((p) => p.built) && ORCHESTRATOR.some((p) => !p.built));
+  // Every part may be built; the not-built branch above still holds for any added later.
+  assert.ok(ORCHESTRATOR.some((p) => p.built));
 });
 
 // The review code in src/review runs in the Ledger and the runner (build

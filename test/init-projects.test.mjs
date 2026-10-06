@@ -115,7 +115,7 @@ test("CLI rename needs both names and contacts no server without them", () => fi
   for (const argv of [["projects", "rename"], ["projects", "rename", "weblog"], ["projects", "rename", "weblog", "ikon", "extra"]]) {
     const r = command(argv);
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /usage: atelier projects remove NAME \[--force\] · projects rename OLD NEW/);
+    assert.match(r.stderr, /usage: atelier projects rename OLD NEW\n       atelier projects remove NAME \[--force\]/);
   }
   assert.deepEqual(config(), initial);
   assert.deepEqual(calls(), []);
