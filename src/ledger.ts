@@ -26,7 +26,7 @@ import {
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
 } from "./plans/state.ts";
 import type { PlanView } from "./plans/show.ts";
-import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
+import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -102,6 +102,11 @@ export interface ProjectInit {
   checks?: string[];
   checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
   checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
+  // The ship order the checkout declares (cli/ship.mjs shipPolicy): the runs'
+  // commands, whose files the gate guards like a check's, and the approval
+  // kinds it needs, for the inbox's undelivered-merge reminder.
+  shipRuns?: string[];
+  shipKinds?: string[];
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -154,6 +159,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   // does not keeps their classes and may declare the undeclared ones.
   const checkClasses = settleCheckClasses(checks, i.checkClasses, p?.checkClasses, i.checks !== undefined);
   const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
+  const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
+  const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -166,6 +173,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       checks,
       ...(checkClasses.length ? { checkClasses } : {}),
       ...(checkPaths.length ? { checkPaths } : {}),
+      ...(shipRuns.length ? { shipRuns } : {}),
+      ...(shipKinds.length ? { shipKinds } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -1054,6 +1063,7 @@ export class Ledger extends DurableObject<Env> {
     // comparison with the policy at merge time.
     this.log(id, actor, "item.accepted", {
       head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
+      ...(policy.shipRuns ? { shipRuns: [...policy.shipRuns] } : {}),
       ...(override ? { reviewOverridden: true } : {}),
     }, at);
     return this.item(id);
@@ -1243,7 +1253,7 @@ export class Ledger extends DurableObject<Env> {
     // The fields the acceptance recorded of the policy it was made under; an
     // older acceptance recorded the protected paths alone.
     const acceptancePolicy: Record<string, unknown> | null = current
-      ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
+      ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks", "shipRuns"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
       : null;
     return { item, policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
@@ -1252,8 +1262,31 @@ export class Ledger extends DurableObject<Env> {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
-    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name)]
+    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name), ...this.shipEntries(p)]
       .sort((a, b) => b.weight - a.weight);
+  }
+
+  // A merged revision whose declared protected actions have not run asks the
+  // owner to ship it: the entry stands on the item the merge landed, and names
+  // each kind (policy.shipKinds, from the checkout's ship files) that no
+  // `action.ran` event follows the `item.merged` event for (unrunKinds in
+  // src/actions.ts). It ranks with the owner's decisions, under a merge.
+  private shipEntries(p: { name: string; policy: ProjectPolicy }): InboxEntry[] {
+    const declared = p.policy.shipKinds ?? [];
+    if (!declared.length) return [];
+    const runs = this.sql.exec(`SELECT seq, data FROM events WHERE kind = 'action.ran'`).toArray()
+      .map((r) => ({ kind: (JSON.parse(r.data as string) as ActionRun).kind, seq: r.seq as number }));
+    const items = new Map(this.items().map((i) => [i.id, i]));
+    return this.sql.exec(`SELECT item_id, seq, data FROM events WHERE kind = 'item.merged' ORDER BY seq`).toArray().flatMap((m) => {
+      const item = items.get(m.item_id as string), data = JSON.parse(m.data as string) as { mergeCommit?: unknown };
+      if (!item || typeof data.mergeCommit !== "string") return [];
+      const kinds = unrunKinds(declared, runs, m.seq as number);
+      return kinds.length ? [{
+        project: p.name, itemId: item.id, title: item.title, kind: "ship" as const,
+        reason: `merged at ${data.mergeCommit.slice(0, 8)} with ${kinds.join(", ")} declared by the ship files and not yet run; in the registered checkout run atelier ship --dry-run, then approve and ship`,
+        weight: 75,
+      }] : [];
+    });
   }
 
   // ── plans ────────────────────────────────────────────────────────────────

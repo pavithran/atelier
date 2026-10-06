@@ -56,7 +56,9 @@ test("macOS: reads with find-generic-password and writes through stdin, never an
   assert.match(where, /macOS Keychain, item atelier\.API_TOKEN/);
   const write = f.calls.at(-1);
   assert.deepEqual(write.argv, ["-i"]);
-  assert.match(write.input, /^add-generic-password -U -s "atelier\.API_TOKEN" -a "pavi" -w "s3cr3t-token-value"\n$/);
+  // The item names /usr/bin/security alone as the application that may read it
+  // without asking; without -T every process the owner runs could.
+  assert.match(write.input, /^add-generic-password -U -T \/usr\/bin\/security -s "atelier\.API_TOKEN" -a "pavi" -w "s3cr3t-token-value"\n$/);
   for (const c of f.calls) assert.ok(!c.argv.join(" ").includes(SECRET), "no secret on a command line");
 });
 
