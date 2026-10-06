@@ -719,6 +719,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "evidence": {
       const item = await L.item(id);
       const check = body.kind === "check";
+      // An observed check posted here is its sender's word, and the gate
+      // counts the latest one, so only the task's holder records it: anyone
+      // else could pass or fail another agent's task. The sandbox route,
+      // open to any caller in scope, runs the checks and records them itself.
+      if (check && actor !== item.owner) {
+        throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. To have Atelier run them, use atelier check ${id} --sandbox`, 403);
+      }
       // A claim (a check's command or a report's text) and a check's output
       // are stored as sent, so each over its limit is refused, not cut.
       const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");

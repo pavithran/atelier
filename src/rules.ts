@@ -142,7 +142,14 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     }
     if (event.kind === "item.released") holder = null;
     if (holder) actors.add(holder);
-    if (event.kind === "push.observed") actors.add(event.actor === "atelier/events" ? holder ?? event.actor : event.actor);
+    // A push the queue saw is logged under atelier/events, which is no
+    // contributor: it counts as the holder's. Seen while nobody holds the
+    // item, it was made with a write token an earlier holder had before the
+    // release revoked it, and every holder is listed already, so it adds no one.
+    if (event.kind === "push.observed") {
+      const by = event.actor === "atelier/events" ? holder : event.actor;
+      if (by) actors.add(by);
+    }
   }
   return [...actors];
 }
