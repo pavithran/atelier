@@ -21,6 +21,41 @@ export function statusJson(views) {
   }));
 }
 
+// The local half of `status --project`, as text: what this machine holds for
+// the project's tasks and whether a landing is running here. Pure: the caller
+// collects the facts, this only words them. A task is { id, uncommitted,
+// unpushed, merging, conflicts, commitMessage } with null for what could not
+// be read and `error` set when the workspace itself could not; landing is
+// { lock, lease }, where lease is null, { unreadable } or { item, holder, since }.
+
+// One task's line: each fact that applies in plain words, or "clean, pushed".
+export function localTaskLine(t) {
+  if (t.error) return `${t.id}  its workspace cannot be read: ${t.error}`;
+  const said = [];
+  if (t.uncommitted) said.push(`${t.uncommitted} ${t.uncommitted === 1 ? "path" : "paths"} with uncommitted changes`);
+  if (t.unpushed) said.push(`${t.unpushed} ${t.unpushed === 1 ? "commit" : "commits"} not pushed to its fork`);
+  if (t.unpushed === null) said.push("its unpushed commits cannot be counted");
+  if (t.merging) said.push(`a merge is in progress${t.conflicts?.length ? `, in conflict: ${t.conflicts.join(", ")}` : ""}`);
+  if (t.commitMessage) said.push("COMMIT_MSG.txt waiting to be committed");
+  return `${t.id}  ${said.length ? said.join("; ") : "clean, pushed"}`;
+}
+
+// The whole section: one line per live task with a workspace here, a count
+// of the closed tasks' workspaces left behind, then one line saying whether a
+// landing is running on this machine for the project.
+export function formatLocal(local) {
+  const lease = local.landing.lease;
+  const leaseText = lease === null
+    ? "the server's landing lease is held by no one"
+    : lease.unreadable ? `the server's landing lease could not be read (${lease.unreadable})`
+      : `the server's landing lease is held by ${lease.holder} for ${lease.item} since ${lease.since}`;
+  const lockText = local.landing.lock ? "a landing is running on this Mac" : "no landing is running on this Mac";
+  const leftover = local.leftover
+    ? [`  ${local.leftover} ${local.leftover === 1 ? "workspace" : "workspaces"} of merged or abandoned tasks left here; atelier gc --project ${local.project} previews removing them`]
+    : [];
+  return ["On this Mac:", ...local.tasks.map((t) => `  ${localTaskLine(t)}`), ...leftover, `  Landing: ${lockText}; ${leaseText}.`].join("\n");
+}
+
 // The command that answers an inbox entry, where there is one.
 function nextCommand(entry, project) {
   const flag = ` --project ${project}`;
