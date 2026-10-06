@@ -742,6 +742,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const detail = await L.detail(id) as Detail;
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
+  // The brief for the item's holder: the planner's, for a plan item, or the
+  // part's (docs/orchestrator.md, sections 2 and 3). An agent token reaches
+  // it (agentRoute), and the Ledger gives it to the holder alone.
+  if (verb === "job-brief" && parts.length === 5 && m === "GET") return json(await L.jobBrief(id, actor));
   if (verb === "sandbox" && parts[5] && m === "GET") {
     // A run id is `${key}:${item}:${head}:${ms}`, and a project's key may
     // hold a colon (only new names are refused one), so the prefix alone can
