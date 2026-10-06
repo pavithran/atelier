@@ -49,7 +49,8 @@ function claimable(agent: string, model: string): boolean {
 const RUNNER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 // A runner is exactly kind:name, with no further colon, and is returned
-// normalized so what is stored is what was matched.
+// normalized, all in lower case, so what is stored is what was matched and
+// home:Studio and home:studio are one runner.
 export function parseRunner(header: string | null): { runner: string; kind: RunnerKind } | null {
   if (!header) return null;
   const at = header.indexOf(":");
@@ -57,7 +58,7 @@ export function parseRunner(header: string | null): { runner: string; kind: Runn
   if (at < 0 || !RUNNER_KINDS.includes(kind.toLowerCase() as RunnerKind) || !RUNNER_NAME.test(name)) {
     throw new RuleError("bad_runner", `"${header}" is not a runner; use cloud:NAME or home:NAME`, 400);
   }
-  return { runner: `${kind.toLowerCase()}:${name}`, kind: kind.toLowerCase() as RunnerKind };
+  return { runner: header.toLowerCase(), kind: kind.toLowerCase() as RunnerKind };
 }
 
 export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown }, by: string, at: string): Dispatch {

@@ -310,6 +310,15 @@ test("a local run's beads carry their actor's colour for the outline", () => {
   for (const b of beads) assert.match(b, /--c:var\(--m-zai\)/);
 });
 
+test("a runner taking a handed-off claim is bookkeeping: no agent's move and a quarter step", () => {
+  const base = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  const adopted = night();
+  adopted.unshift({ seq: 100, itemId: "t2", at: "2026-10-04T11:00:00.000Z", actor: "codex/gpt-6", kind: "item.runner_adopted", data: { runner: "home:studio" } } as never);
+  const story = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], adopted, OWNER);
+  assert.equal(story.tally.agentMoves, base.tally.agentMoves);
+  assert.equal(story.span, base.span + 0.25);
+});
+
 test("a session note is bookkeeping: no agent's move, a quarter step on the axis, and nothing on a thread", () => {
   const base = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
   // The Ledger records a session with no task, as the owner and, once agent tokens are allowed to, as an agent.
@@ -341,4 +350,27 @@ test("the owner's override of a missing review is a decision, told with its reas
   assert.ok(s.moments.some((m) => m.text === "You overrode the independent review of t1: No model of another family is available" && m.tone === "you"));
   const pub = buildStory("demo", [item("t1", "accepted")], events, OWNER, false, "Demo", { redact: true, ownerLabel: "PAVI" });
   assert.ok(pub.moments.some((m) => m.text === "PAVI overrode the independent review of t1"));
+});
+
+test("every mark carries its position and its event, and each segment its span, for the live script", () => {
+  const s = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
+  const html = drawStory(s, OWNER);
+  assert.match(html, /<svg class="graph" [^>]*data-span="[\d.]+"/);
+  const beads = html.match(/<g class="g-bead pop [^"]*"[^>]*>/g) ?? [];
+  assert.ok(beads.length >= 6);
+  for (const b of beads) {
+    assert.match(b, /data-pos="[\d.]+"/, b);
+    assert.match(b, /data-ev="t[12] [a-z]+ 2026-10-04T10:\d\d:00\.000Z"/, b);
+  }
+  // Positions rise with the events: the beads of t1 are listed in event order.
+  const t1 = [...html.matchAll(/data-pos="([\d.]+)" data-ev="t1 /g)].map((m) => Number(m[1]));
+  assert.deepEqual(t1, [...t1].sort((a, b) => a - b));
+  assert.match(html, /data-pos="[\d.]+" data-say="t1 taken by opus-5.5" data-ev="t1 start"/);
+  assert.match(html, /data-pos="[\d.]+" data-say="t1 merged into main as cccccccc" data-ev="t1 merged"/);
+  assert.match(html, /data-pos="[\d.]+" data-say="t2: in progress" data-ev="t2 head"/);
+  const segs = html.match(/class="g-thread g-lane draw"[^>]*data-from="[\d.]+" data-to="[\d.]+"/g) ?? [];
+  assert.ok(segs.length >= 3, "each hold is a segment with its span");
+  // What agents wrote never reaches an attribute unescaped.
+  const quoted = buildStory("demo", [{ id: "t1", title: 'A "quoted" <b>task</b>', state: "claimed" } as never], [night()[14]], OWNER);
+  assert.doesNotMatch(drawStory(quoted, OWNER), /<b>task<\/b>/);
 });

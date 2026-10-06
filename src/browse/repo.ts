@@ -219,6 +219,66 @@ async function locateEntry(entry: (tree: string, name: string) => Promise<Entry 
 const OVER_BUDGET = new Error("history read budget reached");
 const UNKNOWN = Symbol("unknown");
 
+// The newest commit on the first-parent line that changed each entry of
+// the directory at `path`: the entry's mode or hash differs from the commit
+// before it, or the commit before it has no such entry. A directory page
+// examines at most `cap` commits and reads at most `budget` trees, each tree
+// once; an entry not decided within them is left out, and `complete` says
+// whether every entry was decided or the walk reached the first commit.
+export const TOUCH_CAP = 60;
+export const TOUCH_READS = 200;
+
+export interface Touched { by: Map<string, Commit>; examined: number; complete: boolean }
+
+export async function lastChanges(s: Source, ref: string, path: string[], cap = TOUCH_CAP, budget = TOUCH_READS): Promise<Touched> {
+  const log = await s.log({ ref, limit: cap + 1 });
+  const trees = new Map<string, Promise<Entry[] | null>>();
+  let reads = 0;
+  const tree = (hash: string) => {
+    if (!trees.has(hash)) {
+      if (++reads > budget) throw OVER_BUDGET;
+      trees.set(hash, s.tree(hash));
+    }
+    return trees.get(hash)!;
+  };
+  // The directory's entries at a root tree, "mode hash" by name, or null
+  // when the path is not a directory there.
+  const listing = async (root: string): Promise<Map<string, string> | null> => {
+    let hash = root;
+    for (const name of path) {
+      const entry = (await tree(hash))?.find((x) => x.name === name);
+      if (!entry || entry.type !== "tree") return null;
+      hash = entry.hash;
+    }
+    const entries = await tree(hash);
+    return entries ? new Map(entries.map((x) => [x.name, `${x.mode} ${x.hash}`])) : null;
+  };
+  const by = new Map<string, Commit>();
+  let examined = 0, complete = false;
+  try {
+    let current = log.length ? await listing(log[0].treeHash) : null;
+    if (!current) return { by, examined, complete };
+    const pending = new Set(current.keys());
+    for (let i = 0; i < log.length && i < cap && pending.size; i++) {
+      const c = log[i];
+      const root = c.parents.length === 0;
+      // The parent lies beyond the commits read: nothing more can be decided.
+      if (!root && i + 1 >= log.length) break;
+      const before = root ? new Map<string, string>() : await listing(log[i + 1].treeHash);
+      for (const name of [...pending]) {
+        if (current.get(name) !== before?.get(name)) { by.set(name, c); pending.delete(name); }
+      }
+      examined = i + 1;
+      if (root || !before) { complete = root; break; }
+      current = before;
+    }
+    if (!pending.size) complete = true;
+  } catch (err) {
+    if (err !== OVER_BUDGET) throw err;
+  }
+  return { by, examined, complete };
+}
+
 // The hash at a path without listing the final directory, as history needs.
 async function locate(r: Reader, root: string, path: string[]): Promise<string | null> {
   let hash = root;

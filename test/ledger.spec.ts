@@ -390,7 +390,7 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
 
   await L.undispatch(item.id, "owner");
   expect(await L.waiting()).toEqual([]);
-  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", /not waiting for a runner/);
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", /^t\d+ is not queued for a runner, so there is no dispatch to withdraw$/);
   // Withdrawn, it is an ordinary open task again.
   const { item: byHand } = await L.claim(item.id, A);
   expect(byHand.owner).toBe(A);
@@ -430,6 +430,22 @@ it("a claim belongs to the runner that made it; the same agent name from another
   const { item: adopted } = await L.claim(item.id, "opencode/qwen3-coder-next", laptop);
   expect(adopted.runner).toBe("home:laptop");
   await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
+  // The task's history says which runner took the claim; a refresh from it records nothing more.
+  await L.claim(item.id, "opencode/qwen3-coder-next", laptop);
+  const events = ((await L.events(item.id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.runner_adopted");
+  expect(events.map((e) => [e.actor, e.data])).toEqual([["opencode/qwen3-coder-next", { runner: "home:laptop" }]]);
+});
+
+it("a dispatch is withdrawn only from an open task, and a refusal says why and what to do", async () => {
+  const L = await setup("undispatch-refusals");
+  const item = await L.newItem("Edit", ["a/**"], "owner");
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is not queued for a runner, so there is no dispatch to withdraw$`));
+  await L.dispatch(item.id, "owner", { to: "home" });
+  await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched",
+    new RegExp(`^${item.id} is claimed by opencode/glm-5.3-flash; its dispatch applies again only if it is released, so withdraw it then$`));
+  await L.abandon(item.id, "owner", "not needed");
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is abandoned, so its dispatch no longer applies and there is nothing to withdraw$`));
 });
 
 it("a submit records the summary in its event, cleaned, refuses one over its limit, and only the latest submit at a head speaks", async () => {
