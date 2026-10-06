@@ -119,6 +119,12 @@ function leaveWorkspaces(work) {
   writeFileSync(join(uncommitted, "a.txt"), "one and a bit\n");
   mkdirSync(join(uncommitted, ".scratch"), { recursive: true });
   writeFileSync(join(uncommitted, ".scratch", "probe.txt"), "");
+  // A tracked file under .scratch/ whose name Git quotes, for its space, is
+  // still left out when it changes.
+  const quoted = join(uncommitted, ".scratch", "a probe with spaces.txt");
+  writeFileSync(quoted, "first\n");
+  git(uncommitted, "add", "-f", quoted); git(uncommitted, "commit", "-q", "-m", "scratch");
+  writeFileSync(quoted, "changed\n");
   const unpushed = workspace(join(work, "t2"), [["a.txt", "one\n"], ["b.txt", "two\n"]]);
   const merging = workspace(join(work, "t3"), [["a.txt", "one\n"]]);
   git(merging, "checkout", "-q", "-b", "other");
