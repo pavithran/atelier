@@ -25,7 +25,7 @@ function run(args) {
 test("the help lists the showcase command and its forms", () => {
   const r = run(["help"]);
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /showcase set NAME \[--named\|--anonymous\] · showcase remove NAME/);
+  assert.match(r.stdout, /showcase set NAME \[--named\|--anonymous\]/);
   assert.match(r.stdout, /one owner per task/);
 });
 
@@ -33,7 +33,7 @@ test("showcase --help prints its usage without contacting a server", () => {
   for (const args of [["showcase", "--help"], ["showcase", "set", "-h"]]) {
     const r = run(args);
     assert.equal(r.status, 0, args.join(" "));
-    assert.match(r.stdout, /usage: atelier showcase set NAME \[--named\|--anonymous\] · showcase remove NAME/);
+    assert.match(r.stdout, /usage: atelier showcase set NAME \[--named\|--anonymous\]\n\s+atelier showcase remove NAME/);
     assert.doesNotMatch(r.stderr, /no server|fetch failed|ECONNREFUSED|ENOTFOUND/);
   }
 });
@@ -53,5 +53,5 @@ test("showcase refuses a set without a name, an unknown flag and both modes at o
   assert.doesNotMatch(both.stderr, /no server/);
   const remove = run(["showcase", "remove"]);
   assert.equal(remove.status, 1);
-  assert.match(remove.stderr, /atelier showcase set NAME \[--named\|--anonymous\] · showcase remove NAME/);
+  assert.match(remove.stderr, /atelier showcase set NAME \[--named\|--anonymous\]\n\s+atelier showcase remove NAME/);
 });

@@ -43,7 +43,7 @@ async function fixture(t, check) {
     let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: [command], sandboxOnly: false } };
     if (path.endsWith("/claim")) data = { item, workspace: { token: WRITE, remote, defaultBranch: "main", expiresAt: "tomorrow" } };
     if (path.endsWith("/read-token")) data = { remote, token: READ, head, defaultBranch: "main" };
-    if (path.endsWith("/baseline-token")) data = { remote, token: BASE, head, defaultBranch: "main" };
+    if (path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: BASE, head, defaultBranch: "main" };
     if (path.endsWith("/evidence")) evidence.push(JSON.parse(raw));
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));

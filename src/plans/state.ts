@@ -22,6 +22,12 @@ import { PLAN_LIMITS } from "./schema.ts";
 // its parts, dispatching them, blocking and completing the plan.
 export const ORCHESTRATOR = "atelier/orchestrator";
 
+// The reserved actor that merges a plan's parts onto its branch. It is not a
+// pool model and takes no work but a plan item's integrate or refresh job,
+// reachable only through a t43 token bound to it (docs/orchestrator.md,
+// sections 5 and 7).
+export const INTEGRATOR = "atelier/integrator";
+
 // The limits section 7 of docs/orchestrator.md fixes when the owner approves
 // a plan. `attempts` is the count phase.ts's planActions applies; it is kept
 // here so the record says what the run was held to.
@@ -72,6 +78,10 @@ export interface PlanRecord {
   approval: PlanApproval | null;
   reroutes: Record<string, string>;    // part key to the actor the owner rerouted it to
   completedAt?: string;                // when every part had merged
+  // The plan branch's integration head (docs/orchestrator.md, section 5): the
+  // merge commit of its latest recorded integration or refresh, or null when
+  // none is recorded (the branch then sits at the commit the plan forked from).
+  integrationHead?: string | null;
 }
 
 // A goal as the plan stores it: text in NFC with controls and invisible

@@ -21,12 +21,14 @@ import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
 import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
+import { jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
-  cleanGoal, cleanNote, completion, EMPTY_PLAN, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
+  cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
 } from "./plans/state.ts";
+import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanView } from "./plans/show.ts";
-import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
+import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -102,6 +104,11 @@ export interface ProjectInit {
   checks?: string[];
   checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
   checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
+  // The ship order the checkout declares (cli/ship.mjs shipPolicy): the runs'
+  // commands, whose files the gate guards like a check's, and the approval
+  // kinds it needs, for the inbox's undelivered-merge reminder.
+  shipRuns?: string[];
+  shipKinds?: string[];
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -154,6 +161,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   // does not keeps their classes and may declare the undeclared ones.
   const checkClasses = settleCheckClasses(checks, i.checkClasses, p?.checkClasses, i.checks !== undefined);
   const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
+  const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
+  const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -166,6 +175,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       checks,
       ...(checkClasses.length ? { checkClasses } : {}),
       ...(checkPaths.length ? { checkPaths } : {}),
+      ...(shipRuns.length ? { shipRuns } : {}),
+      ...(shipKinds.length ? { shipKinds } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -197,6 +208,22 @@ export function assertProjectRemovable(items: Pick<Item, "state">[], force: bool
   if (!force && items.some((i) => ["claimed", "submitted", "accepted", "blocked"].includes(i.state))) {
     throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409);
   }
+}
+
+// A rejecting review's findings, as jobBrief quotes them. The findings field
+// arrives with the review job (docs/orchestrator.md, section 4, t39); until
+// a review carries one there is nothing to quote, and a part sent back for
+// rework is shown the failing check alone.
+function reviewFindings(r: Review): ReviewFindings | null {
+  const raw = (r as Review & { findings?: unknown }).findings;
+  if (!Array.isArray(raw)) return null;
+  const findings: Finding[] = raw.flatMap((f): Finding[] => {
+    const v = f as { file?: unknown; line?: unknown; severity?: unknown; text?: unknown };
+    return typeof v.file === "string" && typeof v.text === "string" && (v.severity === "blocking" || v.severity === "follow-up")
+      ? [{ file: v.file, line: typeof v.line === "number" ? v.line : null, severity: v.severity, text: v.text }]
+      : [];
+  });
+  return { by: r.by, head: r.head, summary: r.note || null, findings };
 }
 
 export class Ledger extends DurableObject<Env> {
@@ -264,6 +291,9 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("plan")) this.sql.exec(`ALTER TABLE items ADD COLUMN plan TEXT`);
     if (!columns.includes("part_key")) this.sql.exec(`ALTER TABLE items ADD COLUMN part_key TEXT`);
     if (!columns.includes("deps")) this.sql.exec(`ALTER TABLE items ADD COLUMN deps TEXT`);
+    // A part's integration onto the plan's branch: the head that was merged
+    // and the merge commit, recorded when the part became integrated.
+    if (!columns.includes("integration")) this.sql.exec(`ALTER TABLE items ADD COLUMN integration TEXT`);
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS plans (
@@ -624,8 +654,16 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
-    // A plan's planner claims its item to write the plan, under the planner role.
-    assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+    // The integrator is a reserved actor, reachable only through a t43 token
+    // bound to it, so it is exempt from the role policy any other claimant is
+    // judged under.
+    const integrating = actor === INTEGRATOR;
+    if (integrating) {
+      if (!proved) throw new RuleError("integrator_token", `${INTEGRATOR} claims only through a token bound to it`, 403);
+    } else {
+      // A plan's planner claims its item to write the plan, under the planner role.
+      assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+    }
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
@@ -1067,7 +1105,19 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const override = overrideReason === undefined ? null
       : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
-    const g = gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
+    // A plan item is accepted through planGate (docs/orchestrator.md, section
+    // 5), which adds its own blockers: every part integrated or landed, each
+    // integrated at its recorded head, and the branch at the integration head.
+    const g = item.kind === "plan"
+      ? planGate({
+          plan: override ? { ...current, reviewOverride: override.override } : current,
+          parts: this.integrationViews(this.planParts(id)),
+          integrationHead: this.planRecord(id).integrationHead ?? null,
+          policy, evidence,
+          reviews: [...reviews, ...this.planParts(id).flatMap((p) => this.reviewsFor(p.id))],
+          owner: this.owner,
+        })
+      : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     if (override) {
       this.update(id, { review_override: JSON.stringify(override.override) }, at);
@@ -1078,6 +1128,7 @@ export class Ledger extends DurableObject<Env> {
     // comparison with the policy at merge time.
     this.log(id, actor, "item.accepted", {
       head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
+      ...(policy.shipRuns ? { shipRuns: [...policy.shipRuns] } : {}),
       ...(override ? { reviewOverridden: true } : {}),
     }, at);
     return this.item(id);
@@ -1125,6 +1176,16 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
+    // A plan's merge lands its parts too: each integrated part is marked
+    // merged with the plan it landed through (docs/orchestrator.md, section 5).
+    if (item.kind === "plan") {
+      for (const part of this.planParts(id)) {
+        if (part.state === "merged" || part.state === "abandoned") continue;
+        const integration = this.partIntegration(part.id);
+        this.update(part.id, { state: "merged", owner: null }, at);
+        this.log(part.id, actor, "item.merged", { mergeCommit, ...(integration ? { head: integration.head } : {}), via: id }, at);
+      }
+    }
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -1267,7 +1328,7 @@ export class Ledger extends DurableObject<Env> {
     // The fields the acceptance recorded of the policy it was made under; an
     // older acceptance recorded the protected paths alone.
     const acceptancePolicy: Record<string, unknown> | null = current
-      ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
+      ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks", "shipRuns"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
       : null;
     return { item, policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
@@ -1276,8 +1337,31 @@ export class Ledger extends DurableObject<Env> {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
-    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name)]
+    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name), ...this.shipEntries(p)]
       .sort((a, b) => b.weight - a.weight);
+  }
+
+  // A merged revision whose declared protected actions have not run asks the
+  // owner to ship it: the entry stands on the item the merge landed, and names
+  // each kind (policy.shipKinds, from the checkout's ship files) that no
+  // `action.ran` event follows the `item.merged` event for (unrunKinds in
+  // src/actions.ts). It ranks with the owner's decisions, under a merge.
+  private shipEntries(p: { name: string; policy: ProjectPolicy }): InboxEntry[] {
+    const declared = p.policy.shipKinds ?? [];
+    if (!declared.length) return [];
+    const runs = this.sql.exec(`SELECT seq, data FROM events WHERE kind = 'action.ran'`).toArray()
+      .map((r) => ({ kind: (JSON.parse(r.data as string) as ActionRun).kind, seq: r.seq as number }));
+    const items = new Map(this.items().map((i) => [i.id, i]));
+    return this.sql.exec(`SELECT item_id, seq, data FROM events WHERE kind = 'item.merged' ORDER BY seq`).toArray().flatMap((m) => {
+      const item = items.get(m.item_id as string), data = JSON.parse(m.data as string) as { mergeCommit?: unknown };
+      if (!item || typeof data.mergeCommit !== "string") return [];
+      const kinds = unrunKinds(declared, runs, m.seq as number);
+      return kinds.length ? [{
+        project: p.name, itemId: item.id, title: item.title, kind: "ship" as const,
+        reason: `merged at ${data.mergeCommit.slice(0, 8)} with ${kinds.join(", ")} declared by the ship files and not yet run; in the registered checkout run atelier ship --dry-run, then approve and ship`,
+        weight: 75,
+      }] : [];
+    });
   }
 
   // ── plans ────────────────────────────────────────────────────────────────
@@ -1344,6 +1428,69 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "plan.proposed", { hash, parts: parsed.plan.parts.length }, at, proved);
     this.setBlocked(id, record, null);
     return { valid: true, hash, parts: parsed.plan.parts.length };
+  }
+
+  // The brief for the holder of a plan item's claim (its planner) or of a
+  // part's (its builder), from the pure renderers in src/plans/brief.ts
+  // (docs/orchestrator.md, sections 2 and 3). The job-brief route reads it,
+  // so a runner fetches the brief the server wrote instead of assuming one.
+  // Only the holder may read it: the brief is the work this dispatch asked
+  // for, and it names the interfaces other parts rely on.
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string }> {
+    const item = this.item(id);
+    if (item.kind !== "plan" && item.kind !== "part") {
+      throw new RuleError("not_a_plan", `${id} is not a plan or a part of one; its runner writes its own brief`, 404);
+    }
+    assertOwner(item, actor);
+    const project = this.project();
+    if (item.kind === "plan") {
+      const record = this.planRecord(id);
+      const { failed, lastErrors } = plannerAttempts(this.events(id));
+      const revised = this.events(id).find((e) => e.kind === "plan.revised");
+      const note = revised && typeof revised.data.note === "string" && revised.data.note ? revised.data.note : null;
+      return {
+        job: "plan",
+        ...await plannerBrief({
+          item: { id, project: project.name }, goal: record.goal, scope: record.scope,
+          actor: record.planner, attempt: failed + 1, note, errors: lastErrors,
+        }),
+      };
+    }
+    const planId = item.plan!;
+    const record = this.planRecord(planId);
+    const approval = record.approval;
+    if (!approval) throw new RuleError("no_approval", `${id} is a part of ${planId}, which has no approved plan`, 409);
+    const document = this.approvedPlan(planId, approval.hash);
+    const spec = document.parts.find((p) => p.key === item.partKey);
+    if (!spec) throw new RuleError("no_proposal", `${id}'s key ${item.partKey} is not in ${planId}'s approved plan`, 500);
+    const parts = this.planParts(planId);
+    const landed = new Map(parts.map((p) => [p.partKey!, p]));
+    const dependencies: Dependency[] = (item.deps ?? []).flatMap((key) => {
+      const dep = landed.get(key), specOf = document.parts.find((p) => p.key === key);
+      return dep && specOf ? [{ key, title: specOf.title, provides: specOf.provides, scope: specOf.scope, head: dep.acceptedHead ?? dep.head }] : [];
+    });
+    const attempts = partAttempts(tickEvents(this.partEvents(planId), new Map(parts.map((p) => [p.id, p.partKey!])))).get(item.partKey!) ?? [];
+    const job = attempts.some((a) => a.outcome === "failed") ? "rework" : "build";
+    const dispatched = this.events(id).find((e) => e.kind === "item.dispatched");
+    const reason = dispatched && typeof dispatched.data.reason === "string" ? dispatched.data.reason : null;
+    const failed = this.evidenceFor(id).filter((e) => e.grade === "observed" && e.passed === false).at(-1) ?? null;
+    const rejection = this.reviewsFor(id).filter((r) => !r.approve).at(-1) ?? null;
+    return {
+      job,
+      ...await buildBrief({
+        job,
+        item: { id, plan: planId, project: project.name },
+        goal: record.goal,
+        part: spec,
+        dependencies,
+        checks: project.policy.checks,
+        actor: item.owner,
+        attempt: attempts.length + 1,
+        reason,
+        findings: rejection ? reviewFindings(rejection) : null,
+        failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "" } : null,
+      }),
+    };
   }
 
   // The owner approves the newest valid proposal by its hash, once. Each
@@ -1530,12 +1677,12 @@ export class Ledger extends DurableObject<Env> {
           route: route ? rerouted(route, record.reroutes[p.partKey!]) : null,
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
+          integration: this.partIntegration(p.id),
         };
       }),
       preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
-      // The plan's integration branch (t16) is not built, so there is no
-      // integration head or combined check to show.
-      integration: null,
+      // The plan branch's integration head (docs/orchestrator.md, section 5).
+      integration: { integrationHead: record.integrationHead ?? null },
     };
   }
 
@@ -1761,6 +1908,9 @@ export class Ledger extends DurableObject<Env> {
         this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: `the plan is blocked: ${blocked}` }, at);
       }
     }
+    // Integration (docs/orchestrator.md, section 5): the next part ready to
+    // integrate dispatches the plan item's integrate job to the integrator.
+    if (!blocked) this.integrateDispatch(id, plan, parts, at);
   }
 
   // Automatic review (docs/orchestrator.md, section 4): asks for a review
@@ -1896,6 +2046,97 @@ export class Ledger extends DurableObject<Env> {
     this.log(itemId, actor, "review.released", { note }, at, proved);
   }
 
+  // ── integration (docs/orchestrator.md, section 5) ────────────────────────
+  // A plan item's fork is its integration branch. Parts are merged onto it by
+  // the reserved integrator, which reports `integrated` or `integration-failed`;
+  // the Worker verifies the merge commit against the branch's log before the
+  // Ledger records the integration.
+
+  // The integration a part recorded, or null when it has none.
+  private partIntegration(id: string): Integration | null {
+    const row = this.sql.exec(`SELECT integration FROM items WHERE id = ?`, id).toArray()[0];
+    return row?.integration ? (JSON.parse(row.integration as string) as Integration) : null;
+  }
+
+  // Each part as the integration rules read it, in plan order.
+  private integrationViews(parts: Item[]): PlanPartView[] {
+    return parts.map((p) => ({
+      id: p.id, key: p.partKey!, dependsOn: p.deps ?? [], state: p.state,
+      head: p.head, owner: p.owner, pushActors: p.pushActors, integration: this.partIntegration(p.id),
+    }));
+  }
+
+  // Dispatches the plan item's integrate job for the next part ready to
+  // integrate, one at a time: the plan item has exactly one owner, so the
+  // integrations are serialized. The mergeability pre-check runs in the
+  // Worker, not here, because the Ledger cannot read Artifacts.
+  private integrateDispatch(id: string, plan: Item, parts: Item[], at: string): void {
+    if (plan.owner || plan.state !== "open" || plan.dispatch) return;
+    const policy = this.project().policy;
+    const next = nextToIntegrate(this.integrationViews(parts), parts.flatMap((p) => this.reviewsFor(p.id)), policy, this.owner);
+    if (!next) return;
+    const d = { ...makeDispatch({ to: "home", agent: "atelier", model: "integrator", note: `integrate ${next.key}` }, ORCHESTRATOR, at), job: "integrate" as const, part: next.key, head: next.head!, partId: next.id };
+    this.writeDispatch(id, d, { reason: `integrate part ${next.key}` });
+  }
+
+  // What the Worker needs to verify an integration: the plan item, the part
+  // to integrate, and the integration head the merge must sit on.
+  integrationTarget(id: string, partKey: string): { plan: Item; part: Item; integrationHead: string | null } {
+    const plan = this.planItem(id);
+    const part = this.planParts(id).find((p) => p.partKey === partKey);
+    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
+    return { plan, part, integrationHead: this.planRecord(id).integrationHead ?? null };
+  }
+
+  // Records a verified integration: the part becomes integrated with its head
+  // and the merge commit, the integrate job clears, and the integration head
+  // advances. When every part is integrated or landed, the plan item is ready
+  // for the integrator to submit. The Worker has verified the merge commit
+  // against the plan branch's log and passes `verified: true`.
+  integratePart(id: string, actor: string, partKey: string, mergeCommit: string, verified: boolean): { item: Item; allIntegrated: boolean; parts: string[] } {
+    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration`, 403);
+    const plan = this.planItem(id);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    const record = this.planRecord(id);
+    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved`, 409);
+    const part = this.planParts(id).find((p) => p.partKey === partKey);
+    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
+    if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part is integrated`, 409);
+    if (!verified) throw new RuleError("unverified_merge", "the merge commit is not on the plan's branch", 409);
+    const at = new Date().toISOString();
+    this.update(part.id, { state: "integrated" }, at);
+    this.sql.exec(`UPDATE items SET integration = ? WHERE id = ?`, JSON.stringify({ head: part.head, mergeCommit } as Integration), part.id);
+    this.log(part.id, actor, "part.integrated", { head: part.head, mergeCommit }, at);
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+    record.integrationHead = mergeCommit;
+    this.savePlanRecord(id, record);
+    const parts = this.planParts(id);
+    const landed = (s: string) => s === "integrated" || s === "merged" || s === "abandoned";
+    const allIntegrated = parts.every((p) => landed(p.state));
+    this.afterPlanChange(id);
+    return { item: this.item(id), allIntegrated, parts: parts.filter((p) => p.state === "integrated").map((p) => p.partKey!) };
+  }
+
+  // A failed integration sends the part back to its builder for rework, as a
+  // review rejection does: the builder's finished attempt becomes a failed one
+  // (phase.ts reads the integration.failed event), and the tick redispatches
+  // the part. The integrate job clears, and nothing is recorded as integrated.
+  integrationFailed(id: string, actor: string, partKey: string, reason: string): Item {
+    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration failure`, 403);
+    const plan = this.planItem(id);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    const part = this.planParts(id).find((p) => p.partKey === partKey);
+    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
+    if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part fails integration`, 409);
+    const at = new Date().toISOString();
+    const builder = part.owner;
+    this.update(part.id, { owner: null, state: "open" }, at);
+    this.log(part.id, ORCHESTRATOR, "integration.failed", { reason: reason.slice(0, 500), builder }, at);
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+    this.afterPlanChange(id);
+    return this.item(id);
+  }
+
   // Before approval: once the planner has let the plan go twice without a
   // valid proposal, the plan job leaves the queue and the plan is blocked.
   private plannerTick(id: string, record: PlanRecord, at: string): void {
@@ -1911,10 +2152,15 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A part is claimed only through its dispatch, so the plan's order and
-  // limits hold; an approved plan's own item is claimed by nobody, since its
-  // parts carry the work. A holder refreshing its claim is never refused here.
+  // limits hold; an approved plan's own item is claimed by nobody except the
+  // integrator, which takes its integrate or refresh job. A holder refreshing
+  // its claim is never refused here.
   private assertPlanClaim(item: Item, actor: string): void {
     if (item.owner === actor) return;
+    if (actor === INTEGRATOR) {
+      if (item.kind === "plan" && (item.dispatch?.job === "integrate" || item.dispatch?.job === "refresh")) return;
+      throw new RuleError("not_integrator", `${INTEGRATOR} takes only a plan's integrate or refresh job`, 403);
+    }
     if (item.kind === "part" && item.state === "open" && !item.dispatch) {
       throw new RuleError("not_dispatched", `${item.id} is a part of plan ${item.plan}, which dispatches it once the parts it depends on have merged; it is not dispatched now. See atelier plan show ${item.plan}`, 409);
     }

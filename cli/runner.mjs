@@ -14,7 +14,11 @@ export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
   const { agents, errors } = parseConfig(config);
   if (errors.length) throw new Error(errors.join("; "));
-  return { runner: name.toLowerCase(), kind: "home", agents: agents.map(({ agent, models }) => ({ agent, models })), ...(config.jobs?.length ? { jobs: config.jobs } : {}) };
+  // jobs says the dispatches besides building this runner takes (assign in
+  // src/dispatch/rules.ts): building, the plan job (docs/orchestrator.md,
+  // section 2), and whatever else the config lists, such as "review". A
+  // dispatch for any other job is never offered to it.
+  return { runner: name.toLowerCase(), kind: "home", jobs: [...new Set(["build", "plan", ...(config.jobs ?? [])])], agents: agents.map(({ agent, models }) => ({ agent, models })) };
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
@@ -34,9 +38,9 @@ export function briefFor(item, project) {
   ].join("\n");
 }
 
-export function commandFor(entry, { model, briefFile, workspace, diffFile, verdictFile }) {
-  const values = { model, brief_file: briefFile, workspace, diff_file: diffFile, verdict_file: verdictFile };
-  return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace|diff_file|verdict_file)\}/g, (_, key) => values[key]));
+export function commandFor(entry, { model, briefFile, workspace, planFile, diffFile, verdictFile }) {
+  const values = { model, brief_file: briefFile, workspace, plan_file: planFile, diff_file: diffFile, verdict_file: verdictFile };
+  return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace|plan_file|diff_file|verdict_file)\}/g, (_, key) => values[key]));
 }
 
 // Observations are supplied by the loop; terminal states remain terminal.
@@ -241,6 +245,7 @@ export async function runTask(assignment, config, name, io) {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    if (item.kind === "part" && !io.jobBrief) throw Object.assign(new Error("this runner was started with no way to fetch a job brief, so it cannot build parts"), { skipped: true });
     workspace = io.workspacePath(project, item.id);
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
@@ -252,7 +257,12 @@ export async function runTask(assignment, config, name, io) {
     await io.reset(workspace);
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
-    brief = await io.brief(workspace, briefFor({ ...item, owner: actor }, project));
+    // A part's brief comes from the server (GET items/tN/job-brief): the
+    // plan's spec, its checks and any rework to carry. Any other task keeps
+    // the local briefFor below.
+    const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
+    if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
+    brief = await io.brief(workspace, serverBrief ? serverBrief.text : briefFor({ ...item, owner: actor }, project));
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
     // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -287,6 +297,14 @@ export async function runTask(assignment, config, name, io) {
     } else if (!claimed && error.claimRefused) {
       state = { ...state, claimRefused: true };
       io.log(`claim refused: ${error.message}`);
+    } else if (claimed && state.head && item.kind === "part" && state.taskFailure) {
+      // A part whose finish failed is released, not held (docs/orchestrator.md,
+      // section 3): the fork keeps the commits, and the plan's tick sends the
+      // part back with the failing output in its next brief.
+      try {
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace);
+        io.log("released: the part goes back to its plan with the failing output");
+      } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
     } else if (claimed && state.head) {
       io.log("claim preserved: work was committed before finish");
     } else if (claimed && before) {
@@ -382,12 +400,196 @@ export async function runReview(assignment, config, name, io) {
   }
 }
 
+// The integrate job (docs/orchestrator.md, section 5): the runner claims the
+// plan item as atelier/integrator, fetches the part's head, merges it onto the
+// plan's branch with --no-ff, pushes, runs the plan's checks, and posts
+// integrated or integration-failed. It uses no model. A merge that conflicts,
+// or checks that fail, rolls the branch back to its previous head first.
+export async function runIntegrate(assignment, config, name, io) {
+  const { project, item, actor } = assignment;
+  const dispatch = item.dispatch ?? {};
+  const partKey = dispatch.part, partHead = dispatch.head, partId = dispatch.partId;
+  const workspace = io.workspacePath(project, item.id);
+  const release = async (reason) => {
+    try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    catch (error) { io.log(`release failed: ${error.message}`); }
+  };
+  const fail = async (reason) => {
+    await io.cli(["integration-failed", item.id, "--project", project, "--as", actor, "--part", partKey, "--reason", reason]);
+    await release(reason);
+    return { phase: "failed", reason, taskFailure: true };
+  };
+  try {
+    if (actor !== "atelier/integrator") throw new Error("the integrate job runs as atelier/integrator");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id) ||
+        !partId || !/^t[0-9]+$/.test(partId) || !/^[a-f0-9]{40,64}$/.test(partHead ?? "")) {
+      throw Object.assign(new Error("the queue returned an invalid integrate assignment"), { skipped: true });
+    }
+    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    const before = await io.head(workspace);
+    const part = JSON.parse(await io.cli(["read-token", partId, "--project", project, "--as", actor]));
+    await io.fetch(workspace, part.remote, part.token, partHead);
+    const merged = await io.merge(workspace, partHead);
+    if (merged.code !== 0) {
+      await io.abortMerge(workspace);
+      return fail(`merge conflicted: ${merged.output || "the part conflicts with the plan's branch"}`);
+    }
+    const mergeHead = await io.head(workspace);
+    await io.push(workspace);
+    // The plan item's checks compare against the baseline, which is correct for
+    // the whole branch. A failure rolls the branch back before it is reported.
+    let checkOutput = "";
+    try { await io.cli(["check", item.id, "--project", project, "--as", actor], workspace); }
+    catch (error) { checkOutput = error.message; }
+    if (checkOutput) {
+      await io.rollback(workspace, before);
+      return fail(`the plan's checks failed after the merge: ${checkOutput}`);
+    }
+    const result = JSON.parse(await io.cli(["integrated", item.id, "--project", project, "--as", actor, "--part", partKey, "--merge-commit", mergeHead]));
+    if (result.allIntegrated) {
+      await io.cli(["submit", item.id, "--project", project, "--as", actor, "--summary", `integrated ${result.parts.length} part${result.parts.length === 1 ? "" : "s"}: ${result.parts.join(", ")}`]);
+      io.log("every part is integrated; the plan item is submitted for the owner");
+    } else {
+      await release("part integrated");
+    }
+    return { phase: "integrated", part: partKey };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  }
+}
+
+// The refresh job (docs/orchestrator.md, section 5): when main has moved and a
+// conflict is predicted, the integrator merges the baseline into the plan's
+// branch, so later parts fork from a branch that still merges with main.
+export async function runRefresh(assignment, config, name, io) {
+  const { project, item, actor } = assignment;
+  const workspace = io.workspacePath(project, item.id);
+  const release = async (reason) => {
+    try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    catch (error) { io.log(`release failed: ${error.message}`); }
+  };
+  try {
+    if (actor !== "atelier/integrator") throw new Error("the refresh job runs as atelier/integrator");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) {
+      throw Object.assign(new Error("the queue returned an invalid refresh assignment"), { skipped: true });
+    }
+    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    const base = JSON.parse(await io.cli(["base-token", item.id, "--project", project, "--as", actor]));
+    await io.fetch(workspace, base.remote, base.token, base.defaultBranch);
+    const merged = await io.merge(workspace, "FETCH_HEAD");
+    if (merged.code !== 0) {
+      await io.abortMerge(workspace);
+      await release("the baseline merge conflicted");
+      return { phase: "failed", reason: "the baseline merge conflicted", taskFailure: true };
+    }
+    await io.push(workspace);
+    await release("baseline merged into the plan's branch");
+    return { phase: "refreshed" };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  }
+}
+
 export function failureCount(count, state) {
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
 
 export function infrastructureFailureCount(count, state) {
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped ? count + 1 : 0;
+}
+
+// The file a plan job's harness writes the plan document to, inside the
+// workspace: the runner's reset cleans a stale one away before each run, the
+// harness is told to commit nothing, and the runner reads it back as the
+// harness left it.
+export const planFilePath = (workspace) => join(workspace, ".atelier-plan.json");
+
+// A plan job (docs/orchestrator.md, section 2): the runner claims the plan
+// item as the planner, fetches the planner's brief from the server's
+// job-brief route, and runs the harness with a {plan_file} placeholder
+// naming where it writes the plan document. The harness commits nothing; the
+// runner posts the file to the plan item, reports the errors of a refusal,
+// and releases the claim whether the plan was taken or refused.
+export async function runPlanTask(assignment, config, name, io) {
+  const { project, item, agent, model, actor } = assignment;
+  let workspace, brief, claimed = false, claimAttempted = false, taskFailure = false;
+  let state = { phase: "failed", reason: "the plan job did not run" };
+  try {
+    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    if (!/{plan_file}/.test(entry.command.join("\n"))) throw Object.assign(new Error(`${agent}'s command has no {plan_file} placeholder, so it cannot run a plan job; add one to the runner config`), { skipped: true });
+    if (!io.jobBrief || !io.postPlan) throw Object.assign(new Error("this runner was started with no way to fetch a brief or post a plan"), { skipped: true });
+    workspace = io.workspacePath(project, item.id);
+    if (io.stopped()) throw new Error("interrupted");
+    claimAttempted = true;
+    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    claimed = true;
+    io.log("claimed");
+    if (io.stopped()) throw new Error("interrupted");
+    await io.reset(workspace);
+    io.log("workspace reset to HEAD and untracked files removed");
+    if (io.stopped()) throw new Error("interrupted");
+    const job = await io.jobBrief(project, item.id, actor);
+    if (!job || typeof job.text !== "string") throw new Error("the server's job brief has no text");
+    brief = await io.brief(workspace, job.text);
+    const planFile = planFilePath(workspace);
+    const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    for (const each of withheld) io.log(`${each} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
+    // The data folder lasts exactly as long as the harness, as in runTask.
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    taskFailure = true;
+    try {
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
+    if (result.timedOut) throw new Error("harness timed out");
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.code !== 0) throw new Error(`harness exited ${result.signal ?? result.code}`);
+    let document;
+    try { document = readFileSync(planFile, "utf8"); }
+    catch { throw new Error(`the harness wrote no plan document at ${planFile}`); }
+    const posted = await io.postPlan(project, item.id, actor, document);
+    if (posted && posted.valid) {
+      state = { phase: "submitted", head: posted.hash };
+      io.log(`plan posted: ${posted.hash}`);
+    } else {
+      const errors = Array.isArray(posted?.errors) ? posted.errors.map(String) : ["the server refused the plan document"];
+      const attempt = Number.isInteger(posted?.attempt) ? posted.attempt : "?";
+      const attempts = Number.isInteger(posted?.attempts) ? posted.attempts : "?";
+      state = { phase: "failed", reason: `the plan was refused (attempt ${attempt} of ${attempts}): ${errors.join("; ")}`, taskFailure: true };
+      io.log(`failed: ${state.reason}`);
+    }
+  } catch (error) {
+    state = { phase: "failed", reason: error.message };
+    state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
+    if (error.claimRefused) state.claimRefused = true;
+    if (error.skipped) state.skipped = true;
+    if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
+    else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else io.log(`failed: ${state.reason}`);
+  } finally {
+    // The claim is released either way: a valid proposal clears the plan job
+    // itself, and a refused or missing one counts an attempt only once the
+    // claim is given back. A claim whose fate is unknown (the claim step
+    // failed without a refusal) is released too, as runTask releases it.
+    if (claimed || (claimAttempted && !state.claimRefused && !state.skipped)) {
+      const note = state.phase === "failed" ? state.reason : "plan job done";
+      try {
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace);
+        io.log(state.phase === "failed" ? "released: the plan job is back in the queue" : "released: the plan job is done");
+      } catch (releaseError) { io.log(`claim not released: release failed: ${releaseError.message}`); }
+    }
+    if (brief) await io.removeBrief(brief);
+  }
+  return state;
 }
 
 // How a run ended, as the runner reports it to the server for the model's
@@ -407,12 +609,19 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait = delay, executeChild = execute, reportRun }) {
-  if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config"].includes(key) || args.multi[key].length !== 1) ||
+export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun }) {
+  if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
-    throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH]");
+    throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
   }
-  const config = readConfig(args.config), offer = offerFrom(config, args.name);
+  const integrating = args.integrate === true;
+  if (typeof args.name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(args.name)) throw new Error("use --name home:NAME");
+  // The integrator runs no model: it offers the integrate and refresh jobs
+  // alone, under the reserved actor, and takes no config.
+  const config = integrating ? { agents: [] } : readConfig(args.config);
+  const offer = integrating
+    ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
+    : offerFrom(config, args.name);
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -442,8 +651,21 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
     harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env }),
     env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
+    // The plan job's and a part's server calls (atelier.mjs wires them to
+    // fetch); a runner started without them takes no plan job and no part.
+    ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
+    // The integrate job's git operations: fetch a head, merge it onto the
+    // plan's branch, push, and roll the branch back on a failure.
+    fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: gitAuth(token), signal: controller.signal, step: "fetch" }, executeChild),
+    merge: (cwd, head) => executeChild(["git", "merge", "--no-ff", "--quiet", "-m", `Merge part ${head.slice(0, 8)} onto the plan's branch`, head], { cwd, capture: true, captureError: true, signal: controller.signal, step: "merge" }),
+    abortMerge: (cwd) => checked(["git", "merge", "--abort"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild),
+    push: (cwd) => checked(["git", "push", "--quiet", "origin", "HEAD"], { cwd, captureError: true, signal: controller.signal, step: "push" }, executeChild),
+    rollback: async (cwd, before) => {
+      await checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
+      await checked(["git", "push", "--quiet", "--force-with-lease", "origin", "HEAD"], { cwd, captureError: true, signal: controller.signal, step: "rollback" }, executeChild);
+    },
     writeDiff, removeDiff, verdictPath, readVerdict,
     ...taskIO,
   };
@@ -456,9 +678,19 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         if (controller.signal.aborted) break;
         for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
-          state = task.item.dispatch?.job === "review"
-            ? await runReview(task, config, offer.runner, io)
-            : await runTask(task, config, offer.runner, io);
+          // A dispatch carrying job: "plan" asks for the plan job, one
+          // carrying "review" for the review job, "integrate" for the
+          // integrate job and "refresh" for the refresh job
+          // (docs/orchestrator.md, sections 2, 4 and 5); anything else is building.
+          state = task.item.dispatch?.job === "plan"
+            ? await runPlanTask(task, config, offer.runner, io)
+            : task.item.dispatch?.job === "review"
+              ? await runReview(task, config, offer.runner, io)
+              : task.item.dispatch?.job === "integrate"
+                ? await runIntegrate(task, config, offer.runner, io)
+                : task.item.dispatch?.job === "refresh"
+                  ? await runRefresh(task, config, offer.runner, io)
+                  : await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
           const outcome = runOutcome(state);
           if (outcome && reportRun) {

@@ -53,6 +53,20 @@ test("CLI init sends a title update under the registered name", () => fixture(({
   assert.deepEqual(Object.keys(config().projects), ["weblog"]);
 }));
 
+test("CLI init records the ship order's commands and approval kinds with the policy", () => fixture(({ command, initial, calls }) => {
+  mkdirSync(join(initial.projects.weblog.path, "docs", "atelier"), { recursive: true });
+  writeFileSync(join(initial.projects.weblog.path, "docs", "atelier", "ship.json"), JSON.stringify({
+    schema_version: 1, kind: "atelier.ship", class: "web",
+    deploy: { run: ["bin/deploy.sh"] },
+    "verify-deploy": { request: "https://demo.test", status: 200 },
+  }));
+  const result = command(["init"]);
+  assert.equal(result.status, 0, result.stderr);
+  const put = JSON.parse(calls().find((c) => c.method === "PUT").body);
+  assert.deepEqual(put.shipRuns, ["bin/deploy.sh"], "the command the deploy step runs, and not the URL the verify step requests");
+  assert.deepEqual(put.shipKinds, ["deploy"], "push needs an approval only with --push, so it is not a kind the order needs");
+}));
+
 test("CLI rename refuses a different name unless it changes only local config", () => fixture(({ command, initial, config, calls }) => {
   const refused = command(["init", "--name", "ikon"]);
   assert.equal(refused.status, 1);
@@ -115,7 +129,7 @@ test("CLI rename needs both names and contacts no server without them", () => fi
   for (const argv of [["projects", "rename"], ["projects", "rename", "weblog"], ["projects", "rename", "weblog", "ikon", "extra"]]) {
     const r = command(argv);
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /usage: atelier projects remove NAME \[--force\] · projects rename OLD NEW/);
+    assert.match(r.stderr, /usage: atelier projects rename OLD NEW\n       atelier projects remove NAME \[--force\]/);
   }
   assert.deepEqual(config(), initial);
   assert.deepEqual(calls(), []);
