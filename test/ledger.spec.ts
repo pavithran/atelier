@@ -562,8 +562,8 @@ it("registration atomically refuses another project with the same baseline", asy
 it("removal policy permits inactive states and force overrides live work", async () => {
   const { assertProjectRemovable } = await import("../src/ledger.ts");
   for (const state of ["open", "merged", "abandoned"] as const) expect(() => assertProjectRemovable([{ state }], false)).not.toThrow();
-  for (const state of ["claimed", "submitted", "accepted"] as const) {
-    expect(() => assertProjectRemovable([{ state }], false)).toThrow(/claimed, submitted or accepted/);
+  for (const state of ["claimed", "submitted", "accepted", "blocked"] as const) {
+    expect(() => assertProjectRemovable([{ state }], false)).toThrow(/claimed, submitted, accepted or blocked/);
     expect(() => assertProjectRemovable([{ state }], true)).not.toThrow();
   }
 });
@@ -644,4 +644,87 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.addReview(review("t1", "owner", H1, false));
   expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
   await refusal(L.accept("t1", "owner", H1), "not_ready", /reject|changes/i);
+});
+
+it("a blocked task keeps its owner and fork, refuses every move but abandon, and returns to its state when unblocked", async () => {
+  const L = await setup("blocked");
+  const t1 = (await L.newItem("Wire the keys", ["src/**"], "owner")).id;
+  await L.claim(t1, A);
+  await L.setFork(t1, "blocked--t1", H0, A);
+  await L.recordPush(t1, A, H1, null);
+  await refusal(L.block(t1, B, "not mine"), "not_owner", /does not own t1/);
+  await refusal(L.block(t1, A, "   "), "block_reason", /a block needs a reason/);
+  const blocked = await L.block(t1, A, " waiting on the API key\u0007");
+  expect(blocked).toMatchObject({ state: "blocked", owner: A, fork: "blocked--t1", head: H1, blocked: { reason: "waiting on the API key", by: A, from: "claimed" } });
+  expect((await L.owners()).map((o) => [o.item, o.state, o.owner])).toEqual([[t1, "blocked", A]]);
+
+  // Every move answers with the reason and the way on; abandon alone still works, below.
+  const moves: [() => Promise<unknown>, string, RegExp][] = [
+    [() => L.recordPush(t1, A, H2, null), "blocked", /^t1 is blocked: waiting on the API key\. Run atelier unblock t1 first$/],
+    [() => L.submit(t1, A), "blocked", /Run atelier unblock t1 first/],
+    [() => L.addReview(review(t1, B, H1, true)), "blocked", /Run atelier unblock t1 first/],
+    [() => L.handoff(t1, A, B, "take it"), "blocked", /Run atelier unblock t1 first/],
+    [() => L.release(t1, A, "giving up"), "blocked", /Run atelier unblock t1 first/],
+    [() => L.claim(t1, A), "blocked", /Run atelier unblock t1 first/],
+    [() => L.claim(t1, B), "blocked", /Run atelier unblock t1 first/],
+    [() => L.dispatch(t1, "owner", {}), "not_open", /owned by claude-code/],
+    [() => L.block(t1, "owner", "again"), "already_blocked", /already blocked: waiting on the API key/],
+    [() => L.unblock(t1, B), "not_owner", /does not own t1/],
+  ];
+  for (const [move, code, detail] of moves) await refusal(move(), code, detail);
+  expect((await L.item(t1)).head).toBe(H1);
+
+  const inbox = await L.inbox(new Date().toISOString());
+  expect(inbox.map((x) => [x.itemId, x.kind])).toEqual([[t1, "blocked"]]);
+  expect(inbox[0].reason).toBe("blocked by claude-code/opus-5.5: waiting on the API key; run `atelier unblock t1` when it can go on");
+
+  const back = await L.unblock(t1, "owner");
+  expect(back).toMatchObject({ state: "claimed", owner: A, head: H1 });
+  expect(back.blocked).toBeUndefined();
+  await refusal(L.unblock(t1, "owner"), "not_blocked", /t1 is claimed, not blocked/);
+  const events = (await L.events(t1)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "item.blocked")?.data).toEqual({ reason: "waiting on the API key", from: "claimed" });
+  expect(events.find((e) => e.kind === "item.unblocked")?.data).toEqual({ reason: "waiting on the API key", to: "claimed" });
+
+  // An open task the owner blocks leaves the runner queue, and is back in it once unblocked.
+  const t2 = (await L.newItem("Later", ["docs/**"], "owner")).id;
+  await L.dispatch(t2, "owner", { to: "home" });
+  await refusal(L.block(t2, A, "not mine"), "not_owner", /owner: nobody/);
+  expect((await L.block(t2, "owner", "waiting on t1")).blocked).toMatchObject({ by: "owner", from: "open" });
+  expect(await L.waiting()).toEqual([]);
+  await refusal(L.claim(t2, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" }), "blocked", /waiting on t1/);
+  expect((await L.unblock(t2, "owner")).state).toBe("open");
+  expect((await L.waiting()).map((i) => i.id)).toEqual([t2]);
+
+  // A task blocked in review returns to review; closing a blocked task ends the block with it.
+  await L.submit(t1, A);
+  await L.block(t1, "owner", "the owner is away");
+  expect((await L.unblock(t1, A)).state).toBe("submitted");
+  await L.block(t1, A, "needs a decision");
+  const closed = await L.abandon(t1, "owner", "superseded");
+  expect(closed).toMatchObject({ state: "abandoned", owner: null });
+  expect(closed.blocked).toBeUndefined();
+  await refusal(L.block(t1, "owner", "again"), "closed", /only an open, claimed or submitted task can be blocked/);
+});
+
+it("the framing is stored with the item, carried by its brief, and edited only by the owner, one field at a time", async () => {
+  const L = await setup("fields");
+  const item = await L.newItem("Add the page", ["src/ui.ts"], "owner", { nonGoals: ["no new routes"], stopWhen: ["a check fails twice"], nextGate: "design review" });
+  expect(item).toMatchObject({ nonGoals: ["no new routes"], stopWhen: ["a check fails twice"], nextGate: "design review" });
+  expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
+
+  await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the project owner edits/);
+  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --non-goal, --stop-when or --next-gate/);
+  // A field given replaces; one left out is kept; an empty list or a null gate clears.
+  const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
+  expect(edited).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: ["a check fails twice"], nextGate: null });
+  expect((await L.editItem(item.id, "owner", { stopWhen: [] })).stopWhen).toEqual([]);
+  expect(briefFor(await L.detail(item.id) as never)).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: [], nextGate: null });
+
+  const events = (await L.events(item.id)) as unknown as LedgerEvent[];
+  expect(events.filter((e) => e.kind === "item.edited").map((e) => e.data)).toEqual([{ stopWhen: [] }, { nonGoals: ["no new routes", "no CSS changes"], nextGate: null }]);
+  expect(events.find((e) => e.kind === "item.created")?.data).toMatchObject({ title: "Add the page", nonGoals: ["no new routes"], nextGate: "design review" });
+
+  await L.abandon(item.id, "owner", "done elsewhere");
+  await refusal(L.editItem(item.id, "owner", { nextGate: "x" }), "closed", /its fields stay as they were/);
 });

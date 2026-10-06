@@ -5,7 +5,7 @@ import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
+import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
@@ -623,7 +623,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
-  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor), 201);
+  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, itemFields(body)), 201);
   if (parts.length === 3 && m === "GET") return json(await L.items());
 
   const id = parts[3];
@@ -760,6 +760,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.dispatch(id, actor, body));
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // The owner's framing of a task: agentRoute gives an agent token no edit
+    // route, and requireOwner refuses any other actor the owner token names.
+    case "edit":
+      requireOwner(env, actor);
+      return json(await L.editItem(id, actor, itemFields(body)));
+    // The holder or the owner blocks and unblocks; the Ledger checks which.
+    case "block":
+      return json(await L.block(id, actor, body.reason, !!c.token));
+    case "unblock":
+      return json(await L.unblock(id, actor, !!c.token));
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
@@ -1041,6 +1051,8 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // independent review, its reason in the note.
     else if (verb === "override") await L.accept(id, owner, expected, note);
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
+    else if (verb === "block") await L.block(id, owner, note);
+    else if (verb === "unblock") await L.unblock(id, owner);
     else if (verb === "release") await L.release(id, owner, note, false, oldToken);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {

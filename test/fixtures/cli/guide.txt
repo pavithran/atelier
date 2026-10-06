@@ -15,6 +15,8 @@ item with exactly one owner. Never edit the project checkout directly.
    `atelier report "…"` records a Reported claim, never an Observed pass.
 6. If you can't finish, `atelier handoff ID --to HARNESS/MODEL --note "…"`
    or `atelier release ID`. Your write token is revoked either way.
+   Waiting on something only the owner can settle: `atelier block ID "what"`.
+   The owner sees the reason in the inbox and runs `atelier unblock ID`.
 7. Reviewing someone else's item: `atelier diff ID`, then
    `atelier review ID --approve|--reject --note "…"`. Changes to protected
    paths need approval from a model of another family than every agent

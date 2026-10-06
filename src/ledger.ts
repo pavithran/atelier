@@ -5,7 +5,9 @@ import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertBlockable, assertNotBlocked, blockReason,
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
+  type Block, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
@@ -134,8 +136,8 @@ export function assertNameFree(source: ProjectRef, to: string, target: ProjectRe
 }
 
 export function assertProjectRemovable(items: Pick<Item, "state">[], force: boolean): void {
-  if (!force && items.some((i) => ["claimed", "submitted", "accepted"].includes(i.state))) {
-    throw new RuleError("live_work", "project has claimed, submitted or accepted work; use --force to remove it", 409);
+  if (!force && items.some((i) => ["claimed", "submitted", "accepted", "blocked"].includes(i.state))) {
+    throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409);
   }
 }
 
@@ -189,6 +191,12 @@ export class Ledger extends DurableObject<Env> {
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
+    // The owner's framing of a task (JSON lists and one line of text), and
+    // the block record while a task is blocked (see Block in rules.ts).
+    if (!columns.includes("non_goals")) this.sql.exec(`ALTER TABLE items ADD COLUMN non_goals TEXT`);
+    if (!columns.includes("stop_when")) this.sql.exec(`ALTER TABLE items ADD COLUMN stop_when TEXT`);
+    if (!columns.includes("next_gate")) this.sql.exec(`ALTER TABLE items ADD COLUMN next_gate TEXT`);
+    if (!columns.includes("blocked")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked TEXT`);
   }
 
   // ── index instance ───────────────────────────────────────────────────────
@@ -429,7 +437,7 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
-  newItem(title: string, scope: string[], actor: string): Item {
+  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item {
     if (!title.trim()) throw new RuleError("bad_title", "an item needs a title", 400);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -438,7 +446,23 @@ export class Ledger extends DurableObject<Env> {
       `INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)`,
       id, title.trim(), JSON.stringify(scope), now, now,
     );
-    this.log(id, actor, "item.created", { title, scope });
+    const set = fieldColumns(fields);
+    if (Object.keys(set).length) this.update(id, set);
+    this.log(id, actor, "item.created", { title, scope, ...fields });
+    return this.item(id);
+  }
+
+  // The project owner changes a task's framing after it was created. A
+  // field sent replaces the stored one, a field left out is kept, and the
+  // event records only what was sent. A closed task is left as it was.
+  editItem(id: string, actor: string, fields: ItemFields): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    const set = fieldColumns(fields);
+    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --non-goal, --stop-when or --next-gate", 400);
+    this.update(id, set);
+    this.log(id, actor, "item.edited", { ...fields });
     return this.item(id);
   }
 
@@ -763,8 +787,33 @@ export class Ledger extends DurableObject<Env> {
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
+    assertNotBlocked(item);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
+  }
+
+  // The holder or the project owner blocks a task with the reason it cannot
+  // go on, and either unblocks it. The task keeps its owner, workspace and
+  // dispatch record meanwhile; unblocking returns it to the state it was in.
+  // An open task has no holder, so only the owner blocks or unblocks it.
+  block(id: string, actor: string, reason: unknown, proved = false): Item {
+    const text = blockReason(reason);
+    const item = this.item(id);
+    if (actor !== this.owner) assertOwner(item, actor);
+    assertBlockable(item);
+    const record: Block = { reason: text, by: actor, at: new Date().toISOString(), from: item.state };
+    this.update(id, { state: "blocked", blocked: JSON.stringify(record) });
+    this.log(id, actor, "item.blocked", { reason: text, from: item.state }, proved);
+    return this.item(id);
+  }
+
+  unblock(id: string, actor: string, proved = false): Item {
+    const item = this.item(id);
+    if (item.state !== "blocked" || !item.blocked) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`);
+    if (actor !== this.owner) assertOwner(item, actor);
+    this.update(id, { state: item.blocked.from, blocked: null });
+    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, proved);
+    return this.item(id);
   }
 
   private releaseAllowed(id: string, actor: string): Item {
@@ -876,7 +925,8 @@ export class Ledger extends DurableObject<Env> {
   abandon(id: string, actor: string, note: string, token?: string | null): Item {
     this.abandonAllowed(id, actor);
     this.dropToken(id, token);
-    this.update(id, { state: "abandoned", owner: null });
+    // Closing a blocked task ends the block with it.
+    this.update(id, { state: "abandoned", owner: null, blocked: null });
     this.log(id, actor, "item.abandoned", { note });
     return this.item(id);
   }
@@ -920,7 +970,7 @@ export class Ledger extends DurableObject<Env> {
   // metadata consumer such as ControlPlane's Observatory publication.
   owners() {
     return this.items()
-      .filter((i) => i.state === "claimed" || i.state === "submitted" || i.state === "accepted")
+      .filter((i) => i.state === "claimed" || i.state === "submitted" || i.state === "accepted" || (i.state === "blocked" && i.owner))
       .map((i) => ({ item: i.id, state: i.state, owner: i.owner, head: i.head, since: i.updatedAt }));
   }
 
@@ -980,5 +1030,20 @@ function toItem(r: Row): Item {
     runner: (r.runner as string | null) ?? null,
     // Only an item the owner has overridden carries the field.
     ...(r.review_override ? { reviewOverride: JSON.parse(r.review_override as string) as ReviewOverride } : {}),
+    nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
+    stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
+    nextGate: (r.next_gate as string | null) ?? null,
+    // Only a blocked item carries the record; unblocking and abandoning clear it.
+    ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
   };
+}
+
+// The columns an ItemFields sets: a field given becomes its column, an
+// empty list or null gate becomes NULL, and a field left out sets nothing.
+function fieldColumns(fields: ItemFields): Record<string, string | null> {
+  const set: Record<string, string | null> = {};
+  if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
+  if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
+  if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
+  return set;
 }
