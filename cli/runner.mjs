@@ -354,7 +354,11 @@ export async function runReview(assignment, config, name, io) {
       await release(`harness exited ${result.code}`);
       return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
     }
-    const parsed = parseVerdict(io.readVerdict(verdictFile));
+    // A harness that wrote no verdict file leaves nothing to read; the
+    // request is released like any other unusable verdict.
+    let reply;
+    try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+    const parsed = parseVerdict(reply);
     if (!parsed.ok) {
       await release(parsed.error);
       io.log(`review released: ${parsed.error}`);
