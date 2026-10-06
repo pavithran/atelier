@@ -1,8 +1,8 @@
 # Orchestrator design
 
-Built in t85: build-sequence steps 1 and 2, the plan schema, content hash and
-structural validation. Built in t86: step 3, part routing, with the model
-context-window size rule. Steps 4 through 14 are not built.
+Steps 1 to 4, 8 and 11 of the build sequence (section 8) are built, as pure
+functions in `src/plans/` and `src/review/`; nothing outside those folders
+calls them but their tests. Steps 5 to 7, 9, 10 and 12 to 14 are not built.
 
 The remaining sections describe the proposed orchestrator. They do not
 claim that its routes, storage, commands or runner jobs are implemented.
@@ -176,7 +176,7 @@ A failed integration attempts to restore its previous head.
 
 **Finishing.** After the last part is integrated and the checks pass, the integrator submits the plan item with a summary of its parts.
 - `planGate()` adds blockers to `gate()`: every part integrated, and each with a cross-family approval at the head that was integrated.
-- The owner runs `atelier merge tP --head H --approve`, unchanged.
+- The owner accepts and lands the plan with `atelier merge tP --head H`, as for any item. A plan whose changes touch a protected path also needs an independent review of the plan item, and no reviewer qualifies: `atelier/integrator` is one of its contributors and its family is not recognised, so `familyRefusal` fails every reviewer. The owner accepts such a plan only by recording an override, `atelier merge tP --head H --override-review "reason"`. `--approve` records the owner's own review, which is not the independent review.
 - `Ledger.merged` then marks the parts merged, with `{via: tP}`.
 
 **Where the merge can run.**
@@ -196,7 +196,7 @@ A failed integration attempts to restore its previous head.
 | `atelier plan approve tP --hash H [--allow-paid]` | Approve the split, once |
 | `atelier plan revise tP --note …` | Send it back to the planner, before approval only |
 | `atelier plan reroute tN --to a/m`, `plan retry tN`, `plan stop tP` | Decisions for a blocked plan |
-| `atelier merge tP --head H --approve` | Accept and land the whole plan |
+| `atelier merge tP --head H [--override-review "reason"]` | Accept and land the whole plan; section 5 says when the override is needed |
 
 **Inbox.** Two new kinds: `approve-plan` (weight 95) and `plan-blocked` (weight 85). The plan item's `accept` and `merge` entries work as today.
 - Parts never appear as accept, assess, failing, scope or stale entries.
@@ -233,23 +233,23 @@ Reaching any limit blocks the plan; it never continues silently.
 **Runner tests (`.mjs`):** 7b, 10, 14.
 
 **t15: Plans**
-1. **Schema and hash.** `src/plans/schema.ts`, `test/plans-schema.test.ts`. Acceptance: unknown fields and caps are refused; the hash does not depend on key order.
-2. **Validation.** `src/plans/validate.ts`. Acceptance: a cycle is named; unordered overlaps are refused; interfaces depend only on interfaces; scope counts are capped. Model context-window sizing belongs to step 3.
-3. **Part routing.** `src/plans/route.ts`, `test/plans-route.test.ts`. Built in t86. Acceptance: the reviewer is from another family; refused and paid models are excluded; governed roles are respected.
-4. **The tick, dispatch half.** `src/plans/phase.ts`. Acceptance: scenario tests for dependencies, the parallel limit, retries and blocking.
+1. **Schema and hash.** `src/plans/schema.ts`, `test/plans-schema.test.ts`. Built. Acceptance: unknown fields and caps are refused; the hash does not depend on key order.
+2. **Validation.** `src/plans/validate.ts`. Built. Acceptance: a cycle is named; unordered overlaps are refused; interfaces depend only on interfaces; scope counts are capped. Model context-window sizing belongs to step 3.
+3. **Part routing.** `src/plans/route.ts`, `test/plans-route.test.ts`. Built. Acceptance: the reviewer is from another family; refused and paid models are excluded; governed roles are respected.
+4. **The tick, dispatch half.** `src/plans/phase.ts`. Built. Acceptance: scenario tests for dependencies, the parallel limit, retries and blocking.
 5. **Ledger and rules.** `src/ledger.ts` and `src/rules.ts` changes (new columns and table; `newPlan`, `postPlan`, `approvePlan`, `dispatchPart`, the tick hook; inbox kinds; same-plan overlap). Test: `test/plans.spec.ts`.
 6. **Routes and CLI.** `src/index.ts`, `cli/atelier.mjs`. Tests: `routes.spec.ts`, `test/plan-cli.test.mjs`.
 7. **Server briefs and runner jobs.** 7a: `src/plans/brief.ts`. 7b: in `cli/runner.mjs`, the plan job, the `{plan_file}` placeholder, releasing on finish failure, and the scrubbed environment.
 
 **t39: Automatic cross-family review**
 
-8. **Review rules.** `src/review/` with `reviewNeeded`, `pickReviewer`, `parseVerdict` and `reviewBrief`.
+8. **Review rules.** `src/review/` with `reviewNeeded`, `pickReviewer`, `parseVerdict` and `reviewBrief`. Built.
 9. **Ledger side.** Review requests, review claims, findings, the rework transition, and review jobs in the queue.
 10. **Runner review job.**
 
 **t16: Integration branch per plan**
 
-11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`.
+11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`. Built.
 12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`.
 13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check, marking parts merged when the plan merges, and the reserved integrator actor.
 14. **Runner `--integrate`.** The integrate and refresh jobs, and a merge receipt that lists the parts.

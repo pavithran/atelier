@@ -29,8 +29,8 @@ suggestions; the facts in them are the ones to keep.
    ```
 
    The third touches a protected file, so it will need a review from a model
-   other than its owner's. Note the ids the commands print; the script calls
-   them A, B and C.
+   of another family than every agent that worked on it. Note the ids the
+   commands print; the script calls them A, B and C.
 
 3. **Three agent sessions**, each opened in the `cloudflare-git` folder:
    Claude Code, Codex and GLM. Do not start them yet.
@@ -198,15 +198,17 @@ Show this diagram, or draw it.
  agents (any harness)          owner
    │ atelier CLI                │ browser · CLI
    ▼                            ▼
- ┌──────────────── Cloudflare Worker (atelier.zone) ────────────────┐
- │  Ledger: one Durable Object per project — items, owners,          │
- │          graded evidence, reviews, every event                    │
+ ┌──────────────── Cloudflare Worker (atelier.zone) ─────────────────┐
+ │  Ledger: one Durable Object per project, holding items, owners,   │
+ │          graded evidence, reviews and every event                 │
  │  CheckRunner: one Durable Object + container per check run        │
- │ Pages: Decisions · Flow · Studio · Projects · History (no script) │
- └───────────────┬──────────────────────────────────┬────────────────┘
+ │  Pages (no script): Decisions · Flow · Studio · Models · Usage ·  │
+ │                     Projects · History                            │
+ └───────────────┬───────────────────────────────────┬───────────────┘
                  │ Artifacts binding                 │ egress gateway
                  ▼                                   ▼
-   baseline repo + one fork per item          registry.npmjs.org (GET only)
+   baseline repo + one fork per item          registry.npmjs.org
+                                              (GET and HEAD only)
 ```
 
 > A Durable Object per project makes "exactly one owner" a matter of
@@ -226,9 +228,11 @@ Show the README at `https://github.com/pavithran/atelier`.
 
 ## What the video must not claim
 
-- **Identity is declared, not authenticated.** Every caller shares one API
-  token, and an actor's name is what it says it is. What enforces ownership
-  is the per-fork write token. Do not say agents are authenticated.
+- **Identity is proved only by an agent token.** A caller with its own agent
+  token (`atelier token issue`) acts as that token's actor and no other; a
+  caller with the owner token may name any actor. What enforces ownership is
+  the per-fork write token. Say agents are authenticated only if each agent in
+  the demo runs with its own agent token.
 - **Push events are not provisioned.** The handler for Artifacts push events
   exists, but no queue or subscription is set up on the live server, so
   pushes are recorded when an agent runs `atelier push`. Do not show or claim
