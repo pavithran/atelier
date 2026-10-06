@@ -296,6 +296,14 @@ test("a capability's chains, pipelines, redirections and globs are judged on eac
       glob: "rm -f build/*.log",
       expanded: '"$HOME/tools/x.py" && ~/tools/y.py',
       present: 'git fetch && "tools/has space.sh"',
+      // A `cd` moves the judge's working directory for the commands after it:
+      // present ones stop being reported from the checkout's root, missing
+      // ones are named where they are run from, and a `cd` through a variable
+      // stops the judging rather than guess the root.
+      "cd-present": 'cd tools && "./has space.sh"',
+      "cd-missing": "cd docs && ./gen.sh",
+      "cd-variable": "cd $D && ./x.sh",
+      "cd-then": 'if [ -f x ]; then cd tools && "./has space.sh"; fi',
     },
   }));
   assert.deepEqual(leftovers(dir), [
@@ -307,6 +315,7 @@ test("a capability's chains, pipelines, redirections and globs are judged on eac
     'docs/control-plane/project-adapter.v1.json: capability "conditional" runs tools/ship.py, which does not exist',
     'docs/control-plane/project-adapter.v1.json: capability "inline" runs tools/ship.py, which does not exist',
     'docs/control-plane/project-adapter.v1.json: capability "inline" runs tools/count.py, which does not exist',
+    'docs/control-plane/project-adapter.v1.json: capability "cd-missing" runs docs/gen.sh, which does not exist',
   ]);
 });
 

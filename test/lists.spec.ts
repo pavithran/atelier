@@ -56,7 +56,7 @@ it("an item's scope must be a list of non-empty strings", async () => {
 });
 
 it("a project's checks, protected paths and eligible agents must each be a list of non-empty strings", async () => {
-  for (const field of ["checks", "protected", "eligible"]) {
+  for (const field of ["checks", "protected", "eligible", "shipRuns", "shipKinds"]) {
     for (const value of BAD) {
       const res = await call("PUT", "/projects/lists-policy", { [field]: value });
       expect(res.status, `${field}: ${JSON.stringify(value)}`).toBe(400);
@@ -68,8 +68,11 @@ it("a project's checks, protected paths and eligible agents must each be a list 
   // A refused init registers nothing.
   const listed = (await env.LEDGER.get(env.LEDGER.idFromName("__index")).projects()) as { name: string }[];
   expect(listed.some((p) => p.name === "lists-policy")).toBe(false);
-  const ok = await call("PUT", "/projects/lists-policy", { checks: [" npm test "], protected: ["AGENTS.md"], eligible: ["codex"] });
+  const ok = await call("PUT", "/projects/lists-policy", {
+    checks: [" npm test "], protected: ["AGENTS.md"], eligible: ["codex"],
+    shipRuns: [" bin/deploy.sh "], shipKinds: ["deploy"],
+  });
   expect(ok.status, await ok.clone().text()).toBe(200);
-  expect(((await ok.json()) as { project: { policy: { checks: string[]; protected: string[]; eligible: string[] } } }).project.policy)
-    .toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md"], eligible: ["codex"] });
+  expect(((await ok.json()) as { project: { policy: Record<string, string[]> } }).project.policy)
+    .toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md"], eligible: ["codex"], shipRuns: ["bin/deploy.sh"], shipKinds: ["deploy"] });
 });

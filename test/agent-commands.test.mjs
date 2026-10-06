@@ -59,7 +59,7 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
     let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox } };
     if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" } };
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
-    if (path.endsWith("/read-token") || path.endsWith("/baseline-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
+    if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
     if (path.endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title }];
     if (path.endsWith("/sandbox")) data = { runId: "run" };
@@ -197,4 +197,13 @@ test("a workspace with no recorded branch pushes to the branch its fork reads", 
   assert.equal(r.status, 0, r.output);
   assert.equal(git(f.remote, "rev-parse", "refs/heads/master"), git(f.workspace, "rev-parse", "HEAD"));
   assert.equal(git(f.remote, "for-each-ref", "--format=%(refname)"), "refs/heads/master");
+});
+
+test("the task an agent starts and the brief it reads carry the owner's framing, one flattened line per field", () => {
+  const framed = { title: "Edit", scope: [], nonGoals: ["no CSS\nchanges", "no routes"], stopWhen: ["a check fails twice"], nextGate: "design\x1b[31m review" };
+  assert.equal(formatTask(framed), "Edit\nScope: not specified\nNon-goals: no CSS changes; no routes\nStop when: a check fails twice\nNext gate: design review");
+  assert.equal(formatTask({ title: "Plain", scope: ["a/**"], nonGoals: [], stopWhen: [], nextGate: null }), "Plain\nScope: a/**");
+  const text = formatBrief("proj", "t1", { ...brief, ...framed, summary: null }, "https://atelier.test");
+  assert.deepEqual(text.split("\n").slice(1, 5), [brief.decided, "Non-goals: no CSS changes; no routes", "Stop when: a check fails twice", "Next gate: design review"]);
+  assert.ok(!text.includes("\x1b"));
 });

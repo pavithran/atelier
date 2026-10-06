@@ -227,3 +227,14 @@ export function actionRuns(sql: SqlStorage, limit = 20): (ActionRun & { at: stri
   return sql.exec(`SELECT at, actor, data FROM events WHERE kind = 'action.ran' ORDER BY seq DESC LIMIT ?`, Math.max(1, Math.min(200, limit))).toArray()
     .map((r) => ({ ...(JSON.parse(r.data as string) as ActionRun), at: r.at as string, actor: r.actor as string }));
 }
+
+// The declared kinds a merged revision still needs run, for the owner's inbox
+// (the Ledger's inbox, docs/ship.md): each kind the project's ship files
+// declare (policy.shipKinds) with no `action.ran` event for it after the
+// item's `item.merged` event. The event log's order stands for the order of
+// things, so a run recorded after a merge covers it whatever the baseline's
+// head was when it ran: a ship at a later head delivers the older merge too,
+// and retires its reminder.
+export function unrunKinds(declared: readonly string[], runs: readonly { kind: string | null; seq: number }[], mergeSeq: number): string[] {
+  return declared.filter((kind) => !runs.some((r) => r.seq > mergeSeq && r.kind === kind));
+}

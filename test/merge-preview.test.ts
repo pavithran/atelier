@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedRegions, commitsSince, linesConflict, linesOf, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
+import { bytesOf, changedRegions, commitsSince, linesConflict, linesOf, mergeLines, mergePatch, mergeTrees, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
 import type { Reader } from "../src/diff.ts";
 
 // A content-addressed toy: files are named by their text, trees by a label.
@@ -163,4 +163,51 @@ test("a file on one side where the other side has a folder is a conflict, as in 
   const r2: Reader = { tree: async (h) => ({ base: [{ name: "foo", hash: "dir", mode: "40000", type: "tree" }], dir: trees.dir, ours: trees.ours, gone: [] } as Record<string, typeof trees.ours>)[h] ?? null, blob: async () => new TextEncoder().encode("x\n") };
   const replaced = await mergeability(r2, r2, "base", "ours", "gone");
   assert.equal(replaced.clean, true, "a deleted path leaves nothing to collide with");
+});
+
+// The merged tree for a check in the sandbox: git's result where the
+// preview's conflict rule finds none, and no tree where it finds one.
+test("mergeLines applies both sides' changes to separate lines, a shared change once, and refuses a conflict", () => {
+  const L = (s: string) => s.split("");
+  assert.deepEqual(mergeLines(L("12345"), L("O2345"), L("1234F")), L("O234F"));
+  assert.deepEqual(mergeLines(L("123"), L("1x23"), L("12y3")), L("1x2y3"), "insertions at different places");
+  assert.deepEqual(mergeLines(L("123"), L("1x23"), L("1x23")), L("1x23"), "the same change on both sides, taken once");
+  assert.deepEqual(mergeLines(L("1234"), L("134"), L("1234x")), L("134x"), "a deletion and an append");
+  assert.deepEqual(mergeLines(L("12"), L("12"), L("T2")), L("T2"), "one side unchanged");
+  assert.equal(mergeLines(L("12345"), L("O2345"), L("1T345")), null, "adjacent edits conflict, as in git");
+  assert.equal(mergeLines(L("1234"), L("134"), L("12T4")), null, "a deletion next to an edit conflicts");
+});
+
+test("bytesOf writes linesOf's lines back, keeping a missing final newline", () => {
+  for (const text of ["a\nb\n", "a\nb", "", "\n", "a"]) assert.equal(new TextDecoder().decode(bytesOf(linesOf(new TextEncoder().encode(text)))), text);
+});
+
+test("mergePatch lays main's changes over the head: main's files where the task left them, merged lines where both changed, nothing where they agree", async () => {
+  const base = { "a.ts": "1\n2\n3\n4\n5\n", "b.ts": "b\n", "c.ts": "c\n", "same.ts": "s\n", "gone.ts": "g\n" };
+  const main = repo({ base, ours: { "a.ts": "ONE\n2\n3\n4\n5\n", "b.ts": "B\n", "c.ts": "c\n", "same.ts": "S\n", "new.ts": "n\n" } });
+  const task = repo({ base, theirs: { "a.ts": "1\n2\n3\n4\nFIVE\n", "b.ts": "b\n", "c.ts": "C\n", "same.ts": "S\n", "gone.ts": "g\n", "t.ts": "t\n" } });
+  const { patch, conflicts } = await mergePatch(main, task, "base", "ours", "theirs");
+  assert.deepEqual(conflicts, []);
+  assert.deepEqual([...patch.keys()].sort(), ["a.ts", "b.ts", "gone.ts", "new.ts"], "c.ts and t.ts are the task's alone, and same.ts changed alike");
+  assert.equal(new TextDecoder().decode(patch.get("a.ts")!.data), "ONE\n2\n3\n4\nFIVE\n");
+  assert.deepEqual(patch.get("b.ts"), { type: "blob", hash: id("B\n") });
+  assert.equal(patch.get("gone.ts"), null, "deleted on main");
+  assert.deepEqual(patch.get("new.ts"), { type: "blob", hash: id("n\n") });
+  // Main unchanged since the fork point: nothing to lay over.
+  assert.equal((await mergePatch(main, task, "base", "base", "theirs")).patch.size, 0);
+});
+
+test("mergePatch gives the preview's conflicts and no tree", async () => {
+  const main = repo({ base: { "a.ts": "1\n2\n" }, ours: { "a.ts": "1\nX\n", "n.ts": "main\n" } });
+  const task = repo({ base: { "a.ts": "1\n2\n" }, theirs: { "a.ts": "1\nY\n" } });
+  const { patch, conflicts } = await mergePatch(main, task, "base", "ours", "theirs");
+  assert.equal(patch.size, 0);
+  assert.deepEqual(conflicts, [{ path: "a.ts", reason: "both sides changed the same lines" }]);
+});
+
+test("mergeTrees reads the fork point, main's head and the task's head as the preview does", async () => {
+  const trees = { base: { "a.ts": "1\n" }, m1: { "a.ts": "2\n" }, task: { "a.ts": "1\nt\n" }, x: {} };
+  const A = artifactsOf({ main: { log: ["m1", "base"], trees }, fork: { log: ["task", "base"], trees }, apart: { log: ["x"], trees } });
+  assert.deepEqual(await mergeTrees(await A.get("main"), await A.get("fork")), { base: "base", baseTree: "base", main: "m1", mainTree: "m1", head: "task", headTree: "task" });
+  assert.equal(await mergeTrees(await A.get("main"), await A.get("apart")), null, "no fork point");
 });

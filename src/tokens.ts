@@ -61,16 +61,22 @@ export function inScope(token: Pick<AgentToken, "projects"> | undefined, names: 
 }
 
 // Only the agent's workflow is allowed. Unknown routes stay owner-only.
+// POST items/tN/plan is the planner posting its plan document, and GET
+// items/tN/job-brief is the holder reading the brief of the work it holds;
+// the Ledger takes each only from the holder of the item's claim. Every
+// other plan route is the owner's.
 export function agentRoute(method: string, parts: string[], body: Record<string, unknown> = {}): boolean {
   const [root, project, section, id, verb] = parts;
   if (parts.length === 1) return method === "GET" && ["config", "inbox", "projects", "queue"].includes(root) || root === "queue" && method === "POST";
   if (root !== "projects" || !project) return false;
   if (parts.length === 2) return method === "GET";
   if (parts.length === 3) {
-    if (method === "GET") return ["owners", "standing", "items"].includes(section);
+    // baseline-head reveals only a commit hash, which the read token an
+    // agent may mint already exposes; status and unwrap read it.
+    if (method === "GET") return ["owners", "standing", "items", "baseline-head"].includes(section);
     return section === "baseline-token" && method === "POST" && body.scope !== "write";
   }
   if (section !== "items" || !id) return false;
-  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff"].includes(verb) || parts.length === 6 && verb === "sandbox";
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release"].includes(verb);
+  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief"].includes(verb) || parts.length === 6 && verb === "sandbox";
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-release", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "block", "unblock"].includes(verb);
 }

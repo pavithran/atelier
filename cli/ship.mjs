@@ -258,6 +258,21 @@ export function knownKinds(top) {
   return kinds;
 }
 
+// What the project's policy records of its ship order, read from the checkout
+// at init and sync: the commands its runs execute, as one line each, so the
+// gate can guard the files they run like a check's (checkFiles in
+// src/rules.ts), and the approval kinds the order needs unconditionally
+// (install, deploy and the kinds runs name; push needs one only with --push),
+// which the inbox reads to say a merged revision is not delivered
+// (unrunKinds in src/actions.ts).
+export function shipPolicy(top) {
+  const plan = composeShip(top);
+  return {
+    runs: plan.steps.flatMap((s) => s.runs).filter((r) => r.argv).map((r) => r.argv.join(" ")),
+    kinds: neededKinds(plan.steps, false),
+  };
+}
+
 // ── approvals ───────────────────────────────────────────────────────────────
 
 // The approval kinds a ship needs, in order: each install or deploy step's,

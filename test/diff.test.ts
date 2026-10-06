@@ -287,7 +287,7 @@ test("a merge that makes an older main commit the fork point cannot hide a rever
   assert.equal(await fork.readTree("new"), null, "the fork never holds main's newer tree");
   assert.deepEqual(await changedPaths(pairReader(fork, main), m!.mainTree, m!.headTree), ["AGENTS.md", "a.ts"]);
   // What the evidence route records, by the same measure.
-  assert.deepEqual(await measureWorkspace(A, "main", "fork"), { head: "M", changedPaths: ["AGENTS.md", "a.ts"] });
+  assert.deepEqual(await measureWorkspace(A, "main", "fork"), { head: "M", main: "new", changedPaths: ["AGENTS.md", "a.ts"] });
   // The first-parent fork point is the one the agent built, and lists only a.ts.
   const base = mergeBase((await fork.log({ limit: 500 })).map((c) => c.hash), (await main.log({ limit: 1000 })).map((c) => c.hash));
   assert.equal(base, "old");

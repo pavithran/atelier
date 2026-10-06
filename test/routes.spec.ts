@@ -241,6 +241,23 @@ it("a first init with no title creates the project without one", async () => {
   expect(((await res.json()) as { project: { title?: string } }).project.title).toBeUndefined();
 });
 
+it("init refuses an approval over its limit instead of cutting it", async () => {
+  const put = (approval: unknown) => worker.fetch(new Request("https://atelier.test/api/projects/routes-approval", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ approval }),
+  }), artifactsEnv);
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-approval"));
+  expect((await put("PAVI, today: the copy is approved")).status).toBe(200);
+  const over = await put("a".repeat(501));
+  expect(over.status).toBe(400);
+  expect(await over.json()).toMatchObject({ error: "too_long", detail: expect.stringContaining("the approval is 501 characters; the limit is 500") });
+  // The refusal left what was recorded standing, and a note at the limit is kept whole.
+  expect((await L.project()).policy.approval).toBe("PAVI, today: the copy is approved");
+  expect((await put("b".repeat(500))).status).toBe(200);
+  expect((await L.project()).policy.approval).toBe("b".repeat(500));
+});
+
 it("init refuses another name for a registered baseline before touching Artifacts", async () => {
   await project("repo-collision");
   const res = await call("PUT", "/projects/Repo-Collision", "owner", { title: "Duplicate" });
@@ -773,4 +790,124 @@ it("push events are read on the project's branch, not the one the fork's info re
   expect((await L.item("t1")).head).toBe(H0);
   await send(notice("refs/heads/master"));
   expect((await L.item("t1")).head).toBe(H2);
+});
+
+// The checks on the would-be merge through the Worker: each check names
+// main's head as Atelier reads it, a merged check is bound to the main head
+// it merged with, which must be on main's line, and it never stands in for
+// the head's own run.
+it("a merged check is recorded against both revisions, needs a main head on main's line, and blocks only after main moved past the head's own passing check", async () => {
+  const name = "merged-check", A = "claude-code/opus-5.5";
+  const H0 = "0".repeat(40), H1 = "a".repeat(40), H2 = "9".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Edit the readme", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  const store = (mainLog: { hash: string; parents: string[]; treeHash: string }[]) => gitStore({
+    [name]: mainLog,
+    [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],
+  }, { [T0]: { "README.md": "b".repeat(40) }, [T1]: { "README.md": "c".repeat(40) } });
+  const as = (ARTIFACTS: Artifacts, actor = A) => (method: string, path: string, body?: unknown) =>
+    worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS } as typeof env);
+  const rows = async () => (await (await call("GET", `/projects/${name}/items/t1`, "owner")).json()) as { evidence: Record<string, unknown>[]; gate: { ready: boolean; blockers: string[] } };
+
+  // Main at H0: the head's own check names it, and a merged check against it is shown, not counted.
+  const atH0 = as(store([{ hash: H0, parents: [], treeHash: T0 }]));
+  const own = await atH0("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1 });
+  expect(own.status, await own.clone().text()).toBe(200);
+  expect((await rows()).evidence.at(-1)).toMatchObject({ grade: "observed", mainHead: H0, changedPaths: ["README.md"] });
+  expect((await rows()).evidence.at(-1)).not.toHaveProperty("merged");
+  const same = await atH0("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: false, head: H1, merged: true, mainHead: H0 });
+  expect(same.status, await same.clone().text()).toBe(200);
+  expect((await rows()).evidence.at(-1)).toMatchObject({ grade: "observed", merged: true, mainHead: H0, passed: false, changedPaths: null, where: "runner" });
+  expect((await atH0("POST", "/items/t1/submit", {})).status).toBe(200);
+  expect((await rows()).gate).toMatchObject({ ready: true });
+  // A main head that is not a commit on main is refused.
+  const unknown = await atH0("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, merged: true, mainHead: "f".repeat(40) });
+  expect(unknown.status, await unknown.clone().text()).toBe(409);
+  expect(await unknown.json()).toMatchObject({ error: "unknown_main" });
+  expect((await rows()).evidence).toHaveLength(2);
+
+  // Main moves to H2. A merged check against the older H0 is still a commit on main and is kept, bound to H0; it merged with the main the head's own check saw, so it does not block.
+  const moved = store([{ hash: H2, parents: [H0], treeHash: T0 }, { hash: H0, parents: [], treeHash: T0 }]);
+  const atH2 = as(moved), ownerAtH2 = as(moved, "owner");
+  const older = await atH2("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: false, head: H1, merged: true, mainHead: H0 });
+  expect(older.status, await older.clone().text()).toBe(200);
+  expect((await rows()).evidence.at(-1)).toMatchObject({ merged: true, mainHead: H0 });
+  expect((await rows()).gate).toMatchObject({ ready: true });
+  // A merged check that fails against main's head now, after the head's own check passed against H0, blocks acceptance.
+  expect((await atH2("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: false, head: H1, merged: true, mainHead: H2 })).status).toBe(200);
+  const blocked = (await rows()).gate;
+  expect(blocked.ready).toBe(false);
+  expect(blocked.blockers.join(" ")).toMatch(/failed on the merge with main at 99999999/);
+  const refused = await ownerAtH2("POST", "/items/t1/accept", { head: H1 });
+  expect(refused.status, await refused.clone().text()).toBe(409);
+  expect(await refused.json()).toMatchObject({ error: "not_ready" });
+  // A later merged run that passes clears it, and the head's own check rerun now names H2.
+  expect((await atH2("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, merged: true, mainHead: H2 })).status).toBe(200);
+  expect((await rows()).gate).toMatchObject({ ready: true });
+  expect((await atH2("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1 })).status).toBe(200);
+  expect((await rows()).evidence.at(-1)).toMatchObject({ mainHead: H2, changedPaths: ["README.md"] });
+  expect((await rows()).gate).toMatchObject({ ready: true });
+  // A merged check for an item with no workspace has nothing to merge.
+  await L.newItem("No workspace", [], "owner");
+  await L.claim("t2", A);
+  await L.recordPush("t2", A, H1, null);
+  const noFork = await atH2("POST", "/items/t2/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, merged: true, mainHead: H2 });
+  expect(await noFork.json()).toMatchObject({ error: "no_fork" });
+});
+
+it("the sandbox route passes a merged run on to the runner, and a plain one as before", async () => {
+  const name = "sandbox-merged", A = "claude-code/opus-5.5", H1 = "a".repeat(40);
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Run in the cloud", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), A);
+  await L.recordPush("t1", A, H1, H1);
+  const started = async (body: unknown) => {
+    const res = await call("POST", `/projects/${name}/items/t1/sandbox`, "owner", body);
+    expect(res.status, await res.clone().text()).toBe(202);
+    return (await res.json() as { state: { request: Record<string, unknown> } }).state.request;
+  };
+  expect(await started({ merged: true })).toMatchObject({ itemId: "t1", head: H1, merged: true });
+  expect(await started({})).not.toHaveProperty("merged");
+  expect(await started({ merged: "yes" })).not.toHaveProperty("merged");
+});
+it("the holder blocks and unblocks through the API, only the owner edits the framing, and the brief carries both", async () => {
+  await project("routes-c");
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-c"));
+  const made = await call("POST", "/projects/routes-c/items", "owner", { title: "Frame it", scope: ["a/**"], nonGoals: ["no b"], nextGate: "demo" });
+  expect(made.status).toBe(201);
+  const created = await made.json() as { id: string; nonGoals: string[]; nextGate: string };
+  expect([created.nonGoals, created.nextGate]).toEqual([["no b"], "demo"]);
+  expect((await call("POST", "/projects/routes-c/items", "owner", { title: "Bad", nonGoals: "no b" })).status).toBe(400);
+  const at = (verb: string) => `/projects/routes-c/items/${created.id}/${verb}`;
+
+  await L.claim(created.id, "codex/gpt-6");
+  expect((await call("POST", at("block"), "codex/gpt-6", {})).status).toBe(400);
+  const blocked = await call("POST", at("block"), "codex/gpt-6", { reason: "waiting on the owner" });
+  expect(blocked.status).toBe(200);
+  expect((await blocked.json() as { state: string; blocked: { by: string } })).toMatchObject({ state: "blocked", blocked: { by: "codex/gpt-6" } });
+  const submit = await call("POST", at("submit"), "codex/gpt-6", {});
+  expect(submit.status).toBe(409);
+  expect((await submit.json() as { error: string; detail: string })).toMatchObject({ error: "blocked", detail: `${created.id} is blocked: waiting on the owner. Run atelier unblock ${created.id} first` });
+
+  expect((await call("POST", at("edit"), "codex/gpt-6", { nextGate: "x" })).status).toBe(403);
+  const edited = await call("POST", at("edit"), "owner", { stopWhen: ["a test is red"], nextGate: null });
+  expect(edited.status).toBe(200);
+  expect(await edited.json() as { nonGoals: string[]; stopWhen: string[]; nextGate: string | null }).toMatchObject({ nonGoals: ["no b"], stopWhen: ["a test is red"], nextGate: null });
+
+  const brief = await (await call("GET", at("brief"), "owner")).json() as { nonGoals: string[]; stopWhen: string[]; recommendation: { verdict: string; reason: string } };
+  expect([brief.nonGoals, brief.stopWhen]).toEqual([["no b"], ["a test is red"]]);
+  expect(brief.recommendation.verdict).toBe("decide");
+  expect(brief.recommendation.reason).toMatch(/^codex\/gpt-6 blocked it: waiting on the owner\. Clear that, then run atelier unblock/);
+
+  expect((await call("POST", at("unblock"), "owner", {})).status).toBe(200);
+  expect((await (await call("GET", `/projects/routes-c/items/${created.id}`, "owner")).json() as { item: { state: string } }).item.state).toBe("claimed");
 });

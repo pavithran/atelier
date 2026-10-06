@@ -23,14 +23,15 @@ function fixture(t) {
     writeFileSync(join(dir, ".gitignore"), "ignored\n");
     git(dir, "add", ".gitignore");
     git(dir, "commit", "-m", "Initial");
-    items.push({ id, state, acceptedHead: git(dir, "rev-parse", "HEAD") });
+    const head = git(dir, "rev-parse", "HEAD");
+    items.push({ id, state, head, acceptedHead: state === "merged" ? head : null });
     return dir;
   }
   const options = { cache, name: "proj", items, cwd: cache, apply: false, getItem: async (id) => items.find((i) => i.id === id), log: () => {} };
   return { cache, items, workspace, git, options };
 }
 
-test("gc previews, then removes only clean merged clones; preserves all local work", async (t) => {
+test("gc previews, then removes only clean closed clones; preserves all local work", async (t) => {
   const f = fixture(t), clean = f.workspace("t1");
   const active = f.workspace("t2", "claimed");
   const dirty = f.workspace("t3"); writeFileSync(join(dirty, ".gitignore"), "changed");
@@ -44,13 +45,16 @@ test("gc previews, then removes only clean merged clones; preserves all local wo
   const current = f.workspace("t8");
   const foreign = f.workspace("t9"); f.git(foreign, "config", "atelier.project", "other");
   const abandoned = f.workspace("t10", "abandoned");
-  const busy = f.workspace("t11"); writeFileSync(join(busy, ".git", "index.lock"), "");
-  const submodules = f.workspace("t12"); mkdirSync(join(submodules, ".git", "modules"));
+  const abandonedMoved = f.workspace("t11", "abandoned"); f.git(abandonedMoved, "commit", "--allow-empty", "-m", "Never pushed");
+  const busy = f.workspace("t12"); writeFileSync(join(busy, ".git", "index.lock"), "");
+  const submodules = f.workspace("t13"); mkdirSync(join(submodules, ".git", "modules"));
   await collectCache({ ...f.options, cwd: current });
   assert.ok(existsSync(clean));
   await collectCache({ ...f.options, apply: true, cwd: current });
   assert.ok(!existsSync(clean));
-  for (const dir of [active, dirty, ignored, untracked, branch, ahead, current, foreign, abandoned, busy, submodules]) assert.ok(existsSync(dir), dir);
+  assert.ok(!existsSync(ignored), "ignored files alone do not hold a workspace");
+  assert.ok(!existsSync(abandoned), "a clean abandoned workspace at its recorded head goes");
+  for (const dir of [active, dirty, untracked, branch, ahead, current, foreign, abandonedMoved, busy, submodules]) assert.ok(existsSync(dir), dir);
 });
 
 test("gc rechecks server state and local files before removal", async (t) => {
