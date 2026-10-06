@@ -1,0 +1,28 @@
+atelier atelier/t127 "Security, medium (gpt-6-astra, confirmed by opus-5.5): atelier check runs the item's check code with the caller's full environment (cli/atelier.mjs:307) and uploads its output unredacted (cli/atelier.mjs:1187, src/ledger.ts:529), so a check can print ATELIER_TOKEN into evidence any project-scoped agent token can read; give checks a minimal environment, redact known secrets before upload, and prefer the sandbox for agent-written checks (the Keychain stays reachable from a local check)"
+accepted head 98206887cc708207adbfc1353ec92e040e63f330
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T03:36:05.089Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T03:36:07.514Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE ### Follow-ups - **`cli/atelier.mjs` (line 556 / `runCheck`) - Memory accumulation**: The `child.stdout.on("data", (chunk) => { stdout += chunk; ... })` handler appends chunks to the `stdout` and `stderr` strings unconditionally. While the `append` function likely enforces `MAX_EVIDENCE_BYTES` for the evidence buffer, the raw string variables keep growing in memory. If a malicious or runaway check outputs gigabytes of data, it will cause the CLI's Node process to crash with an Out Of Memory (OOM) error before redaction can even occur. Consider en
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T01:59:44.438Z pavi item.created
+2026-10-06T02:00:31.370Z claude-code/opus-5.5 item.claimed
+2026-10-06T02:00:34.313Z claude-code/opus-5.5 fork.created
+2026-10-06T02:27:49.039Z claude-code/opus-5.5 push.observed
+2026-10-06T02:29:13.687Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:29:16.801Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:29:22.172Z claude-code/opus-5.5 item.submitted
+2026-10-06T02:56:18.057Z claude-code/opus-5.5 push.observed
+2026-10-06T02:57:39.534Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:57:41.907Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:57:42.799Z claude-code/opus-5.5 item.submitted
+2026-10-06T03:20:54.132Z claude-code/opus-5.5 push.observed
+2026-10-06T03:22:18.579Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:22:20.898Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:22:21.535Z claude-code/opus-5.5 item.submitted
+2026-10-06T03:34:44.765Z claude-code/opus-5.5 push.observed
+2026-10-06T03:36:05.570Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:36:07.715Z claude-code/opus-5.5 evidence.observed
+2026-10-06T03:36:08.294Z claude-code/opus-5.5 item.submitted
+2026-10-06T04:05:35.273Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T04:05:35.775Z pavi review.approved
+2026-10-06T04:05:36.235Z pavi item.accepted
