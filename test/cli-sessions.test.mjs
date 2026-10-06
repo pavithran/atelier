@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
-import { landingDir, landingJournalFile } from "../cli/landing.mjs";
+import { landingDir, landingJournalFile, oldLandingJournalFile } from "../cli/landing.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 function fixture(t) {
@@ -378,6 +378,9 @@ const unfinished = {
   "rebase-apply": { say: /a rebase in progress/, make: (f) => mkdirSync(join(f.checkout, ".git", "rebase-apply")) },
   // The journal lives under the cache, keyed by the checkout's Git directory, not in it.
   "a landing journal": { say: /a landing in progress/, make: (f) => { const file = landingJournalFile(landingDir(join(f.dir, "cache"), join(f.checkout, ".git"))); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "{}\n"); } },
+  // A landing interrupted under an earlier CLI left its journal in the Git directory. Wrap names it
+  // and, like every refusal here, changes nothing: the next merge moves it (cli/landing.mjs).
+  "a landing journal an earlier CLI left in the Git directory": { say: /a landing in progress/, make: (f) => writeFileSync(oldLandingJournalFile(join(f.checkout, ".git")), "{}\n") },
   "a cherry-pick stopped on a conflict": {
     say: /a cherry-pick in progress/,
     make: (f) => { diverge(f); conflict(f, "cherry-pick", "side"); assert.ok(marked(f, "CHERRY_PICK_HEAD") && unmerged(f)); },

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // A landing's lock and journal live under the CLI's cache, in a directory per
@@ -17,6 +17,47 @@ export function landingDir(cache, gitDir) {
 }
 
 export const landingJournalFile = (dir) => join(dir, 'journal.json');
+
+// Where an earlier CLI kept the journal and the lock: in the Git directory.
+export const oldLandingJournalFile = (gitDir) => join(gitDir, 'atelier-landing.json');
+export const oldLandingLockDir = (gitDir) => join(gitDir, 'atelier-landing.lock');
+
+// Whether a process with this pid is running: only "no such process" says it is gone.
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
+
+// Move a file with its bytes unchanged: a rename where both sit on one
+// volume, otherwise a copy made whole beside the destination and renamed in.
+function moveFile(from, to) {
+  try { renameSync(from, to); return; }
+  catch (error) { if (error.code !== 'EXDEV') throw error; }
+  copyFileSync(from, `${to}.tmp`); renameSync(`${to}.tmp`, to); unlinkSync(from);
+}
+
+// A landing interrupted under an earlier CLI left its journal, and perhaps
+// its lock, in the Git directory. Called before the landing state is read
+// (merge, merge --cancel, sync). The old lock is removed when every owner it
+// records is gone, the record being `pid` or the copy iCloud makes of it
+// ("pid 2"); a live owner still blocks, and a lock with no readable owner
+// waits for a human. The old journal then moves under the cache, unchanged,
+// so the landing resumes or cancels as if it had always been there. A journal
+// in both places is refused: nothing says which one the next step follows.
+export function adoptOldLanding(gitDir, dir) {
+  const lock = oldLandingLockDir(gitDir);
+  if (existsSync(lock)) {
+    const owners = readdirSync(lock).filter((name) => /^pid( \d+)?$/.test(name))
+      .flatMap((name) => { try { return [Number(readFileSync(join(lock, name), 'utf8'))]; } catch { return []; } })
+      .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+    if (!owners.length) throw new Error(`the landing lock ${lock}, left by an earlier CLI, has no owner record; inspect it before retrying`);
+    const live = owners.find(alive);
+    if (live !== undefined) throw new Error(`another landing process (pid ${live}) is still running; its lock is ${lock}`);
+    rmSync(lock, { recursive: true });
+  }
+  const old = oldLandingJournalFile(gitDir), file = landingJournalFile(dir);
+  if (!existsSync(old)) return;
+  if (existsSync(file)) throw new Error(`a landing journal is in two places: ${old}, left by an earlier CLI, and ${file}; keep the one this landing follows and remove the other before retrying`);
+  mkdirSync(dir, { recursive: true });
+  moveFile(old, file);
+}
 
 // A local journal makes remote failures recoverable without repeating the Git merge.
 export function landingJournal(dir, identity) {

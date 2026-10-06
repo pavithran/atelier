@@ -26,7 +26,7 @@ import { pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
-import { landingDir, landingJournal, landingJournalFile, landingLock } from "./landing.mjs";
+import { adoptOldLanding, landingDir, landingJournal, landingJournalFile, landingLock, oldLandingJournalFile } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
@@ -840,11 +840,15 @@ function sessionTree(cwd) {
 // `report` prints advisories; a refusal always prints what it counted.
 function wrapReady(name, cwd, report) {
   const branch = git(["branch", "--show-current"], { cwd });
-  // The landing marker is the journal under the cache; the others are files in the Git directory.
-  const markerFile = (marker) => marker === "landing"
-    ? landingJournalFile(landingHome(git(["rev-parse", "--absolute-git-dir"], { cwd })))
-    : resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }));
-  const inProgress = Object.keys(WRAP_MARKERS).filter((marker) => existsSync(markerFile(marker)));
+  // The landing marker is the journal under the cache, or one an earlier CLI
+  // left in the Git directory and merge has not yet moved; the others are
+  // files in the Git directory. A refusal changes nothing in the checkout, so
+  // the old journal is named here and moved by merge (cli/landing.mjs).
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+  const markerFiles = (marker) => marker === "landing"
+    ? [landingJournalFile(landingHome(gitDir)), oldLandingJournalFile(gitDir)]
+    : [resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))];
+  const inProgress = Object.keys(WRAP_MARKERS).filter((marker) => markerFiles(marker).some((file) => existsSync(file)));
   const unmerged = unmergedPaths(git(["ls-files", "-u", "-z"], { cwd, raw: true }));
   const refusal = wrapRefusal({ branch, registered: cfg.projects[name].branch, inProgress, unmerged });
   if (refusal) die(refusal);
@@ -1584,6 +1588,7 @@ const commands = {
     let unlock;
     try { unlock = landingLock(landing); } catch (error) { die(error.message); }
     try {
+      try { adoptOldLanding(gitDir, landing); } catch (error) { die(error.message); }
       if (existsSync(landingJournalFile(landing))) die("a merge is in progress; finish it or cancel it first");
       const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
       git([...auth(base.token), "fetch", "--quiet", base.remote, p.branch], { cwd });
@@ -1612,10 +1617,10 @@ const commands = {
     // Ends an interrupted merge's landing lease, so the task's owner can push
     // again; refused once the merge is on the baseline.
     if (args.cancel === true) {
-      const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+      const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
       const item = (await call("GET", I(name, id), undefined, OWNER)).item;
       let journal;
-      try { journal = landingJournal(landingHome(gitDir), { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
+      try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id, head: item.acceptedHead }); } catch (error) { die(error.message); }
       const local = journal.state?.mergeCommit;
       // An unpublished merge commit in the checkout is kept unless the owner
       // asks for it to go; then the checkout returns to where the merge began.
@@ -1646,6 +1651,7 @@ const commands = {
     let unlock;
     try { unlock=landingLock(landing); } catch (error) { die(error.message); }
     try {
+      try { adoptOldLanding(gitDir,landing); } catch (error) { die(error.message); }
       const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
       if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
       if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");

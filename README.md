@@ -970,6 +970,16 @@ uncommitted Git merge, inspect `git status` and resolve or abort that merge
 before retrying. The journal preserves the original revision and starting
 commit. Never remove it to bypass a mismatch.
 
+An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
+with its lock, `atelier-landing.lock`, beside it. A landing interrupted under
+it is picked up where it was left: the next `atelier merge`, `merge --cancel`
+or `sync` moves the journal under the cache unchanged and goes on from it, and
+removes the lock once the process its owner record names (`pid`, or the `pid 2`
+copy iCloud makes) is gone. A live owner still blocks, a lock with no owner
+record waits for a human, and a journal found in both places is refused with
+both paths named. `atelier wrap` names such a journal as a landing in progress
+and moves nothing.
+
 The browser provides this local command after acceptance. It does not run a
 network-accessible local executor. Deployment and pushing the project branch
 to its own remotes remain separate decisions.
