@@ -20,6 +20,7 @@ import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "
 import { renderUsage } from "./usage/page.ts";
 
 export { CheckRunner, Egress, Ledger };
+import { renderHow } from "./how.ts";
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
@@ -1016,6 +1017,8 @@ export default {
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
       if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
+      // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
+      if (url.pathname === "/how" && req.method === "GET") { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
       if (url.pathname === "/login") {
         if (req.method === "POST") {
           const token = String((await req.formData()).get("token") ?? "");
