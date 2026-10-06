@@ -224,6 +224,8 @@ const FLAGS = {
   release: { note: false },
   accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false },
+  defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
+  served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
   done: { sandbox: true, summary: false },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
@@ -1284,6 +1286,9 @@ const commands = {
           if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
           return res.json();
         },
+        // A run that stalled, timed out or was refused goes to the run
+        // reports, under the runner's name, as a model's status does.
+        reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
       });
     } catch (error) { die(error.message); }
   },
@@ -1806,6 +1811,36 @@ const commands = {
     const name = project(), id = itemArg();
     await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
     console.log(`${id} abandoned.`);
+  },
+
+  // The project owner traces a defect to an item's accepted revision. The
+  // server refuses an item never accepted, and a blank note.
+  async defect() {
+    const name = project(), id = itemArg();
+    if (typeof args.note !== "string" || !args.note.trim()) die('a defect needs a note: atelier defect ID --note "what is wrong" [--found-in ID]');
+    const item = await call("POST", `${I(name, id)}/defect`, { note: args.note.trim(), ...(args["found-in"] !== undefined ? { foundIn: args["found-in"] } : {}) }, OWNER);
+    console.log(`Defect traced to ${id} at ${short(item.acceptedHead)}. It counts against the model that built that revision and each model that approved it; the Models page shows the record.`);
+  },
+
+  // The project owner records which model served events recorded under
+  // another: each matching event gets an annotation, and the event itself
+  // never changes. Without --apply it lists the matches and records nothing.
+  async served() {
+    const name = project(), model = args._[1];
+    if (args._.length !== 2 || ["recorded", "from", "to"].some((k) => typeof args[k] !== "string")) {
+      die("usage: atelier served MODEL --recorded HARNESS/MODEL --from TIME --to TIME [--item ID]... [--note TEXT] [--apply] [--project P]");
+    }
+    const r = await call("POST", `${P(name)}/served`, {
+      served: model, recorded: args.recorded, from: args.from, to: args.to,
+      ...(args.multi.item ? { items: args.multi.item } : {}), ...(args.note !== undefined ? { note: args.note } : {}), apply: args.apply === true,
+    }, OWNER);
+    const n = r.matched.length;
+    console.log(`${n} ${n === 1 ? "event" : "events"} on ${r.project} recorded as ${r.recorded} from ${r.from} to ${r.to}, in ${r.items ? r.items.join(" ") : "every task"}:`);
+    for (const m of r.matched) console.log(`  ${m.itemId ?? "(no task)"}  #${m.seq}  ${m.kind}  ${m.at}${m.served ? `  annotated as served by ${m.served}` : ""}`);
+    const as = `${r.recorded.slice(0, r.recorded.indexOf("/"))}/${r.served}`;
+    if (r.applied) console.log(`Annotated ${r.annotated} as served by ${r.served}; ${n - r.annotated} already were. The records count them under ${as}.`);
+    else if (r.pending) console.log(`Nothing was recorded. To annotate ${r.pending} as served by ${r.served}, run this again with --apply.`);
+    else console.log(`Nothing to record: ${n ? `each is already annotated as served by ${r.served}` : "no event matches"}.`);
   },
 
   async done() {

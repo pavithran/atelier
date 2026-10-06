@@ -7,8 +7,8 @@ Items      new "title" [--scope GLOB]... · ls [--all] · show ID · owners [--j
 Agents     start ID [--as H/M] · done "summary"
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push · update · check [--sandbox | -- CMD] · report [ID] "…" [--item ID] · submit [--summary T]
            handoff ID --to H/M · release ID · diff ID · review ID --approve|--reject
-Owner      accept ID [--override-review REASON] · merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok] · abandon ID
-           approve ACTION --head SHA [--note T] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
+Owner      accept ID [--override-review REASON] · merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok] · abandon ID · defect ID --note TEXT [--found-in ID]
+           served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--apply] · approve ACTION --head SHA [--note T] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
            ship [--dry-run] [--push]
 Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json]
            plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT

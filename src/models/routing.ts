@@ -1,5 +1,6 @@
 import type { ModelEvidence, ModelProfile, TaskKind, Where } from "./registry.ts";
 import type { ModelRecord } from "./record.ts";
+import { tiebreak as share } from "./reliability.ts";
 
 export interface Task { kind: TaskKind }
 export interface Constraints { localOnly: boolean; allowedWhere: Where | "any" }
@@ -7,8 +8,15 @@ export interface Candidate {
   profile: ModelProfile;
   actor: string | null; // null until a home model's harness is configured
   score: number;
+  tiebreak: number;     // orders equal scores only; one half without a reliability record
   reasons: string[];
 }
+
+// A candidate's reliability across every project (src/models/reliability.ts),
+// keyed by actor: the share of outcomes in its favour, and the reason that
+// says so. It never changes a score.
+export interface Tiebreak { value: number; reason: string }
+const NEUTRAL = share({ good: 0, bad: 0 });
 
 const WEIGHTS = { "model-card": 1, benchmark: 3, "local-qualification": 10, "atelier-record": 100 };
 const CODE_TASKS: readonly TaskKind[] = ["mechanical-edit", "feature", "refactor", "tests"];
@@ -27,8 +35,9 @@ function relevance(evidence: ModelEvidence, task: Task): string | null {
 // outweigh qualification. Each observed pass, approval or merge adds 100;
 // each failure or rejection subtracts 100. A net outcome outweighs qualification.
 // Raw counts favor longer histories; claims and handoffs are neutral. These
-// weights are routing priors, not measured quality.
-export function route(task: Task, profiles: readonly ModelProfile[], record: ModelRecord, constraints: Constraints): Candidate[] {
+// weights are routing priors, not measured quality. Equal scores go by the
+// reliability tie-breaker, then model id, then actor name.
+export function route(task: Task, profiles: readonly ModelProfile[], record: ModelRecord, constraints: Constraints, tiebreaks: ReadonlyMap<string, Tiebreak> = new Map()): Candidate[] {
   const candidates: Candidate[] = [];
   for (const profile of profiles) {
     if (constraints.localOnly && (profile.where !== "home" || !profile.dataStaysLocal)) continue;
@@ -56,8 +65,10 @@ export function route(task: Task, profiles: readonly ModelProfile[], record: Mod
         actorReasons.push(`Atelier ledger for ${actor}: ${r.itemsClaimed} items claimed, ${r.handoffsAway} handoffs away; no score adjustment.`);
       }
       if (actor === null) actorReasons.push("Harness assignment not supplied; configure a harness before dispatch.");
-      candidates.push({ profile, actor, score, reasons: actorReasons });
+      const tie = actor === null ? undefined : tiebreaks.get(actor);
+      if (tie) actorReasons.push(tie.reason);
+      candidates.push({ profile, actor, score, tiebreak: tie?.value ?? NEUTRAL, reasons: actorReasons });
     }
   }
-  return candidates.sort((a, b) => b.score - a.score || a.profile.id.localeCompare(b.profile.id) || (a.actor ?? "").localeCompare(b.actor ?? ""));
+  return candidates.sort((a, b) => b.score - a.score || b.tiebreak - a.tiebreak || a.profile.id.localeCompare(b.profile.id) || (a.actor ?? "").localeCompare(b.actor ?? ""));
 }
