@@ -3,9 +3,11 @@ import { type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertHandoffTarget, assertReviewAllowed, pushActors,
+  assertHandoffTarget, assertReviewAllowed, pushActors, ACTOR_MAX,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertBlockable, assertNotBlocked, blockReason,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
+  type Block, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
@@ -13,10 +15,13 @@ import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
+import type { RunReport } from "./models/reliability.ts";
+import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
 import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
+import { jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
@@ -110,6 +115,9 @@ export interface ProjectInit {
 
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 
+// How many run reports the index returns: the most recent, for the reliability record.
+export const RUN_REPORTS = 1000;
+
 // How many of the project's most recent events make the track record a plan
 // is routed on, as the Models page reads a project's record.
 const RECORD_EVENTS = 1000;
@@ -126,9 +134,6 @@ function rerouted(route: PartRoute, actor: string | undefined): PartRoute {
   if (!actor) return route;
   return { ...route, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: route.alternates.filter((a) => a.actor !== actor) };
 }
-
-// The longest actor a task can be handed to, as harness/model:profile.
-const ACTOR_MAX = 200;
 
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
@@ -191,9 +196,25 @@ export function assertNameFree(source: ProjectRef, to: string, target: ProjectRe
 }
 
 export function assertProjectRemovable(items: Pick<Item, "state">[], force: boolean): void {
-  if (!force && items.some((i) => ["claimed", "submitted", "accepted"].includes(i.state))) {
-    throw new RuleError("live_work", "project has claimed, submitted or accepted work; use --force to remove it", 409);
+  if (!force && items.some((i) => ["claimed", "submitted", "accepted", "blocked"].includes(i.state))) {
+    throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409);
   }
+}
+
+// A rejecting review's findings, as jobBrief quotes them. The findings field
+// arrives with the review job (docs/orchestrator.md, section 4, t39); until
+// a review carries one there is nothing to quote, and a part sent back for
+// rework is shown the failing check alone.
+function reviewFindings(r: Review): ReviewFindings | null {
+  const raw = (r as Review & { findings?: unknown }).findings;
+  if (!Array.isArray(raw)) return null;
+  const findings: Finding[] = raw.flatMap((f): Finding[] => {
+    const v = f as { file?: unknown; line?: unknown; severity?: unknown; text?: unknown };
+    return typeof v.file === "string" && typeof v.text === "string" && (v.severity === "blocking" || v.severity === "follow-up")
+      ? [{ file: v.file, line: typeof v.line === "number" ? v.line : null, severity: v.severity, text: v.text }]
+      : [];
+  });
+  return { by: r.by, head: r.head, summary: r.note || null, findings };
 }
 
 export class Ledger extends DurableObject<Env> {
@@ -215,6 +236,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -246,6 +268,12 @@ export class Ledger extends DurableObject<Env> {
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
+    // The owner's framing of a task (JSON lists and one line of text), and
+    // the block record while a task is blocked (see Block in rules.ts).
+    if (!columns.includes("non_goals")) this.sql.exec(`ALTER TABLE items ADD COLUMN non_goals TEXT`);
+    if (!columns.includes("stop_when")) this.sql.exec(`ALTER TABLE items ADD COLUMN stop_when TEXT`);
+    if (!columns.includes("next_gate")) this.sql.exec(`ALTER TABLE items ADD COLUMN next_gate TEXT`);
+    if (!columns.includes("blocked")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked TEXT`);
     // Plans (docs/orchestrator.md, section 1): an item's kind (null for an
     // ordinary task, plan or part), a part's plan item, its key in the
     // approved plan, and the keys of the parts it depends on, as JSON.
@@ -347,8 +375,17 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`DELETE FROM projects WHERE name = ?`, name).rowsWritten > 0;
   }
 
+  // The names table is read once for the whole list, as resolveProject reads
+  // it once for one name: each record's key and former names come from that
+  // one read, not from two queries of its own per project.
   projects(): ProjectRecord[] {
-    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => this.listed(JSON.parse(r.json as string)));
+    const keys = new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string]));
+    const listed = (record: ProjectRecord): ProjectRecord => {
+      const key = keys.get(record.name) ?? record.name;
+      const formerly = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)].filter((n) => n !== record.name);
+      return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
+    };
+    return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => listed(JSON.parse(r.json as string)));
   }
 
   // ── names ────────────────────────────────────────────────────────────────
@@ -360,19 +397,8 @@ export class Ledger extends DurableObject<Env> {
   // whichever is registered, so renaming back needs no special case, and
   // every former name resolves in one step.
 
-  private keyOf(name: string): string {
-    const row = this.sql.exec(`SELECT key FROM names WHERE name = ?`, name).toArray()[0];
-    return row ? (row.key as string) : name;
-  }
-
   private namesOf(key: string): string[] {
     return [key, ...this.sql.exec(`SELECT name FROM names WHERE key = ? ORDER BY name`, key).toArray().map((r) => r.name as string)];
-  }
-
-  private listed(record: ProjectRecord): ProjectRecord {
-    const key = this.keyOf(record.name);
-    const formerly = this.namesOf(key).filter((n) => n !== record.name);
-    return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
   }
 
   // Every request that names a project resolves it here, so the names table
@@ -481,6 +507,21 @@ export class Ledger extends DurableObject<Env> {
     return { report, alerts };
   }
 
+  // ── runs ─────────────────────────────────────────────────────────────────
+  // Runs that ended without a result the ledger could record, as the runners
+  // reported them (src/models/reliability.ts), on the index instance beside
+  // the usage reports. Each report is kept as it arrived; none replaces another.
+
+  putRun(report: RunReport): RunReport {
+    this.sql.exec(`INSERT INTO runs (json) VALUES (?)`, JSON.stringify(report));
+    return report;
+  }
+
+  // The most recent reports, newest first.
+  runs(limit = RUN_REPORTS): RunReport[] {
+    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
   // ── project instance ─────────────────────────────────────────────────────
 
   // An init, merged into the current record in one step: the Durable Object
@@ -516,7 +557,7 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
-  newItem(title: string, scope: string[], actor: string): Item {
+  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item {
     if (!title.trim()) throw new RuleError("bad_title", "an item needs a title", 400);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -525,7 +566,24 @@ export class Ledger extends DurableObject<Env> {
       `INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)`,
       id, title.trim(), JSON.stringify(scope), now, now,
     );
-    this.log(id, actor, "item.created", { title, scope }, now);
+    const set = fieldColumns(fields);
+    if (Object.keys(set).length) this.update(id, set, now);
+    this.log(id, actor, "item.created", { title, scope, ...fields }, now);
+    return this.item(id);
+  }
+
+  // The project owner changes a task's framing after it was created. A
+  // field sent replaces the stored one, a field left out is kept, and the
+  // event records only what was sent. A closed task is left as it was.
+  editItem(id: string, actor: string, fields: ItemFields): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    const set = fieldColumns(fields);
+    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --non-goal, --stop-when or --next-gate", 400);
+    const at = new Date().toISOString();
+    this.update(id, set, at);
+    this.log(id, actor, "item.edited", { ...fields }, at);
     return this.item(id);
   }
 
@@ -577,8 +635,10 @@ export class Ledger extends DurableObject<Env> {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
       // an actor name, and the second must not take over the first's fork.
+      // Runner names are lowercased when parsed, and a hold recorded before
+      // that may not be, so the same runner is compared without case.
       const held = item.runner ?? null, asking = runner?.runner ?? null;
-      if (held && held !== asking) {
+      if (held && held.toLowerCase() !== (asking ?? "").toLowerCase()) {
         throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
       }
       // After a handoff the new owner holds no runner yet; the first runner to
@@ -827,12 +887,16 @@ export class Ledger extends DurableObject<Env> {
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}) }, new Date().toISOString(), proved);
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.where ? { where: e.where } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     this.afterPlanChange(e.itemId);
   }
 
-  addReview(r: Review, origin?: string, proved = false): void {
+  // `via` says where a review by the project owner was recorded: "page" is a
+  // form on the task page, which only the signed-in owner reaches; "api" is
+  // the owner token, as the orchestrator and the CLI use it. The reliability
+  // record (src/models/reliability.ts) counts the two apart.
+  addReview(r: Review, origin?: string, proved = false, via?: "page" | "api"): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertLength(r.note, NOTE_MAX, "the review note");
     if (r.findings !== undefined && !validFindings(r.findings)) {
@@ -853,7 +917,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(r.findings?.length ? { findings: r.findings } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     this.answerReviewRequest(r.itemId, r.head, at);
     // A rejection with blocking findings sends a part back to its builder for
     // rework (docs/orchestrator.md, section 4). The re-review goes to the same
@@ -910,8 +974,35 @@ export class Ledger extends DurableObject<Env> {
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
+    assertNotBlocked(item);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
+  }
+
+  // The holder or the project owner blocks a task with the reason it cannot
+  // go on, and either unblocks it. The task keeps its owner, workspace and
+  // dispatch record meanwhile; unblocking returns it to the state it was in.
+  // An open task has no holder, so only the owner blocks or unblocks it.
+  block(id: string, actor: string, reason: unknown, proved = false): Item {
+    const text = blockReason(reason);
+    const item = this.item(id);
+    if (actor !== this.owner) assertOwner(item, actor);
+    assertBlockable(item);
+    const at = new Date().toISOString();
+    const record: Block = { reason: text, by: actor, at, from: item.state };
+    this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
+    this.log(id, actor, "item.blocked", { reason: text, from: item.state }, at, proved);
+    return this.item(id);
+  }
+
+  unblock(id: string, actor: string, proved = false): Item {
+    const item = this.item(id);
+    if (item.state !== "blocked" || !item.blocked) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`);
+    if (actor !== this.owner) assertOwner(item, actor);
+    const at = new Date().toISOString();
+    this.update(id, { state: item.blocked.from, blocked: null }, at);
+    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, at, proved);
+    return this.item(id);
   }
 
   private releaseAllowed(id: string, actor: string, note: string): Item {
@@ -1068,11 +1159,49 @@ export class Ledger extends DurableObject<Env> {
   abandon(id: string, actor: string, note: string, token?: string | null): Item {
     this.abandonAllowed(id, actor, note);
     this.dropToken(id, token);
+    // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
-    this.update(id, { state: "abandoned", owner: null }, at);
+    this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
     this.log(id, actor, "item.abandoned", { note }, at);
     this.afterPlanChange(id);
     return this.item(id);
+  }
+
+  // The owner traces a defect to the revision this item was accepted at,
+  // merged or not. Nothing about the item changes: the event is the record,
+  // and the reliability record counts it against the model that built that
+  // revision and every model that approved it. An item never accepted
+  // carries no approved change, so it is refused.
+  traceDefect(id: string, actor: string, note: string, foundIn: string | null): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner traces a defect to a change", 403);
+    const item = this.item(id);
+    if (!item.acceptedHead) {
+      throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
+    }
+    const at = new Date().toISOString();
+    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) }, at);
+    return item;
+  }
+
+  // The owner records which model served events recorded under another
+  // (src/models/served.ts): one event.served for each matching event that
+  // no annotation already says this model served. The annotated events
+  // never change. Without `apply` nothing is written, and the answer says
+  // what matches and what would be annotated.
+  annotateServed(sel: ServedSelection, actor: string, apply: boolean): { matched: ServedMatch[]; pending: number; annotated: number; applied: boolean } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records which model served an event", 403);
+    this.project();
+    const events = this.sql.exec(`SELECT * FROM events WHERE (at >= ? AND at < ?) OR kind = ? ORDER BY seq`, sel.from, sel.to, SERVED).toArray()
+      .map((r) => ({ seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string, actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }));
+    const { matched, pending } = matchServed(events, sel);
+    if (matched.length > SERVED_LIMIT) {
+      throw new RuleError("too_many_events", `${matched.length} events match, more than the ${SERVED_LIMIT} one request may annotate; name the tasks or narrow the window`, 400);
+    }
+    if (apply) {
+      const at = new Date().toISOString();
+      for (const m of pending) this.log(m.itemId, actor, SERVED, { seq: m.seq, recorded: m.actor, served: sel.served, ...(sel.note ? { note: sel.note } : {}) }, at);
+    }
+    return { matched, pending: pending.length, annotated: apply ? pending.length : 0, applied: apply };
   }
 
   evidenceFor(id: string): Evidence[] {
@@ -1148,7 +1277,7 @@ export class Ledger extends DurableObject<Env> {
   // metadata consumer such as ControlPlane's Observatory publication.
   owners() {
     return this.items()
-      .filter((i) => i.state === "claimed" || i.state === "submitted" || i.state === "accepted")
+      .filter((i) => i.state === "claimed" || i.state === "submitted" || i.state === "accepted" || (i.state === "blocked" && i.owner))
       .map((i) => ({ item: i.id, state: i.state, owner: i.owner, head: i.head, since: i.updatedAt }));
   }
 
@@ -1242,6 +1371,69 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "plan.proposed", { hash, parts: parsed.plan.parts.length }, at, proved);
     this.setBlocked(id, record, null);
     return { valid: true, hash, parts: parsed.plan.parts.length };
+  }
+
+  // The brief for the holder of a plan item's claim (its planner) or of a
+  // part's (its builder), from the pure renderers in src/plans/brief.ts
+  // (docs/orchestrator.md, sections 2 and 3). The job-brief route reads it,
+  // so a runner fetches the brief the server wrote instead of assuming one.
+  // Only the holder may read it: the brief is the work this dispatch asked
+  // for, and it names the interfaces other parts rely on.
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string }> {
+    const item = this.item(id);
+    if (item.kind !== "plan" && item.kind !== "part") {
+      throw new RuleError("not_a_plan", `${id} is not a plan or a part of one; its runner writes its own brief`, 404);
+    }
+    assertOwner(item, actor);
+    const project = this.project();
+    if (item.kind === "plan") {
+      const record = this.planRecord(id);
+      const { failed, lastErrors } = plannerAttempts(this.events(id));
+      const revised = this.events(id).find((e) => e.kind === "plan.revised");
+      const note = revised && typeof revised.data.note === "string" && revised.data.note ? revised.data.note : null;
+      return {
+        job: "plan",
+        ...await plannerBrief({
+          item: { id, project: project.name }, goal: record.goal, scope: record.scope,
+          actor: record.planner, attempt: failed + 1, note, errors: lastErrors,
+        }),
+      };
+    }
+    const planId = item.plan!;
+    const record = this.planRecord(planId);
+    const approval = record.approval;
+    if (!approval) throw new RuleError("no_approval", `${id} is a part of ${planId}, which has no approved plan`, 409);
+    const document = this.approvedPlan(planId, approval.hash);
+    const spec = document.parts.find((p) => p.key === item.partKey);
+    if (!spec) throw new RuleError("no_proposal", `${id}'s key ${item.partKey} is not in ${planId}'s approved plan`, 500);
+    const parts = this.planParts(planId);
+    const landed = new Map(parts.map((p) => [p.partKey!, p]));
+    const dependencies: Dependency[] = (item.deps ?? []).flatMap((key) => {
+      const dep = landed.get(key), specOf = document.parts.find((p) => p.key === key);
+      return dep && specOf ? [{ key, title: specOf.title, provides: specOf.provides, scope: specOf.scope, head: dep.acceptedHead ?? dep.head }] : [];
+    });
+    const attempts = partAttempts(tickEvents(this.partEvents(planId), new Map(parts.map((p) => [p.id, p.partKey!])))).get(item.partKey!) ?? [];
+    const job = attempts.some((a) => a.outcome === "failed") ? "rework" : "build";
+    const dispatched = this.events(id).find((e) => e.kind === "item.dispatched");
+    const reason = dispatched && typeof dispatched.data.reason === "string" ? dispatched.data.reason : null;
+    const failed = this.evidenceFor(id).filter((e) => e.grade === "observed" && e.passed === false).at(-1) ?? null;
+    const rejection = this.reviewsFor(id).filter((r) => !r.approve).at(-1) ?? null;
+    return {
+      job,
+      ...await buildBrief({
+        job,
+        item: { id, plan: planId, project: project.name },
+        goal: record.goal,
+        part: spec,
+        dependencies,
+        checks: project.policy.checks,
+        actor: item.owner,
+        attempt: attempts.length + 1,
+        reason,
+        findings: rejection ? reviewFindings(rejection) : null,
+        failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "" } : null,
+      }),
+    };
   }
 
   // The owner approves the newest valid proposal by its hash, once. Each
@@ -1999,10 +2191,25 @@ function toItem(r: Row): Item {
     runner: (r.runner as string | null) ?? null,
     // Only an item the owner has overridden carries the field.
     ...(r.review_override ? { reviewOverride: JSON.parse(r.review_override as string) as ReviewOverride } : {}),
+    nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
+    stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
+    nextGate: (r.next_gate as string | null) ?? null,
+    // Only a blocked item carries the record; unblocking and abandoning clear it.
+    ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
     // Only a plan and its parts carry these.
     ...(r.kind === "plan" || r.kind === "part" ? { kind: r.kind } : {}),
     ...(r.plan ? { plan: r.plan as string } : {}),
     ...(r.part_key ? { partKey: r.part_key as string } : {}),
     ...(r.deps ? { deps: JSON.parse(r.deps as string) as string[] } : {}),
   };
+}
+
+// The columns an ItemFields sets: a field given becomes its column, an
+// empty list or null gate becomes NULL, and a field left out sets nothing.
+function fieldColumns(fields: ItemFields): Record<string, string | null> {
+  const set: Record<string, string | null> = {};
+  if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
+  if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
+  if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
+  return set;
 }

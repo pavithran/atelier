@@ -56,10 +56,12 @@ export function agentsIn(message: string): string[] {
       .replace(TEXT_CONTROLS, " ")
       .replace(/\s+/g, " ").trim();
     // A human co-author is a person, not an agent: keep only names that
-    // read as a model or an agent harness and model. The whole name is
-    // tested, then it is capped by code points, so a digit or slash after
-    // the cap, or half of an emoji, is not what decides.
-    if (name && !name.includes("@") && (/\//.test(name) || /\d/.test(name) || /^(claude|gpt|codex|gemini|glm|deepseek|qwen|opus|sonnet|haiku|fable)\b/i.test(name))) {
+    // read as a model or an agent harness and model. A name with no letter
+    // at all, only a digit or a slash among its marks, is a number or a
+    // path, not an agent's name. The whole name is tested, then it is
+    // capped by code points, so a digit or slash after the cap, or half of
+    // an emoji, is not what decides.
+    if (/\p{L}/u.test(name) && !name.includes("@") && (/\//.test(name) || /\d/.test(name) || /^(claude|gpt|codex|gemini|glm|deepseek|qwen|opus|sonnet|haiku|fable)\b/i.test(name))) {
       names.add(Array.from(name).slice(0, NAME_LIMIT).join("").trim());
     }
   }

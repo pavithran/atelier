@@ -171,7 +171,7 @@ function nextSteps(v: PlanView, flag: string): string[] {
     }
     if (v.item.owner) return [`Waiting for ${v.item.owner} to post its proposal.`];
     return [
-      `Waiting for ${v.planner} to propose a plan. No runner takes a plan job yet; to plan by hand as ${v.planner}:`,
+      `Waiting for ${v.planner} to propose a plan; a runner that offers plan jobs takes it. To plan by hand as ${v.planner}:`,
       `  atelier claim ${id} --as ${v.planner} --runner home:NAME ${flag}`,
       `  atelier plan post ${id} FILE ${flag}`,
       `  atelier release ${id} ${flag}`,
@@ -220,5 +220,5 @@ export function planBrief(v: PlanView): Brief {
     else recommendation = recommend("wait", "The parts are being built; nothing waits on you.");
   }
   const decided = v.approval ? `Plan ${id}, approved at ${v.approval.hash.slice(0, 12)}: ${goal}` : v.proposal ? `Approve plan ${id}'s split of: ${goal}` : `Plan ${id}: ${goal}`;
-  return { decided, summary: null, evidence, recommendation };
+  return { decided, summary: null, nonGoals: v.item.nonGoals ?? [], stopWhen: v.item.stopWhen ?? [], nextGate: v.item.nextGate ?? null, evidence, recommendation };
 }

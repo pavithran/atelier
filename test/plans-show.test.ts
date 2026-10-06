@@ -48,7 +48,7 @@ test("before approval, plan show prints the proposal's parts, the routing an app
     `Approve this split: atelier plan approve t1 --hash ${HASH} --project demo`,
     '  or send it back: atelier plan revise t1 --note "what to change" --project demo',
   ]) assert.ok(text.split("\n").includes(line), line);
-  // A revise not yet answered waits for the planner; with no runner for plan jobs, the text says how to plan by hand.
+  // A revise not yet answered waits for the planner; the text still says how to plan by hand.
   const asked = planText({ ...proposed, proposal: { ...proposed.proposal!, answered: false } }, "demo").split("\n");
   assert.ok(asked.includes("  atelier claim t1 --as claude-code/opus-5.5 --runner home:NAME --project demo"));
   assert.ok(!asked.some((l) => l.startsWith("Approve this split")));
@@ -82,6 +82,7 @@ test("once approved, plan show gives each part's state, routing, attempts and th
 test("a plan's brief says what is decided and what it waits on, in the shape any item's brief has", () => {
   assert.deepEqual(planBrief(proposed), {
     decided: "Approve plan t1's split of: Ship the feature", summary: null,
+    nonGoals: [], stopWhen: [], nextGate: null,
     evidence: ["Phase: proposed.", `Proposal 2: 2 parts, ${HASH.slice(0, 12)}, by claude-code/opus-5.5.`],
     recommendation: { verdict: "decide", reason: "Read the split with atelier plan show t1, then approve it by its hash or send it back with a note." },
   });
