@@ -93,7 +93,7 @@ async function mergeFixture(t){
   const failOnce=()=>{res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({error:'temporary',detail:'retry'}));};
   if(req.url.endsWith('/review'))assert.equal(body.head,head);
   else if(req.url.endsWith('/accept')){assert.equal(body.head,head);box.state='accepted';answer={...item,state:box.state,acceptedHead:head};}
-  else if(req.url.endsWith('/baseline-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
+  else if(req.url.endsWith('/baseline-token')||req.url.endsWith('/base-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
   else if(req.url.endsWith('/read-token'))answer={remote:fork,token:'fixture',head,defaultBranch:'main'};
   else if(req.url.endsWith('/landing')&&body.cancel!==true&&box.failLanding){box.failLanding=false;return failOnce();}
   else if(req.url.endsWith('/merged')){
@@ -181,7 +181,7 @@ async function caseFixture(t,{files,advance,paths}){
  const server=createServer(async(req,res)=>{
   for await(const chunk of req);requests.push(req.url);
   let answer={item:{id:'t1',title:'Fixture task',state:'accepted',owner:'codex/test',head,acceptedHead:head},policy:{checks:[],protected:[]},acceptanceProtected:[],gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
-  if(req.url.endsWith('/baseline-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
+  if(req.url.endsWith('/baseline-token')||req.url.endsWith('/base-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
   else if(req.url.endsWith('/read-token'))answer={remote:fork,token:'fixture',head,defaultBranch:'main'};
   else if(req.method!=='GET')answer={};
   res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(answer));

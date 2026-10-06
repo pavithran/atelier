@@ -1,16 +1,19 @@
 # Orchestrator design
 
-Steps 1 to 11 of the build sequence (section 8) are built. Steps 1 to 4,
-8 and 11 are pure functions in `src/plans/` and `src/review/`. Step 5 puts
+Steps 1 to 14 of the build sequence (section 8) are built. Steps 1 to 4,
+8, 11 and 12 are pure functions in `src/plans/` and `src/review/`. Step 5 puts
 plans in the project's Ledger: proposals, approval, the parts and the tick
 that dispatches them. Step 6 gives them routes and the `atelier plan`
 command. Step 7 gives the planner and each part's builder a brief from the
 server (`GET items/tN/job-brief`) and the runner a plan job. Steps 9 and 10
 add automatic cross-family review: the Ledger's tick asks a review request
 for each submitted part, and a reviewer's runner answers it with findings
-and the rework transition. The integration code is still called by nothing
-but its tests. Steps 12 to 14 are not built: nothing merges parts into a
-plan's branch.
+and the rework transition. Steps 12 to 14 add the integration branch: parts
+fork from and are measured against their plan's fork, the integrator merges
+each part and reports `integrated` or `integration-failed`, and the plan
+submits and merges once every part is integrated. The merge receipt that
+lists the parts is not built, and nothing dispatches the `refresh` job
+automatically yet (section 5).
 
 Where a section describes something not built, it is the design, not a
 claim that the routes, storage, commands or runner jobs exist. Where the
@@ -204,6 +207,13 @@ A failed integration attempts to restore its previous head.
 
 **Friction with governed projects.** Under a governed policy, `assertEligible` needs `agentOf()` to name the actor, and it maps `atelier/integrator` to nothing, so the claim would be refused. Treat the integrator as a reserved actor, reachable only through a t43 token bound to it.
 
+**What is built, and where it differs from this design.** Steps 12 to 14 are built (section 8), with these deviations:
+
+- The mergeability pre-check runs when the integrator claims the plan item's integrate job, not when the tick writes the dispatch. The tick lives in the Ledger, which has no Artifacts access, so the Worker's claim route reads the part's base, the plan's head and the part's head and refuses a predicted conflict by sending the part back. A failure to read the branch only costs a runner trip, never a blocked integration.
+- The `refresh` job's runner side is built (it merges the baseline into the plan's fork and pushes), but nothing dispatches it automatically yet: `plan show` does not read `previewAgainstMain` to predict a conflict with main. `plan show` shows the integration head and each part's integration; the combined checks and mergeability with main are not shown, since they need Artifacts the Ledger cannot read.
+- `planGate` is read by `Ledger.accept` for the plan item, and `Ledger.merged` marks the parts merged with `{via: tP}` as described.
+
+
 ## 6. The owner's interface
 
 | Command | What it does |
@@ -276,9 +286,9 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 **t16: Integration branch per plan**
 
 11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`. Built.
-12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`.
-13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check, marking parts merged when the plan merges, and the reserved integrator actor.
-14. **Runner `--integrate`.** The integrate and refresh jobs, and a merge receipt that lists the parts.
+12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`. Built.
+13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check at the integrator's claim, marking parts merged when the plan merges, and the reserved integrator actor. Built.
+14. **Runner `--integrate`.** The integrate and refresh jobs; the merge receipt that lists the parts is not built. Built.
 
 ## Deferred work
 

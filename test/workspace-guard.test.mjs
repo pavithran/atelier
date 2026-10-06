@@ -77,6 +77,7 @@ globalThis.fetch = async (url, options = {}) => {
     const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(m[1]) ?? [];
     if (verb === "push") data = { ...item(id), head: body.head };
     else if (verb === "read-token") data = { remote: FORKS[id], token: "fake-fork-token", defaultBranch: "main", head: forkHead(id), base: BASE };
+    else if (verb === "base-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
     else data = { item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };
   }
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });

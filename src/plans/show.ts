@@ -28,6 +28,7 @@ export interface PlanPartView {
   route: PartRoute | null;        // the routing fixed at approval, with the owner's reroute
   attempts: Attempt[];            // counted from the owner's latest reroute or retry
   gate: { ready: boolean; blockers: string[] } | null;  // while submitted or accepted
+  integration: { head: string; mergeCommit: string } | null;  // recorded when the part became integrated
 }
 
 export interface PlanView {
@@ -44,7 +45,7 @@ export interface PlanView {
   approval: { hash: string; at: string; by: string; allowPaid: boolean; limits: PlanLimits; deadline: string; jobsUsed: number } | null;
   parts: PlanPartView[];
   preview: PartRoute[] | null;    // before approval: the routing an approval would fix now
-  integration: null;              // the plan's integration branch (t16) is not built
+  integration: { integrationHead: string | null };  // the plan branch's integration head; null when none is recorded
 }
 
 const flat = (text: string) => text.replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim();
@@ -62,6 +63,7 @@ function partState(p: PlanPartView, parts: PlanPartView[]): string {
   }
   if (p.state === "claimed") return `claimed by ${p.owner}`;
   if (p.state === "submitted") return `submitted by ${p.owner}`;
+  if (p.state === "integrated") return p.integration ? `integrated as ${p.integration.mergeCommit.slice(0, 8)}` : "integrated";
   return p.state;
 }
 
@@ -132,7 +134,10 @@ export function planText(v: PlanView, project: string): string {
     }
     if (v.preview) lines.push("", "The routing shown is what an approval would fix now, without paid models; it is computed again when you approve.");
   }
-  lines.push("", "The plan's integration branch, its combined checks and its mergeability with main are not built yet: each part reaches main by its own merge.");
+  if (v.approval) {
+    const head = v.integration.integrationHead;
+    lines.push("", head ? `Integration branch at ${head.slice(0, 8)}.` : "No part is integrated yet; the integration branch still sits at the commit the plan forked from.");
+  }
   lines.push("", ...nextSteps(v, flag));
   return lines.join("\n");
 }
@@ -171,6 +176,12 @@ function nextSteps(v: PlanView, flag: string): string[] {
       `  atelier plan post ${id} FILE ${flag}`,
       `  atelier release ${id} ${flag}`,
     ];
+  }
+  // The integrator submitted the plan item once every part is integrated; the
+  // owner accepts and merges the whole branch now (docs/orchestrator.md, section 5).
+  if (v.item.state === "submitted") {
+    const parts = v.parts.filter((p) => p.state === "integrated").map((p) => p.key);
+    return [`The plan is integrated (${parts.length ? list(parts) : "no part"}); accept and land it: atelier merge ${id} --head ${v.item.head} ${flag}`];
   }
   const yours = v.parts.filter((p) => p.state === "accepted" || (p.state === "submitted" && p.gate !== null));
   return yours.length

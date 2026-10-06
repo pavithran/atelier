@@ -18,9 +18,15 @@ export interface Dispatch {
   at: string;
   note: string;
   // A job other than building the item: "plan" asks the runner to write the
-  // plan item's plan document (docs/orchestrator.md, section 2). Absent for
-  // ordinary work.
-  job?: "plan";
+  // plan item's plan document (docs/orchestrator.md, section 2), "integrate"
+  // and "refresh" ask atelier/integrator to merge a part onto the plan's
+  // branch or main into it (section 5). Absent for ordinary work.
+  job?: "plan" | "integrate" | "refresh";
+  // For an integrate job: the part key to merge, its verified head, and the
+  // part's item id, so the integrator can fetch the head to merge.
+  part?: string;
+  head?: string;
+  partId?: string;
 }
 
 // What a runner says it can run when it asks for work. `jobs` names the
@@ -92,6 +98,13 @@ export function assertDispatchable(item: Item): void {
 
 // The agent and model a runner should use for a dispatch, or null if it cannot.
 export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
+  // The integrate and refresh jobs always run as the reserved integrator,
+  // which the queue returns to a runner that offers the job.
+  if (d.job === "integrate" || d.job === "refresh") {
+    if (!(offer.jobs ?? []).includes(d.job)) return null;
+    if (d.to !== "any" && d.to !== offer.kind) return null;
+    return { agent: "atelier", model: "integrator", actor: "atelier/integrator" };
+  }
   if (d.to !== "any" && d.to !== offer.kind) return null;
   if (d.job && !(offer.jobs ?? []).includes(d.job)) return null;
   for (const { agent, models } of offer.agents) {

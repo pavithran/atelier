@@ -60,6 +60,8 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check }) {
     let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: [check], protected: [], sandboxOnly: false }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
     if (path.endsWith("/read-token")) data = { remote: fork, token: "fake-fork-token", head, defaultBranch: "main" };
     if (path.endsWith("/baseline-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
+    // A task with no plan is measured against the baseline, so its base token names it.
+    if (path.endsWith("/base-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
     // A sandbox run, finished at once, as the Worker reports one it ran on the merge.
     if (path.endsWith("/sandbox")) data = { runId: "run" };
     if (path.endsWith("/sandbox/run")) data = { status: "done", recorded: true, request: { head, merged: true }, mainHead, results: [{ claim: check, passed: true, seconds: 1, outputTail: "check output" }] };
