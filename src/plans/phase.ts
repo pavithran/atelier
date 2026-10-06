@@ -11,7 +11,7 @@ import type { Plan } from "./schema.ts";
 
 // The item states a part or the plan item can be in. Mirrors the ledger's
 // states without importing its row types.
-export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned";
+export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "merged" | "abandoned" | "blocked";
 
 // The derived state of a plan. Only the reason for `blocked` is stored; every
 // other state is computed from plain data.
@@ -223,6 +223,8 @@ export function planActions(input: TickInput): TickResult {
   let live = input.plan.parts.filter((p) => {
     const state = states.get(p.key);
     if (state === "claimed" || state === "submitted") return true;
+    // A blocked part counts as live, so it still holds a slot in the parallel limit.
+    if (state === "blocked") return true;
     return state === "open" && (history.get(p.key)?.waiting ?? false);
   }).length;
 

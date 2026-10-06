@@ -11,6 +11,8 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { againstMain, changedPaths, pairReader, repoReader, type Reader } from "../diff";
 import { mergePatch, mergeTrees, type Patch } from "../preview/merge";
+import { refusalOf, refusalText } from "../checks.ts";
+import { checkApplies, type CheckPaths } from "../rules.ts";
 import { END_OF_ARCHIVE } from "./tar";
 import { writeTree } from "./tree";
 
@@ -40,16 +42,20 @@ export interface RunRequest {
   fork: string;
   head: string;            // the head the caller asked about; the run refuses any other
   checks: string[];
+  checkPaths?: CheckPaths[];  // checks that apply only when the change touches these paths
   requestedBy: string;
   merged?: boolean;        // run on the merge of the head with main's head, not on the head alone
 }
 
+// A check whose paths the change does not touch is not run: its result is
+// notApplicable, with no pass, exit code or output.
 export interface CheckResult {
   claim: string;
-  passed: boolean;
-  exitCode: number;
+  passed: boolean | null;
+  exitCode: number | null;
   seconds: number;
   outputTail: string;
+  notApplicable?: boolean;
 }
 
 export interface RunState {
@@ -128,6 +134,11 @@ export class CheckRunner extends DurableObject<Env> {
 
   private async run(state: RunState): Promise<void> {
     const req = state.request;
+    // A check that is never read-only is not run here, however the run was asked for.
+    for (const claim of req.checks) {
+      const why = refusalOf(claim);
+      if (why) throw new Error(`${refusalText(claim, why)}.`);
+    }
     using fork = await this.env.ARTIFACTS.get(req.fork);
     using baseline = await this.env.ARTIFACTS.get(req.baselineRepo);
     // The paths are measured against main's head, not against a fork point
@@ -138,7 +149,13 @@ export class CheckRunner extends DurableObject<Env> {
     if (m.head !== req.head) throw new Error(`the workspace moved to ${m.head.slice(0, 8)} after ${req.head.slice(0, 8)} was requested`);
     state.changedPaths = await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree);
     state.mainHead = m.main;
+    const applies = (claim: string) => checkApplies({ checkPaths: req.checkPaths }, claim, state.changedPaths ?? null) !== false;
+    state.results = req.checks.filter((claim) => !applies(claim)).map((claim) => ({ claim, passed: null, exitCode: null, seconds: 0, outputTail: "", notApplicable: true }));
     await this.ctx.storage.put("state", state);
+    // When no check applies, no container is started; the results record the
+    // paths measured. A merged run needs no merge tree then either, since a
+    // check that does not apply to the change is not needed on the merge.
+    if (!req.checks.some(applies)) return this.record(state, m.head, fork);
     // The tree the container checks is the head's, whose objects are in the
     // fork. A merged run checks the would-be merge instead: the head's tree
     // with main's changes since the fork point laid over it, as the preview
@@ -185,8 +202,7 @@ export class CheckRunner extends DurableObject<Env> {
     const [unpacked] = await Promise.all([unpack.output(), written]);
     if (unpacked.exitCode !== 0) throw new Error(`tar failed: ${new TextDecoder().decode(unpacked.stderr).slice(0, 500)}`);
 
-    state.results = [];
-    for (const claim of req.checks) {
+    for (const claim of req.checks.filter(applies)) {
       const t0 = Date.now();
       const proc = await container.exec(["timeout", "--kill-after=5", String(STEP_SECONDS), "sh", "-c", claim], { cwd: WORKDIR, stderr: "combined", env: ENV });
       const decoder = new TextDecoder();
@@ -208,29 +224,36 @@ export class CheckRunner extends DurableObject<Env> {
       });
       await this.ctx.storage.put("state", state);
     }
+    await this.record(state, m.head, fork);
+  }
 
-    // Record in the Ledger. It refuses evidence for a head the item has moved
-    // past. Each row names main's head the run was measured against; a merged
-    // run's rows are bound to that commit too, measure no paths, and are
-    // stale once main moves on.
+  // Record in the Ledger. It refuses evidence for a head the item has moved
+  // past. Each row names main's head the run was measured against; a merged
+  // run's rows are bound to that commit too, measure no paths, and are stale
+  // once main moves on. A row for a check that does not apply is a fact about
+  // the head, so it is never merged and keeps the paths measured.
+  private async record(state: RunState, head: string, fork: ArtifactsRepo): Promise<void> {
+    const req = state.request;
     const ledger = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${req.project}`));
     const current = await fork.log({ limit: 1 });
-    if (current[0]?.hash !== m.head) throw new Error("the workspace changed while checks ran; record the push and check again");
+    if (current[0]?.hash !== head) throw new Error("the workspace changed while checks ran; record the push and check again");
     const at = new Date().toISOString();
-    for (const r of state.results) {
+    for (const r of state.results ?? []) {
       await ledger.addEvidence({
         itemId: req.itemId,
         claim: r.claim,
         grade: "observed",
-        head: m.head,
+        head,
         passed: r.passed,
         by: "atelier/sandbox",
         at,
-        changedPaths: req.merged ? null : state.changedPaths,
-        outputTail: `${r.outputTail}\n[atelier] ran in a Cloudflare container in ${r.seconds}s, exit ${r.exitCode}${req.merged ? `, on the merge with main at ${m.main.slice(0, 8)}` : ""}`,
+        changedPaths: req.merged && !r.notApplicable ? null : state.changedPaths,
+        outputTail: r.notApplicable
+          ? "[atelier] not run: no path this change touches is one the check applies to"
+          : `${r.outputTail}\n[atelier] ran in a Cloudflare container in ${r.seconds}s, exit ${r.exitCode}${req.merged ? `, on the merge with main at ${state.mainHead?.slice(0, 8)}` : ""}`,
         where: "sandbox",
-        mainHead: m.main,
-        ...(req.merged ? { merged: true } : {}),
+        mainHead: state.mainHead,
+        ...(r.notApplicable ? { notApplicable: true } : req.merged ? { merged: true } : {}),
       });
     }
     state.recorded = true;

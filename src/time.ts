@@ -1,8 +1,8 @@
 // Times as the owner reads them: in the time zone the TIMEZONE setting names
 // (an IANA name such as America/New_York), or UTC when it is unset or not a
-// zone this runtime knows. Pages are drawn on the server, with no script, so
-// the zone is the owner's setting, not the browser's. Each request sets it
-// from the Worker's settings before any page is drawn.
+// zone this runtime knows. Pages are drawn on the server and read without
+// script, so the zone is the owner's setting, not the browser's. Each request
+// sets it from the Worker's settings before any page is drawn.
 
 let zone = "UTC";
 
@@ -48,6 +48,11 @@ export function shortStamp(at: Date | string | number): string {
 export function dayOf(at: Date | string | number): string {
   const p = parts(at);
   return `${p.y}-${p.m}-${p.d}`;
+}
+
+// "Sunday": the day of the week in the owner's zone.
+export function weekdayOf(at: Date | string | number): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "long" }).format(at instanceof Date ? at : new Date(at));
 }
 
 // "EDT": the abbreviation in force at one moment.

@@ -606,6 +606,8 @@ it("the project page carries the same standing as the route", async () => {
   expect(html).toContain("A queued &lt;task&gt;");
 });
 
+// Over a thousand Durable Object calls: under a loaded machine they take
+// longer than vitest's 5 s default, so this test has its own limit.
 it("the standing route reads each section from its own source, not a window over the whole record", async () => {
   const name = "standing-window", agent = "codex/gpt-6-astra", H0 = "0".repeat(40), head = "a".repeat(40);
   await project(name);
@@ -641,7 +643,7 @@ it("the standing route reads each section from its own source, not a window over
   expect(s.live.find((x) => x.id === "t3")!.since).toBeNull();
   expect(s.partial).toContain("t3: when it was taken is not shown, because its record is longer than the last 300 events read.");
   expect(s.partial.filter((x) => x.startsWith("t1:") || x.startsWith("t2:"))).toEqual([]);
-});
+}, 30_000);
 
 it("sessions record, clean, cap and read newest first, and only the project owner records one", async () => {
   await project("sessions");
@@ -859,4 +861,36 @@ it("the sandbox route passes a merged run on to the runner, and a plain one as b
   expect(await started({ merged: true })).toMatchObject({ itemId: "t1", head: H1, merged: true });
   expect(await started({})).not.toHaveProperty("merged");
   expect(await started({ merged: "yes" })).not.toHaveProperty("merged");
+});
+it("the holder blocks and unblocks through the API, only the owner edits the framing, and the brief carries both", async () => {
+  await project("routes-c");
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-c"));
+  const made = await call("POST", "/projects/routes-c/items", "owner", { title: "Frame it", scope: ["a/**"], nonGoals: ["no b"], nextGate: "demo" });
+  expect(made.status).toBe(201);
+  const created = await made.json() as { id: string; nonGoals: string[]; nextGate: string };
+  expect([created.nonGoals, created.nextGate]).toEqual([["no b"], "demo"]);
+  expect((await call("POST", "/projects/routes-c/items", "owner", { title: "Bad", nonGoals: "no b" })).status).toBe(400);
+  const at = (verb: string) => `/projects/routes-c/items/${created.id}/${verb}`;
+
+  await L.claim(created.id, "codex/gpt-6");
+  expect((await call("POST", at("block"), "codex/gpt-6", {})).status).toBe(400);
+  const blocked = await call("POST", at("block"), "codex/gpt-6", { reason: "waiting on the owner" });
+  expect(blocked.status).toBe(200);
+  expect((await blocked.json() as { state: string; blocked: { by: string } })).toMatchObject({ state: "blocked", blocked: { by: "codex/gpt-6" } });
+  const submit = await call("POST", at("submit"), "codex/gpt-6", {});
+  expect(submit.status).toBe(409);
+  expect((await submit.json() as { error: string; detail: string })).toMatchObject({ error: "blocked", detail: `${created.id} is blocked: waiting on the owner. Run atelier unblock ${created.id} first` });
+
+  expect((await call("POST", at("edit"), "codex/gpt-6", { nextGate: "x" })).status).toBe(403);
+  const edited = await call("POST", at("edit"), "owner", { stopWhen: ["a test is red"], nextGate: null });
+  expect(edited.status).toBe(200);
+  expect(await edited.json() as { nonGoals: string[]; stopWhen: string[]; nextGate: string | null }).toMatchObject({ nonGoals: ["no b"], stopWhen: ["a test is red"], nextGate: null });
+
+  const brief = await (await call("GET", at("brief"), "owner")).json() as { nonGoals: string[]; stopWhen: string[]; recommendation: { verdict: string; reason: string } };
+  expect([brief.nonGoals, brief.stopWhen]).toEqual([["no b"], ["a test is red"]]);
+  expect(brief.recommendation.verdict).toBe("decide");
+  expect(brief.recommendation.reason).toMatch(/^codex\/gpt-6 blocked it: waiting on the owner\. Clear that, then run atelier unblock/);
+
+  expect((await call("POST", at("unblock"), "owner", {})).status).toBe(200);
+  expect((await (await call("GET", `/projects/routes-c/items/${created.id}`, "owner")).json() as { item: { state: string } }).item.state).toBe("claimed");
 });
