@@ -56,8 +56,10 @@ export function cleanSession(value: Record<string, unknown>): SessionData {
   return { ...metadata, summary, next: sessionText(value.next), head: value.head, dirty: value.dirty, checks, checksSkipped: value.checksSkipped === true };
 }
 
+// PROJECT.md is the last choice: a project may keep its handoff in a file Git
+// does not track, as Atelier's own checkout does because the repository is public.
 export function stateFile(paths: string[]): string | undefined {
-  return ["docs/STATE.md", "STATE.md"].find((p) => paths.includes(p));
+  return ["docs/STATE.md", "STATE.md", "PROJECT.md"].find((p) => paths.includes(p));
 }
 
 export function handoffNotes(state: string, paths: string[], since?: string, modified: Record<string, string> = {}): string[] {
