@@ -1,0 +1,16 @@
+atelier atelier/t111 "Orchestrator step 8 (t39): automatic cross-family review rules as pure functions in src/review/ (reviewNeeded, pickReviewer, parseVerdict, reviewBrief) with tests; see docs/orchestrator.md sections 4 and 8"
+accepted head d1193da7b2eaeb1de8d112bb350509f1bae61fc4
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T01:19:50.770Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T01:19:52.903Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. pickReviewer refuses any reviewer whose family matches a contributor (familyOf strips profile suffixes and ignores case; an unrecognised family refuses outright; handoffs counted through pushActors). parseVerdict refuses replies that mention both verdicts or carry stray verdict keys, so quoting cannot steer it. reviewBrief's fence is longer than any backtick run in the payload and direction characters are shown as code points. reviewNeeded follows gate(). Pure; no follow-ups.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T00:45:45.838Z pavi item.created
+2026-10-06T00:45:46.660Z claude-code/opus-5.5 item.claimed
+2026-10-06T00:45:52.459Z claude-code/opus-5.5 fork.created
+2026-10-06T01:18:31.202Z claude-code/opus-5.5 push.observed
+2026-10-06T01:19:50.986Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:19:53.007Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:19:53.672Z claude-code/opus-5.5 item.submitted
+2026-10-06T01:28:56.406Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T01:28:57.044Z pavi review.approved
+2026-10-06T01:28:57.683Z pavi item.accepted
