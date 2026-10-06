@@ -1,0 +1,14 @@
+atelier atelier/t174 "Timing tests fail under machine load and block every observed check: the process-group and opencode tests in test/runner.test.mjs give node starts sub-second budgets, and the standing-route test in test/routes.spec.ts makes 1010 Durable Object calls inside vitest's 5 s default; widen the budgets and give that test its own timeout"
+accepted head 05788f5e5e665d49766954affbc749db79e08ada
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T14:02:56.664Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T14:02:59.469Z
+REVIEW approve — antigravity/gemini-3.1-pro: Tests only: budgets widened and a 30 s limit for the standing-route test; no assertion weakened.
+2026-10-06T13:59:45.551Z pavi item.created
+2026-10-06T13:59:47.046Z claude-code/opus-5.5 item.claimed
+2026-10-06T13:59:52.151Z claude-code/opus-5.5 fork.created
+2026-10-06T14:01:18.241Z claude-code/opus-5.5 push.observed
+2026-10-06T14:02:57.173Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:02:59.660Z claude-code/opus-5.5 evidence.observed
+2026-10-06T14:03:00.375Z claude-code/opus-5.5 item.submitted
+2026-10-06T14:03:55.725Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T14:03:56.800Z pavi item.accepted
