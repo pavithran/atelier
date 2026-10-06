@@ -421,9 +421,10 @@ defaults, as a first init does; the project's title and creation date are kept.
 When the checkout is already registered locally, `init` reuses its registered
 name, even if the folder has a different name. A different `--name NAME` is
 refused. `atelier init --name NAME --rename-local` changes only that local
-config entry and then returns. It does not rename a server project, update
-its title or policy, or push a baseline. The server refuses a new project
-when its baseline repository belongs to another registered project.
+config entry and then returns. It does not rename a server project (see
+[Renaming a project](#renaming-a-project)), update its title or policy, or
+push a baseline. The server refuses a new project when its baseline
+repository belongs to another registered project.
 
 ## Projects that use Git LFS
 
@@ -521,8 +522,31 @@ can be restored.
 
 Removal retains the Artifacts repository and all project Ledger data,
 including items, evidence and history. Deleting a repository requires a
-separate, deliberate action by the owner. Reinitialising the same project
-can register its retained Ledger again.
+separate, deliberate action by the owner. Reinitialising the same project,
+under any name it has had, registers its retained Ledger again.
+
+## Renaming a project
+
+`atelier projects rename OLD NEW` gives a project a new name on the server
+and moves the local config entry to it. Task references become `NEW/t43`
+and pages `/p/NEW/...`. The project's Ledger, its baseline repository and
+every task fork stay where they are, under the name the project was created
+with, its key; new forks are named from that key too. Nothing is copied.
+
+The old name keeps working. `/api/projects/OLD/...` serves the project as
+before, in place rather than by redirect, so an agent whose token is limited
+to the old name, a workspace clone that records it, and a command run with
+`--project OLD` all carry on; the answer carries an `X-Atelier-Project`
+header naming the project as it is called now. Pages under `/p/OLD/...`
+redirect to `/p/NEW/...`, and a form posted from a page opened before the
+rename still acts. The `SHOWCASE` setting may keep the old name.
+
+A name is refused when another project is registered under it or was called
+it before, or when a removed project's Ledger is kept under it. Renaming
+back restores the old name by the same operation, and after any number of
+renames every name the project has had resolves to it in one step. A former
+name cannot be given to a new project while it still belongs to the renamed
+one.
 
 ## Operations
 

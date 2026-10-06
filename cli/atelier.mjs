@@ -586,7 +586,7 @@ const usage = {
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]",
-  projects: "usage: atelier projects remove NAME [--force]",
+  projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
 };
 
 // The checkout's state against the baseline, in words. The baseline's head is
@@ -1539,9 +1539,33 @@ const commands = {
     }
   },
 
+  // The project owner renames a project on the server, or removes it.
   async projects() {
-    const name = args._[2];
-    if (args._[1] !== "remove" || !name) die("usage: atelier projects remove NAME [--force]");
+    const [, sub, name, to] = args._;
+    if (sub === "rename") {
+      if (!name || !to || args._.length !== 4) die(usage.projects);
+      const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
+      // The server says which name the project was registered under; the
+      // local entry moves from that name. An entry already under the new
+      // name is kept, and the old one dropped, saying what it held.
+      let local = `No local config entry was called ${r.from}.`;
+      const held = cfg.projects?.[r.from];
+      if (held && !cfg.projects[r.to]) {
+        cfg.projects[r.to] = held;
+        delete cfg.projects[r.from];
+        saveConfig(cfg);
+        local = `The local config entry ${r.from} is now ${r.to}.`;
+      } else if (held) {
+        const settings = Object.entries(held).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
+        delete cfg.projects[r.from];
+        saveConfig(cfg);
+        local = `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped (it held: ${settings.join(", ")}).`;
+      }
+      console.log(`${r.from} is now ${r.to} on ${server()}. Its Ledger, baseline ${r.project.repo} and every fork stay where they are. ${local}`);
+      console.log(`${r.from} still works: the API serves it under that name, old page links redirect, tokens limited to it keep their access, and workspaces under ${join(CACHE, "work", r.from)} need no change.`);
+      return;
+    }
+    if (sub !== "remove" || !name) die(usage.projects);
     await call("DELETE", P(name), { force: args.force === true }, await actor(OWNER));
     // The whole local entry goes; say what it held, since some of it (notesRemote) is set by hand.
     let dropped = "";
@@ -1614,7 +1638,7 @@ Agents     start ID [--as H/M] · done "summary"\n           claim ID --as H/M [
 Owner      accept ID · merge ID [--head SHA [--approve]] [--policy-changed-ok] · abandon ID
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
-Projects   projects remove NAME [--force] · init --name NAME --rename-local
+Projects   projects rename OLD NEW · projects remove NAME [--force] · init --name NAME --rename-local
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
 Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH]\n           runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
