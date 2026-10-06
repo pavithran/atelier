@@ -1,0 +1,16 @@
+atelier atelier/t116 "Audit t105, blocking (confirmed by glm-5.3): the item's own agent records the Observed check result and the changed paths: the evidence route trusts body.passed and body.changedPaths (src/index.ts:516-536), agent tokens may post evidence on their own item, and changeClass classifies on that list, so a change to a protected path merges with no review; measure changed paths server-side in the evidence route (as src/sandbox/runner.ts already does) and ignore the caller's list"
+accepted head dfad983d412b1028f37d278f8a2fb036fe7dc2a7
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T01:52:15.029Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T01:52:17.232Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. body.changedPaths is discarded; the Worker measures the paths and the head; a check for any head but the fork's is refused; no fork point records null and the gate waits; another item's fork is measured, not the caller's. Counting a posted result while classifying server-side is sound: every protected change needs an independent review. Follow-ups: case variants (t117) and newline paths (audit F5) remain, as does t126.
+REVIEW approve — pavi: Owner approval after Gemini 3.1 Pro's review.
+2026-10-06T01:21:05.319Z pavi item.created
+2026-10-06T01:30:27.505Z claude-code/opus-5.5 item.claimed
+2026-10-06T01:30:31.957Z claude-code/opus-5.5 fork.created
+2026-10-06T01:50:55.357Z claude-code/opus-5.5 push.observed
+2026-10-06T01:52:15.251Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:52:17.331Z claude-code/opus-5.5 evidence.observed
+2026-10-06T01:52:18.046Z claude-code/opus-5.5 item.submitted
+2026-10-06T02:06:02.431Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:06:03.112Z pavi review.approved
+2026-10-06T02:06:03.752Z pavi item.accepted
