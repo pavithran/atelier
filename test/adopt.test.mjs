@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { fillTemplate, insertSection, isLink, leftovers, linkedPart, section, TEMPLATE } from "../cli/adopt.mjs";
+import { ceilingRefusal, fillTemplate, insertSection, isLink, leftovers, linkedPart, section, TEMPLATE } from "../cli/adopt.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 const template = readFileSync(TEMPLATE, "utf8");
@@ -297,11 +297,15 @@ test("a settled project has no leftovers", (t) => {
 
 // `outside` is a directory beside the checkout and the workspace, for files a
 // symlink may point at: `files` writes them, `links` turns a checkout path
-// into a symlink to one.
-async function fixture(t, { registered = true, paste = true, agents = AGENTS, files = {}, links = {} } = {}) {
+// into a symlink to one. `held` writes more files into the checkout itself.
+async function fixture(t, { registered = true, paste = true, agents = AGENTS, files = {}, links = {}, held = {} } = {}) {
   const { root, dir } = checkout(t, { paste });
   if (agents === null) rmSync(join(dir, "AGENTS.md"), { force: true });
   else if (agents !== AGENTS) writeFileSync(join(dir, "AGENTS.md"), agents);
+  for (const [path, text] of Object.entries(held)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
   const outside = join(root, "outside");
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(outside, path)), { recursive: true });
@@ -553,6 +557,55 @@ test("an AGENTS.md with no heading gets the section at the top", async (t) => {
   const agents = f.read("AGENTS.md");
   assert.ok(agents.startsWith("## This project works through Atelier\n"), agents.slice(0, 60));
   assert.ok(agents.endsWith(prose), "every line of the file is kept");
+});
+
+// ── the project's context ceiling ──────────────────────────────────────────
+
+const BUDGET = "docs/control-plane/context-budget.v1.json";
+const budget = (ceiling) => JSON.stringify({
+  schema_version: 1, kind: "control-plane.context-budget", advisory: true, drift_multiple: 3,
+  surfaces: [{ path: "AGENTS.md", baseline_lines: 1, required: true, ceiling_lines: ceiling }, { path: "docs/STATE.md", baseline_lines: 26, required: false }],
+}, null, 2) + "\n";
+
+test("the files the move writes are measured against the project's context ceiling", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-ceiling-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = [{ path: "bin/control-plane", text: "#!/bin/sh\n" }, { path: "AGENTS.md", text: "# weblog\n\n## This project works through Atelier\n\nLine.\n" }];
+  assert.equal(ceilingRefusal(root, files), null, "no policy, no ceiling");
+  mkdirSync(join(root, "docs/control-plane"), { recursive: true });
+  writeFileSync(join(root, BUDGET), budget(5));
+  assert.equal(ceilingRefusal(root, files), null, "five lines fit a ceiling of five");
+  writeFileSync(join(root, BUDGET), budget(4));
+  assert.equal(ceilingRefusal(root, files),
+    `AGENTS.md would be 5 lines after the move, 1 over its ceiling of 4 in ${BUDGET}, and atelier wrap refuses a file over its ceiling. Shorten AGENTS.md in the checkout (move history to docs/history/), commit, then run atelier adopt again.`);
+  // A surface with no ceiling sets none; a file the policy does not name is not measured.
+  writeFileSync(join(root, BUDGET), budget(undefined));
+  assert.equal(ceilingRefusal(root, files), null);
+  writeFileSync(join(root, BUDGET), "{");
+  assert.match(ceilingRefusal(root, files), /context-budget\.v1\.json is not a valid context budget policy .*run atelier adopt again/);
+});
+
+test("a move past the project's context ceiling is refused before the task exists", async (t) => {
+  const f = await fixture(t, { held: { [BUDGET]: budget(20) } });
+  const before = tree(f.dir);
+  const r = await f.run(["adopt", "--project", "weblog"]);
+  assert.equal(r.status, 1, r.stdout);
+  const counted = /AGENTS\.md would be (\d+) lines after the move, (\d+) over its ceiling of 20 in docs\/control-plane\/context-budget\.v1\.json/.exec(r.stderr);
+  assert.ok(counted, r.stderr);
+  assert.ok(Number(counted[1]) > 20);
+  assert.equal(Number(counted[1]) - 20, Number(counted[2]));
+  assert.match(r.stderr, /Shorten AGENTS\.md in the checkout/);
+  assert.deepEqual(f.posts, [], "no task, no claim");
+  assert.ok(!existsSync(f.workspace), "no workspace was made");
+  assert.deepEqual(tree(f.dir), before, "the registered checkout is unchanged");
+});
+
+test("a move under the ceiling goes ahead and leaves the policy as it is", async (t) => {
+  const f = await fixture(t, { held: { [BUDGET]: budget(500) } });
+  const r = await f.run(["adopt", "--project", "weblog"]);
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.read(BUDGET), budget(500));
+  assert.deepEqual(f.workspaceGit("show", "--name-only", "--format=", "HEAD").split("\n").sort(), ["AGENTS.md", "bin/control-plane", "bin/control-plane-paste"]);
 });
 
 for (const typed of ["pickup-card", "unwrap"]) test(`${typed} refuses extra arguments with one line that names ${typed}`, (t) => {

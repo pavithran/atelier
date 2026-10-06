@@ -21,6 +21,8 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
+import { contextBudget, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
+
 // What the new task may touch: the files the move writes and the files the
 // leftovers live in, which the agent finishing the task settles.
 export const SCOPE = [
@@ -264,6 +266,33 @@ export function linkedPart(root, path) {
   return null;
 }
 
+// The lines a file holds, counted as wrap counts a context surface: a final
+// newline ends the last line and starts none.
+const lineCount = (text) => (text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0);
+
+// Why the files the move writes cannot be written under the project's
+// context ceiling, or null. The policy is docs/control-plane/context-budget.v1.json
+// in the directory the move is applied to; `atelier wrap` refuses a surface
+// over its ceiling, so a move that wrote past one would leave the project
+// unable to wrap. A missing policy sets no ceiling; one that cannot be read
+// refuses the move, because nothing can be measured against it.
+export function ceilingRefusal(workspace, files) {
+  let text;
+  try { text = readFileSync(join(workspace, CONTEXT_BUDGET_PATH), "utf8"); } catch { return null; }
+  let policy;
+  try { policy = contextBudget(JSON.parse(text)); }
+  catch (error) { return `${CONTEXT_BUDGET_PATH} is not a valid context budget policy (${error.message}); fix it in the checkout, commit, then run atelier adopt again`; }
+  for (const file of files) {
+    const surface = policy.surfaces.find((s) => s.path === file.path && s.ceiling_lines !== undefined);
+    if (!surface) continue;
+    const lines = lineCount(file.text);
+    if (lines > surface.ceiling_lines) {
+      return `${file.path} would be ${lines} lines after the move, ${lines - surface.ceiling_lines} over its ceiling of ${surface.ceiling_lines} in ${CONTEXT_BUDGET_PATH}, and atelier wrap refuses a file over its ceiling. Shorten ${file.path} in the checkout (move history to docs/history/), commit, then run atelier adopt again.`;
+    }
+  }
+  return null;
+}
+
 // Everything the move writes and everything it reports, computed from the
 // checkout and from the directory the move is applied to. Called with the
 // checkout before the task exists — the workspace is a clone of it, so the
@@ -293,6 +322,10 @@ export function adoption({ project, checkout, workspace, guide, template = readF
     ...(paste ? [{ path: "bin/control-plane-paste", text: pasteScript(), mode: 0o755 }] : []),
     { path: "AGENTS.md", text: insertSection(held, section(guide)), mode: null },
   ];
+  // Measured after the section is in: the project's own ceiling decides
+  // whether the move can be written at all.
+  const ceiling = ceilingRefusal(workspace, files);
+  if (ceiling) throw new Error(ceiling);
   const message = `Move ${project} from ControlPlane to Atelier\n\n`
     + "bin/control-plane now prints the Atelier command it runs and forwards to it,\n"
     + "never to ControlPlane's central checkout; bin/control-plane-paste points\n"
