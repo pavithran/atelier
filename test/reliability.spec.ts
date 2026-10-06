@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
-import type { ModelReliability, RunReport } from "../src/models/reliability.ts";
+import { buildReliability, type ModelReliability, type RunReport } from "../src/models/reliability.ts";
 import { signIn } from "./signin.ts";
 
 // t109: each model's reliability across every project, through the Worker's
@@ -52,11 +52,12 @@ function artifacts(heads: Record<string, string>): Artifacts {
 
 it("a runner reports a run under its name; the owner token reads the reports; an agent token cannot send one", async () => {
   const body = { actor: "opencode/glm-5.3", role: "review", outcome: "refused", project: "rel-runs", item: "t4", detail: "Select a model before continuing" };
-  expect((await call("POST", "/runs", "owner", body)).status).toBe(400);
+  // No runner header: the owner records a run by hand, under the owner's name.
+  expect((await call("POST", "/runs", "owner", body)).status).toBe(201);
   expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "laptop" })).status).toBe(400);
   const bad = await call("POST", "/runs", "owner", { ...body, outcome: "crashed" }, { "x-atelier-runner": "home:studio" });
   expect(bad.status).toBe(400);
-  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be stalled, timed-out or refused" });
+  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, early_stop, permission_stop, duplicate_design, incomplete_merge" });
   const sent = await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" });
   expect(sent.status).toBe(201);
   expect(await sent.json()).toMatchObject({ ...body, runner: "home:studio" });
@@ -149,4 +150,58 @@ it("each model's reliability across projects: the JSON route, the Models page an
   expect(usage).toContain("Reliability by model");
   expect(usage).toContain("<code>glm-5.3</code>");
   expect(usage).toContain("review run refused: no model");
+});
+
+it("the owner records a verdict on one review finding; anyone else, a bad verdict and a missing finding are refused", async () => {
+  await project("rel-finding");
+  const id = await submitted("rel-finding", OPUS, H1);
+  await L("rel-finding").addReview({ itemId: id, by: GPT, head: H1, approve: false, note: "no", at: new Date().toISOString(), findings: [
+    { file: "a.ts", line: 1, severity: "blocking", text: "drops rows" },
+    { file: "b.ts", line: 2, severity: "follow-up", text: "name it" },
+  ] });
+  const path = `/projects/rel-finding/items/${id}/finding`;
+  expect((await call("POST", path, GPT, { head: H1, index: 1, verdict: "confirmed" })).status).toBe(403);
+  expect((await call("POST", path, "owner", { head: H1, index: 1, verdict: "maybe" })).status).toBe(400);
+  expect((await call("POST", path, "owner", { head: H2, index: 1, verdict: "confirmed" })).status).toBe(409);
+  expect((await call("POST", path, "owner", { head: H1, index: 3, verdict: "confirmed" })).status).toBe(409);
+  const ok = await call("POST", path, "owner", { head: H1, index: 2, verdict: "refuted", note: "the code already names it" });
+  expect(ok.status).toBe(201);
+  expect(await ok.json()).toMatchObject({ id, head: H1, index: 2, verdict: "refuted" });
+  const events = (await L("rel-finding").events(id)) as unknown as LedgerEvent[];
+  const finding = events.find((e) => e.kind === "review.finding");
+  expect(finding).toMatchObject({ actor: "owner", data: { head: H1, index: 2, verdict: "refuted", by: GPT, note: "the code already names it" } });
+});
+
+it("the owner records a run by hand for a run outside the runner, in a new outcome kind", async () => {
+  const body = { actor: "opencode/glm-5.3", role: "build", outcome: "early_stop", project: "rel-handrun", item: "t4", detail: "stopped after a refused read" };
+  // No runner header, owner token: recorded under the owner's name.
+  const byOwner = await call("POST", "/runs", "owner", body);
+  expect(byOwner.status).toBe(201);
+  expect(await byOwner.json()).toMatchObject({ ...body, runner: "owner" });
+  // The new outcome is read back as part of the model's record.
+  const read = (await (await call("GET", "/runs", "codex/gpt-6-astra")).json()) as RunReport[];
+  expect(read.some((r) => r.outcome === "early_stop" && r.runner === "owner")).toBe(true);
+});
+
+it("the Models page shows finding precision, median timings and the comparison by kind of work", async () => {
+  const { reliabilitySection } = await import("../src/ui.ts");
+  const ev = (seq: number, itemId: string, actor: string, kind: string, data: Record<string, unknown> = {}): LedgerEvent =>
+    ({ seq, itemId, actor, kind, data, at: new Date(Date.UTC(2026, 9, 6, 12, seq)).toISOString() });
+  const events: LedgerEvent[] = [
+    ev(1, "t1", "owner", "item.created", { title: "Build", scope: ["src/**"], partKind: "build" }),
+    ev(2, "t1", "claude-code/opus-5.5", "item.claimed"),
+    ev(3, "t1", "claude-code/opus-5.5", "push.observed", { head: H1 }),
+    ev(4, "t1", "claude-code/opus-5.5", "item.submitted", { head: H1 }),
+    ev(5, "t1", "antigravity/gemini-3.1-pro", "review.rejected", { head: H1, note: "no", findings: [{ file: "a.ts", line: 1, severity: "blocking", text: "x" }] }),
+    ev(6, "t1", "owner", "review.finding", { head: H1, index: 1, verdict: "confirmed", by: "antigravity/gemini-3.1-pro" }),
+  ];
+  const rel = buildReliability([{ project: "a", events }], [], "owner");
+  const html = reliabilitySection(rel, "Pavi", { events: 1000, unread: [] });
+  expect(html).toContain('<th scope="col">Findings</th>');
+  expect(html).toContain('<th scope="col">Median timings</th>');
+  expect(html).toContain("By kind of work");
+  expect(html).toContain("build");
+  expect(html).toContain("1 of 1 kept");
+  expect(html).toContain("none timed");
+  expect(html).toContain("Findings adjudicated · 1");
 });
