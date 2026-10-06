@@ -1,0 +1,24 @@
+atelier atelier/t170 "Follow-ups from the 2026-10-06 bundles, CLI side: the runner's release note can pass the 2000 character cap (cli/runner.mjs:210,215); hand-written usage strings drift from the generated help (cli/atelier.mjs); adopt judges 'cd DIR && prog' from the checkout root (cli/adopt.mjs:188); usage's Not reported lines skip full cleaning; init --history-since after a partial stepped init is refused; sync exits 0 on a malformed policy; the merge policy warning names ControlPlane when only checks changed; make -C paths not normalised in checkFiles; status and ls --json with times for Observatory"
+accepted head 988e87a7acafa8363b571849eb5b2665907ea802
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T17:29:45.158Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T17:29:50.266Z
+REVIEW approve — antigravity/gemini-3.1-pro: CLI follow-ups from the 2026-10-06 bundles.
+REVIEW approve — antigravity/gemini-3.1-pro: CLI follow-ups from the 2026-10-06 bundles.
+REVIEW approve — antigravity/gemini-3.1-pro: CLI follow-ups from the 2026-10-06 bundles.
+2026-10-06T13:28:34.097Z pavi item.created
+2026-10-06T14:42:09.631Z opencode/glm-5.3 item.claimed
+2026-10-06T14:42:14.900Z opencode/glm-5.3 fork.created
+2026-10-06T17:07:08.782Z opencode/glm-5.3 push.observed
+2026-10-06T17:09:18.202Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:09:21.129Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:09:21.962Z opencode/glm-5.3 item.submitted
+2026-10-06T17:18:29.843Z opencode/glm-5.3 push.observed
+2026-10-06T17:18:31.343Z opencode/glm-5.3 item.submitted
+2026-10-06T17:20:53.896Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T17:21:14.593Z opencode/glm-5.3 item.submitted
+2026-10-06T17:23:23.826Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T17:29:46.160Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:29:50.967Z opencode/glm-5.3 evidence.observed
+2026-10-06T17:29:51.857Z opencode/glm-5.3 item.submitted
+2026-10-06T17:33:41.661Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T17:33:42.467Z pavi item.accepted
