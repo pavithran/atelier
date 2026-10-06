@@ -1,0 +1,35 @@
+atelier atelier/t164 "Item fields from ControlPlane's work item (PAVI's decision 2026-10-05): non-goals, stop conditions and the next gate as optional item fields shown in the brief, and a blocked state for a task with its reason (block and unblock by the holder or the owner)"
+accepted head ef8ae4fea91624abadbc56d689b27c2571fc2160
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-06T15:29:53.994Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-06T15:29:57.456Z
+REVIEW approve — antigravity/gemini-3.1-pro: Item framing fields and a blocked state, merged with main.
+2026-10-06T12:43:35.270Z pavi item.created
+2026-10-06T12:59:09.549Z claude-code/fable-5.1 item.claimed
+2026-10-06T12:59:12.950Z claude-code/fable-5.1 fork.created
+2026-10-06T13:26:41.451Z claude-code/fable-5.1 push.observed
+2026-10-06T13:31:57.543Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:32:01.408Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:32:02.441Z claude-code/fable-5.1 item.submitted
+2026-10-06T13:35:51.333Z claude-code/opus-5.5 review.approved
+2026-10-06T13:45:34.527Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:45:38.364Z claude-code/fable-5.1 evidence.observed
+2026-10-06T13:45:40.388Z claude-code/fable-5.1 item.submitted
+2026-10-06T14:53:13.766Z claude-code/fable-5.1 item.handoff
+2026-10-06T15:08:14.169Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:10:40.759Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:10:44.381Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:10:45.139Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:17:49.995Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:17:52.724Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:17:53.655Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:24:33.733Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:24:36.858Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:24:37.733Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:26:55.112Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T15:26:56.058Z pavi item.accepted
+2026-10-06T15:27:31.404Z opencode/deepseek-v4-pro push.observed
+2026-10-06T15:29:54.670Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:29:57.869Z opencode/deepseek-v4-pro evidence.observed
+2026-10-06T15:29:58.677Z opencode/deepseek-v4-pro item.submitted
+2026-10-06T15:32:19.820Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T15:32:20.650Z pavi item.accepted
