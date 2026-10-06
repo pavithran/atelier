@@ -426,14 +426,17 @@ export function spanLabel(from: number, to: number): string {
 const SAME_MIN = 50;
 
 // What the comparison draws. `same` is a project with both commits from
-// before its first task and tasks since, shown on both sides as itself, but
+// before its first task and tasks since (of those with a substantial imported
+// history, the one with the most tasks), shown on both sides as itself, but
 // only when its imported history is substantial or no other shown project is
 // known only from git; otherwise `before` is that git-only project with the
 // largest imported history, and the record Atelier kept of the shown
 // projects' tasks stands against it.
 function comparePick(stories: Story[], imported: Map<string, ImportedHistory>): { same?: Story; before?: Story } {
   const total = (s: Story) => imported.get(s.project)?.total ?? 0;
-  const same = stories.filter((s) => s.threads.length && total(s) > 0).sort((a, b) => b.threads.length - a.threads.length)[0];
+  const both = stories.filter((s) => s.threads.length && total(s) > 0);
+  const byTasks = (a: Story, b: Story) => b.threads.length - a.threads.length;
+  const same = both.filter((s) => total(s) >= SAME_MIN).sort(byTasks)[0] ?? both.sort(byTasks)[0];
   const before = stories.filter((s) => noTasks(s) && total(s) > 0).sort((a, b) => total(b) - total(a))[0];
   if (same && (total(same) >= SAME_MIN || !before)) return { same };
   return before ? { before } : {};
