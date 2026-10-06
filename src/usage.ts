@@ -40,7 +40,9 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "notes-remote [REMOTE | --off]", about: "Names a git remote that receives `refs/notes/atelier`, the merge provenance, and only that ref, on every merge. `--off` stops it; with no argument it says what is set. The setting is kept on this machine." },
   ]] },
   { name: "Items", lines: [[
-    { form: 'new "title" [--scope GLOB]...', about: "The project owner creates an item with a title and, optionally, the globs it intends to touch." },
+    { form: 'new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates an item with a title and, optionally, the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. The brief, `atelier start` and the item's page show them." },
+    { form: "edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes an item's non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it." },
+  ], [
     { form: "ls [--all]", about: "Lists the project's items with state, owner and head. Merged and abandoned items need `--all`." },
     { form: "show ID", about: "Prints an item's decision brief: what is decided, the recorded evidence, a recommendation and the item's address. `--json` prints it for scripts." },
     { form: "owners [--json]", about: "Prints one line per live item: its state, its owner and since when." },
@@ -62,6 +64,8 @@ export const HELP_GROUPS: HelpGroup[] = [
   ], [
     { form: "handoff ID --to H/M", about: "Moves ownership to another agent, with `--note` saying why. The old write token is revoked; the workspace and its history carry over." },
     { form: "release ID", about: "Gives the item up: it returns to open and the write token is revoked." },
+    { form: 'block [ID] "reason"', about: "The holder or the project owner blocks the item with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed, submitted, reviewed, handed off or released, and sits in the owner's inbox with the reason until it is unblocked." },
+    { form: "unblock [ID]", about: "The holder or the project owner lifts the block, and the item returns to the state it was in." },
     { form: "diff ID", about: "For a reviewer: prints the item's commits and diff against the baseline, from a clean read-only clone." },
     { form: "review ID --approve|--reject", about: "Records a verdict on the item's current head, with `--note` giving the reason. The rules say whose approval counts." },
   ]] },
@@ -69,12 +73,27 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "accept ID [--override-review REASON]", about: "The project owner accepts the item at its current head. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
     { form: "merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted item is accepted at that exact revision first: `--approve` records the owner's review, which is not the independent review, and `--override-review` accepts with the owner's override, as `accept` does. Run again, it resumes an interrupted merge; `--cancel` ends one." },
     { form: "abandon ID", about: "Closes the item without merging it. The write token is revoked; the history and evidence stay." },
+    { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the item was accepted at. Nothing about the item changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
   ], [
+    { form: "served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--apply]", about: "The project owner records which model served events recorded under another, as when zcode served deepseek-flash while its events named glm-5.3. Each event recorded as `--recorded` from `--from` up to `--to`, on the tasks `--item` names or on every task, gets an annotation of its own, and the track record, the reliability record and the graph count it under the served model; the event itself never changes. Without `--apply` it lists the matches and records nothing. `--note` says how the owner knows." },
     { form: "approve ACTION --head SHA [--note T] [--expires 24h]", about: "The project owner approves one protected action, such as `deploy`, `install`, `push`, `paid-run` or `photos-writeback`, at one exact revision of the main line: the full SHA of a commit the baseline holds. `atelier ship` uses the approval once, at that revision only, and a later revision needs its own. It stands for 24 hours unless `--expires` gives from `1m` to `30d`; `--note` records why. Any other kind must be one the project's ship files name." },
     { form: "approvals [--all]", about: "Lists the approvals that stand, each with its kind, revision and expiry. `--all` adds the used, withdrawn and expired ones." },
     { form: "approvals withdraw ID [--note T]", about: "The project owner withdraws an approval no ship has used, so none can use it." },
   ], [
     { form: "ship [--dry-run] [--push]", about: "Run by the project owner in the registered checkout, clean and at the baseline's head: composes the ship order from the project's ControlPlane ship policy and adapter, or from `docs/atelier/ship.json`, and refuses before running anything when a protected step has no approval at that revision, naming the command that approves it. It then runs the steps in order and stops at the first that fails, recording each step's command, exit status, duration and redacted output tail on the ledger. It pushes only with `--push` and an approval for `push`, and never forces a push. `--dry-run` prints the steps and which approvals are present or missing, and runs nothing." },
+  ]] },
+  { name: "Plans", lines: [[
+    { form: 'plan "goal" [--scope GLOB]... [--planner H/M]', about: "The project owner states a goal. Atelier creates the plan item and queues it as a plan job for the planner named, or else for the first model in the pool for research work that is not refused, not paid per token and may plan. A project has one active plan at a time. No runner takes a plan job yet: a planner claims the plan item with `--runner` and posts the plan by hand." },
+    { form: "plan show ID [--json]", about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, the part dispatches used, why it is blocked, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now. It accepts a part's id too." },
+  ], [
+    { form: "plan approve ID --hash HASH [--allow-paid]", about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no model of another family can review, refuses the approval. `--allow-paid` lets models paid per token build and review." },
+    { form: 'plan revise ID --note TEXT', about: "Before approval, sends the plan back to its planner with a note; its next proposal replaces the one before." },
+  ], [
+    { form: "plan reroute ID --to H/M", about: "Names who builds an open part from now on, its attempts counted afresh; before approval, names another planner for the plan." },
+    { form: "plan retry ID", about: "Counts an open part's attempts afresh, so its builder is asked again; before approval, asks the planner again." },
+    { form: "plan stop ID [--note TEXT]", about: "Closes the plan and every part not yet merged, revoking their write tokens. The history and evidence stay." },
+  ], [
+    { form: "plan post ID FILE", about: "The holder of the plan item's claim, its planner, posts the plan document in FILE. An invalid one is refused with every error, and the planner gets one more attempt before the plan blocks." },
   ]] },
   { name: "Models", lines: [[
     { form: "models", about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found." },
@@ -144,10 +163,15 @@ export const COMMAND_USAGE: Record<string, string> = {
   finish: `usage: atelier finish [--sandbox] [--summary T]\n${LOCAL_CHECK}`,
   check: `usage: atelier check [--sandbox | -- CMD]\n${LOCAL_CHECK}`,
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
+  new: 'usage: atelier new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]',
+  edit: 'usage: atelier edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]   (a flag given replaces that field; --next-gate "", or one empty --non-goal or --stop-when, clears it)',
+  block: 'usage: atelier block [ID] "what it is waiting on"   (in a workspace, ID is its item)',
+  unblock: "usage: atelier unblock [ID]   (in a workspace, ID is its item)",
   models: "usage: atelier models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... · models remove ID",
   runner: "usage: atelier runner --name home:NAME [--once] [--config PATH] · runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] · runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
   projects: "usage: atelier projects remove NAME [--force] · projects rename OLD NEW",
   report: 'usage: atelier report [ID] "what you verified and how" [--item ID] [--project P]   (in a workspace, ID is its item unless --item or --project says otherwise)',
+  plan: 'usage: atelier plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json] · plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT · plan reroute ID --to H/M · plan retry ID · plan stop ID [--note TEXT] · plan post ID FILE',
   approve: "usage: atelier approve ACTION --head SHA [--note T] [--expires 24h] [--project P]   (ACTION: deploy, install, push, paid-run, photos-writeback, or a kind the project's ship files name; --expires from 1m to 30d)",
   approvals: "usage: atelier approvals [--all] [--project P] · approvals withdraw ID [--note T] [--project P]",
   ship: "usage: atelier ship [--dry-run] [--push] [--project P]   (in the registered checkout, clean and at the baseline's head)",
@@ -174,6 +198,8 @@ item with exactly one owner. Never edit the project checkout directly.
    \`atelier report "…"\` records a Reported claim, never an Observed pass.
 6. If you can't finish, \`atelier handoff ID --to HARNESS/MODEL --note "…"\`
    or \`atelier release ID\`. Your write token is revoked either way.
+   Waiting on something only the owner can settle: \`atelier block ID "what"\`.
+   The owner sees the reason in the inbox and runs \`atelier unblock ID\`.
 7. Reviewing someone else's item: \`atelier diff ID\`, then
    \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
    paths need approval from a model of another family than every agent

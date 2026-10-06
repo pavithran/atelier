@@ -17,13 +17,20 @@ export interface Dispatch {
   by: string;
   at: string;
   note: string;
+  // A job other than building the item: "plan" asks the runner to write the
+  // plan item's plan document (docs/orchestrator.md, section 2). Absent for
+  // ordinary work.
+  job?: "plan";
 }
 
-// What a runner says it can run when it asks for work.
+// What a runner says it can run when it asks for work. `jobs` names the
+// jobs besides building that it runs; a dispatch for any other job is never
+// offered to it.
 export interface RunnerOffer {
   runner: string;          // "home:studio", "cloud:atelier"
   kind: RunnerKind;
   agents: { agent: string; models: string[] }[];
+  jobs?: string[];
 }
 
 export interface Assignment {
@@ -86,6 +93,7 @@ export function assertDispatchable(item: Item): void {
 // The agent and model a runner should use for a dispatch, or null if it cannot.
 export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
   if (d.to !== "any" && d.to !== offer.kind) return null;
+  if (d.job && !(offer.jobs ?? []).includes(d.job)) return null;
   for (const { agent, models } of offer.agents) {
     if (d.agent && agent !== d.agent) continue;
     const usable = models.filter((m) => claimable(agent, m));
