@@ -14,7 +14,7 @@ import { withServed } from "./models/served.ts";
 import { shortStamp, stamp } from "./time.ts";
 import { withoutAddresses } from "./text.ts";
 
-export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "owner" | "other";
+export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "moonshot" | "xai" | "xiaomi" | "bytedance" | "cohere" | "owner" | "other";
 
 // Which family an actor belongs to, by the harness it runs in. The colour is
 // the vendor's, so a reader can see a thread change hands between companies.
@@ -483,5 +483,6 @@ function beadMark(b: Bead, X: number, y: number, d: string, color: string, key: 
 export const VENDOR_NAMES: [Vendor, string][] = [
   ["anthropic", "Claude"], ["openai", "GPT"], ["zai", "GLM"], ["google", "Gemini"], ["deepseek", "DeepSeek"],
   ["qwen", "Qwen"], ["minimax", "MiniMax"], ["mistral", "Mistral"], ["meta", "Llama"],
+  ["moonshot", "Kimi"], ["xai", "Grok"], ["xiaomi", "MiMo"], ["bytedance", "Seed"], ["cohere", "North"],
   ["other", "Other agents"], ["owner", "You"],
 ];
