@@ -5,13 +5,14 @@
 // approval from another family at that head nor an open review request.
 // Every part is reviewed, even where gate() asks for none. An item outside a
 // plan is reviewed only when the gate needs an independent review of its
-// change class, and only until the gate has one.
+// change class, and only until the gate has one or the owner's override
+// stands in for it.
 
 import {
-  changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, matchesAny,
+  changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, matchesAny,
   type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
-import { contributorsOf, familyRefusal } from "./independence.ts";
+import { contributorsOf } from "./independence.ts";
 import type { Finding } from "./verdict.ts";
 
 // A review with the findings parseVerdict read from its reply. Review in
@@ -112,22 +113,26 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   }
 
   // Reviews at this head. A rejection by anyone the gate counts waits for
-  // rework, since the gate blocks on it. The owner's approval ends the need
-  // for parts too, because the gate counts the owner as independent of
-  // everyone, and a model's rejection after it would block a head the owner
-  // has approved.
+  // rework, since the gate blocks on it. The owner's approval does not end
+  // the need: it is not the independent review, in the gate or here. A part
+  // needs what the gate asks of a protected change, an approval from another
+  // family than every contributor, whatever its class; an item outside a
+  // plan needs what its gate asks, which the owner's override also meets.
   const reviews = [...input.reviews];
   const atHead = countingReviews(reviews, head, policy, owner);
   const rejected = atHead.filter((r) => !r.approve).map((r) => (r.by === owner ? "the project owner" : r.by));
   if (rejected.length) return no(`${rejected.join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
-  if (atHead.some((r) => r.approve && r.by === owner)) return no(`the project owner approved ${short(head)}`);
   const contributors = contributorsOf(item);
   if (basis === "part") {
-    const independent = atHead.find((r) => r.approve && familyRefusal(r.by, contributors) === null);
+    const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner));
     if (independent) return no(`${independent.by}, of another family than every contributor, approved ${short(head)}`);
-  } else if (!gate(item, policy, [...input.evidence], reviews, owner).needsAssessor) {
-    const approvers = atHead.filter((r) => r.approve).map((r) => r.by);
-    return no(`the gate already counts an independent approval of ${short(head)} (${approvers.join(", ")})`);
+  } else {
+    const g = gate(item, policy, [...input.evidence], reviews, owner);
+    if (g.overridden) return no(`the project owner overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
+    if (!g.needsAssessor) {
+      const approvers = atHead.filter((r) => independentApproval(r, kind === "protected" ? "protected" : "coordinated", contributors, owner)).map((r) => r.by);
+      return no(`the gate already counts an independent approval of ${short(head)} (${approvers.join(", ")})`);
+    }
   }
 
   // A live request for this head holds the item unless its claim has lapsed.

@@ -61,7 +61,7 @@ const sandbox = (claim, head = HEAD) => ({ itemId: "t1", claim, grade: "observed
 const detail = {
   item: items[0], policy, ownerActor: "pavi", reviews: [], events: events.filter((x) => x.itemId === "t1").reverse(),
   evidence: policy.checks.map((c) => sandbox(c)),
-  gate: { ready: false, blockers: ["touches a protected path; needs approval from a different model or the project owner"], outOfScope: [], needsAssessor: true },
+  gate: { ready: false, blockers: ["touches a protected path; needs approval from a model of another family than every contributor"], outOfScope: [], needsAssessor: true },
 };
 const diff = { base: BASE, head: HEAD, truncated: false, files: [
   { path: "src/sandbox/runner.ts", status: "added", added: 6, removed: 0, hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 6, lines: [

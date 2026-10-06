@@ -20,7 +20,7 @@ import { clockTime, dayOf, shortStamp, stamp, zoneLabel } from "./time";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, stateLabel, modelOf,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, OVERRIDE_REASON_MAX, overrideAt, stateLabel, modelOf,
   type Evidence, type Gate, type InboxEntry, type Item, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -960,6 +960,18 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   const accept = evidenceVisible && decision.action === "accept"
     ? `<form method="post" action="${action("accept")}">${revision}<button class="primary">Accept revision</button></form>`
     : "";
+  // The owner's override, offered only while the missing independent review
+  // is the one thing blocking this revision, since it waives that and nothing
+  // else. Its reason is required and recorded.
+  const overridable = evidenceVisible && item.state === "submitted" && !!item.head && gate.needsAssessor && gate.blockers.length === 1;
+  const override = overridable
+    ? `<details class="request-changes"><summary>Accept without an independent review</summary>
+      <form class="stack" method="post" action="${action("override")}">${revision}
+        <label>Why is no independent review possible?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>
+        <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review.</p>
+        <button>Override the review and accept</button>
+      </form></details>`
+    : "";
   const merge = decision.action === "merge"
     ? `<div class="merge-command"><p>In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier merge ${item.id} --project ${shell(p.name)} --head ${item.acceptedHead}`)}</pre>
@@ -988,7 +1000,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   <p class="review-description">${e(decision.detail)}</p>
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
-  <div class="actions">${approve}${accept}${reject}${dispatchBox}</div>
+  <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}</div>
   ${merge}
   <p class="meta revision">Revision <code>${short(item.head)}</code>${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
@@ -999,7 +1011,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
       <ul>${gate.outOfScope.map((f) => `<li><code>${e(f)}</code></li>`).join("")}</ul></details>`
     : "";
   const protectedNote = gate.needsAssessor
-    ? '<div class="notice"><h3>Protected change</h3><p>These files affect protected behavior. Approval from you or a different model is required.</p></div>'
+    ? `<div class="notice"><h3>${gate.changeClass === "coordinated" ? "Coordinated change" : "Protected change"}</h3><p>${e(gate.requirement ? `${gate.requirement}.` : "These files affect protected behavior and need an approval from a model of another family than every contributor.")} Your own approval does not count as that review.</p></div>`
     : "";
 
   const checkRows = view.checks.map((c) => {
@@ -1026,6 +1038,11 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     : "";
   const reviews = latestReviews(d.reviews, item.head).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
     <p>${e(r.note || "No note provided.")}</p><p class="meta">${e(r.by)} · ${when(r.at)}</p></div>`).join("");
+  const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
+  const overrideNote = overridden
+    ? `<div class="review-note">${tag("Review overridden", "ask")}
+    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review</p></div>`
+    : "";
   const blockers = live && !gate.ready
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`
     : "";
@@ -1055,7 +1072,7 @@ ${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : "This project requires no checks."}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
-  ${checkRows}${reports}${reviews}${blockers}
+  ${checkRows}${reports}${reviews}${overrideNote}${blockers}
 </section>
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;

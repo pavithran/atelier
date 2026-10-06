@@ -4,7 +4,7 @@ import {
   INTEGRABLE_FROM, integrationBlockers, integrationChecks, LANDED, landed, nextToIntegrate, planGate, rollbackFor, verifyIntegration,
   type LogCommit, type Part, type PartState, type PlanGateInput,
 } from "../src/plans/integrate.ts";
-import type { AgentRole, Evidence, Item, ProjectPolicy, Review } from "../src/rules.ts";
+import { PROTECTED_NEED, type AgentRole, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
 
 const T = "2026-10-05T12:00:00.000Z";
 const h = (c: string) => c.repeat(40);
@@ -90,7 +90,10 @@ test("integration needs an approval from another model family at the part's head
   assert.deepEqual(blocked([]), none);
   assert.deepEqual(blocked([review(a, SAME_FAMILY)]), none);
   assert.deepEqual(blocked([review(a, REVIEWER, true, OLD)]), none);
-  assert.deepEqual(blocked([review(a, "owner")]), []);
+  // The owner's approval is not the review, whatever the deployment names its owner.
+  assert.deepEqual(blocked([review(a, "owner")]), none);
+  assert.deepEqual(integrationBlockers(a, [a], [review(a, "pavi")], policy, "pavi"), none);
+  assert.deepEqual(blocked([review(a, "owner"), review(a)]), []);
   // Every builder's family is excluded: after a handoff to gpt-6-astra, only a third family counts.
   const handed = part("a", { owner: REVIEWER, pushActors: [BUILDER, REVIEWER] });
   assert.deepEqual(blocked([review(handed, REVIEWER)], handed), none);
@@ -258,13 +261,19 @@ test("planGate keeps gate()'s blockers for the plan item and refuses a branch th
   assert.deepEqual(planGate(gateInput({ integrationHead: null })).blockers, [
     "the plan's head 22222222 is not its integration head (none recorded); the branch has commits no integration recorded",
   ]);
-  // A protected path on the plan needs an independent approval of the plan
-  // itself, as atelier merge tP --approve records the owner's; a part's
-  // approval does not stand in for it.
+  // A protected path on the plan needs an independent review of the plan
+  // itself: a part's approval does not stand in for it, and the owner's
+  // approval is not one. The plan item's contributor, atelier/integrator, has
+  // no recognised family, so no model can qualify either, and the owner's
+  // override recorded on the plan item at its head is what lets it through.
   const guarded = { ...policy, protected: ["src/a/**"] };
   const blocked = planGate(gateInput({ policy: guarded }));
   assert.equal(blocked.needsAssessor, true);
-  assert.deepEqual(blocked.blockers, ["touches a protected path; needs approval from a different model or the project owner"]);
+  assert.deepEqual(blocked.blockers, [PROTECTED_NEED]);
   const approved: Review = { itemId: "t1", by: "owner", head: MB, approve: true, note: "", at: T };
-  assert.deepEqual(planGate(gateInput({ policy: guarded, reviews: [...gateInput().reviews, approved] })).blockers, []);
+  assert.deepEqual(planGate(gateInput({ policy: guarded, reviews: [...gateInput().reviews, approved] })).blockers, [PROTECTED_NEED]);
+  assert.deepEqual(planGate(gateInput({ policy: guarded, reviews: [...gateInput().reviews, { ...approved, by: REVIEWER }] })).blockers, [PROTECTED_NEED]);
+  const reviewOverride = { head: MB, by: "owner", reason: "Each part had its own review from another family", at: T };
+  const overridden = planGate(gateInput({ policy: guarded, plan: planItem({ reviewOverride }) }));
+  assert.deepEqual([overridden.blockers, overridden.overridden], [[], reviewOverride]);
 });

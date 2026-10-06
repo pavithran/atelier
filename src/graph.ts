@@ -87,7 +87,7 @@ export interface Story {
 // Bookkeeping takes a quarter step on the axis so the work gets the width, and
 // is not an agent's move: a session note records where a session ended, not work.
 const QUIET = new Set(["item.created", "fork.created", "item.undispatched", "item.released", "session.wrapped"]);
-const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched"]);
+const DECISIONS = new Set(["item.accepted", "item.abandoned", "item.handoff", "item.dispatched", "review.overridden"]);
 
 export function emptyTally(): Tally {
   return { agentMoves: 0, decisions: 0, checks: 0, inCloud: 0, sentBack: 0, localRuns: 0, agents: [], byVendor: {},
@@ -224,6 +224,9 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         bead("reject", R ? `${name(ev.actor)} sent it back` : `${name(ev.actor)} sent it back: ${clip(str(d.note), 220)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`);
         say(R ? `${name(ev.actor)} sent ${id} back` : `${name(ev.actor)} sent ${id} back: ${clip(str(d.note), 180)}`, "catch");
         break;
+      // The owner's override of a missing independent review is told with its
+      // reason, since it is the record of why no review was needed.
+      case "review.overridden": say(`${name(ev.actor)} overrode the independent review of ${id}${d.reason && !R ? `: ${clip(str(d.reason), 140)}` : ""}`, ev.actor === owner ? "you" : ""); break;
       case "item.accepted": t.accepts++; bead("accept", `${name(ev.actor)} accepted ${sha8(d.head)}`); say(`${name(ev.actor)} accepted ${id}`, ev.actor === owner ? "you" : ""); break;
       case "item.dispatched": say(`${name(ev.actor)} sent ${id} to ${str(d.to) === "any" ? "any runner" : `a ${str(d.to)} runner`}`, ev.actor === owner ? "you" : ""); break;
       case "item.merged":

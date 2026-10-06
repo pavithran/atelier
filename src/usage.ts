@@ -66,8 +66,8 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "review ID --approve|--reject", about: "Records a verdict on the item's current head, with `--note` giving the reason. The rules say whose approval counts." },
   ]] },
   { name: "Owner", lines: [[
-    { form: "accept ID", about: "The project owner accepts the item at its current head. It is refused unless the gate is clear." },
-    { form: "merge ID [--head SHA [--approve]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted item is accepted at that exact revision first, and `--approve` records the owner's review. Run again, it resumes an interrupted merge; `--cancel` ends one." },
+    { form: "accept ID [--override-review REASON]", about: "The project owner accepts the item at its current head. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
+    { form: "merge ID [--head SHA [--approve] [--override-review REASON]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted item is accepted at that exact revision first: `--approve` records the owner's review, which is not the independent review, and `--override-review` accepts with the owner's override, as `accept` does. Run again, it resumes an interrupted merge; `--cancel` ends one." },
     { form: "abandon ID", about: "Closes the item without merging it. The write token is revoked; the history and evidence stay." },
   ]] },
   { name: "Models", lines: [[
@@ -162,7 +162,8 @@ item with exactly one owner. Never edit the project checkout directly.
    or \`atelier release ID\`. Your write token is revoked either way.
 7. Reviewing someone else's item: \`atelier diff ID\`, then
    \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
-   paths need approval from a different model than the owner's.
+   paths need approval from a model of another family than every agent
+   that worked on the item.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
 
 For each session the project owner runs in the registered checkout:
