@@ -215,6 +215,8 @@ export function familyRefusal(reviewer: string, contributors: readonly string[])
 
 // Minimal glob: `**` crosses directories, `*` does not, everything else literal.
 // Case-sensitive, as Git's paths are; `matchesFolded` is the matcher that is not.
+// A newline is a path character like any other to Git, so `**` crosses one
+// (the s flag), as `*` and `?` already do.
 export function globToRegExp(glob: string): RegExp {
   let out = "";
   for (let i = 0; i < glob.length; i++) {
@@ -231,7 +233,7 @@ export function globToRegExp(glob: string): RegExp {
       out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
     }
   }
-  return new RegExp(`^${out}$`);
+  return new RegExp(`^${out}$`, "s");
 }
 
 export function matchesAny(path: string, globs: string[]): boolean {
