@@ -21,7 +21,7 @@ import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, session
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
 import { redactGitArgs } from "./runner.mjs";
-import { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
+import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision } from "../src/control-plane.ts";
 import { assertEligible, pathCollisions } from "../src/rules.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -701,10 +701,10 @@ export function readControlPlane(top) {
   const read = (name) => {
     try {
       const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error(`${name} is empty or is not an object`);
+      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error("empty, or not a JSON object");
       return value;
     }
-    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+    catch (error) { if (error.code === "ENOENT") return null; throw new Error(`${join("docs", "control-plane", name)}: ${error.message}`); }
   };
   const agent = read("agent-policy.v1.json");
   const exec = read("execution-policy.v1.json");
@@ -743,14 +743,16 @@ export async function refreshControlPlane(top, name, request = call, report = co
   let cp;
   try { cp = readControlPlane(top); }
   catch (error) {
-    report(`Warning: ControlPlane policy could not be read: ${error.message}. Continuing without a refresh; merge uses the policy recorded at acceptance.`);
-    return { skipped: true, changes: [] };
+    report(`Warning: ControlPlane policy could not be read: ${error.message}. The stored policy was not refreshed.`);
+    return { skipped: true, changes: [], error: error.message };
   }
   if (!cp) return null;
-  const before = (await request("GET", P(name), undefined, OWNER)).project.policy;
+  const current = await request("GET", P(name), undefined, OWNER);
+  const before = current.project.policy;
   const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
   // Roles and change classes are compared here too, as whole values with their
-  // keys in a fixed order; the merge guard compares protected paths only.
+  // keys in a fixed order; the merge guard compares the fields an acceptance
+  // records (mergePolicyDecision).
   const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
   const changes = [...controlPlaneChanges(before, policy),
     ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`)];
@@ -758,7 +760,7 @@ export async function refreshControlPlane(top, name, request = call, report = co
     await request("PUT", P(name), policy, OWNER);
     for (const change of changes) report(`ControlPlane ${change}`);
   }
-  return { before, policy: { ...before, ...policy }, changes };
+  return { before, policy: { ...before, ...policy }, changes, items: current.items ?? [] };
 }
 
 // The receipt goes only into a real folder reached through no symlink, the
@@ -1374,7 +1376,9 @@ const commands = {
       return;
     }
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
-    const cp = readControlPlane(top);
+    let cp;
+    try { cp = readControlPlane(top); }
+    catch (error) { die(`ControlPlane policy could not be read: ${error.message}. Fix the file, then run atelier init again.`); }
     // A ControlPlane project is copied into Artifacts with the owner's
     // approval recorded on it. An init that changes the checks, the title or
     // the policy of a project already registered keeps that approval; it is
@@ -1874,6 +1878,9 @@ const commands = {
       return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
     }
     const refreshed = await refreshControlPlane(cwd, name);
+    // The merge compares the policy as it is now with the one the acceptance
+    // was made under, so a policy it cannot read stops it here.
+    if (refreshed?.skipped) die(`ControlPlane policy could not be read: ${refreshed.error}. Fix the file, then run atelier merge ${id} again.`);
     if (args.head !== undefined) {
       if (!/^[a-f0-9]{40,64}$/.test(args.head)) die("usage: atelier merge ID [--head FULL_REVISION [--approve --note TEXT] [--override-review REASON]] | atelier merge ID --cancel [--discard-local]");
       const reason=overrideArg("merge ID --head FULL_REVISION");
@@ -1894,9 +1901,9 @@ const commands = {
       if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
       const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
       if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
-      const acceptedPolicy = { ...d.policy, protected: d.acceptanceProtected ?? [] };
+      const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
       if (refreshed?.policy) {
-        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, []);
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
         if (decision.warning) console.error(decision.warning);
       }
       if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
@@ -1909,8 +1916,12 @@ const commands = {
       if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
       if (refreshed?.policy) {
         if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
-        const paths = git(['diff', '--name-only', '--no-renames', '-z', item.base, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
-        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true);
+        // The accepted revision's own changes: those since the newest baseline
+        // commit it holds, which atelier update moves past the recorded base.
+        const forkPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
+        const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base;
+        const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
+        const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true, context);
         if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
       }
       const local=git(['rev-parse','HEAD'],{cwd});
