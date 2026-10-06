@@ -141,6 +141,7 @@ else if (args.includes('--abbrev-ref')) console.log('main');
 else if (args.includes('rev-parse')) console.log(${JSON.stringify(head)});
 else if (args.includes('diff')) process.stdout.write('src/secret.ts\\0');
 else if (args.includes('merge')) { console.error('merge reached'); process.exit(1); }
+else if (args[0] === 'merge-base' && args.at(-1) !== 'HEAD') process.exit(1);
 `, { mode: 0o755 });
     const storage = join(dir, "server.json");
     writeFileSync(storage, JSON.stringify({ policy: before, state: "accepted", acceptanceProtected: before.protected }));
