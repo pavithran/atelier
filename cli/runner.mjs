@@ -400,6 +400,98 @@ export async function runReview(assignment, config, name, io) {
   }
 }
 
+// The integrate job (docs/orchestrator.md, section 5): the runner claims the
+// plan item as atelier/integrator, fetches the part's head, merges it onto the
+// plan's branch with --no-ff, pushes, runs the plan's checks, and posts
+// integrated or integration-failed. It uses no model. A merge that conflicts,
+// or checks that fail, rolls the branch back to its previous head first.
+export async function runIntegrate(assignment, config, name, io) {
+  const { project, item, actor } = assignment;
+  const dispatch = item.dispatch ?? {};
+  const partKey = dispatch.part, partHead = dispatch.head, partId = dispatch.partId;
+  const workspace = io.workspacePath(project, item.id);
+  const release = async (reason) => {
+    try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    catch (error) { io.log(`release failed: ${error.message}`); }
+  };
+  const fail = async (reason) => {
+    await io.cli(["integration-failed", item.id, "--project", project, "--as", actor, "--part", partKey, "--reason", reason]);
+    await release(reason);
+    return { phase: "failed", reason, taskFailure: true };
+  };
+  try {
+    if (actor !== "atelier/integrator") throw new Error("the integrate job runs as atelier/integrator");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id) ||
+        !partId || !/^t[0-9]+$/.test(partId) || !/^[a-f0-9]{40,64}$/.test(partHead ?? "")) {
+      throw Object.assign(new Error("the queue returned an invalid integrate assignment"), { skipped: true });
+    }
+    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    const before = await io.head(workspace);
+    const part = JSON.parse(await io.cli(["read-token", partId, "--project", project, "--as", actor]));
+    await io.fetch(workspace, part.remote, part.token, partHead);
+    const merged = await io.merge(workspace, partHead);
+    if (merged.code !== 0) {
+      await io.abortMerge(workspace);
+      return fail(`merge conflicted: ${merged.output || "the part conflicts with the plan's branch"}`);
+    }
+    const mergeHead = await io.head(workspace);
+    await io.push(workspace);
+    // The plan item's checks compare against the baseline, which is correct for
+    // the whole branch. A failure rolls the branch back before it is reported.
+    let checkOutput = "";
+    try { await io.cli(["check", item.id, "--project", project, "--as", actor], workspace); }
+    catch (error) { checkOutput = error.message; }
+    if (checkOutput) {
+      await io.rollback(workspace, before);
+      return fail(`the plan's checks failed after the merge: ${checkOutput}`);
+    }
+    const result = JSON.parse(await io.cli(["integrated", item.id, "--project", project, "--as", actor, "--part", partKey, "--merge-commit", mergeHead]));
+    if (result.allIntegrated) {
+      await io.cli(["submit", item.id, "--project", project, "--as", actor, "--summary", `integrated ${result.parts.length} part${result.parts.length === 1 ? "" : "s"}: ${result.parts.join(", ")}`]);
+      io.log("every part is integrated; the plan item is submitted for the owner");
+    } else {
+      await release("part integrated");
+    }
+    return { phase: "integrated", part: partKey };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  }
+}
+
+// The refresh job (docs/orchestrator.md, section 5): when main has moved and a
+// conflict is predicted, the integrator merges the baseline into the plan's
+// branch, so later parts fork from a branch that still merges with main.
+export async function runRefresh(assignment, config, name, io) {
+  const { project, item, actor } = assignment;
+  const workspace = io.workspacePath(project, item.id);
+  const release = async (reason) => {
+    try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    catch (error) { io.log(`release failed: ${error.message}`); }
+  };
+  try {
+    if (actor !== "atelier/integrator") throw new Error("the refresh job runs as atelier/integrator");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) {
+      throw Object.assign(new Error("the queue returned an invalid refresh assignment"), { skipped: true });
+    }
+    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    const base = JSON.parse(await io.cli(["base-token", item.id, "--project", project, "--as", actor]));
+    await io.fetch(workspace, base.remote, base.token, base.defaultBranch);
+    const merged = await io.merge(workspace, "FETCH_HEAD");
+    if (merged.code !== 0) {
+      await io.abortMerge(workspace);
+      await release("the baseline merge conflicted");
+      return { phase: "failed", reason: "the baseline merge conflicted", taskFailure: true };
+    }
+    await io.push(workspace);
+    await release("baseline merged into the plan's branch");
+    return { phase: "refreshed" };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  }
+}
+
 export function failureCount(count, state) {
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
@@ -518,11 +610,18 @@ export function runOutcome(state) {
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
 export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun }) {
-  if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config"].includes(key) || args.multi[key].length !== 1) ||
+  if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
-    throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH]");
+    throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
   }
-  const config = readConfig(args.config), offer = offerFrom(config, args.name);
+  const integrating = args.integrate === true;
+  if (typeof args.name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(args.name)) throw new Error("use --name home:NAME");
+  // The integrator runs no model: it offers the integrate and refresh jobs
+  // alone, under the reserved actor, and takes no config.
+  const config = integrating ? { agents: [] } : readConfig(args.config);
+  const offer = integrating
+    ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
+    : offerFrom(config, args.name);
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -557,6 +656,16 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
+    // The integrate job's git operations: fetch a head, merge it onto the
+    // plan's branch, push, and roll the branch back on a failure.
+    fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: gitAuth(token), signal: controller.signal, step: "fetch" }, executeChild),
+    merge: (cwd, head) => executeChild(["git", "merge", "--no-ff", "--quiet", "-m", `Merge part ${head.slice(0, 8)} onto the plan's branch`, head], { cwd, capture: true, captureError: true, signal: controller.signal, step: "merge" }),
+    abortMerge: (cwd) => checked(["git", "merge", "--abort"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild),
+    push: (cwd) => checked(["git", "push", "--quiet", "origin", "HEAD"], { cwd, captureError: true, signal: controller.signal, step: "push" }, executeChild),
+    rollback: async (cwd, before) => {
+      await checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
+      await checked(["git", "push", "--quiet", "--force-with-lease", "origin", "HEAD"], { cwd, captureError: true, signal: controller.signal, step: "rollback" }, executeChild);
+    },
     writeDiff, removeDiff, verdictPath, readVerdict,
     ...taskIO,
   };
@@ -570,13 +679,18 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         for (const task of tasks.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
           // A dispatch carrying job: "plan" asks for the plan job, one
-          // carrying "review" for the review job (docs/orchestrator.md,
-          // sections 2 and 4); anything else is building.
+          // carrying "review" for the review job, "integrate" for the
+          // integrate job and "refresh" for the refresh job
+          // (docs/orchestrator.md, sections 2, 4 and 5); anything else is building.
           state = task.item.dispatch?.job === "plan"
             ? await runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
               ? await runReview(task, config, offer.runner, io)
-              : await runTask(task, config, offer.runner, io);
+              : task.item.dispatch?.job === "integrate"
+                ? await runIntegrate(task, config, offer.runner, io)
+                : task.item.dispatch?.job === "refresh"
+                  ? await runRefresh(task, config, offer.runner, io)
+                  : await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
           const outcome = runOutcome(state);
           if (outcome && reportRun) {

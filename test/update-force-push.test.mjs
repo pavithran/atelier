@@ -71,7 +71,7 @@ globalThis.fetch = async (url, options = {}) => {
   let data = {};
   const verb = /^\\/api\\/projects\\/demo\\/(?:items\\/t3\\/)?(.*)$/.exec(path)?.[1];
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
-  else if (verb === "baseline-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
+  else if (verb === "baseline-token" || verb === "base-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
   else if (verb === "claim") data = { item: item(), workspace: { remote: FORK, token: "fake-fork-token", defaultBranch: "main", expiresAt: "later" }, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
   else if (verb === "push") data = { ...item(), head: forkHead() };
   else data = { item: item(), policy: { checks: [], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };

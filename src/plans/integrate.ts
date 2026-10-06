@@ -72,6 +72,16 @@ const HASH = /^[a-f0-9]{40,64}$/;
 const short = (hash: string) => hash.slice(0, 8);
 const named = (part: Pick<Part, "key" | "id">) => `part ${part.key} (${part.id})`;
 
+// The repository an item forks from and is measured against (docs/orchestrator.md,
+// section 5): a part forks from its plan's fork, the integration branch, at
+// its current head, and is measured against that branch rather than the
+// baseline, so it never reports its dependencies' files as its own. A plan or
+// an ordinary task forks from the baseline. `planFork` is the plan item's
+// fork, read by the caller.
+export function baseRepoOf(item: { kind?: string | null }, baselineRepo: string, planFork: string | null): string {
+  return item.kind === "part" && planFork ? planFork : baselineRepo;
+}
+
 // The reviews that let a part's head into the plan. Reviews count as gate()
 // counts them: the latest from each reviewer at that head, from the project
 // owner or an assessor. One approval is needed, from a model of another
