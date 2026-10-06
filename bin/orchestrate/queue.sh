@@ -13,7 +13,12 @@ lock="$ATELIER_CACHE/landing-$ATELIER_PROJECT.lock"
 # A lock whose holder is gone (killed before its trap ran) is taken over.
 until mkdir "$lock" 2>/dev/null; do
   holder=$(cat "$lock/pid" 2>/dev/null)
-  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then rm -rf "$lock"; continue; fi
+  # Rename it first, so only one waiter takes it over; if what was renamed
+  # is a newer lock with a live holder, put it back.
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null && mv "$lock" "$lock.$$" 2>/dev/null; then
+    if [ "$(cat "$lock.$$/pid" 2>/dev/null)" = "$holder" ]; then rm -rf "$lock.$$"; else mv "$lock.$$" "$lock" 2>/dev/null || rm -rf "$lock.$$"; fi
+    continue
+  fi
   sleep 20
 done
 echo $$ > "$lock/pid"
@@ -22,7 +27,7 @@ cd "$W" || exit 1
 # A workspace an agent never built in has no dependencies yet; the type check
 # below needs them, and the project's generated types.
 if [ -f package.json ] && [ ! -d node_modules ]; then
-  npm ci --prefer-offline --no-audit --no-fund >/dev/null && { ! grep -q '"types"' package.json || npm run types >/dev/null; } || { echo "$t: npm ci failed"; exit 5; }
+  npm ci --prefer-offline --no-audit --no-fund >/dev/null && { ! node -e 'process.exit(require("./package.json").scripts?.types ? 0 : 1)' || npm run types >/dev/null; } || { echo "$t: npm ci failed"; exit 5; }
 fi
 git fetch -q "$M" main || { echo "$t: could not fetch main from $M"; exit 6; }
 merge=$(git merge --no-ff -m "Merge main into $t" FETCH_HEAD 2>&1); merged=$?
