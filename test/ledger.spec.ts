@@ -432,14 +432,18 @@ it("a claim belongs to the runner that made it; the same agent name from another
   await refusal(L.claim(item.id, "opencode/qwen3-coder-next", studio), "owned", /on home:laptop, not home:studio/);
 });
 
-it("a submit records the summary in its event, cleaned and capped, and only the latest submit at a head speaks", async () => {
+it("a submit records the summary in its event, cleaned, refuses one over its limit, and only the latest submit at a head speaks", async () => {
   const L = await setup("summary");
   await L.newItem("Summarise", ["src/**"], "owner");
   await L.claim("t1", A);
   await L.setFork("t1", "summary--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(900)}  `);
   const submitted = async () => ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
+  // Over 600 characters once cleaned, the summary is refused and nothing is submitted.
+  await refusal(L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(900)}  `), "too_long", /the summary is 918 characters; the limit is 600/);
+  expect(await submitted()).toEqual([]);
+  expect((await L.item("t1")).state).toBe("claimed");
+  await L.submit("t1", A, `  Added the brief.\u0007\n${"x".repeat(582)}  `);
   const [first] = await submitted();
   const text = first.data.summary as string;
   expect(text).toHaveLength(600);
@@ -564,7 +568,7 @@ it("abandon is refused while a merge holds the landing lease, so a published mer
   await L.accept("t1", "owner", H1);
   await L.beginLanding("t1", "owner", H1);
   // The check the route makes before it revokes the holder's token refuses too, so nothing is revoked.
-  await refusal(L.checkAbandon("t1", "owner"), "landing", /being merged at aaaaaaaa and holds the landing lease.*atelier merge t1 records the merge.*atelier merge t1 --cancel/);
+  await refusal(L.checkAbandon("t1", "owner", ""), "landing", /being merged at aaaaaaaa and holds the landing lease.*atelier merge t1 records the merge.*atelier merge t1 --cancel/);
   await refusal(L.abandon("t1", "owner", "changed my mind mid-merge"), "landing", /landing lease/);
   expect(await L.item("t1")).toMatchObject({ state: "accepted", owner: A, acceptedHead: H1 });
   expect(await L.merged("t1", "owner", "c".repeat(40), true, H1)).toMatchObject({ state: "merged" });

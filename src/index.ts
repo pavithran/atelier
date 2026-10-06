@@ -7,6 +7,7 @@ import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type 
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjects, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -702,24 +703,36 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
     }
     case "push": {
+      // The head the workspace says it pushed is recorded beside the one
+      // Atelier reads when the two differ, so it must be a commit hash:
+      // anything else would be stored as the caller sent it.
+      const reported = body.head ?? null;
+      if (reported !== null && (typeof reported !== "string" || !/^[a-f0-9]{40,64}$/.test(reported))) {
+        throw new RuleError("bad_head", "head must be the full commit hash the workspace pushed, as git rev-parse HEAD prints it", 400);
+      }
       const item = await L.item(id);
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      return json(await L.recordPush(id, actor, observed, body.head ?? null, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
+      return json(await L.recordPush(id, actor, observed, reported, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
     }
     case "evidence": {
       const item = await L.item(id);
       const check = body.kind === "check";
+      // A claim (a check's command or a report's text) and a check's output
+      // are stored as sent, so each over its limit is refused, not cut.
+      const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
+      assertLength(claim, CLAIM_MAX, check ? "the check's command" : "the report");
+      if (check) assertLength(outputTail, OUTPUT_MAX, "the check's output");
       const e: Evidence = {
         itemId: id,
-        claim: String(body.claim ?? "").slice(0, 500),
+        claim,
         grade: check ? "observed" : "reported",
         head: String(body.head ?? item.head ?? ""),
         passed: check ? Boolean(body.passed) : null,
         by: actor,
         at: new Date().toISOString(),
-        ...(check ? { changedPaths: null, outputTail: String(body.outputTail ?? "").slice(-4000), where: "runner" as const } : {}),
+        ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // An observed check counts only against the head Atelier itself reads
@@ -784,20 +797,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // (see dropToken), so a token a claim recorded in between is never left
     // live and unrecorded.
     case "handoff": {
-      const to = String(body.to ?? "");
+      const to = String(body.to ?? ""), note = String(body.note ?? "");
       const oldToken = await L.tokenId(id);
-      await L.checkHandoff(id, actor, to);
+      await L.checkHandoff(id, actor, to, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.handoff(id, actor, to, String(body.note ?? ""), !!c.token, oldToken);
+      const item = await L.handoff(id, actor, to, note, !!c.token, oldToken);
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
     case "release": {
+      const note = String(body.note ?? "");
       const oldToken = await L.tokenId(id);
-      await L.checkRelease(id, actor);
+      await L.checkRelease(id, actor, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.release(id, actor, String(body.note ?? ""), !!c.token, oldToken);
+      const item = await L.release(id, actor, note, !!c.token, oldToken);
       return json(item);
     }
     case "accept":
@@ -835,11 +849,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "abandon": {
       requireOwner(env, actor);
+      const note = String(body.note ?? "");
       const oldToken = await L.tokenId(id);
-      await L.checkAbandon(id, actor);
+      await L.checkAbandon(id, actor, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.abandon(id, actor, String(body.note ?? ""), oldToken);
+      const item = await L.abandon(id, actor, note, oldToken);
       return json(item);
     }
   }
@@ -1028,9 +1043,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // change would then take it off the record while it still works.
     const moving = verb === "abandon" || verb === "release" || verb === "handoff";
     if (moving) {
-      if (verb === "abandon") await L.checkAbandon(id, owner);
-      else if (verb === "release") await L.checkRelease(id, owner);
-      else await L.checkHandoff(id, owner, String(form.get("to") ?? ""));
+      if (verb === "abandon") await L.checkAbandon(id, owner, note);
+      else if (verb === "release") await L.checkRelease(id, owner, note);
+      else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
       const { fork } = await L.item(id);
       await revoke(env, fork, oldToken);
     }

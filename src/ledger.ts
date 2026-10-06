@@ -8,6 +8,7 @@ import {
   type Evidence, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
 } from "./rules";
 import { cleanSummary } from "./brief";
+import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -79,6 +80,9 @@ export interface ProjectInit {
 }
 
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+
+// The longest actor a task can be handed to, as harness/model:profile.
+const ACTOR_MAX = 200;
 
 // What the Worker found in a fork's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
@@ -725,6 +729,7 @@ export class Ledger extends DurableObject<Env> {
 
   addReview(r: Review, origin?: string, proved = false): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
+    assertLength(r.note, NOTE_MAX, "the review note");
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
@@ -751,9 +756,10 @@ export class Ledger extends DurableObject<Env> {
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
+    // Cleaned first: a summary over its limit is refused before anything is written.
+    const text = cleanSummary(summary);
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
-    const text = cleanSummary(summary);
     this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
     this.notify(id, origin);
     return this.item(id);
@@ -762,12 +768,17 @@ export class Ledger extends DurableObject<Env> {
   // The checks a handoff, release or abandon makes, asked alone. The caller
   // revokes the holder's write token before it changes the owner, and asks
   // these first, so a change that would be refused revokes nothing. The
-  // change itself checks again.
-  checkHandoff(id: string, from: string, to: string): void { this.handoffAllowed(id, from, to); }
-  checkRelease(id: string, actor: string): void { this.releaseAllowed(id, actor); }
-  checkAbandon(id: string, actor: string): void { this.abandonAllowed(id, actor); }
+  // change itself checks again. The note is checked here too, so a note over
+  // its limit is refused before the token is revoked.
+  checkHandoff(id: string, from: string, to: string, note: string): void { this.handoffAllowed(id, from, to, note); }
+  checkRelease(id: string, actor: string, note: string): void { this.releaseAllowed(id, actor, note); }
+  checkAbandon(id: string, actor: string, note: string): void { this.abandonAllowed(id, actor, note); }
 
-  private handoffAllowed(id: string, from: string, to: string): Item {
+  private handoffAllowed(id: string, from: string, to: string, note: string): Item {
+    assertLength(note, NOTE_MAX, "the handoff note");
+    // The name is stored as the task's owner and in its event, so it is
+    // held to a length no harness/model name reaches.
+    assertLength(to, ACTOR_MAX, "the name of the agent it is handed to");
     const item = this.item(id);
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
@@ -776,15 +787,17 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
-  private releaseAllowed(id: string, actor: string): Item {
+  private releaseAllowed(id: string, actor: string, note: string): Item {
+    assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
     assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
     return item;
   }
 
-  private abandonAllowed(id: string, actor: string): Item {
+  private abandonAllowed(id: string, actor: string, note: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
+    assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     // A merge under the landing lease may already have put the accepted
@@ -802,7 +815,7 @@ export class Ledger extends DurableObject<Env> {
   // `token`, and the change is made only if that is still the token recorded
   // (see dropToken).
   handoff(id: string, from: string, to: string, note: string, proved = false, token?: string | null): Item {
-    const item = this.handoffAllowed(id, from, to);
+    const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
     const at = new Date().toISOString();
     this.update(id, { owner: to, state: "claimed" }, at);
@@ -811,7 +824,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   release(id: string, actor: string, note: string, proved = false, token?: string | null): Item {
-    const item = this.releaseAllowed(id, actor);
+    const item = this.releaseAllowed(id, actor, note);
     this.dropToken(id, token);
     const at = new Date().toISOString();
     this.update(id, { owner: null, state: "open" }, at);
@@ -894,7 +907,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   abandon(id: string, actor: string, note: string, token?: string | null): Item {
-    this.abandonAllowed(id, actor);
+    this.abandonAllowed(id, actor, note);
     this.dropToken(id, token);
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null }, at);
