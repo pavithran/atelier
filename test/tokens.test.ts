@@ -26,10 +26,14 @@ test("issuance validates identity, expiry and metadata", () => {
 });
 
 test("scope is exact, absent means all and empty means none", () => {
-  assert.equal(inScope({}, "p"), true);
-  assert.equal(inScope({ projects: [] }, "p"), false);
-  assert.equal(inScope({ projects: ["p"] }, "p"), true);
-  for (const name of ["P", "prefix", "p/other"]) assert.equal(inScope({ projects: ["p"] }, name), false);
+  assert.equal(inScope({}, ["p"]), true);
+  assert.equal(inScope({ projects: [] }, ["p"]), false);
+  assert.equal(inScope({ projects: ["p"] }, ["p"]), true);
+  for (const name of ["P", "prefix", "p/other"]) assert.equal(inScope({ projects: ["p"] }, [name]), false);
+  // A renamed project answers to each name it has had, so a token issued for any of them reaches it.
+  assert.equal(inScope({ projects: ["p"] }, ["q", "p"]), true);
+  assert.equal(inScope({ projects: ["q"] }, ["q", "p"]), true);
+  assert.equal(inScope({ projects: ["r"] }, ["q", "p"]), false);
 });
 
 test("expiry is exclusive and revocation takes effect immediately", () => {

@@ -3,7 +3,7 @@ import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions,
 import { itemDiff, type ItemDiff } from "./diff";
 import { previewAgainstMain } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef } from "./ledger.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, measuredPaths, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
@@ -22,7 +22,9 @@ export { CheckRunner, Egress, Ledger };
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
 
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken };
+// `ref` is the project an API path names, resolved once at the entry (see
+// resolveProject); null when the path names none.
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -44,14 +46,15 @@ function showcased(env: Env): string[] {
   return ((env as unknown as Settings).SHOWCASE ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
-// The showcased names that are still registered: the page, the login link and
-// the front door all use this, so none of them points at a showcase that would
-// answer 404 after its last project was removed.
-async function liveShowcase(env: Env): Promise<string[]> {
+// The showcased projects that are still registered, under whichever of their
+// names the setting uses: the page, the login link and the front door all use
+// this, so none of them points at a showcase that would answer 404 after its
+// last project was removed.
+async function liveShowcase(env: Env): Promise<ProjectRecord[]> {
   const names = showcased(env);
   if (!names.length) return [];
   const registered = await index(env).projects();
-  return names.filter((name) => registered.some((p) => p.name === name));
+  return [...new Set(names.map((name) => projectNamed(registered, name)).filter((p): p is ProjectRecord => p !== undefined))];
 }
 
 // The public page, read without signing in. It reads only the named projects,
@@ -59,16 +62,18 @@ async function liveShowcase(env: Env): Promise<string[]> {
 async function showcase(env: Env, url: URL): Promise<Response> {
   // Read index membership before using a cached page. Removed projects must
   // not remain visible through a previously cached showcase.
-  const names = await liveShowcase(env);
+  const projects = await liveShowcase(env);
+  const names = projects.map((p) => p.name);
   const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(names))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
   const hit = await caches.default.match(key);
   if (hit) return hit;
   const owner = ownerActor(env);
   const cutoffs = new Map<string, number | null>();
   const records: ProjectRecord[] = [];
-  const stories = (await Promise.all(names.map(async (name) => {
+  const stories = (await Promise.all(projects.map(async (p) => {
+    const { name } = p;
     try {
-      const L = ledger(env, name);
+      const L = ledgerOf(env, p);
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
       const [project, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
       cutoffs.set(name, firstTaskAt(items));
@@ -116,8 +121,8 @@ const TASK_EVENTS = 300;
 // Where a project stands, from its Ledger: the page and the JSON route share it.
 // Each section reads its own source: items for holders and merges, and the
 // events of the tasks it names, never a window over the whole project's record.
-async function standingOf(env: Env, name: string): Promise<Standing> {
-  const L = ledger(env, name);
+async function standingOf(env: Env, key: string): Promise<Standing> {
+  const L = ledger(env, key);
   const now = new Date();
   const [project, items, inbox] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString())]);
   const taskEvents = new Map<string, LedgerEvent[]>();
@@ -178,11 +183,49 @@ const html = (body: string, status = 200) =>
     },
   });
 
-function ledger(env: Env, project: string) {
-  return env.LEDGER.get(env.LEDGER.idFromName(`project:${project}`));
+// A project's Ledger is the Durable Object named after its key: the name it
+// was created with, which a rename keeps. Routes that take a project name
+// resolve it once (resolveProject) and address storage by the key only.
+function ledger(env: Env, key: string) {
+  return env.LEDGER.get(env.LEDGER.idFromName(`project:${key}`));
+}
+function ledgerOf(env: Env, p: ProjectRecord) {
+  return ledger(env, p.key ?? p.name);
 }
 function index(env: Env) {
   return env.LEDGER.get(env.LEDGER.idFromName("__index"));
+}
+function resolveProject(env: Env, name: string): Promise<ProjectRef> {
+  return index(env).resolveProject(name);
+}
+// Every name a listed project answers to, for a token's project scope.
+function namesOf(p: ProjectRecord): string[] {
+  return [p.name, ...(p.formerly ?? [])];
+}
+// The listed project a name belongs to, current or former.
+function projectNamed(projects: ProjectRecord[], name: string): ProjectRecord | undefined {
+  return projects.find((p) => namesOf(p).includes(name));
+}
+
+// A project name as the API and the local config take it: text with
+// something in it, no surrounding space and no slash, and one a repository
+// could be named from, so a fresh init under it would succeed.
+function projectNameArg(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value !== value.trim() || value.includes("/")) {
+    throw new RuleError("bad_name", "the new name must be text without a slash or surrounding space", 400);
+  }
+  repoName(value);
+  return value;
+}
+
+// A page reached through a name the project no longer has moves to the name
+// it has now, with the rest of its path and its query. Permanent, but not
+// cached: a rename can be reversed, and a cached redirect each way would loop.
+function movedTo(url: URL, parts: string[]): Response {
+  return new Response(null, {
+    status: 301,
+    headers: { location: `/${parts.map(encodeURIComponent).join("/")}${url.search}`, "cache-control": "no-store" },
+  });
 }
 
 function requireOwner(env: Env, actor: string) {
@@ -283,10 +326,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // what it can run and gets back the tasks it may claim, with the name to claim under.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
-    const projects = (await index(env).projects()).filter((p) => inScope(c.token, p.name));
+    const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
-      try { return (await ledger(env, p.name).waiting()).map((item) => ({ project: p.name, item })); }
+      try { return (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item })); }
       catch { unreadable.push(p.name); return []; }
     }));
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
@@ -302,14 +345,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return res;
   }
   if (parts[0] !== "projects") throw new RuleError("not_found", "no such route", 404);
-  if (parts.length === 1 && m === "GET") return json((await index(env).projects()).filter((p) => inScope(c.token, p.name)));
+  if (parts.length === 1 && m === "GET") return json((await index(env).projects()).filter((p) => inScope(c.token, namesOf(p))));
 
-  const project = parts[1];
-  const L = ledger(env, project);
+  // From here every route works on one project: `project` is the name it is
+  // registered under, whichever of its names the path used, and `ref.key`
+  // addresses its storage.
+  const ref = c.ref;
+  if (!ref) throw new RuleError("not_found", "no such route", 404);
+  const project = ref.name;
+  const L = ledger(env, ref.key);
 
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
-    const repo = repoName(project);
+    const repo = repoName(ref.key);
     await index(env).assertRepoAvailable(project, repo);
     // Running init again changes only what it is given; the Ledger merges it
     // into the current record in one step (initProject). Only reset: true
@@ -343,8 +391,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
-    const registered = await index(env).projects();
-    if (!registered.some((p) => p.name === project)) throw new RuleError("no_project", `no project ${project}`, 404);
+    if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
     const items = await L.items();
     // A task queued for a runner is live work too: removing the project would drop it from the queue while it stays claimable.
     if (body.force !== true && items.some((i) => i.state === "open" && i.dispatch)) {
@@ -356,6 +403,29 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts.length === 2 && m === "GET") {
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
+  }
+  // The owner gives the project a new name. The index decides and refuses a
+  // clash; the project's own record follows. If that second write did not
+  // happen, running the rename again, to the name the index already has,
+  // finishes it.
+  if (parts[2] === "rename" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    const to = projectNameArg(body.to);
+    if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    if (project === to) {
+      if ((await L.project()).name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
+      return json({ from: project, to, key: ref.key, names: ref.names, project: await L.setName(to, actor) });
+    }
+    // The index knows registered names and former ones, and refuses those
+    // again when it writes. A Ledger retained after a removal is known only
+    // to itself, and the new name must not hide one behind this project.
+    const target = await index(env).resolveProject(to);
+    assertNameFree(ref, to, target);
+    if (target.key !== ref.key && await ledger(env, to).project().then(() => true, () => false)) {
+      throw new RuleError("name_taken", `${to} is in use: a removed project's Ledger is kept under that name`, 409);
+    }
+    const moved = await index(env).renameProject(project, to);
+    return json({ ...moved, project: await L.setName(to, actor) });
   }
   if (parts[2] === "sessions" && parts.length === 3) {
     if (m === "GET") return json(await L.sessions());
@@ -372,7 +442,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ head: await headOf(env, (await L.project()).repo) });
   }
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
-  if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, project));
+  if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
@@ -390,7 +460,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
   if (verb === "sandbox" && parts[5] && m === "GET") {
-    if (!parts[5].startsWith(`${project}:${id}:`)) throw new RuleError("not_found", "no such run", 404);
+    if (!parts[5].startsWith(`${ref.key}:${id}:`)) throw new RuleError("not_found", "no such run", 404);
     const state = await env.RUNNER.get(env.RUNNER.idFromName(parts[5])).state();
     if (!state) throw new RuleError("not_found", "no such run", 404);
     return json(state);
@@ -408,7 +478,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const p = await L.project();
       let fork = item.fork;
       if (needsFork) {
-        fork = repoName(p.name, id);
+        // Forks are named after the key, like the baseline, whatever the project is called now.
+        fork = repoName(ref.key, id);
         try {
           using base = await env.ARTIFACTS.get(p.repo);
           await base.fork(fork, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
@@ -470,9 +541,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
       const p = await L.project();
       if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
-      const runId = `${project}:${id}:${item.head.slice(0, 12)}:${Date.now()}`;
+      // The run is named and the runner records to the Ledger by the key, so a
+      // run started under one of the project's names is read under any other.
+      const runId = `${ref.key}:${id}:${item.head.slice(0, 12)}:${Date.now()}`;
       const request: RunRequest = {
-        runId, project, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
+        runId, project: ref.key, itemId: id, baselineRepo: p.repo, fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
       };
       await L.setNotificationOrigin(id, c.url.origin);
@@ -519,7 +592,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "accept":
       requireOwner(env, actor);
-      await verifyRevision(env, project, id, String(body.head ?? ""));
+      await verifyRevision(env, ref.key, id, String(body.head ?? ""));
       return json(await L.accept(id, actor, String(body.head ?? "")));
     case "merged": {
       requireOwner(env, actor);
@@ -586,7 +659,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   // the page says how many, and which projects could not be read.
   const unread: string[] = [];
   const events = (await Promise.all(projects.map(async (p) => {
-    try { return (await ledger(env, p.name).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[]; } catch { unread.push(titleOf(p)); return []; }
+    try { return (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[]; } catch { unread.push(titleOf(p)); return []; }
   })));
   const record = new Map<string, ActorRecord>();
   for (const evs of events) {
@@ -600,19 +673,20 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
 // /p/P/tN/{code,log,commit,history}/… reads task tN's fork. Null when the
-// path is not a browsing path, so the task page keeps /p/P/tN.
+// path is not a browsing path, so the task page keeps /p/P/tN. `parts` is
+// the path after the project, which `ref` has resolved.
 const VIEWS = new Set(["code", "log", "commit", "history"]);
 const HASH = /^[0-9a-f]{40}$/;
 
-async function browse(env: Env, url: URL, parts: string[]): Promise<Response | null> {
-  const [project, second, ...rest] = parts;
+async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Promise<Response | null> {
+  const [second, ...rest] = parts;
   const item = VIEWS.has(second) ? null : second;
   const [view, ...tail] = item ? rest : [second, ...rest];
   if (!VIEWS.has(view ?? "")) return null;
-  const L = ledger(env, project);
+  const L = ledger(env, ref.key);
   const p = await L.project();
   const repoName = item ? (await L.item(item)).fork : p.repo;
-  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(project)}/${encodeURIComponent(item!)}`), 404);
+  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(ref.name)}/${encodeURIComponent(item!)}`), 404);
   const atParam = url.searchParams.get("at");
   const at = atParam && HASH.test(atParam) ? atParam : null;
   const w: Where = { project: p, item, at };
@@ -626,7 +700,7 @@ async function browse(env: Env, url: URL, parts: string[]): Promise<Response | n
     return c ? html(renderCommit(w, c, ownerName(env))) : notFound("That commit");
   }
   const head = await resolve(s, at);
-  if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(project)}`), 404);
+  if (!head) return at ? notFound("That commit") : html(renderError("This repository has no commits yet.", `/p/${encodeURIComponent(ref.name)}`), 404);
   if (view === "log") {
     const page = Math.min(Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0), LOG_PAGES - 1);
     const { commits, more } = await logPage(s, head.hash, page);
@@ -684,14 +758,14 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
 }
 
 async function inbox(env: Env, token?: AgentToken) {
-  const projects = (await index(env).projects()).filter((p) => inScope(token, p.name));
+  const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
-  const lists = await Promise.all(projects.map((p) => ledger(env, p.name).inbox(now)));
+  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now)));
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
 
-async function verifyRevision(env: Env, project: string, id: string, expected: string) {
-  const item = await ledger(env,project).item(id);
+async function verifyRevision(env: Env, key: string, id: string, expected: string) {
+  const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
   if (item.fork && await headOf(env,item.fork) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
 }
@@ -705,8 +779,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const origin = req.headers.get("origin");
     if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);
     const form = await req.formData();
-    const [, project, id, verb] = parts; // /ui/<project>/<id>/<verb>
-    const L = ledger(env, project);
+    const [, named, id, verb] = parts; // /ui/<project>/<id>/<verb>
+    // A form posted from a page opened before a rename still acts; its
+    // answer sends the browser to the page under the name the project has now.
+    const ref = await resolveProject(env, named ?? "");
+    const project = ref.name;
+    const L = ledger(env, ref.key);
     const note = String(form.get("note") ?? "");
     const owner = ownerActor(env);
     if (id === "new" && !verb) {
@@ -716,7 +794,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
-    if (["accept", "approve", "reject"].includes(verb)) await verifyRevision(env, project, id, expected);
+    if (["accept", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
     const oldToken = await L.tokenId(id);
     if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
     else if (verb === "undispatch") await L.undispatch(id, owner);
@@ -737,7 +815,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 0 || ["decisions", "projects", "history", "studio", "flow"].includes(parts[0])) {
     const projects = await index(env).projects();
     const views: ProjectView[] = await Promise.all(projects.map(async project => {
-      try { return {project, items: await ledger(env,project.name).items()}; }
+      try { return {project, items: await ledgerOf(env, project).items()}; }
       catch { return {project, items: [], unavailable: true}; }
     }));
     if (parts[0] === "projects") return html(renderProjects(views, ownerName(env)));
@@ -746,7 +824,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const now = new Date();
     const floorViews: FloorView[] = (await Promise.all(views.filter((v) => !v.unavailable).map(async (v) => {
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
-      try { return { ...v, events: (await ledger(env, v.project.name).events(undefined, 400)) as unknown as LedgerEvent[] }; }
+      try { return { ...v, events: (await ledgerOf(env, v.project).events(undefined, 400)) as unknown as LedgerEvent[] }; }
       catch { v.unavailable = true; return null; }
     }))).filter((v): v is FloorView => v !== null);
     const floor = buildFloor(floorViews, now);
@@ -756,7 +834,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const cutoffs = new Map<string, number | null>();
     const story = async (v: FloorView) => {
       try {
-        const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+        const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
         cutoffs.set(v.project.name, firstTaskAt(v.items));
         return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
       } catch { return null; }
@@ -777,7 +855,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       
       const filteredStory = async (v: FloorView) => {
         try {
-          const events = (await ledger(env, v.project.name).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+          const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
           cutoffs.set(v.project.name, firstTaskAt(v.items));
           return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project), { since: sinceIso, family: familyAllowed });
         } catch { return null; }
@@ -793,7 +871,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     if (parts[0] === "studio") return html(renderStudio(floor, ownerName(env), now, views.some((v) => v.unavailable), projects));
     const lists = await Promise.all(views.map(async v => {
       if (v.unavailable) return [];
-      try { return await ledger(env,v.project.name).inbox(new Date().toISOString()); }
+      try { return await ledgerOf(env, v.project).inbox(new Date().toISOString()); }
       catch { v.unavailable = true; return []; }
     }));
     const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
@@ -803,10 +881,10 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 0 && !entries.length && !c.url.search) return Response.redirect(new URL("/flow", c.url).toString(), 303);
     const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
     const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
-    const project = projects.find(p=>p.name===projectName);
+    const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
     let selected: ReviewContext | undefined;
     if (project && task) {
-      const L = ledger(env,project.name);
+      const L = ledgerOf(env, project);
       const detail = await L.detail(task);
       const selectedItem = await L.item(task);
       selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
@@ -816,26 +894,30 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const details = new Map<string, Detail>();
     const seen = new Set<string>();
     await Promise.all(entries.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
-      try { details.set(`${x.project}/${x.itemId}`, (await ledger(env, x.project).detail(x.itemId)) as unknown as Detail); } catch { /* the row stays without its card */ }
+      // An entry names its project as the Ledger's record does; the listed record says where that Ledger is.
+      const p = projectNamed(projects, x.project);
+      if (!p) return;
+      try { details.set(`${x.project}/${x.itemId}`, (await ledgerOf(env, p).detail(x.itemId)) as unknown as Detail); } catch { /* the row stays without its card */ }
     }));
     const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
     const latest = busiest && !selected ? await story(busiest) : null;
     return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details));
   }
-  if (parts[0] === "p" && parts.length === 2) {
-    const L = ledger(env, parts[1]);
-    const standing = await standingOf(env, parts[1]);
-    return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env), standing));
-  }
-  if (parts[0] === "p" && parts.length >= 3) {
-    const res = await browse(env, c.url, parts.slice(1));
+  if (parts[0] === "p" && parts.length >= 2) {
+    const ref = await resolveProject(env, parts[1]);
+    if (ref.former) return movedTo(c.url, ["p", ref.name, ...parts.slice(2)]);
+    const L = ledger(env, ref.key);
+    if (parts.length === 2) {
+      const standing = await standingOf(env, ref.key);
+      return html(renderProject(await L.project(), await L.items(), await L.events(undefined, 40), ownerName(env), standing));
+    }
+    const res = await browse(env, c.url, ref, parts.slice(2));
     if (res) return res;
-  }
-  if (parts[0] === "p" && parts.length === 3) {
-    const L = ledger(env, parts[1]);
-    const p = await L.project();
-    const item = await L.item(parts[2]);
-    return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork)));
+    if (parts.length === 3) {
+      const p = await L.project();
+      const item = await L.item(parts[2]);
+      return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork)));
+    }
   }
   return html("Not found.", 404);
 }
@@ -850,7 +932,7 @@ export default {
         if (notice) {
           const projects = await index(env).projects();
           for (const project of projects) {
-            const L = ledger(env,project.name);
+            const L = ledgerOf(env, project);
             const item = (await L.items()).find(i=>i.fork===notice.repo);
             if (!item || ["merged","abandoned"].includes(item.state)) continue;
             using repo = await env.ARTIFACTS.get(notice.repo);
@@ -903,11 +985,17 @@ export default {
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
           return json({ error: "bad_body", detail: "the request body must be a JSON object" }, 400);
         }
+        // The project a path names is resolved here, once: a former name
+        // reaches the project as the current one does, for a token limited to
+        // either, and the answer names the project as it is called now.
+        const ref = parts[1] === "projects" && parts[2] !== undefined ? await resolveProject(env, parts[2]) : null;
         if (token) {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
-          if (parts[1] === "projects" && parts[2] && !inScope(token, parts[2])) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
+          if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
-        return await api({ env, req, url, actor, body, token }, parts.slice(1));
+        const res = await api({ env, req, url, actor, body, token, ref }, parts.slice(1));
+        if (ref?.former) res.headers.set("x-atelier-project", ref.name);
+        return res;
       }
       // The front door: a visitor who is not signed in sees the public showcase
       // when there is one, and is otherwise asked to sign in.
