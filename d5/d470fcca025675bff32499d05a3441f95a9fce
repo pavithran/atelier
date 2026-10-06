@@ -1,0 +1,16 @@
+atelier atelier/t133 "Security, low (gpt-6-astra, confirmed by opus-5.5): the CLI sends the owner token to any server URL scheme, including plain http:// (cli/atelier.mjs:165, 239, 962); require https except for localhost (related to t122's login fix)"
+accepted head 1c96ba758f75338c38d0e9a01bed708df63abd4e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-06T03:00:35.144Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-06T03:00:39.559Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. server() refuses an unsafe URL before any request; insecureServer parses with WHATWG URL, so userinfo tricks, look-alike subdomains and uppercase schemes cannot pass; login checks --server before asking for a token; tests cover ATELIER_SERVER, config.json and --server, refused hosts get no request, https and loopback http work.
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T01:59:46.714Z pavi item.created
+2026-10-06T02:44:01.716Z claude-code/fable-5.1 item.claimed
+2026-10-06T02:44:05.252Z claude-code/fable-5.1 fork.created
+2026-10-06T02:59:13.842Z claude-code/fable-5.1 push.observed
+2026-10-06T03:00:36.108Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:00:39.807Z claude-code/fable-5.1 evidence.observed
+2026-10-06T03:00:41.129Z claude-code/fable-5.1 item.submitted
+2026-10-06T03:04:27.687Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T03:04:28.255Z pavi review.approved
+2026-10-06T03:04:28.783Z pavi item.accepted
