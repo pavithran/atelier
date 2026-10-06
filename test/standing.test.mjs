@@ -216,3 +216,18 @@ test("a project with no checkout on this machine is still reported", async (t) =
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /\nCheckout: none is registered on this machine for demo/);
 });
+
+test("each check is one line with its class and the paths it applies to, flattened", () => {
+  const out = formatStanding(standing({ checks: [
+    { command: "npm ci && npm test", class: "read-only", text: "read-only, a known build or test command", paths: null },
+    { command: "xcodebuild build", class: "read-only", text: "read-only, from ControlPlane: capability app-build is local-read-only", paths: ["App/**", "project.yml"] },
+    { command: "./check.sh\nforged", class: "undeclared", text: "undeclared: still run", paths: null },
+  ] })).split("\n");
+  const at = out.indexOf("Checks:");
+  assert.ok(at > 0);
+  assert.deepEqual(out.slice(at + 1), [
+    "  npm ci && npm test  read-only, a known build or test command",
+    "  xcodebuild build  read-only, from ControlPlane: capability app-build is local-read-only; applies only when the change touches App/**, project.yml",
+    "  ./check.sh forged  undeclared: still run",
+  ]);
+});

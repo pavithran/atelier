@@ -28,11 +28,23 @@ only a list of tasks.
   screen also shows who is on the floor, so the parallel work is visible
   before anything is opened.
 - **Studio** is the floor itself: one lane per live task on a shared time
-  axis. A lane is banded by who held the task, so a handoff is a visible
-  change of band, and the current holder's band is tinted with the signal
-  colour and runs to the "now" line. Every recorded event is a mark on the
-  lane. The page refreshes every fifteen seconds without script.
-- **Projects** and **History** list work in motion and work finished.
+  axis, drawn as the Flow graph draws a thread. A lane is banded by who held
+  the task, each band and the thread along it in the holder's family colour
+  (a local run dotted), so a handoff is a visible change of band and colour;
+  the current holder's band runs to the "now" line, where the head breathes.
+  Every recorded event is a mark on the lane. The page refreshes every
+  fifteen seconds without script.
+- **Code** and **Log** carry a stripe per entry and per commit in the family
+  of the agent the commit's message names, with that name in words beside
+  it; an entry's stripe is the commit that last changed it.
+- **Sign in** stands over the public showcase's graph, dimmed, when the
+  owner shows projects publicly; the graph is the showcase's redacted one.
+- **Projects** is a card per project: its tally of tasks and the last two
+  weeks of moves, a bar per day stacked by the family of the agent that made
+  them, with the owner's decisions on top.
+- **History** is the timeline of merges and closures across projects, by
+  day, each marked in the family of the agent that held the task when it
+  ended; a closure is a grey cap, not a dot.
 
 ## Evidence always says where
 
@@ -67,9 +79,18 @@ staggered above and below the line so none hides another.
 
 ## Constraints
 
-No script runs on any page; every action is a form post bound to the
-revision on screen, and the content security policy forbids script. Badges
-never wrap. Pages hold their layout without horizontal scrolling at 390 px,
+Every page reads fully without script, and every action is a form post
+bound to the revision on screen. Flow, Decisions and a task's page also
+carry Atelier's own script, served from this origin under a nonce made for
+the request, which the content security policy names and the script tag
+carries; no inline script and no script from elsewhere runs, and every
+other page keeps the policy that forbids script. The script only refreshes
+those pages and animates what arrived, and adds the scrubber that steps
+through a task's recorded events in order. A refresh never changes the
+revisions on screen: when the fetched copy binds its forms to revisions
+other than the ones the page shows, one moved, new or gone, the page keeps
+what it shows, says a new revision arrived with a link to reload, and
+stops refreshing. Badges never wrap. Pages hold their layout without horizontal scrolling at 390 px,
 and the navigation drops its icons below 720 px so all four destinations fit.
 
 The [orchestrator design](docs/orchestrator.md) describes plans, review and integration, with implementation status.
