@@ -524,7 +524,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   ${compareBlock(stories, imported, total, owner, who)}
   ${body}
-  <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded.</p>
+  <p class="meta public-note">Shown read only. Review notes, reports and diffs stay private; titles, models, times and outcomes are as recorded, with email addresses left out.</p>
 `,
   });
 }
