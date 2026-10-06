@@ -1,0 +1,14 @@
+atelier atelier/t190 "atelier land's version check compares commits, so after every merge the CLI refuses until the next deploy (cli/land.mjs, GET /api/version from t187): replace it with a route level the server reports and the CLI requires, bumped only when the CLI starts calling a new route"
+accepted head 8692cd31f76b099c27cae255fef128af9c509141
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-06T20:43:50.015Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-06T20:43:53.517Z
+REVIEW approve — antigravity/gemini-3.1-pro: Route level gates atelier land; version public
+2026-10-06T18:33:32.258Z pavi item.created
+2026-10-06T20:30:53.442Z opencode/glm-5.3 item.claimed
+2026-10-06T20:31:03.056Z opencode/glm-5.3 fork.created
+2026-10-06T20:41:55.814Z opencode/glm-5.3 push.observed
+2026-10-06T20:43:50.975Z opencode/glm-5.3 evidence.observed
+2026-10-06T20:43:53.962Z opencode/glm-5.3 evidence.observed
+2026-10-06T20:43:54.909Z opencode/glm-5.3 item.submitted
+2026-10-06T20:50:53.617Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T20:50:54.542Z pavi item.accepted
