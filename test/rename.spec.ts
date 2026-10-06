@@ -270,3 +270,30 @@ it("resolving a name reads the names table once, however many projects are regis
     }
   });
 });
+
+// Task t167: projects() read the names table twice per project (the key and
+// the former names of each listed record), so a list of N projects ran 2N
+// queries on it.
+it("listing the projects reads the names table once, however many are registered", async () => {
+  for (let n = 0; n < 30; n++) await project(`many-list-${n}`);
+  expect((await rename("many-list-7", "many-list-seven")).status).toBe(200);
+  await runInDurableObject(I(), async (instance) => {
+    const held = instance as unknown as { sql: SqlStorage };
+    const sql = held.sql;
+    const reads: string[] = [];
+    held.sql = { exec: (query: string, ...bindings: unknown[]) => { if (/\bnames\b/.test(query)) reads.push(query); return sql.exec(query, ...bindings); } } as unknown as SqlStorage;
+    try {
+      const listed = instance.projects() as { name: string; key?: string; formerly?: string[] }[];
+      expect(reads.length).toBe(1);
+      expect(listed.filter((p) => p.name.startsWith("many-list-"))).toHaveLength(30);
+      const renamed = listed.find((p) => p.name === "many-list-seven")!;
+      expect(renamed.key).toBe("many-list-7");
+      expect(renamed.formerly).toEqual(["many-list-7"]);
+      const plain = listed.find((p) => p.name === "many-list-0")!;
+      expect(plain.key).toBeUndefined();
+      expect(plain.formerly).toBeUndefined();
+    } finally {
+      held.sql = sql;
+    }
+  });
+});
