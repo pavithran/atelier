@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { checkEnv } from "./check-env.mjs";
+import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
 
 export function offerFrom(config, name) {
@@ -103,16 +105,40 @@ export function writeBrief(workspace, text) {
 
 export const removeBrief = ({ file }) => rmSync(file, { force: true });
 
+// A harness runs a model and the code the model writes, so it gets what a
+// check gets (checkEnv in check-env.mjs: the variables toolchains need, nothing
+// named ATELIER_* and nothing whose name says it holds a secret) and the
+// variables its runner config entry names in `env`, such as the provider key
+// opencode reads, taken from the runner's environment. A named variable that
+// holds one of `tokens`, the owner's Atelier token (ownerTokens), is withheld
+// whatever its name. Returns the environment and the names withheld.
+export function harnessEnv(base, names = [], tokens = []) {
+  const env = checkEnv(base), withheld = [];
+  for (const name of names) {
+    const value = base[name];
+    if (value === undefined || /^ATELIER_/i.test(name)) continue;
+    if (tokens.some((token) => token && value.includes(token))) withheld.push(name);
+    else env[name] = value;
+  }
+  return { env, withheld };
+}
+
+// The owner's Atelier token as this machine holds it: ATELIER_TOKEN, and the
+// one `atelier login` stored. Read only when an entry names variables to pass.
+export function ownerTokens(base = process.env) {
+  const tokens = [base.ATELIER_TOKEN?.trim()];
+  try { tokens.push(readSecret("API_TOKEN", { env: { ...base, ATELIER_TOKEN: "" } })); } catch { /* A store that cannot be read gives the CLI no token either. */ }
+  return tokens.filter(Boolean);
+}
+
 // Every opencode process opens one database in its data folder,
 // $XDG_DATA_HOME/opencode/opencode.db, and prunes it at startup; runs
 // started together deadlock on it, holding it at 0% CPU without reaching
-// the model. So each opencode run gets a data folder of its own. Keys that
-// reach opencode through its environment or its config still do: the
-// harness inherits the runner's environment with only XDG_DATA_HOME
-// changed, and opencode reads its config from XDG_CONFIG_HOME and its
-// downloads from XDG_CACHE_HOME. A key saved by `opencode auth login` is in
-// the shared data folder's auth.json, which a run does not see. Other
-// harnesses keep the runner's environment as it is.
+// the model. So each opencode run gets a data folder of its own, set over
+// what harnessEnv gives it. Keys reach opencode through the variables its
+// entry names and through its config, which it reads from XDG_CONFIG_HOME
+// (~/.config when that is not named). A key saved by `opencode auth login`
+// is in the shared data folder's auth.json, which a run does not see.
 export const OWN_DATA_HOME = new Set(["opencode"]);
 
 // The folder is a sibling of the workspace, like the brief, so nothing in
@@ -169,6 +195,8 @@ export async function runTask(assignment, config, name, io) {
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
     brief = await io.brief(workspace, briefFor({ ...item, owner: actor }, project));
+    const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
     // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
     // is removed when the harness ends, however it ends, before anything else.
     const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
@@ -176,7 +204,7 @@ export async function runTask(assignment, config, name, io) {
     try {
       advance({ type: "start" });
       taskFailure = true;
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { XDG_DATA_HOME: dataHome.dir } : undefined);
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
@@ -259,9 +287,9 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
         await checked(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
       }
     },
-    // `env` holds what a run changes in the runner's environment (OWN_DATA_HOME).
-    harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
-      ...(env ? { env: { ...process.env, ...env } } : {}) }),
+    // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
+    harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env }),
+    env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     ...taskIO,
   };
