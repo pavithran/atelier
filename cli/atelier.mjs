@@ -790,13 +790,16 @@ const commands = {
     // end) refuses the commit; a bare ======= alone does not, since Markdown
     // underlines headings with it. The scan fails closed: if git cannot
     // diff a path, wrap stops. Paths are literal, so none is read as an
-    // option, a pathspec or standard input. No call takes the index lock, so
-    // a refusal leaves even the index's cached file data as it was.
+    // option, a pathspec or standard input. No call writes the index, so a
+    // refusal leaves even its cached file data as it was: git diff refreshes
+    // a stat-dirty index on its own unless diff.autoRefreshIndex is off,
+    // whatever --no-optional-locks says, and iCloud leaves files stat-dirty.
     const opensOrCloses = /^(<{7}|>{7})( |$)/;
     const marked = [];
-    const changed = git(["--no-optional-locks", "diff", "HEAD", "--name-only", "--no-renames", "-z"], { cwd, raw: true }).split("\0").filter(Boolean);
+    const readOnly = ["-c", "diff.autoRefreshIndex=false", "--no-optional-locks"];
+    const changed = git([...readOnly, "diff", "HEAD", "--name-only", "--no-renames", "-z"], { cwd, raw: true }).split("\0").filter(Boolean);
     for (const file of changed) {
-      const added = git(["--no-optional-locks", "--literal-pathspecs", "diff", "HEAD", "--text", "--no-ext-diff", "--no-textconv", "-U0", "--", file], { cwd, allowFail: true });
+      const added = git([...readOnly, "--literal-pathspecs", "diff", "HEAD", "--text", "--no-ext-diff", "--no-textconv", "-U0", "--", file], { cwd, allowFail: true });
       if (added.status !== 0) die(`wrap could not read the changes to ${sessionText(file, 200)} (git diff exited ${added.status}); nothing was staged`);
       if ((added.stdout || "").split("\n").some((line) => line.startsWith("+") && !line.startsWith("+++") && opensOrCloses.test(line.slice(1)))) marked.push(file);
     }
