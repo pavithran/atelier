@@ -28,7 +28,7 @@ export const HELP_TITLE = "atelier — one owner per item, observed evidence, th
 export const HELP_GROUPS: HelpGroup[] = [
   { name: "Sessions", lines: [[
     { form: "unwrap [--project P]", about: "Reads where the project stands, the state of this checkout, where its branch stands against each of the checkout's remotes as last fetched or pushed, the newest session note, the state file (the first of `docs/STATE.md`, `STATE.md` and `PROJECT.md` that exists) and any dated handoffs. It fetches and writes nothing. The project owner's session starts here." },
-    { form: 'wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]', about: "Closes the owner's session in the registered checkout: runs the registered checks, commits everything with the summary as its subject, updates the baseline and records a session note on the ledger. Check results are Reported, because they ran on the owner's machine. `--push` also pushes the checkout's own remotes; `--found` files a task for each defect found; `--no-check` skips the checks." },
+    { form: 'wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]', about: "Closes the owner's session in the registered checkout: runs the registered checks and, when every one passes, commits everything with the summary as its subject, updates the baseline and records a session note on the ledger. A failing check refuses the commit, naming each failed check with how it ended, and leaves the checkout, the ledger and every remote as they were; `--allow-failing` commits anyway, and the note records which checks it let through. Check results are Reported, because they ran on the owner's machine. `--push` also pushes the checkout's own remotes; `--found` files a task for each defect found; `--no-check` skips the checks." },
   ]] },
   { name: "Setup", lines: [[
     { form: "login --server URL", about: "Stores this server's address and the owner's token, asking for the token when none is stored for it. A token the server refuses is not stored." },
@@ -129,7 +129,7 @@ export const HELP_FORMS: string[] = HELP_GROUPS.flatMap((g) => g.lines.flat().ma
 // Per-command usage lines, shown by --help/-h and by a bad subcommand.
 export const COMMAND_USAGE: Record<string, string> = {
   unwrap: "usage: atelier unwrap [--project P]",
-  wrap: 'usage: atelier wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check] [--project P]',
+  wrap: 'usage: atelier wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]',
   start: "usage: atelier start ID [--as harness/model]",
   done: 'usage: atelier done "summary"',
   adopt: "usage: atelier adopt --project NAME [--as harness/model]",
@@ -168,7 +168,7 @@ item with exactly one owner. Never edit the project checkout directly.
 For each session the project owner runs in the registered checkout:
 
 1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
-2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout; it commits and updates the baseline. Add \`--push\` to push each checkout remote. It never deploys or publishes a release.
+2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout. It runs the registered checks, commits, and always updates Atelier's own copy of the project, the baseline. A failing check stops it before anything is committed: fix the check, or add \`--allow-failing\` to commit anyway and record in the note which checks failed. It never pushes the project's own remotes unless \`--push\` is given; add \`--push\` only with the owner's approval for that session. It never deploys or publishes a release.
 3. ${FILING_RELAY} Use repeatable \`--found TEXT\` on wrap to file tasks in this project.
 
 Session notes keep metadata only, never prompts, transcripts or file contents.
