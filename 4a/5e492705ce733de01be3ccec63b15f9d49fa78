@@ -1,0 +1,14 @@
+atelier atelier/t188 "docs/orchestrating.md: the handbook for a session that runs Atelier for a project, cold: how work flows, how to brief and run agents of each harness, how to land work one task at a time, how to judge a review, what to record, and the failures seen on 2026-10-06 with what prevents each (PAVI asked for the knowledge to be handed on)"
+accepted head d83c853915681b0684a232ac15f9733857efc4ea
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T18:12:23.643Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T18:12:26.783Z
+REVIEW approve — antigravity/gemini-3.1-pro: The handbook for a session that runs Atelier for a project.
+2026-10-06T17:57:54.275Z pavi item.created
+2026-10-06T17:57:58.195Z claude-code/opus-5.5 item.claimed
+2026-10-06T17:58:01.531Z claude-code/opus-5.5 fork.created
+2026-10-06T18:10:39.506Z claude-code/opus-5.5 push.observed
+2026-10-06T18:12:24.274Z claude-code/opus-5.5 evidence.observed
+2026-10-06T18:12:27.073Z claude-code/opus-5.5 evidence.observed
+2026-10-06T18:12:28.357Z claude-code/opus-5.5 item.submitted
+2026-10-06T18:15:56.509Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T18:15:57.508Z pavi item.accepted
