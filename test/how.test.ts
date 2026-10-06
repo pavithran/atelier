@@ -53,10 +53,11 @@ test("a part marked built has its files and code; a part marked not built has no
 });
 
 // The review code in src/review runs in the Ledger and the runner (build
-// steps 9 and 10); nothing else imports it, so the page's account of who
-// calls it stays true. The help lists atelier plan exactly when the page
-// marks its command built.
-test("the review code is called by the ledger and the runner, and nothing else", () => {
+// steps 9 and 10); nothing else imports it. The page says the ledger's tick
+// asks for reviews and the runner serves them, and no longer that the review
+// code is called by nothing. The help lists atelier plan and atelier land
+// exactly when the page marks each built.
+test("the review code is called by the ledger and the runner, and the page says so", () => {
   const inside = join("src", "review") + sep;
   const imports = /(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\//;
   // The part brief (src/plans/brief.ts) shares the verdict's finding type and
@@ -64,9 +65,21 @@ test("the review code is called by the ledger and the runner, and nothing else",
   const sharesTypes = new Set([join("src", "plans", "brief.ts")]);
   const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
-  assert.ok(ORCHESTRATOR.find((p) => p.name === "Review requests and runner job" && p.built));
+  const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;
+  assert.ok(requests.built);
+  assert.ok(requests.code.some((c) => c.file === "src/ledger.ts") && requests.code.some((c) => c.file === "cli/runner.mjs"), "the review requests part names the ledger and the runner as the callers");
+  // The prose of the orchestrator section (src/how.ts) once said the review
+  // code was pure functions that nothing called; the ledger and the runner
+  // call it now, and the page must not say otherwise.
+  const prose = read("src/how.ts");
+  assert.doesNotMatch(prose, /nothing else calls it|nothing calls it|calls it yet|pure functions with tests/, "the orchestrator section still says the review code is uncalled");
+  for (const said of ["review request", "runReview", "cli/agy-review.mjs", "routeParts", "integration branch", "atelier runner --integrate", "atelier land", "landing lease"]) {
+    assert.ok(prose.includes(said), `the orchestrator section no longer says "${said}"`);
+  }
   const command = ORCHESTRATOR.find((p) => p.name === "Plan routes and command")!;
   assert.equal(HELP_FORMS.some((form) => form.split(" ")[0] === "plan"), command.built, "the help and the page disagree on whether atelier plan exists");
+  const land = ORCHESTRATOR.find((p) => p.name === "Landing a single task")!;
+  assert.equal(HELP_FORMS.some((form) => form.split(" ")[0] === "land"), land.built, "the help and the page disagree on whether atelier land exists");
 });
 
 test("the page text uses no dash as punctuation, and says each step, term and rule once", () => {
