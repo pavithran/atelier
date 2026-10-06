@@ -790,8 +790,14 @@ Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner
 validation are skipped and remembered so other tasks
 can run.
-SIGINT stops polling and interrupts the active child process. A second
-interrupt exits immediately.
+The harness, and every command the runner starts, leads a process group of
+its own, and the group ends with it: when the harness exits, whether it
+succeeded or failed, when its deadline passes and when the runner is
+interrupted, every process left in the group gets SIGTERM, then SIGKILL after
+five seconds, before the runner goes on. A process that starts a session of
+its own (`setsid`) leaves the group and is not ended. SIGINT stops polling and
+interrupts the active child process. A second interrupt kills every group at
+once and exits.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
@@ -819,8 +825,8 @@ from a LaunchAgent has only the variables the LaunchAgent sets, so a key named
 here must be set there too. Atelier login and credentials are shared
 with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
 deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
-deadline from 60 minutes. Expiry terminates the process group, with forced
-termination after five seconds. A finish timeout leaves the claim held.
+deadline from 60 minutes. Expiry ends the process group as above. A finish
+timeout leaves the claim held.
 
 ```sh
 atelier runner --name home:studio

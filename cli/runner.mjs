@@ -59,31 +59,60 @@ export function nextStep(state, result) {
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
 
-export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env } = {}) {
+// The process groups execute() has started and not yet seen end.
+const liveGroups = new Set();
+
+// SIGKILL to every process group execute() started that has not ended. A
+// second interrupt calls it just before process.exit, which leaves no time
+// for a grace period.
+export function killGroups() {
+  for (const pid of liveGroups) { try { process.kill(-pid, "SIGKILL"); } catch { /* The group has ended. */ } }
+  liveGroups.clear();
+}
+
+// The child leads a process group of its own, and the group ends with it.
+// When the child exits, whether it succeeded or failed, when its deadline
+// passes and when `signal` aborts, every process in the group gets SIGTERM,
+// then SIGKILL if any is left after `graceMs`. The result comes back once
+// the group is gone, so nothing the child started still runs in its folder.
+// A process that leaves the group (setsid) is beyond this.
+export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
       stdio: ["ignore", capture ? "pipe" : "inherit", captureError ? "pipe" : "inherit"] });
-    let output = "", stderr = "", error, timedOut = false, stopping = false, closed, escalated = false;
-    const kill = (sig) => { try { if (child.pid) process.kill(-child.pid, sig); } catch { /* The group may already have exited. */ } };
+    const pid = child.pid;
+    if (pid) liveGroups.add(pid);
+    let output = "", stderr = "", error, timedOut = false, closed, ending = false, ended = !pid;
+    // A signal to every process in the group; false once none is left.
+    const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
     const finish = () => {
-      if (!closed || (stopping && !escalated)) return;
+      if (!closed || !ended) return;
       clearTimeout(deadline);
-      signal?.removeEventListener("abort", stop);
+      signal?.removeEventListener("abort", end);
       if (error) reject(error);
       else resolve({ ...closed, output: output.trim(), stderr: stderr.trim(), timedOut });
     };
-    const stop = () => {
-      if (stopping) return;
-      stopping = true;
-      kill("SIGTERM");
-      setTimeout(() => { kill("SIGKILL"); escalated = true; finish(); }, 5000);
+    const end = () => {
+      if (ending || ended) return;
+      ending = true;
+      const until = Date.now() + graceMs;
+      const done = () => { liveGroups.delete(pid); ended = true; finish(); };
+      const wait = () => {
+        if (!send(0)) return done();
+        if (Date.now() >= until) { send("SIGKILL"); return done(); }
+        setTimeout(wait, 50);
+      };
+      send("SIGTERM");
+      wait();
     };
-    const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
-    signal?.addEventListener("abort", stop, { once: true });
+    const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
+    signal?.addEventListener("abort", end, { once: true });
     child.stdout?.on("data", (chunk) => { output += chunk; });
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
     child.on("error", (e) => { error = e; });
+    // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
+    child.on("exit", () => { clearTimeout(deadline); end(); });
     child.on("close", (code, sig) => { closed = { code, signal: sig }; finish(); });
   });
 }
@@ -267,8 +296,10 @@ export async function runRunner(args, { queue, workspacePath, taskIO = {}, wait 
   }
   const config = readConfig(args.config), offer = offerFrom(config, args.name);
   const controller = new AbortController();
+  // The first interrupt ends the active child's group with its grace
+  // period; a second kills every group at once and exits.
   const stop = () => {
-    if (controller.signal.aborted) process.exit(130);
+    if (controller.signal.aborted) { killGroups(); process.exit(130); }
     controller.abort();
   };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];

@@ -354,6 +354,71 @@ test("timeout kills the process group even when its leader exits before a child 
   }
 });
 
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// Waits up to `ms` for the process to be gone, as a SIGKILL takes a moment to land.
+async function gone(pid, ms = 2000) {
+  for (const until = Date.now() + ms; alive(pid) && Date.now() < until;) await new Promise((ok) => setTimeout(ok, 20));
+  return !alive(pid);
+}
+
+test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 30_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-group-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pids = [];
+  t.after(() => { for (const pid of pids) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } });
+  for (const [ending, ignore] of [["exit 0", false], ["exit 1", false], ["exit 0", true], ["deadline", false]]) {
+    const file = join(dir, `${ending}-${ignore}.pid`);
+    // The leader starts a child in its own group, detached from its output,
+    // as code a harness ran might, waits until the child has written its pid
+    // (and set its SIGTERM handler), then ends as `ending` says.
+    const child = `${ignore ? "process.on('SIGTERM', () => {});" : ""} require('node:fs').writeFileSync(${JSON.stringify(file)}, String(process.pid)); ${UNTIL_TEST_EXITS}`;
+    const leader = `const fs = require('node:fs');
+      require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: 'ignore' }).unref();
+      const written = () => { try { return fs.readFileSync(${JSON.stringify(file)}, 'utf8'); } catch { return ''; } };
+      while (!written()) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      ${ending === "deadline" ? UNTIL_TEST_EXITS : `process.exit(${ending.slice(5)})`}`;
+    const start = Date.now();
+    const result = await execute([process.execPath, "-e", leader], { capture: true, timeoutMs: ending === "deadline" ? 1000 : 20_000, graceMs: 1000 });
+    const took = Date.now() - start;
+    const pid = Number(readFileSync(file, "utf8"));
+    pids.push(pid);
+    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
+    assert.equal(result.timedOut, ending === "deadline", label);
+    if (ending !== "deadline") assert.equal(result.code, Number(ending.slice(5)), label);
+    assert.ok(await gone(pid), `the background child is gone once execute returns: ${label}`);
+    // A group that ends at SIGTERM ends the wait at once; one that ignores it waits out the grace period.
+    assert.ok(ignore ? took >= 1000 : took < (ending === "deadline" ? 1000 : 0) + 900, `${label}: ${took} ms`);
+  }
+});
+
+test("a second interrupt kills a harness that ignores SIGTERM before the runner exits", { timeout: 30_000 }, async (t) => {
+  const { dir, workspace, path } = gitWorkspace(t);
+  const pidFile = join(dir, "harness.pid"), script = join(dir, "harness.mjs");
+  writeFileSync(script, `import { writeFileSync } from "node:fs"; process.on("SIGTERM", () => {});
+    writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${UNTIL_TEST_EXITS}`);
+  writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
+  // The runner runs in a process of its own, as `atelier runner` does, so a
+  // real process.exit ends it; the atelier commands it would run are stubbed.
+  const runner = join(dir, "run.mjs");
+  writeFileSync(runner, `import { runRunner, execute } from ${JSON.stringify(new URL("../cli/runner.mjs", import.meta.url).href)};
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: ${JSON.stringify(path)}, once: true }, {
+      workspacePath: () => ${JSON.stringify(workspace)}, queue: async () => [${JSON.stringify(assignment)}],
+      executeChild: (argv, options) => argv[1]?.endsWith("atelier.mjs") ? execute([process.execPath, "-e", ""], options) : execute(argv, options),
+    });`);
+  const child = spawn(process.execPath, [runner], { stdio: "ignore" });
+  const exited = new Promise((ok) => child.on("exit", (code) => ok(code)));
+  t.after(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } });
+  while (!existsSync(pidFile) || !readFileSync(pidFile, "utf8")) await new Promise((ok) => setTimeout(ok, 20));
+  const harness = Number(readFileSync(pidFile, "utf8"));
+  t.after(() => { try { process.kill(harness, "SIGKILL"); } catch { /* gone */ } });
+  child.kill("SIGINT");
+  await new Promise((ok) => setTimeout(ok, 300));
+  assert.ok(alive(harness), "one interrupt leaves the harness its grace period");
+  child.kill("SIGINT");
+  assert.equal(await exited, 130);
+  assert.ok(await gone(harness), "the harness is killed, not left running after the runner exits");
+});
+
 test("timed out tasks release only uncommitted work", async () => {
   for (const head of ["before", "after"]) {
     const { io, calls, logs } = fixture({ head, timedOut: true });
