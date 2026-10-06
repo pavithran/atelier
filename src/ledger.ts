@@ -31,6 +31,11 @@ export interface ProjectRecord {
   name: string;           // links, commands, and storage until the project is renamed
   title?: string;         // what people read; the name when absent
   repo: string;
+  // The branch init registered: the checkout's branch, which init also made
+  // the baseline's default branch. Every fork copies the baseline's HEAD, so
+  // this is the branch a task's workspace pushes to and Atelier reads.
+  // Absent when no init has named one; the baseline's info stands in then.
+  branch?: string;
   policy: ProjectPolicy;
   createdAt: string;
   // The two below are set by the index on the records it lists, never stored.
@@ -60,6 +65,7 @@ export interface ProjectInit {
   name: string;
   repo: string;
   reset: boolean;
+  branch?: string;
   title?: string | null;
   checks?: string[];
   protected?: string[];
@@ -74,16 +80,18 @@ export interface ProjectInit {
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 
 // `reset` starts the policy over; the project's identity (its title, when the
-// init does not name one, and when it was created) is kept either way.
+// init does not name one, its branch, and when it was created) is kept either way.
 export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: string): ProjectRecord {
   const p = i.reset ? undefined : current?.policy;
   const title = i.title === undefined ? current?.title : i.title ?? undefined;
   const approval = i.approval === undefined ? p?.approval : i.approval ?? undefined;
+  const branch = i.branch ?? current?.branch;
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
     ...(title ? { title } : {}),
     repo: i.repo,
+    ...(branch ? { branch } : {}),
     policy: {
       ...((i.agents ?? p?.agents) !== undefined ? { agents: i.agents ?? p?.agents } : {}),
       ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),

@@ -34,11 +34,14 @@ test("pure output keeps the brief and gate wording", () => {
   assert.ok(!text.includes("\x1b"));
 });
 
-async function fixture(t, { failed = false, blockers = [], failStep, sandbox = false } = {}) {
+// `forkBranch` is the branch the fork's HEAD names, and `branch.claim` the
+// one the claim route gives; the test may change it between claims. The
+// push route reports the fork's HEAD, as headOf reads it in Artifacts.
+async function fixture(t, { failed = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = join(root, "source"), remote = join(root, "remote.git");
-  execFileSync("git", ["init", "-q", "-b", "main", source]);
+  execFileSync("git", ["init", "-q", "-b", forkBranch, source]);
   git(source, "config", "user.name", "Test Owner");
   git(source, "config", "user.email", "owner@example.test");
   git(source, "commit", "-q", "--allow-empty", "-m", "Initial");
@@ -46,7 +49,7 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
   const head = git(source, "rev-parse", "HEAD");
   const item = { id: "t1", title: brief.title, scope: ["docs/**"], owner: actor, state: "claimed", head, dispatch: { note: "Keep examples" } };
   const gate = { ready: !blockers.length, blockers };
-  const posts = [], requests = [];
+  const posts = [], requests = [], branch = { claim: claimBranch };
   const command = failed ? "exit 1" : "exit 0";
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -54,8 +57,8 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
     requests.push(path);
     if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
     let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox } };
-    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: "main", expiresAt: "tomorrow" } };
-    if (path.endsWith("/push")) data = item;
+    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" } };
+    if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
     if (path.endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title }];
@@ -76,7 +79,7 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
     const status = await new Promise((done) => child.on("close", done));
     return { status, output };
   }
-  return { run, workspace, posts, requests, origin };
+  return { run, workspace, posts, requests, origin, remote, branch };
 }
 
 test("start claims and prepares a clone with task instructions", async (t) => {
@@ -149,4 +152,49 @@ test("done refuses uncommitted work before pushing", async (t) => {
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /prepare failed: commit your changes/);
   assert.ok(!f.posts.some((p) => /\/(push|submit)$/.test(p.path)));
+});
+
+test("push refuses a branch the fork does not read, and a claim refresh corrects the workspace", async (t) => {
+  // The fork's HEAD names master while the claim gives main, as for llm-basics t2.
+  const f = await fixture(t, { forkBranch: "master", claimBranch: "main" });
+  const claimed = await f.run(["claim", "t1"]);
+  assert.equal(claimed.status, 0, claimed.output);
+  assert.match(claimed.output, /Warning: t1's fork reads its head from master, but the project's branch is main, so atelier push will refuse/);
+  assert.equal(git(f.workspace, "config", "atelier.branch"), "main");
+  git(f.workspace, "commit", "-q", "--allow-empty", "-m", "Work");
+  const head = git(f.workspace, "rev-parse", "HEAD");
+
+  const refused = await f.run(["push"], f.workspace);
+  assert.equal(refused.status, 1, refused.output);
+  assert.match(refused.output, /t1's fork reads its head from master, but this workspace pushes to main \(git config atelier\.branch\); nothing was pushed\. Run atelier claim t1/);
+  assert.equal(git(f.remote, "for-each-ref", "--format=%(refname)"), "refs/heads/master");
+  assert.ok(!f.posts.some((p) => p.path.endsWith("/push")));
+
+  // The server now gives the registered branch: the refresh rewrites the workspace's and says so.
+  f.branch.claim = "master";
+  const refreshed = await f.run(["claim", "t1"]);
+  assert.equal(refreshed.status, 0, refreshed.output);
+  assert.match(refreshed.output, /This workspace pushed to main; it now pushes to master, the branch Atelier reads\./);
+  assert.doesNotMatch(refreshed.output, /Warning/);
+  assert.equal(git(f.workspace, "config", "atelier.branch"), "master");
+  assert.equal(git(f.workspace, "rev-parse", "HEAD"), head);
+
+  const pushed = await f.run(["push"], f.workspace);
+  assert.equal(pushed.status, 0, pushed.output);
+  assert.match(pushed.output, new RegExp(`t1 head ${head.slice(0, 8)} \\(observed in Artifacts\\)`));
+  assert.equal(git(f.remote, "rev-parse", "refs/heads/master"), head);
+  assert.deepEqual(f.posts.filter((p) => p.path.endsWith("/push")).map((p) => p.body), [{ head }]);
+  // A claim that changes nothing says nothing about the branch.
+  assert.doesNotMatch((await f.run(["claim", "t1"])).output, /now pushes to|Warning/);
+});
+
+test("a workspace with no recorded branch pushes to the branch its fork reads", async (t) => {
+  const f = await fixture(t, { forkBranch: "master" });
+  assert.equal((await f.run(["claim", "t1"])).status, 0);
+  git(f.workspace, "config", "--unset", "atelier.branch");
+  git(f.workspace, "commit", "-q", "--allow-empty", "-m", "Work");
+  const r = await f.run(["push"], f.workspace);
+  assert.equal(r.status, 0, r.output);
+  assert.equal(git(f.remote, "rev-parse", "refs/heads/master"), git(f.workspace, "rev-parse", "HEAD"));
+  assert.equal(git(f.remote, "for-each-ref", "--format=%(refname)"), "refs/heads/master");
 });
