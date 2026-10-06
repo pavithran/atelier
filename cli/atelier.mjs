@@ -888,24 +888,20 @@ export function formatBrief(project, id, brief, origin) {
 
 // ── commands ───────────────────────────────────────────────────────────────
 
-// The checkout's state against the baseline, in words. The baseline's head is
-// read with ls-remote, so nothing is fetched into the checkout.
+// The checkout's state against the baseline, in words. The baseline's head
+// comes from the server (GET baseline-head), as the Worker reads it from
+// Artifacts: no token is minted and nothing is fetched into the checkout, so
+// status and unwrap, which print this line, read and write nothing.
 // Every path out of it is one flattened line, whatever a name holds.
 async function checkoutStatus(name, as) {
   return flat(await checkoutStatusLine(name, as));
 }
 
-async function checkoutStatusLine(name, as, readOnly = false) {
+async function checkoutStatusLine(name, as) {
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) return checkoutLine({ name, registered: false });
   const cwd = p.path, fresh = p.fresh === true;
-  let baselineHead;
-  if (readOnly) baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
-  else {
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, as);
-    const listed = git(["ls-remote", base.remote, `refs/heads/${p.branch}`], { cwd, token: base.token });
-    baselineHead = listed.split(/\s/)[0];
-  }
+  const baselineHead = (await call("GET", `${P(name)}/baseline-head`, undefined, as)).head;
   if (!baselineHead) return `Checkout: cannot be compared: the baseline has no ${p.branch} branch yet.`;
   // The registered branch is compared, whatever is checked out: the line
   // names that branch, so its head is what it must describe.
@@ -1074,7 +1070,7 @@ const commands = {
     const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
     console.log(formatStanding(standing, OWNER_NAME));
-    console.log(await checkoutStatusLine(name, as, true));
+    console.log(await checkoutStatusLine(name, as));
     if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
     if (cwd) {
       console.log(`Current branch: ${git(["branch", "--show-current"], { cwd }) || "detached HEAD"}`);

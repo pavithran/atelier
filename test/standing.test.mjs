@@ -111,10 +111,13 @@ async function run(t, setup) {
   git(dir, "clone", "-q", "--bare", checkout, bare);
   const state = setup({ checkout, bare, dir }) ?? {};
   const seen = [];
+  // The standing and the baseline's head, as the Worker reads it from
+  // Artifacts. Any other route is refused: status reads, and mints nothing.
   const server = createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(req.url.endsWith("/standing") ? standing() : { remote: bare, token: "t" }));
+    const known = req.url.endsWith("/standing") ? standing() : req.url.endsWith("/baseline-head") ? { head: git(dir, "--git-dir", bare, "rev-parse", "refs/heads/main") } : null;
+    res.writeHead(known ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify(known ?? { error: "unexpected", detail: `${req.method} ${req.url}` }));
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
@@ -127,13 +130,14 @@ async function run(t, setup) {
   return { status, output, seen };
 }
 
-test("status --project prints where it stands and says the checkout is in step", async (t) => {
+test("status --project prints where it stands and says the checkout is in step, reading only", async (t) => {
   const r = await run(t, () => null);
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /^Demo project \(demo\) as of /);
   assert.match(r.output, /Waiting on /);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*$/);
-  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "POST /api/projects/demo/baseline-token"]);
+  // The baseline's head is read from the server; no read token is minted.
+  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
 });
 
 test("status --project says the checkout is out of step when the baseline has moved on", async (t) => {
