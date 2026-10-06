@@ -772,3 +772,36 @@ it("push events are read on the project's branch, not the one the fork's info re
   await send(notice("refs/heads/master"));
   expect((await L.item("t1")).head).toBe(H2);
 });
+
+it("the holder blocks and unblocks through the API, only the owner edits the framing, and the brief carries both", async () => {
+  await project("routes-c");
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-c"));
+  const made = await call("POST", "/projects/routes-c/items", "owner", { title: "Frame it", scope: ["a/**"], nonGoals: ["no b"], nextGate: "demo" });
+  expect(made.status).toBe(201);
+  const created = await made.json() as { id: string; nonGoals: string[]; nextGate: string };
+  expect([created.nonGoals, created.nextGate]).toEqual([["no b"], "demo"]);
+  expect((await call("POST", "/projects/routes-c/items", "owner", { title: "Bad", nonGoals: "no b" })).status).toBe(400);
+  const at = (verb: string) => `/projects/routes-c/items/${created.id}/${verb}`;
+
+  await L.claim(created.id, "codex/gpt-6");
+  expect((await call("POST", at("block"), "codex/gpt-6", {})).status).toBe(400);
+  const blocked = await call("POST", at("block"), "codex/gpt-6", { reason: "waiting on the owner" });
+  expect(blocked.status).toBe(200);
+  expect((await blocked.json() as { state: string; blocked: { by: string } })).toMatchObject({ state: "blocked", blocked: { by: "codex/gpt-6" } });
+  const submit = await call("POST", at("submit"), "codex/gpt-6", {});
+  expect(submit.status).toBe(409);
+  expect((await submit.json() as { error: string; detail: string })).toMatchObject({ error: "blocked", detail: `${created.id} is blocked: waiting on the owner. Run atelier unblock ${created.id} first` });
+
+  expect((await call("POST", at("edit"), "codex/gpt-6", { nextGate: "x" })).status).toBe(403);
+  const edited = await call("POST", at("edit"), "owner", { stopWhen: ["a test is red"], nextGate: null });
+  expect(edited.status).toBe(200);
+  expect(await edited.json() as { nonGoals: string[]; stopWhen: string[]; nextGate: string | null }).toMatchObject({ nonGoals: ["no b"], stopWhen: ["a test is red"], nextGate: null });
+
+  const brief = await (await call("GET", at("brief"), "owner")).json() as { nonGoals: string[]; stopWhen: string[]; recommendation: { verdict: string; reason: string } };
+  expect([brief.nonGoals, brief.stopWhen]).toEqual([["no b"], ["a test is red"]]);
+  expect(brief.recommendation.verdict).toBe("decide");
+  expect(brief.recommendation.reason).toMatch(/^codex\/gpt-6 blocked it: waiting on the owner\. Clear that, then run atelier unblock/);
+
+  expect((await call("POST", at("unblock"), "owner", {})).status).toBe(200);
+  expect((await (await call("GET", `/projects/routes-c/items/${created.id}`, "owner")).json() as { item: { state: string } }).item.state).toBe("claimed");
+});

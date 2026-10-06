@@ -200,7 +200,12 @@ const FLAGS = {
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false },
   adopt: {},
   publish: {},
-  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry' },
+  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
+  // edit takes the same three; one empty value clears the field, so the
+  // owner can take a framing back.
+  edit: { "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
+  block: {},
+  unblock: {},
   ls: { all: true },
   show: { json: true },
   start: { runner: false },
@@ -412,6 +417,28 @@ function listArg(flag, cmd) {
   const values = args.multi[flag] ?? [];
   if (values.some((v) => typeof v !== "string" || !v.trim())) die(`--${flag} needs text: atelier ${cmd} --${flag} "TEXT", once per entry`);
   return values.map((v) => v.trim());
+}
+
+// --non-goal, --stop-when and --next-gate, as new and edit send them: a list
+// per use for the first two, one line for the gate, each trimmed. A flag not
+// given is not sent, so the server keeps the item's value. For edit, one
+// empty value clears the field; for new, an empty value is refused as a
+// bare flag is, with the flag table's wording.
+function fieldsArg(cmd) {
+  const out = {};
+  for (const [flag, key] of [["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
+    const values = args.multi[flag];
+    if (values === undefined) continue;
+    if (cmd === "edit" && values.length === 1 && values[0] === "") { out[key] = []; continue; }
+    if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS[cmd][flag]);
+    out[key] = values.map((v) => v.trim());
+  }
+  const gate = args["next-gate"];
+  if (gate !== undefined) {
+    if (typeof gate !== "string" || (!gate.trim() && cmd !== "edit")) die(FLAGS[cmd]["next-gate"]);
+    out.nextGate = gate.trim() || null;
+  }
+  return out;
 }
 
 // --override-review takes the reason the override records. A bare flag is
@@ -870,14 +897,24 @@ export function formatDone(gate) {
   return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
 }
 
+// The owner's framing of a task, one line per field that is set, for the
+// task an agent starts and the brief it reads.
+export function formatFields(fields) {
+  return [
+    fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
+    fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
+    fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+  ].filter(Boolean);
+}
+
 export function formatTask(item) {
-  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`,
+  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
     item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {
   return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
-    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...brief.evidence.map(flat),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief), ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
@@ -1472,10 +1509,40 @@ const commands = {
 
   async new() {
     const title = args._.slice(1).join(" ");
-    if (!title) die('usage: atelier new "title" [--scope GLOB]...');
+    if (!title) die(COMMAND_USAGE.new);
     const scope = listArg("scope", "new");
-    const item = await call("POST", `${P(project())}/items`, { title, scope }, await actor(OWNER));
-    console.log(`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`);
+    const item = await call("POST", `${P(project())}/items`, { title, scope, ...fieldsArg("new") }, await actor(OWNER));
+    console.log([`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`, ...formatFields(item)].join("\n"));
+  },
+
+  // The project owner changes a task's framing; the server keeps every field
+  // not named and refuses a closed task.
+  async edit() {
+    const name = project(), id = itemArg();
+    const fields = fieldsArg("edit");
+    if (!Object.keys(fields).length) die(COMMAND_USAGE.edit);
+    const item = await call("POST", `${I(name, id)}/edit`, fields, OWNER);
+    const lines = formatFields(item);
+    console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
+  },
+
+  // The holder or the owner blocks a task with what it is waiting on. The
+  // id comes first when given; in a workspace it is the workspace's item.
+  async block() {
+    const words = args._.slice(1);
+    const named = /^t\d+$/.test(words[0] ?? "") ? words.shift() : null;
+    const reason = words.join(" ");
+    if (!reason.trim()) die(COMMAND_USAGE.block);
+    const name = project(), id = named ?? wsConfig("item");
+    if (!id) die(`which item? pass its id (t3) or run inside its workspace: ${COMMAND_USAGE.block}`);
+    const item = await call("POST", `${I(name, id)}/block`, { reason }, await actor(OWNER));
+    console.log(`${id} is blocked: ${flat(item.blocked?.reason ?? reason)}. It keeps its owner and workspace; run atelier unblock ${id} when it can go on.`);
+  },
+
+  async unblock() {
+    const name = project(), id = itemArg();
+    const item = await call("POST", `${I(name, id)}/unblock`, {}, await actor(OWNER));
+    console.log(`${id} is unblocked and ${flat(item.state)} again.`);
   },
 
   async ls() {

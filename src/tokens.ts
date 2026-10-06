@@ -72,5 +72,5 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   }
   if (section !== "items" || !id) return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff"].includes(verb) || parts.length === 6 && verb === "sandbox";
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release", "block", "unblock"].includes(verb);
 }
