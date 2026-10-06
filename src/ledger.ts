@@ -479,7 +479,8 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A change of owner takes the write token with it. The caller has read the
-  // recorded token's id, and revokes it once the change is made; the change
+  // recorded token's id, checked the change (checkHandoff, checkRelease,
+  // checkAbandon) and revoked that token before asking for it; the change
   // is made only if that is still the token recorded, so a claim that
   // recorded a newer one in between is refused here, never left live and
   // unrecorded. Without `expected` the record is kept, for the next claim
