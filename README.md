@@ -1043,10 +1043,23 @@ Save a config at `~/.config/atelier/runner.json`, or select one with `--config P
       "models": ["GLM-5.3-Flash-4_8bit"],
       "command": ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "Read the attached task brief and complete it in {workspace}."],
       "env": ["ZAI_API_KEY"]
+    },
+    {
+      "agent": "antigravity",
+      "models": ["gemini-3.1-pro", "gpt-oss-120b"],
+      "command": ["node", "/ABSOLUTE/PATH/TO/atelier/cli/agy-review.mjs", "--model", "{model}", "--brief", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}", "--workspace", "{workspace}"]
     }
-  ]
+  ],
+  "jobs": ["review"]
 }
 ```
+
+The antigravity entry names `cli/agy-review.mjs`, an adapter that runs
+Antigravity's `agy` for a review: it builds one prompt from the brief and the
+diff, maps Atelier's model ids to Antigravity's, writes the reply to the
+verdict file, and runs `agy` sandboxed in the runner's review clone (the
+owner's decision of 2026-10-06). Name the adapter by its absolute path: the
+runner starts the command inside the review clone, which need not hold it.
 
 Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
@@ -1420,11 +1433,13 @@ anything.
 
 The steps in between:
 
-1. The server must run a main commit this CLI can see. `GET /api/version`
+1. The server must be at this CLI's route level or newer. `GET /api/version`
    reports the commit the server was deployed from (`npm run deploy` records
-   it), and a landing whose CLI is newer than the server refuses before it
-   starts, saying to deploy, since the server may lack the routes the
-   landing needs.
+   it) and its route level, and a landing whose server is older refuses
+   before it starts, naming both levels and saying to deploy, since the
+   server may lack the routes the landing needs. The route level
+   (`src/route-level.ts`) rises by one only when a change makes the CLI
+   start calling a route the server did not have.
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
