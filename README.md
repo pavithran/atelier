@@ -1069,7 +1069,7 @@ adding the consumer handler alone does not activate event delivery. See
 
 Run `node test/preview.mjs` for a local, read-only preview with illustrative
 content. It prints its URL. The preview cannot approve, merge, or create live
-tasks. Use `?state=empty`, `/p/cloudflare-git/t1?state=failed`, `state=ready`,
+tasks. Use `?state=empty`, `/p/atelier/t1?state=failed`, `state=ready`,
 `state=accepted`, `state=merged`, `state=unavailable`, or `state=long` to inspect
 important states. The pages follow the device's light or dark setting;
 change that setting to inspect the other palette.
