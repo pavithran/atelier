@@ -1339,6 +1339,14 @@ const commands = {
 
   // The project owner, in the project's checkout.
   async init() {
+    // A task workspace is a clone claimWorkspace made, named by the project
+    // and item in its Git config. Registering it would make the workspace a
+    // project called after its folder, so init stops here and says where to run.
+    const wsItem = wsConfig("item"), wsProject = wsConfig("project");
+    if (wsItem) {
+      const path = cfg.projects?.[wsProject]?.path;
+      die(`this folder is ${wsProject}/${wsItem}'s task workspace, not a project checkout; nothing was registered. Run atelier init in ${wsProject}'s checkout${path ? `: cd ${JSON.stringify(path)} && atelier init` : ", which is not registered on this Mac."}`);
+    }
     const checks = listArg("check", "init"), given = args.multi.protect ? listArg("protect", "init") : null;
     const top = git(["rev-parse", "--show-toplevel"]);
     let name, existing;
