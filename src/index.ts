@@ -4,6 +4,7 @@ import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
@@ -58,8 +59,8 @@ type Settings = {
   // The usage alert thresholds (src/usage/report.ts); each a number, "off", or unset for the default.
   USAGE_WEEKLY_PERCENT?: string; USAGE_WINDOW_PERCENT?: string; USAGE_DAILY_SPEND?: string; USAGE_BALANCE_FLOOR?: string;
   // The main commit this deployment was built from, set by `npm run deploy`
-  // and read by GET /api/version, so a CLI can refuse to run against a
-  // server older than itself (atelier land).
+  // and read by GET /api/version beside the route level, so a CLI can
+  // refuse a server older than the routes it calls (atelier land).
   DEPLOYED_MAIN?: string;
 };
 
@@ -1858,6 +1859,15 @@ export default {
       const how = await authorised(req, env);
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       if (parts[0] === "api") {
+        // The server's version: the deployed main commit and its route
+        // level (src/route-level.ts). It answers without a token: the
+        // commit of a public repository and a route level are not secret,
+        // and a session checks them before it signs in. atelier land
+        // refuses on the level, saying to deploy, when the server's is
+        // lower than the CLI's.
+        if (parts.length === 2 && parts[1] === "version" && req.method === "GET") {
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
+        }
         if (how !== "api" && (typeof how !== "object" || !how)) return json({ error: "unauthorised" }, 401);
         const token = typeof how === "object" && how ? how : undefined;
         const declared = req.headers.get("x-atelier-actor");
@@ -1865,13 +1875,6 @@ export default {
           return json({ error: "actor_mismatch", detail: "X-Atelier-Actor must equal the agent token actor" }, 403);
         }
         if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token ? { actor: token.actor } : {}) });
-        // The deployed main commit, as the deploy recorded it. A CLI that
-        // needs routes this server may lack (atelier land) compares it with
-        // the commit it runs from and refuses, saying to deploy, when the
-        // server's main does not hold the CLI's.
-        if (parts.length === 2 && parts[1] === "version" && req.method === "GET") {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null });
-        }
         const actor = token?.actor ?? declared ?? "";
         if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));

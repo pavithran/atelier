@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { checkEnv } from "./check-env.mjs";
 import { runCommand } from "./ship.mjs";
+import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -16,25 +16,14 @@ import { runCommand } from "./ship.mjs";
 // server for the independent review the gate needs and waits for the verdict,
 // then accepts and merges. Every step, its duration and the commits that came
 // from main are recorded on the ledger as land.* events (t186 reads them for
-// the integration cost), and the server must hold a main commit this CLI can
-// see, or the landing refuses before it starts, saying to deploy.
+// the integration cost), and the server must be at this CLI's route level or
+// newer, or the landing refuses before it starts, saying to deploy.
 
-const CLI_DIR = dirname(fileURLToPath(import.meta.url));
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 const REVIEW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_REVIEW_TIMEOUT ?? 30 * 60_000);
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
 
 const short = (sha) => (sha ? sha.slice(0, 8) : "—");
-
-// The checkout this CLI runs from and its head, or null when it is not in a
-// Git checkout: the server's version is compared against this commit, since
-// the routes a landing needs are the ones this CLI's own code was built with.
-function cliCheckout(git) {
-  const top = git(["rev-parse", "--show-toplevel"], { cwd: CLI_DIR, allowFail: true });
-  if (top.status !== 0) return null;
-  const head = git(["rev-parse", "HEAD"], { cwd: top.stdout.trim(), allowFail: true });
-  return head.status === 0 && head.stdout.trim() ? { top: top.stdout.trim(), head: head.stdout.trim() } : null;
-}
 
 // A step that failed carries its own event data beside the failure: the files
 // a conflict stopped on, or which check failed.
@@ -56,20 +45,20 @@ export async function runLand(io) {
   const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
   const dir = io.workspacePath(name, id);
 
-  // The server's version and this CLI's own commit: a server older than the
-  // CLI may lack the routes this command needs, so the landing refuses here,
-  // saying to deploy, before the lease or any workspace changes.
+  // The server's route level against this CLI's: a server older than the
+  // routes this command calls would fail them one by one, so the landing
+  // refuses here instead, saying to deploy, before the lease or any
+  // workspace changes. The level (src/route-level.ts) rises only when a CLI
+  // starts calling a route the server did not have; which commit either
+  // side runs says nothing, since every merge moves the CLI past the
+  // deployed one.
   let version = null;
   try { version = await request("GET", "/version"); } catch { /* a server with no version route is one that predates it */ }
-  const cli = cliCheckout(git);
-  const deploy = (why) => `the server runs main at ${short(version?.commit)}, this CLI at ${short(cli?.head)}: ${why}. Deploy the server from a checkout that holds this CLI (npm run deploy, which records the commit it deploys), then run atelier land ${id} again`;
-  if (!version || typeof version.commit !== "string" || !/^[0-9a-f]{40,64}$/.test(version.commit)) die(deploy(version ? "the server reports no deployed main commit" : "the server does not answer GET /api/version"));
-  if (!cli) die(`this CLI, running from ${CLI_DIR}, is not inside a Git checkout, so the server's version cannot be compared with it; run atelier land from a checkout of atelier`);
-  if (version.commit !== cli.head) {
-    const known = git(["cat-file", "-e", `${version.commit}^{commit}`], { cwd: cli.top, allowFail: true }).status === 0;
-    const holds = known && git(["merge-base", "--is-ancestor", cli.head, version.commit], { cwd: cli.top, allowFail: true }).status === 0;
-    if (!holds) die(deploy("the server's main does not hold this CLI's commit"));
-  }
+  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
+  const deploy = (why) => `the server ${typeof version?.commit === "string" && version.commit ? `runs main at ${short(version.commit)}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${ROUTE_LEVEL}: ${why}. Deploy the server from a checkout at route level ${ROUTE_LEVEL} or newer (npm run deploy, which records the commit it deploys), then run atelier land ${id} again`;
+  if (!version) die(deploy("the server does not answer GET /api/version"));
+  if (level === null) die(deploy("the server is older than route levels"));
+  if (level < ROUTE_LEVEL) die(deploy("the server's routes are older than the ones this CLI calls"));
 
   // The lease is read, not taken, so the checks that only refuse are asked
   // before anything changes. A lease held for another live task refuses the
