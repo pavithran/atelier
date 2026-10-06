@@ -1,0 +1,22 @@
+atelier atelier/t196 "Two diagrams of how Atelier works, on /how and the public showcase: the layers from the owner's devices through the Mac, the agents and their model providers to Cloudflare (Worker, Ledger Durable Objects, the check container, Artifacts), and one task's path from claim to merge, as inline SVG in the site's own tokens, light and dark (PAVI asked, 2026-10-06)"
+accepted head be6b40096dd21fae846ee13a6b34975cf53a08ba
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T21:16:22.303Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T21:16:25.253Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T21:19:29.713Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T21:19:32.556Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T21:26:39.493Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T21:26:42.769Z
+REVIEW approve — antigravity/gemini-3.1-pro: Where Atelier runs, on /how and the showcase
+2026-10-06T21:01:41.097Z pavi item.created
+2026-10-06T21:01:44.795Z claude-code/opus-5.5 item.claimed
+2026-10-06T21:01:56.426Z claude-code/opus-5.5 fork.created
+2026-10-06T21:14:23.032Z claude-code/opus-5.5 push.observed
+2026-10-06T21:16:22.779Z claude-code/opus-5.5 evidence.observed
+2026-10-06T21:16:25.594Z claude-code/opus-5.5 evidence.observed
+2026-10-06T21:19:30.148Z claude-code/opus-5.5 evidence.observed
+2026-10-06T21:19:32.801Z claude-code/opus-5.5 evidence.observed
+2026-10-06T21:26:40.398Z claude-code/opus-5.5 evidence.observed
+2026-10-06T21:26:43.124Z claude-code/opus-5.5 evidence.observed
+2026-10-06T21:26:43.938Z claude-code/opus-5.5 item.submitted
+2026-10-06T21:32:06.168Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T21:32:06.918Z pavi item.accepted
