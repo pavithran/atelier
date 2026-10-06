@@ -3,7 +3,7 @@
 // script, every value escaped. `Where` names the repository being read and
 // builds every link, so a link never leaves the repository it came from.
 
-import { escapeText as e, page, renderFile, titleOf } from "../ui.ts";
+import { escapeText as e, page, projectTabs, renderFile, titleOf } from "../ui.ts";
 import type { ProjectRecord } from "../ledger.ts";
 import { stamp } from "../time.ts";
 import { agentsIn, NO_AGENT, normaliseAgentName } from "../import/history.ts";
@@ -39,14 +39,19 @@ export function commitFamily(c: Commit): { label: string; colour: string } {
 }
 const stripe = (c: Commit) => `<i class="stripe" style="--c:${commitFamily(c).colour}" aria-hidden="true"></i>`;
 
-function frame(w: Where, title: string, tab: "code" | "log" | "commit", head: Commit | null, body: string, ownerName: string | null): string {
+// The frame of a browsing page inside its project's area: the project's tab
+// bar, with the tab the page belongs to current. A commit and a path's
+// history belong to Log (finding 24). `crumb` is the page's own name at the
+// end of the breadcrumb, which for a commit says "Commit" before its hash so
+// the crumb never ends in a bare eight characters.
+function frame(w: Where, title: string, crumb: string, tab: "code" | "log" | "commit", head: Commit | null, body: string, ownerName: string | null): string {
   const name = titleOf(w.project);
-  const crumbs = `<nav class="breadcrumbs"><a href="/projects">Projects</a> / <a href="/p/${enc(w.project.name)}">${e(name)}</a>${
-    w.item ? ` / <a href="/p/${enc(w.project.name)}/${enc(w.item)}">${e(w.item)}</a>` : ""} / ${e(title)}</nav>`;
+  const active = tab === "commit" ? "Log" : tab === "code" ? "Code" : "Log";
+  const crumbs = `<nav class="breadcrumbs"><a href="/">Home</a> / <a href="/p/${enc(w.project.name)}">${e(name)}</a>${
+    w.item ? ` / <a href="/p/${enc(w.project.name)}/${enc(w.item)}">${e(w.item)}</a>` : ""} / ${e(crumb)}</nav>`;
   const what = w.item ? `${e(w.item)}'s fork` : "the baseline";
-  const tabs = `<nav class="repo-tabs" aria-label="Repository"><a href="${codeHref(w, [])}"${tab === "code" ? ' aria-current="page"' : ""}>Code</a><a href="${logHref(w)}"${tab === "log" ? ' aria-current="page"' : ""}>Log</a></nav>`;
   const at = head ? `<p class="meta repo-at">${w.at ? "At" : "Head of"} ${what}: <a class="mono" href="${commitHref(w, head.hash)}">${short(head.hash)}</a> · ${e(firstLine(head.message))} · ${e(head.author.name)} · ${day(head.authoredAt)}${w.at ? ` · <a href="${root(w)}/code">back to the head</a>` : ""}</p>` : "";
-  return page(`${title} · ${name}`, `<div class="page-width repo">${crumbs}<header><h1>${e(name)}${w.item ? ` <span class="repo-sub">${e(w.item)}</span>` : ""}</h1>${tabs}${at}</header>${body}</div>`, "Projects", ownerName);
+  return page(`${title} · ${name}`, `<div class="page-width repo">${crumbs}<header class="proj-head"><h1>${e(name)}${w.item ? ` <span class="repo-sub">${e(w.item)}</span>` : ""}</h1>${projectTabs(w.project, active)}${at}</header>${body}</div>`, "Home", ownerName);
 }
 
 function pathCrumbs(w: Where, path: string[]): string {
@@ -78,7 +83,8 @@ export function renderTree(w: Where, head: Commit, path: string[], node: Extract
     : touched.examined ? `<p class="meta">Each stripe is the family of the agent named by the commit that last changed the entry, among the last ${touched.examined} commits on the first-parent line.</p>`
     : '<p class="meta">Which commit last changed each entry was not read: the directory is too deep or too busy for this page\'s read budget.</p>';
   const body = `${pathCrumbs(w, path)}${node.entries.length ? `<ul class="repo-tree">${rows}</ul>${stripes}${more}` : '<p class="empty">This directory is empty.</p>'}`;
-  return frame(w, path.length ? path.join("/") : "Code", "code", head, body, ownerName);
+  const title = path.length ? path.join("/") : "Code";
+  return frame(w, title, title, "code", head, body, ownerName);
 }
 
 export function renderBlob(w: Where, head: Commit, path: string[], view: FileView, ownerName: string | null = null, symlink = false): string {
@@ -90,7 +96,7 @@ export function renderBlob(w: Where, head: Commit, path: string[], view: FileVie
     ? `<ol class="code-lines" tabindex="0">${view.lines.map((l) => `<li><code>${e(l) || " "}</code></li>`).join("")}</ol>`
     : view.kind === "binary" ? '<p class="empty">A binary file; not shown.</p>'
     : '<p class="empty">Too large to show here; clone the repository to read it.</p>';
-  return frame(w, path.join("/"), "code", head, `${pathCrumbs(w, path)}${tools}${body}`, ownerName);
+  return frame(w, path.join("/"), path.join("/"), "code", head, `${pathCrumbs(w, path)}${tools}${body}`, ownerName);
 }
 
 // Each commit carries a stripe in the family its message names, and the name in its line.
@@ -104,7 +110,7 @@ export function renderLog(w: Where, head: Commit | null, commits: Commit[], page
   const older = more && page + 1 < LOG_PAGES;
   const pager = `<nav class="pager" aria-label="Pages">${page > 0 ? `<a href="${logHref(w, page - 1)}">Newer</a>` : ""}${older ? `<a href="${logHref(w, page + 1)}">Older</a>` : ""}</nav>${more && !older ? '<p class="meta">Older commits are not paged here; clone the repository to read them.</p>' : ""}`;
   const body = commits.length ? `<p class="meta">The first-parent line, newest first.</p>${commitRows(w, commits)}${pager}` : '<p class="empty">No commits.</p>';
-  return frame(w, "Log", "log", head, body, ownerName);
+  return frame(w, "Log", "Log", "log", head, body, ownerName);
 }
 
 export function renderHistory(w: Where, head: Commit, path: string[], commits: Commit[], complete: boolean, ownerName: string | null = null, examined = HISTORY_CAP): string {
@@ -113,7 +119,8 @@ export function renderHistory(w: Where, head: Commit, path: string[], commits: C
     : examined === 0 ? "This path is too deep, or changed in too many places, to trace here; clone the repository to follow it."
     : `No commit among the most recent ${examined} changed it.`;
   const body = `${pathCrumbs(w, path)}<p class="meta">${note}</p>${commits.length ? commitRows(w, commits) : `<p class="empty">${none}</p>`}`;
-  return frame(w, `History of ${path.join("/")}`, "log", head, body, ownerName);
+  const historyTitle = `History of ${path.join("/")}`;
+  return frame(w, historyTitle, historyTitle, "log", head, body, ownerName);
 }
 
 export function renderCommit(w: Where, c: { commit: Commit; parent: string | null; files: FileChange[]; truncated: boolean; parentMissing?: boolean }, ownerName: string | null = null): string {
@@ -127,5 +134,6 @@ ${commit.message.includes("\n") ? `<pre class="commit-body">${e(commit.message.s
     commit.parents.length ? ` · parent${commit.parents.length > 1 ? "s" : ""} ${commit.parents.map((p) => `<a class="mono" href="${commitHref(w, p)}">${short(p)}</a>`).join(", ")}` : " · the first commit"} · <a href="${codeHref(at, [])}">Browse files at this commit</a></p></section>
 ${c.parentMissing ? `<p class="empty">Its parent, <span class="mono">${short(parent!)}</span>, could not be read from this repository, so its changes are not shown.</p>` : `<p class="meta">${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"} changed, +${added} −${removed}${parent ? `, against <span class="mono">${short(parent)}</span>` : ""}.</p>`}
 ${files.map((f) => renderFile(f, files.length <= 8)).join("")}`;
-  return frame(w, short(commit.hash), "commit", null, body, ownerName);
+  // The crumb names a commit as a commit, never a bare hash (finding 24).
+  return frame(w, `Commit ${short(commit.hash)}`, `Commit ${short(commit.hash)}`, "commit", null, body, ownerName);
 }

@@ -24,6 +24,9 @@ import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./tim
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
+import type { PlanPartView, PlanView } from "./plans/show.ts";
+import type { Attempt } from "./plans/phase.ts";
+import type { PartRoute } from "./plans/route.ts";
 
 // A page that carries the live script (src/live.ts): the request's nonce,
 // which the script tag and the policy both name, and how often the page
@@ -75,27 +78,40 @@ const ICONS: Record<string, string> = {
 const icon = (name: string) =>
   `<svg aria-hidden="true" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ""}</svg>`;
 
+// The site is organised by project: the rail holds the owner's cross-project
+// views only (the portfolio, the inbox, the floor), because everything else
+// lives inside a project's own area at /p/NAME. The pages about the owner's
+// own setup sit under the account menu, out of the work navigation.
 const NAV: [string, string, string][] = [
+  ["Home", "/", "projects"],
   ["Decisions", "/decisions", "decisions"],
-  ["Flow", "/flow", "flow"],
   ["Studio", "/studio", "studio"],
-  ["Models", "/models", "models"],
-  ["Usage", "/usage", "usage"],
-  ["Projects", "/projects", "projects"],
-  ["History", "/history", "history"],
 ];
+
+const ACCOUNT: [string, string][] = [
+  ["Models", "/models"],
+  ["Usage", "/usage"],
+];
+
+// One line about Atelier, used here and as the sign-in page's headline, so
+// the two never say different things.
+const TAGLINE = "Many agents, one owner per task.";
 
 const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
 // `signedIn` draws the sign-out form in the rail; the sign-in page has none.
 // `live` adds the script under its nonce; with a refresh, <main> says how
-// often, and a note the script reveals says when this copy was drawn.
+// often, and a small note in the rail's foot, revealed by the script and
+// widened on hover, says when this copy was drawn.
 export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live): string {
   const nav = NAV.map(([label, url, glyph]) =>
     `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
+  const accountOpen = active === "Models" || active === "Usage";
+  const account = `<details class="account"${accountOpen ? " open" : ""}><summary>Settings</summary>
+    <div>${ACCOUNT.map(([label, url]) => `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</div></details>`;
   const liveAttr = live?.refresh ? ` data-live-refresh="${live.refresh}"` : "";
   const liveNote = live?.refresh
-    ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live: this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</p>`
+    ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live<span class="live-when"> · this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</span></p>`
     : "";
   const script = live ? `\n<script nonce="${e(live.nonce)}" src="/live.js" defer></script>` : "";
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
@@ -108,11 +124,13 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 <aside class="rail">
   <a class="brand" href="/">Atelier</a>
   <nav aria-label="Main navigation">${nav}</nav>
+  ${account}
   <div class="rail-foot"><span class="avatar">${e((ownerName || "P").slice(0, 1))}</span><strong>${e(ownerName || "Project owner")}</strong>
-  <p>Many agents, one owner per task.<br>Decisions with evidence.</p>${signedIn ? `
-  <form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : ""}</div>
+  <p>${e(TAGLINE)}</p>${liveNote}${signedIn ? `
+  <form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : ""}
+</div>
 </aside>
-<main id="main"${liveAttr}>${liveNote}${body}</main>${script}</body></html>`;
+<main id="main"${liveAttr}>${body}</main>${script}</body></html>`;
 }
 
 // The shell of the pages anyone can read: no rail, and no link into a signed-in
@@ -204,7 +222,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
     mainClass: "login-page",
     main: `<section class="login${graph ? " over-graph" : ""}">${graph}
-  <h1>Many agents.<br>One decision at a time.</h1>
+  <h1>Many agents,<br>one owner per task.</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
     <h2>Sign in to Atelier</h2>
@@ -381,12 +399,12 @@ const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
 // headline and the picture agree. Callers' totals are not used.
 const drawnTotal = (stories: Story[]) => stories.filter((s) => s.threads.length).reduce((acc, s) => addTally(acc, s.tally), emptyTally());
 
-interface FlowParts { stages: string; columns: string; shown: Story[] }
+interface FlowParts { stages: string; moments: string; journey: string; shown: Story[] }
 
-// The parts Flow and the public showcase share. `where` is the page the replay
-// link reloads; `href` links a task, or nothing on the public page.
-// A project's history before Atelier, read from git: drawn below its
-// threads, framed and labelled as imported, never counted in the tally.
+// The parts Flow, a project's Flow tab and the public showcase share. `href`
+// links a task, or nothing on the public page. A project's history before
+// Atelier, read from git: drawn below its threads, framed and labelled as
+// imported, never counted in the tally.
 function importedBlock(h: ImportedHistory | undefined, owner: string, title: string, project: string): string {
   if (!h?.total) return "";
   const named = h.lanes.filter((l) => l.label !== NO_AGENT).length;
@@ -501,18 +519,19 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
 </section>`;
 }
 
-function flowParts(stories: Story[], t: Tally, owner: string, where: string, href?: (s: Story) => (th: { id: string }) => string, who = "You", imported: Map<string, ImportedHistory> = new Map()): FlowParts {
+function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) => (th: { id: string }) => string, who = "You", imported: Map<string, ImportedHistory> = new Map()): FlowParts {
   const shown = stories.filter((s) => s.threads.length || imported.get(s.project)?.total);
-  const moments = shown
+  const many = shown.length > 1;
+  // One picture of the latest moves: the newest moments across whatever the
+  // caller draws, named for whether it spans projects (finding 19).
+  const momentsList = shown
     .flatMap((s) => s.moments.map((m) => ({ ...m, project: s.title })))
     .sort((a, b) => b.at.localeCompare(a.at))
     .slice(0, 14);
-  const many = shown.length > 1;
   const stages = shown.map((s) => `<section class="stage" id="${e(s.project)}" aria-label="${e(s.title)}">
   <div class="stage-head"><h2>${e(s.title)}</h2><span class="meta">${s.threads.length
     ? `${plural(s.threads.length, "task")} taken · ${s.tally.merges} merged · ${plural(s.tally.agents.length, "agent")}${s.partial ? " · the most recent part of the record" : ""}`
-    : noTasks(s) ? "History imported from git · no Atelier tasks yet" : `${plural(s.tally.planned, "task")} planned, none taken yet${s.partial ? " · the most recent part of the record" : ""}`}</span>
-  ${s.threads.length ? `<a class="replay" href="${where}${where.includes("?") ? "&amp;" : "?"}replay=${Date.now().toString(36)}#${e(s.project)}">▶ Replay</a>` : ""}</div>
+    : noTasks(s) ? "History imported from git · no Atelier tasks yet" : `${plural(s.tally.planned, "task")} planned, none taken yet${s.partial ? " · the most recent part of the record" : ""}`}</span></div>
   ${s.threads.length ? `<div class="stage-scroll">${drawStory(s, owner, { ...(href ? { href: href(s) } : {}), ...(who === "You" ? {} : { ownerLabel: who }) })}</div>` : imported.get(s.project)?.total ? "" : `<p class="meta stage-empty">No Atelier tasks yet.</p>`}
   ${importedBlock(imported.get(s.project), owner, s.title, s.project)}
 </section>`).join("");
@@ -526,47 +545,46 @@ function flowParts(stories: Story[], t: Tally, owner: string, where: string, hre
     ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
     ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
   ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
-  const columns = `<div class="flow-cols">
-  <section aria-label="What happened"><h2>What happened</h2><ol class="moments">${moments.map((m) =>
-    `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(shortStamp(m.at))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>
-  <section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol></section>
-</div>`;
-  return { stages, columns, shown };
+  const moments = `<section aria-label="Latest moves"><h2>${many ? "Latest moves across projects" : "Latest moves"}</h2><ol class="moments">${momentsList.map((m) =>
+    `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(shortStamp(m.at))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>`;
+  const journeySection = `<section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol></section>`;
+  return { stages, moments, journey: journeySection, shown };
 }
 
 export function renderFlow(stories: Story[], _total: Tally, owner: string, ownerName: string | null = null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), sinceParam = "all", familyParam?: string, familiesPresent: string[] = [], live?: Live): string {
   const t = drawnTotal(stories);
-  // Replay keeps the filters in force, so it replays what is shown.
-  const filtered = [sinceParam !== "all" ? `since=${e(sinceParam)}` : "", familyParam ? `family=${e(familyParam)}` : ""].filter(Boolean).join("&amp;");
-  const { stages, columns, shown } = flowParts(stories, t, owner, filtered ? `/flow?${filtered}` : "/flow", (s) => taskHref(s.project), "You", imported);
+  const { stages, moments, journey, shown } = flowParts(stories, t, owner, (s) => taskHref(s.project), "You", imported);
   const body = shown.length
-    ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0))}${stages}${columns}`
+    ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0))}${stages}<div class="flow-cols">${moments}${journey}</div>`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
-  
+
   const link = (s: string, f: string | undefined) => `?since=${e(s)}${f ? `&amp;family=${e(f)}` : ''}`;
   const sinceLinks = [["1d", "last day"], ["7d", "last week"], ["all", "all time"]]
-    .map(([val, label]) => `<a href="${link(val, familyParam)}"${sinceParam === val ? ' aria-current="page"' : ''}>${e(label)}</a>`).join("");
-  
+    .map(([val, label]) => `<a href="${link(val, familyParam)}"${sinceParam === val ? ' aria-current="page"' : ''}>${e(label)}</a>`).join('');
+
   const fams = VENDOR_NAMES.filter(([v]) => familiesPresent.includes(v));
-  const familyLinks = fams.map(([v, label]) => `<a href="${link(sinceParam, v)}"${familyParam === v ? ' aria-current="page"' : ''} style="color:var(--m-${v})">${e(label)}</a>`).join("");
+  const familyLinks = fams.map(([v, label]) => `<a href="${link(sinceParam, v)}"${familyParam === v ? ' aria-current="page"' : ''} style="color:var(--m-${v})">${e(label)}</a>`).join('');
   const allFamiliesLink = `<a href="${link(sinceParam, undefined)}"${!familyParam ? ' aria-current="page"' : ''}>all families</a>`;
-  
+
+  // The filter labels carry their own class: the row wraps at any width, and
+  // no inline style decides their alignment (finding 2).
   const filters = `<nav class="repo-tabs" aria-label="Filters">
-    <span class="meta" style="align-self: center; margin-right: 8px">Time:</span>${sinceLinks}
-    ${familiesPresent.length > 0 ? `<span class="meta" style="align-self: center; margin: 0 8px 0 16px">Family:</span>${allFamiliesLink}${familyLinks}` : ''}
+    <span class="meta filter-label">Time:</span>${sinceLinks}
+    ${familiesPresent.length > 0 ? `<span class="meta filter-label filter-label-gap">Family:</span>${allFamiliesLink}${familyLinks}` : ''}
   </nav>`;
 
+  // The hero is one row: the headline beside its tally, nothing above the
+  // graph but the filters (finding 10).
   return page("Flow", `<div class="page-width flow">
   <header class="flow-hero">
     <div><span class="kicker">Atelier · every project · from the ledger</span>
-      <h1>${headline(t)}</h1>
-      <p class="lead">Each coloured thread is a task an agent took off main: its pushes, its checks, the reviews from other models, and your decision. Hover over a mark for what happened; select a task to open it.</p></div>
+      <h1>${headline(t)}</h1></div>
     ${tallyBlock(t)}
   </header>
   ${filters}
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
   ${body}
-</div>`, "Flow", ownerName, 0, true, live);
+</div>`, "Home", ownerName, 0, true, live);
 }
 
 // ── showcase ───────────────────────────────────────────────────────────────
@@ -610,9 +628,9 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
   const total = drawnTotal(stories);
   const who = ownerName || "the owner";
-  const { columns, shown: drawn } = flowParts(stories, total, owner, "/showcase", undefined, who, imported);
+  const { moments, journey, shown: drawn } = flowParts(stories, total, owner, undefined, who, imported);
   const body = drawn.length
-    ? `${legendLine(vendorsIn(drawn), drawn.some(s => s.tally.localRuns > 0), cap(who))}${columns}`
+    ? `${legendLine(vendorsIn(drawn), drawn.some(s => s.tally.localRuns > 0), cap(who))}${moments}${journey}`
     : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
   // Each card is where a comparison card lands, so the cards come first in
   // the page and the comparison links up to them.
@@ -692,7 +710,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
   ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
-  <form method="post" action="/models/remove" class="inline"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
+  <form method="post" action="/models/remove" class="inline model-remove"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
 </li>`;
   };
   const group = (where: "home" | "cloud", title: string, none: string) => {
@@ -704,10 +722,10 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   <header><h1>Models</h1><p class="lead">${plural(entries.length, "model")} in the pool. The runner on your machine checks each one and reports what it found.</p>
   <p class="meta">Each model's record counts the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? `; ${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted` : ""}.</p></header>
   ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
-  ${group("home", "At home", "No home models yet. Add one served by your Studio or another local server.")}
+  ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
-  <details class="new-task"${entries.length ? "" : " open"}><summary>Add a model</summary>
+  <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
       <label>Model id, as the harness names it<input name="id" required maxlength="128" placeholder="gemini-3.1-pro, GLM-5.3-Flash-4_8bit"></label>
       <label>Harness<select name="harness">${opts(HARNESSES)}</select></label>
@@ -864,6 +882,12 @@ function lane(b: Bench, floor: Floor, now: Date, titles: Map<string, string>, ow
 </li>`;
 }
 
+// The marks a lane most often carries, so the row under the family legend
+// explains the page without opening anything; the full table stays in the
+// disclosure below (finding 20).
+const QUICK_MARKS: MarkKind[] = ["claim", "push", "observed-cloud", "failed", "submit", "approve"];
+const markGlyph = (k: MarkKind) => `<svg width="22" height="22" aria-hidden="true"><svg x="11" y="11" overflow="visible" class="mark">${markShape(k)}</svg></svg>`;
+
 export function renderStudio(floor: Floor, ownerName: string | null = null, now = new Date(), unavailable = false, projects: ProjectRecord[] = [], owner = DEFAULT_OWNER): string {
   const titles = titleMap(projects);
   const agents = new Set(floor.benches.map((b) => b.agent)).size;
@@ -871,9 +895,10 @@ export function renderStudio(floor: Floor, ownerName: string | null = null, now 
   const hasLocal = floor.benches.some((b) => b.chain.some(isLocalRun));
   const legend = (Object.keys(MARK_NAMES) as MarkKind[]).map((k) =>
     `<li><svg width="24" height="24" aria-hidden="true"><svg x="12" y="12" overflow="visible" class="mark">${markShape(k)}</svg></svg>${e(MARK_NAMES[k])}</li>`).join("");
+  const quickLegend = `<ul class="legend-line marks-legend" aria-label="The commonest marks">${QUICK_MARKS.map((k) => `<li>${markGlyph(k)}${e(MARK_NAMES[k])}</li>`).join("")}</ul>`;
   const mid = new Date((Date.parse(floor.from) + Date.parse(floor.to)) / 2).toISOString();
   const body = floor.benches.length
-    ? `${familyLegend(vendors, "You", hasLocal ? LOCAL_KEY : "")}<div class="axis-labels" aria-hidden="true"><span>${e(clock(floor.from))}</span><span>${e(clock(mid))}</span><span>now</span></div>
+    ? `${familyLegend(vendors, "You", hasLocal ? LOCAL_KEY : "")}${quickLegend}<div class="axis-labels" aria-hidden="true"><span>${e(clock(floor.from))}</span><span>${e(clock(mid))}</span><span>now</span></div>
 <ol class="lanes">${floor.benches.map((b) => lane(b, floor, now, titles, owner)).join("")}</ol>`
     : `<div class="empty"><h3>The floor is quiet.</h3><p>When an agent claims a task, its bench appears here with every push, check and handoff as it happens.</p></div>`;
   return page("Studio", `<div class="studio">
@@ -934,24 +959,62 @@ function pulseGraph(p: Pulse): string {
   </svg>`;
 }
 
-// `showcase` is the public showcase setting by project name, so each card
-// carries the owner's control over what is published. The card's link stays
-// the whole card's, so the form sits under it, outside the link.
-export function renderProjects(views: ProjectView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER, showcase: Record<string, "named" | "anonymous"> = {}): string {
+// Home is the portfolio (PAVI's direction, 2026-10-06): one card per project
+// with what needs the owner there, what is running, its two weeks of activity
+// and its last merge. Projects with something waiting come first. `waiting`
+// is that project's own inbox; `showcase` is the public showcase setting by
+// project name, so each card carries the owner's control over what is
+// published, under the card's own link.
+export interface HomeView extends ProjectView {
+  waiting?: InboxEntry[];
+}
+
+export function renderHome(views: HomeView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER, showcase: Record<string, "named" | "anonymous"> = {}): string {
   const vendors = new Set<Vendor>();
-  const cards = views.map(({ project, items, unavailable, events, cut }) => {
+  const ranked = views.map((v) => {
+    // Failing checks are the holder's to fix, not the owner's decision, so
+    // the card counts what the owner must act on (as buildStanding does).
+    const waiting = [...new Set((v.waiting ?? []).filter((x) => x.kind !== "failing").map((x) => x.itemId))];
+    return { v, waiting, lastAt: "" };
+  });
+  for (const { v } of ranked) {
+    const p = buildPulse(v.events ?? [], owner, now, !!v.cut);
+    for (const w of Object.keys(p.byVendor) as Vendor[]) vendors.add(w);
+  }
+  // Something waiting first, then whichever project last moved, so a quiet
+  // portfolio still reads newest first.
+  const order = ranked.map((r) => ({ ...r, lastAt: buildPulse(r.v.events ?? [], owner, now, !!r.v.cut).lastAt ?? "" }))
+    .sort((a, b) => b.waiting.length - a.waiting.length || b.lastAt.localeCompare(a.lastAt));
+  const cards = order.map(({ v, waiting }) => {
+    const { project, items, unavailable, events, cut } = v;
     const count = (states: string[]) => items.filter((i) => states.includes(i.state)).length;
     const p = buildPulse(events ?? [], owner, now, !!cut);
-    for (const v of Object.keys(p.byVendor) as Vendor[]) vendors.add(v);
-    if (p.decisions) vendors.add("owner");
-    const tally = `<p class="card-tally"><span><b>${count(["claimed", "submitted", "accepted"])}</b>active</span><span><b>${count(["open"])}</b>ready to start</span><span><b>${count(["merged"])}</b>merged</span></p>`;
+    const running = items.filter((i) => LIVE_STATES.includes(i.state));
+    const lastMerge = lastMerged(items)[0];
+    const tally = `<p class="card-tally"><span><b>${waiting.length}</b>waiting on you</span><span><b>${count(["claimed", "submitted", "accepted"])}</b>running</span><span><b>${count(["open"])}</b>ready to start</span><span><b>${count(["merged"])}</b>merged</span></p>`;
     const last = p.lastAt ? ` · last activity ${e(ago(p.lastAt, now))}` : "";
     const line = p.moves || p.decisions
       ? `${plural(p.moves, "move")} by ${plural(p.agents.length, "agent")} and ${plural(p.decisions, "decision")} in two weeks${p.cut ? ", from the most recent part of the record" : ""}${last}.`
       : `No moves in the last two weeks${last}.`;
+    const waitingRows = (v.waiting ?? []).filter((x) => x.kind !== "failing");
+    const waitRows = waiting.slice(0, 3).map((id) => {
+      // The entry's own title, so the row stands even when the items list
+      // was read apart from it.
+      const w = waitingRows.find((x) => x.itemId === id);
+      return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
+    }).join("");
+    const more = waiting.length > 3 ? `<li class="meta">and ${waiting.length - 3} more</li>` : "";
+    const runRows = running.slice(0, 3).map((i) =>
+      `<li><a href="${href("p", project.name, i.id)}">${e(i.title)}</a><span class="meta">${e(stateLabel[i.state])} · ${e(i.owner ?? "nobody")}</span></li>`).join("");
+    const mergeLine = lastMerge
+      ? `<p class="meta">Last merge: <a href="${href("p", project.name, lastMerge.id)}">${e(lastMerge.title)}</a> · ${e(ago(lastMerge.updatedAt, now))}</p>`
+      : '<p class="meta">Nothing merged yet.</p>';
     const body = unavailable
       ? '<p class="meta">Temporarily unavailable. Open to retry.</p>'
-      : `${tally}${pulseGraph(p)}<p class="meta">${line}</p>`;
+      : `${pulseGraph(p)}<p class="meta">${line}</p>
+    ${waitRows ? `<h3>Waiting on you</h3><ul class="home-rows">${waitRows}${more}</ul>` : ""}
+    ${runRows ? `<h3>Running</h3><ul class="home-rows">${runRows}</ul>` : ""}
+    ${mergeLine}`;
     const mode = showcase[project.name];
     const form = `<form method="post" action="/projects/showcase" class="show-form">
       <input type="hidden" name="project" value="${e(project.name)}">
@@ -962,14 +1025,15 @@ export function renderProjects(views: ProjectView[], ownerName: string | null = 
       </select></label>
       <button class="quiet">Save</button>
     </form>`;
-    return `<li class="project-card${unavailable ? " unavailable" : ""}"><a href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2>${body}</a>${form}</li>`;
+    return `<li class="project-card${unavailable ? " unavailable" : ""}${waiting.length ? " has-waiting" : ""}"><a class="home-head" href="${href("p", project.name)}"><h2>${e(titleOf(project))}</h2>${tally}</a><div class="home-body">${body}</div>${form}</li>`;
   }).join("");
-  return page("Projects", `<div class="page-width">
-  <header><h1>Projects</h1><p class="lead">Work in motion, with a clear owner for every task. Each card counts the last ${PULSE_DAYS} days of moves, a bar per day, in the colour of the family that made them.</p></header>
+  return page("Home", `<div class="page-width">
+  <header><h1>Home</h1><p class="lead">The portfolio: every project with what waits on you, what runs and where each stands. Each card counts the last ${PULSE_DAYS} days of moves, a bar per day, in the colour of the family that made them.</p>
+  <p class="meta">Across projects: <a href="/flow">the whole flow</a> · <a href="/history">the timeline of merges</a></p></header>
   ${views.length ? familyLegend([...vendors]) : ""}
   <ul class="project-cards">${cards}</ul>
   ${!views.length ? '<div class="empty"><h2>Start with one project.</h2><p>Run <code>atelier init</code> in its local checkout. It will appear here.</p></div>' : ""}
-</div>`, "Projects", ownerName);
+</div>`, "Home", ownerName);
 }
 
 // ── where a project stands ─────────────────────────────────────────────────
@@ -1082,41 +1146,188 @@ export function buildStanding(
   };
 }
 
+// Where a project stands on its Overview tab: what waits on the owner there,
+// what is queued, what merged last and what the last handoff said. Who holds
+// what is the Tasks tab's one list, not a second one here (finding 8), and
+// the policy lives on the Settings tab.
 function standingSection(p: ProjectRecord, s: Standing): string {
   const link = (id: string) => `<a href="${href("p", p.name, id)}">${e(id)}</a>`;
   const group = (title: string, rows: string[]) => rows.length ? `<h3>${e(title)}</h3><ul class="standing-list">${rows.join("")}</ul>` : "";
   const runner = (q: Standing["queued"][number]) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const groups = [
-    group("Held now", s.live.map((i) => `<li>${link(i.id)} <strong>${e(i.title)}</strong><span class="meta">${e(stateLabel[i.state as Item["state"]] ?? i.state)} · held by ${e(i.owner ?? "nobody")}${i.since ? ` since ${e(when(i.since))}` : ", since when is not shown"}</span></li>`)),
     group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${e(w.reason)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
     group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(q.note)}` : ""}</span></li>`)),
     group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
     group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`)),
   ].join("");
-  const cp = s.controlPlane
-    ? `<p class="meta standing-policy">ControlPlane policy, approved: ${e(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(e).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(e).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.</p>`
-    : "";
+  const inHand = s.live.length;
+  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "thing")} waiting on you here` : ""} · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
   return `<section class="standing" id="standing" aria-label="Where it stands">
   <h2 class="section-title">Where it stands</h2>
+  ${lead}
   <p class="meta">Generated from Atelier's record as of ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints the same as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
   ${s.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
-  ${groups || '<p class="empty">Nothing is held, waiting, queued or recently merged.</p>'}
+  ${groups || '<p class="empty">Nothing is waiting, queued or recently merged.</p>'}
   ${s.session ? `<h3>Newest session</h3>${sessionNoteText(s.session).split("\n").map((line) => `<p class="meta">${e(line)}</p>`).join("")}` : ""}
-  ${cp}
 </section>`;
 }
 
+// Every task in one list: open, held, in review or closed, each row with its
+// state, its holder and when it last moved. The separate Held now, Waiting
+// and Work lists are gone; this is the one (finding 8).
 function taskRows(p: ProjectRecord, items: Item[]): string {
-  return `<ul class="task-list">${items.map((i) => `<li><a href="${href("p", p.name, i.id)}">
+  const closed = (i: Item) => i.state === "merged" || i.state === "abandoned";
+  const ordered = [...items].sort((a, b) => Number(closed(a)) - Number(closed(b)) || b.updatedAt.localeCompare(a.updatedAt));
+  return `<ul class="task-list">${ordered.map((i) => `<li><a href="${href("p", p.name, i.id)}">
     <span><strong>${e(i.title)}</strong><span class="meta">${e(i.id)} · ${e(i.owner ?? "No current owner")}</span></span>
     ${tag(stateLabel[i.state], i.state === "merged" ? "go" : "")}<time class="meta">${when(i.updatedAt)}</time>${icon("arrow")}</a></li>`).join("")}</ul>`;
 }
 
-// `actions` is the protected-actions section, drawn by src/actions-page.ts.
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing, actions = ""): string {
-  const closed = (i: Item) => i.state === "merged" || i.state === "abandoned";
-  const live = items.filter((i) => !closed(i));
-  const done = items.filter(closed);
+// ── a project's area ───────────────────────────────────────────────────────
+// Every page under /p/NAME shares one tab bar, so the project is the unit the
+// owner moves in (PAVI's direction, 2026-10-06). The area hangs from Home.
+
+const PROJECT_TABS: [string, string][] = [
+  ["Overview", ""],
+  ["Tasks", "tasks"],
+  ["Flow", "flow"],
+  ["Plans", "plans"],
+  ["Code", "code"],
+  ["Log", "log"],
+  ["Ship", "ship"],
+  ["Settings", "settings"],
+];
+
+export function projectTabs(p: ProjectRecord, active: string): string {
+  return `<nav class="repo-tabs proj-tabs" aria-label="${e(titleOf(p))}">${PROJECT_TABS.map(([label, sub]) =>
+    `<a href="${href("p", p.name, ...sub ? [sub] : [])}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</nav>`;
+}
+
+// The frame every page in a project's area shares: the project's name over
+// its tab bar. `active` is the tab the page is, "Log" for a commit or a
+// path's history (finding 24), and Tasks for a task's own page. `live` adds
+// the live script without a refresh, as the Flow tab's replay needs.
+function projectPage(p: ProjectRecord, active: string, body: string, ownerName: string | null = null, title?: string, live?: Live): string {
+  return page(title ?? titleOf(p), `<div class="page-width">
+  <header class="proj-head"><h1>${e(titleOf(p))}</h1>${projectTabs(p, active)}</header>
+  ${body}</div>`, "Home", ownerName, 0, true, live);
+}
+
+const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ Create a task</summary>
+    <form method="post" action="${href("ui", p.name, "new")}" class="stack">
+      <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
+      <label>Files in scope<input name="scope" type="text" placeholder="src/**, test/**"></label>
+      <p class="meta">Separate patterns with commas. Leave empty for unrestricted scope.</p>
+      <button class="primary">Create task</button>
+    </form>
+  </details>`;
+
+// Overview: where the project stands and what waits on the owner there, with
+// Atelier's own record of it under a disclosure named for what it is (finding
+// 19).
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing): string {
+  return projectPage(p, "Overview", `
+  ${standing ? standingSection(p, standing) : ""}
+  <details class="disclosure"><summary>Ledger events</summary>${eventTable(events, true)}</details>
+  `, ownerName);
+}
+
+// Tasks: the one list, with the form that starts a task.
+export function renderProjectTasks(p: ProjectRecord, items: Item[], ownerName: string | null = null): string {
+  return projectPage(p, "Tasks", `
+  ${newTaskForm(p)}
+  ${items.length ? taskRows(p, items) : '<p class="empty">No tasks yet. Create one above.</p>'}
+  `, ownerName);
+}
+
+// Flow: this project's own graph, with its replay (the scrubber the live
+// script adds), the tally of who did what and its latest moves. What was
+// /flow?project=NAME is this tab now.
+export function renderProjectFlow(p: ProjectRecord, story: Story, owner: string, ownerName: string | null = null, imported: Map<string, ImportedHistory> = new Map(), live?: Live): string {
+  const { stages, moments, shown } = flowParts([story], story.tally, owner, (s) => taskHref(s.project), "You", imported);
+  const body = shown.length
+    ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0))}${stages}${moments}`
+    : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
+  return projectPage(p, "Flow", body, ownerName, `Flow · ${titleOf(p)}`, live);
+}
+
+// Plans (task t17): each plan as one unit, with its parts, each part's state
+// and why it went to the agent that holds it, read from the same view as
+// `atelier plan show` (GET items/tN/plan).
+function routeLines(route: PartRoute | null | undefined, preview: boolean): string[] {
+  if (!route) return [];
+  const lead = preview ? "would be built by" : "built by";
+  const lines: string[] = [];
+  if (route.builder) lines.push(`${lead} ${route.builder.actor}: ${route.builder.reasons[0] ?? ""}`);
+  if (route.alternates.length) lines.push(`alternates ${route.alternates.map((a) => a.actor).join(", ")}`);
+  if (route.reviewer) lines.push(`reviewer ${route.reviewer.actor}, of another family`);
+  if (route.unrouted) lines.push(`unrouted: ${route.unrouted}`);
+  return lines;
+}
+
+const ATTEMPT_WORDS: Record<Attempt["outcome"], string> = { "give-up": "released with no commit", failed: "released after a failed finish", finished: "finished" };
+
+function planPartRow(p: ProjectRecord, v: PlanView, part: PlanPartView): string {
+  const task = part.id ? `<a href="${href("p", p.name, part.id)}">${e(part.id)}</a>` : e(part.key);
+  const state = part.state === "open" && part.dispatch
+    ? `queued for ${part.dispatch.agent ?? part.dispatch.to}${part.dispatch.model ? `/${part.dispatch.model}` : ""}`
+    : `${stateLabel[part.state]}${part.owner && part.state !== "open" ? ` · ${e(part.owner)}` : ""}`;
+  const deps = part.dependsOn.length ? `depends on ${part.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`).join(", ")}` : "";
+  const lines = [
+    ...routeLines(part.route, false),
+    part.attempts.length ? `attempts: ${part.attempts.map((a) => `${a.actor} ${ATTEMPT_WORDS[a.outcome]}`).join("; ")}` : "",
+    part.state === "integrated" && part.integration ? `integrated as ${part.integration.mergeCommit.slice(0, 8)}` : "",
+    deps,
+  ].filter(Boolean);
+  return `<li class="plan-part"><div class="plan-part-head">${task} <strong>${e(part.title)}</strong>${tag(stateLabel[part.state], part.state === "merged" ? "go" : part.state === "open" ? "" : "ask")}</div>
+    <p class="meta">${e(state)}${part.scope.length ? ` · scope ${e(part.scope.join(", "))}` : ""}</p>
+    ${lines.length ? `<ul class="plan-lines">${lines.map((l) => `<li>${e(l)}</li>`).join("")}</ul>` : ""}</li>`;
+}
+
+function planUnit(p: ProjectRecord, v: PlanView): string {
+  const a = v.approval;
+  const proposal = v.proposal && v.plan && !a
+    ? `<p class="meta">Proposal ${v.proposal.count}, by ${e(v.proposal.by)} at ${e(when(v.proposal.at))}: ${plural(v.plan.parts.length, "part")}. Hash <code>${e(v.proposal.hash.slice(0, 12))}</code>${v.proposal.answered ? "" : ", not yet answered"}.</p>
+    <ul class="plan-parts">${v.plan.parts.map((part) => {
+      const lines = routeLines(v.preview?.find((r) => r.key === part.key), true);
+      return `<li class="plan-part"><div class="plan-part-head">${e(part.key)} <strong>${e(part.title)}</strong>${tag(`${part.taskKind}, size ${part.size}`)}</div>
+      <p class="meta">${e(part.brief.replace(/\s+/g, " ").trim())}</p>
+      ${lines.length ? `<ul class="plan-lines">${lines.map((l) => `<li>${e(l)}</li>`).join("")}</ul>` : ""}</li>`;
+    }).join("")}</ul>
+    <p class="meta">The routing shown is what an approval would fix now; it is computed again when you approve.</p>`
+    : "";
+  const approval = a
+    ? `<p class="meta">Approved by ${e(a.by)} at ${e(when(a.at))}, ${a.allowPaid ? "paid models allowed" : "no paid models"} · hash <code>${e(a.hash.slice(0, 12))}</code> · ${a.limits.maxParallel} parts live at once, ${a.limits.attempts} attempts a part, deadline ${e(when(a.deadline))} · ${a.jobsUsed} of ${a.limits.maxJobs} part dispatches used.</p>`
+    : "";
+  const parts = a && v.parts.length ? `<ul class="plan-parts">${v.parts.map((part) => planPartRow(p, v, part)).join("")}</ul>` : "";
+  const integration = a
+    ? `<p class="meta">${v.integration.integrationHead ? `Integration branch at <code>${e(v.integration.integrationHead.slice(0, 8))}</code>.` : "No part is integrated yet."}</p>`
+    : "";
+  return `<li class="plan-unit" id="${e(v.item.id)}">
+  <div class="plan-head"><a href="${href("p", p.name, v.item.id)}">${e(v.item.id)}</a> <strong>${e(v.goal)}</strong>${tag(v.phase)}${tag(stateLabel[v.item.state], v.item.state === "merged" ? "go" : "")}</div>
+  ${v.planner ? `<p class="meta">Planner ${e(v.planner)}${v.plannerReasons.length ? `: ${e(v.plannerReasons.join("; "))}` : ""}.</p>` : ""}
+  ${v.blocked ? `<div class="notice" role="status"><h3>Blocked</h3><p>${e(v.blocked)}</p></div>` : ""}
+  ${proposal || approval}
+  ${parts}${integration}
+</li>`;
+}
+
+export function renderProjectPlans(p: ProjectRecord, plans: PlanView[], ownerName: string | null = null): string {
+  return projectPage(p, "Plans", `
+  <p class="lead">Each plan as one unit: its parts, the state of each, and why each part went to the agent that holds it. <code>atelier plan show tN --project ${e(p.name)}</code> prints the same as text.</p>
+  ${plans.length ? `<ul class="plan-units">${plans.map((v) => planUnit(p, v)).join("")}</ul>` : `<div class="empty"><h3>No plans yet.</h3><p>A plan turns a goal into parts, routes each to a model and integrates what they build. Start one with <code>atelier plan --project ${e(p.name)}</code>.</p></div>`}
+  `, ownerName);
+}
+
+// Ship: protected actions and their history, drawn by src/actions-page.ts.
+export function renderProjectShip(p: ProjectRecord, actions: string, ownerName: string | null = null): string {
+  return projectPage(p, "Ship", actions, ownerName, `Ship · ${titleOf(p)}`);
+}
+
+// Settings: the project's own rules. Checks with their classes and path
+// conditions, the protected paths, the eligible agents, and the ControlPlane
+// policy when the project is governed by one.
+export function renderProjectSettings(p: ProjectRecord, ownerName: string | null = null): string {
   const policy = `<dl>
     <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
@@ -1125,26 +1336,14 @@ export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEve
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
-  return page(titleOf(p), `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/projects">Projects</a> / ${e(titleOf(p))}</nav>
-  <header><h1>${e(titleOf(p))}</h1><p class="lead">${live.length} active or planned task${live.length === 1 ? "" : "s"}.</p>
-  <nav class="repo-tabs" aria-label="Repository"><a href="${href("p", p.name, "code")}">Code</a><a href="${href("p", p.name, "log")}">Log</a></nav></header>
-  ${standing ? standingSection(p, standing) : ""}
-  <details class="new-task"><summary>Create a task</summary>
-    <form method="post" action="${href("ui", p.name, "new")}" class="stack">
-      <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
-      <label>Files in scope<input name="scope" type="text" placeholder="src/**, test/**"></label>
-      <p class="meta">Separate patterns with commas. Leave empty for unrestricted scope.</p>
-      <button class="primary">Create task</button>
-    </form>
-  </details>
-  <h2 class="section-title">Work</h2>
-  ${live.length ? taskRows(p, live) : '<p class="empty">No active tasks. Create one above.</p>'}
-  ${done.length ? `<details class="disclosure"><summary>Completed and closed · ${done.length}</summary>${taskRows(p, done)}</details>` : ""}
-  ${actions}
-  <details class="disclosure"><summary>Project policy</summary>${policy}</details>
-  <details class="disclosure"><summary>Activity</summary>${eventTable(events, true)}</details>
-</div>`, "Projects", ownerName);
+  const cp = p.policy.approval
+    ? `<p class="meta standing-policy">ControlPlane policy, approved: ${e(p.policy.approval)}. Protected areas: ${p.policy.protected.map(e).join(", ") || "none"}. Eligible agents: ${p.policy.eligible?.map(e).join(", ") || "any"}. Overlapping claims: ${p.policy.refuseOverlap ? "refused" : "flagged"}.</p>`
+    : '<p class="meta standing-policy">No ControlPlane policy is recorded for this project.</p>';
+  return projectPage(p, "Settings", `<section class="standing" aria-label="Project policy">
+  <h2 class="section-title">Policy</h2>
+  ${policy}
+  ${cp}
+</section>`, ownerName, `Settings · ${titleOf(p)}`);
 }
 
 export function renderHistory(views: ProjectView[], ownerName: string | null = null, owner = DEFAULT_OWNER): string {
@@ -1161,8 +1360,8 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
     return `<li class="merge-row ${x.ending}"><a href="${href("p", x.project.name, x.item.id)}">${mark}<time datetime="${e(x.at)}">${e(clock(x.at))}</time><span><strong>${e(x.item.title)}</strong><span class="meta">${detail.map(e).join(" · ")}</span></span>${tag(x.ending === "merged" ? "Merged" : "Closed", x.ending === "merged" ? "go" : "")}</a></li>`;
   }).join("")}</ol></li>`).join("");
   const lead = entries.length
-    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each mark is the family of the agent that held the task when it ended.`
-    : "Finished work, with its evidence intact.";
+    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each mark is the family of the agent that held the task when it ended. The same work, move by move, is on <a href="/flow">Flow</a>.`
+    : "Finished work, with its evidence intact. The work in motion is on <a href=\"/flow\">Flow</a>.";
   const capKey = closed ? '<li><i class="cap-key"></i>closed without merging</li>' : "";
   return page("History", `<div class="page-width">
   <header><h1>History</h1><p class="lead">${lead}</p></header>
@@ -1170,7 +1369,7 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
   ${entries.length ? familyLegend(vendors, "You", capKey) : ""}
   <ol class="merge-timeline">${days}</ol>
   ${!entries.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
-</div>`, "History", ownerName);
+</div>`, "Home", ownerName);
 }
 
 function eventTable(events: LedgerEvent[], withItem = false): string {
@@ -1183,12 +1382,14 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 
 // ── a task ─────────────────────────────────────────────────────────────────
 
+// A task's page sits inside its project's area: the project's tab bar above
+// the review sheet, the area reached from Home.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
-  const closed = d.item.state === "merged" || d.item.state === "abandoned";
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/decisions">Decisions</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
+  <nav class="breadcrumbs"><a href="/">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
+  ${projectTabs(p, "Tasks")}
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
-</div>`, closed ? "History" : "Decisions", ownerName, 0, true, live);
+</div>`, "Home", ownerName, 0, true, live);
 }
 
 const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad", none: "" };
@@ -1211,18 +1412,16 @@ function briefBlock(d: Detail): string {
 </section>`;
 }
 
-// The task page's thread, full width on a time axis, with the brief's one line
-// beside its head. It scrolls inside its own box on a narrow screen.
+// The task page's thread, full width on a time axis. The brief's one line
+// stays in the brief below it; the graph itself is not annotated (finding 23).
 function threadBlock(p: ProjectRecord, d: Detail): string {
   const story = taskStory(p.name, d);
   if (!story) return "";
   const owner = d.ownerActor ?? DEFAULT_OWNER;
-  const b = ["claimed", "submitted", "accepted", "blocked"].includes(d.item.state) ? briefFor(d, d.events) : null;
-  const note = b ? { verdict: b.recommendation.verdict, tone: VERDICT_TONE[b.recommendation.verdict] as "go" | "ask" | "bad", text: b.recommendation.reason } : undefined;
   return `<section class="review-section task-thread" id="thread" aria-label="This task's thread">
   <h3>Thread</h3>
   ${legendLine(Object.keys(story.tally.byVendor) as Vendor[], story.tally.localRuns > 0)}
-  <div class="stage-scroll">${drawStory(story, owner, { replaySeconds: 0, ...(note ? { note } : {}) })}</div>
+  <div class="stage-scroll">${drawStory(story, owner, { replaySeconds: 0 })}</div>
 </section>`;
 }
 
@@ -1295,7 +1494,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
         <form method="post" action="${action("undispatch")}">${revision}<button>Withdraw</button></form></div>`
       : `<details class="request-changes dispatch-form"><summary>Send to an agent</summary>
         <form class="stack" method="post" action="${action("dispatch")}">${revision}
-          <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Studio)</option><option value="cloud">Cloud runner</option></select></label>
+          <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Mac Studio)</option><option value="cloud">Cloud runner</option></select></label>
           <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option><option value="antigravity">Antigravity (Gemini)</option><option value="gemini-cli">Gemini CLI</option></select></label>
           <label>Model <span class="meta">optional, as the runner names it</span><input type="text" name="model" placeholder="e.g. glm-5.3-flash"></label>
           <label>Note for the agent <span class="meta">optional</span><input type="text" name="note" maxlength="500"></label>
@@ -1319,15 +1518,19 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
         </form></details>`
       : "";
 
+  // The brief below the header already says what is decided and why, so the
+  // header's own description line is drawn only when there is no brief
+  // (finding 7): one status line and one brief, never both twice.
+  const hasBrief = ["claimed", "submitted", "accepted", "blocked"].includes(item.state);
   const header = `<header class="review-header">
   <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
   <h2>${e(item.title)}</h2>
-  <p class="review-description">${e(decision.detail)}</p>
+  ${hasBrief ? "" : `<p class="review-description">${e(decision.detail)}</p>`}
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${merge}${reaccept}
-  <p class="meta revision">Revision <code>${short(item.head)}</code>${item.owner ? ` · ${e(item.owner)}` : ""}</p>
+  <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
 
   // The owner's framing, set with atelier new or atelier edit: shown only
@@ -1340,6 +1543,39 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     ${item.nextGate ? `<dt>Next gate</dt><dd>${e(item.nextGate)}</dd>` : ""}
   </dl></section>`
     : "";
+
+  // A task with nothing pushed is not a review: there is no revision to
+  // check, no diff to read and no checks that ran, so the page shows its
+  // framing, its scope and the dispatch box, nothing shaped like a review
+  // (finding 17). Whoever holds it can still be changed, so the ownership
+  // forms stay under Technical details.
+  const ownership = live
+    ? `<form class="stack" method="post" action="${action("handoff")}">${revision}
+        <label>New owner<input type="text" name="to" required placeholder="harness/model"></label>
+        <label>Handoff note<input type="text" name="note"></label>
+        <button>Hand off task</button></form>
+      <form method="post" action="${action("release")}">${revision}<button>Release task</button></form>`
+    : "";
+  const close = item.state !== "merged" && item.state !== "abandoned"
+    ? `<form class="stack" method="post" action="${action("abandon")}">${revision}
+        <label>Reason for closing<input type="text" name="note" required></label>
+        <button class="danger">Close task without merging</button></form>`
+    : "";
+  const technical = `<dl>
+    <dt>Workspace</dt><dd><code>${e(item.fork ?? "Not created")}</code></dd>
+    <dt>Forked at</dt><dd><code>${short(item.base)}</code></dd>
+    <dt>Scope</dt><dd>${item.scope.map(e).join(", ") || "Unrestricted"}</dd>
+    <dt>Last push</dt><dd>${when(item.lastPushAt)}</dd>
+  </dl>`;
+  if (item.head === null) {
+    const openScope = `<section class="review-section" aria-label="Scope"><h3>Scope</h3>
+      <p>${item.scope.map(e).join(", ") || "Unrestricted"}</p>
+      <p class="meta">${item.owner ? `${e(item.owner)} holds it; nothing is pushed for review yet.` : "Any eligible agent can claim it; until then nothing is pushed for review."}</p></section>`;
+    return `${header}
+${framing}${openScope}
+<details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
+<details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
+  }
 
   const scope = gate.outOfScope.length
     ? `<details class="notice"><summary>Scope changed · ${gate.outOfScope.length} file${gate.outOfScope.length === 1 ? "" : "s"}</summary>
@@ -1392,25 +1628,6 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`
     : "";
 
-  const technical = `<dl>
-    <dt>Workspace</dt><dd><code>${e(item.fork ?? "Not created")}</code></dd>
-    <dt>Forked at</dt><dd><code>${short(item.base)}</code></dd>
-    <dt>Scope</dt><dd>${item.scope.map(e).join(", ") || "Unrestricted"}</dd>
-    <dt>Last push</dt><dd>${when(item.lastPushAt)}</dd>
-  </dl>`;
-  const ownership = live
-    ? `<form class="stack" method="post" action="${action("handoff")}">${revision}
-        <label>New owner<input type="text" name="to" required placeholder="harness/model"></label>
-        <label>Handoff note<input type="text" name="note"></label>
-        <button>Hand off task</button></form>
-      <form method="post" action="${action("release")}">${revision}<button>Release task</button></form>`
-    : "";
-  const close = item.state !== "merged" && item.state !== "abandoned"
-    ? `<form class="stack" method="post" action="${action("abandon")}">${revision}
-        <label>Reason for closing<input type="text" name="note" required></label>
-        <button class="danger">Close task without merging</button></form>`
-    : "";
-
   return `${header}
 ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
@@ -1423,12 +1640,16 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
 }
 
-export function renderError(message: string, back = "/"): string {
+// The error page keeps the owner's name and the rail, and highlights nothing:
+// it does not know which page failed (finding 18). `back` says where Go back
+// returns to. The public error paths pass no ownerName, so the name never
+// reaches a page anyone can read.
+export function renderError(message: string, back = "/", ownerName: string | null = null, active = ""): string {
   return page("Action needs attention", `<section class="page-width error-page">
   <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
-  <p>Return to the current task, refresh its evidence, and try the available action again.</p>
-  <a class="button" href="${e(back)}">Return to work</a>
-</section>`);
+  <p>Go back, refresh the evidence, and try the available action again.</p>
+  <a class="button" href="${e(back)}">Go back</a>
+</section>`, active, ownerName);
 }
 
 // ── diffs ──────────────────────────────────────────────────────────────────

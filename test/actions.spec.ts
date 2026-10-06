@@ -6,7 +6,7 @@ import { parseRuleError } from "../src/rules.ts";
 import { signIn } from "./signin.ts";
 
 // Protected-action approvals in the Ledger's own storage, over Durable Object
-// RPC, and through the Worker's routes and the project page's forms. The
+// RPC, and through the Worker's routes and the project's Ship tab forms. The
 // Artifacts binding is a stand-in holding one main line, H0 <- H1 <- H2, so
 // the check that an approval names a commit on the main line runs for real.
 // test/actions.test.ts covers the rules with the clock set by hand.
@@ -123,10 +123,10 @@ it("an approval names a commit on the main line, at the full revision, with an e
   expect(after.runs).toMatchObject([{ passed: false, outputTail: "boom" }]);
 });
 
-it("the project page approves at the head it read, lists approvals and withdraws, from its own origin only", async () => {
+it("the Ship tab approves at the head it read, lists approvals and withdraws, from its own origin only", async () => {
   const L = await project("actions-page");
   const cookie = await signIn(TOKEN, testEnv);
-  const page = async () => (await worker.fetch(new Request("https://atelier.test/p/actions-page", { headers: { cookie } }), testEnv)).text();
+  const page = async () => (await worker.fetch(new Request("https://atelier.test/p/actions-page/ship", { headers: { cookie } }), testEnv)).text();
   const before = await page();
   expect(before).toContain('id="actions"');
   expect(before).toContain('action="/ui/actions-page/actions/approve"');
@@ -139,7 +139,7 @@ it("the project page approves at the head it read, lists approvals and withdraws
   expect(await L.actionApprovals()).toEqual([]);
   const approved = await post("approve", { kind: "deploy", head: H2, expires: "24h", note: "from the page" });
   expect(approved.status).toBe(303);
-  expect(approved.headers.get("location")).toBe("https://atelier.test/p/actions-page#actions");
+  expect(approved.headers.get("location")).toBe("https://atelier.test/p/actions-page/ship");
   const refused = await post("approve", { kind: "deploy", head: FORK, expires: "24h" });
   expect(refused.status).toBe(409);
   expect(await refused.text()).toContain("is not on the project&#39;s main line");
@@ -152,11 +152,11 @@ it("the project page approves at the head it read, lists approvals and withdraws
   expect((await post("frobnicate", {})).status).toBe(400);
 });
 
-it("the project page still draws, without the form, when the main line cannot be read", async () => {
+it("the Ship tab still draws, without the form, when the main line cannot be read", async () => {
   await project("actions-dark");
   const dark = { ...testEnv, ARTIFACTS: { async get() { throw new Error("unreachable"); } } } as unknown as typeof env;
   const cookie = await signIn(TOKEN, dark);
-  const res = await worker.fetch(new Request("https://atelier.test/p/actions-dark", { headers: { cookie } }), dark);
+  const res = await worker.fetch(new Request("https://atelier.test/p/actions-dark/ship", { headers: { cookie } }), dark);
   expect(res.status).toBe(200);
   const html = await res.text();
   expect(html).toContain("The main line's head could not be read");
