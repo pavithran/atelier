@@ -107,7 +107,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
 ];
 
-export const HELP_FOOTER = "Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR).";
+export const HELP_FOOTER = "Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --sandbox-only takes no value and never the word after it; --sandbox-only=false turns one off.";
 
 // What `atelier help` prints, without the final newline.
 export function helpText(): string {
