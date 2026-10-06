@@ -1,0 +1,16 @@
+atelier atelier/t136 "Decision (PAVI, 2026-10-06, 'agreed'): an independent review of a protected change must come from a model of a different family than every contributor in every project, not only those with ControlPlane policy files; the owner's approval no longer counts as the independent review (the owner still accepts and merges). Change gate() in src/rules.ts, reviewNeeded in src/review/needed.ts, planGate in src/plans/integrate.ts, and the /how page and README text; keep an explicit owner override that is recorded as an override, not as a review, for when no other-family reviewer exists"
+accepted head 8bcd11ef3911ab484436155f030a87a1bc894852
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-06T02:52:41.134Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-06T02:52:44.101Z
+REVIEW approve — antigravity/gemini-3.1-pro: APPROVE. independentApproval requires a recognised family differing from every contributor (claims, handoff chains, pushes) in every project and never counts the owner; the override is owner-only, needs a reason, waives only the missing review, is refused when nothing is missing, binds to the head, is its own review.overridden event and is shown with its reason; reviewNeeded and planGate use the same function; tests changed for the new rule and new tests fail on the old code.
+REVIEW approve — pavi: Owner acceptance after Gemini 3.1 Pro's review.
+2026-10-06T02:18:08.008Z pavi item.created
+2026-10-06T02:18:08.391Z claude-code/opus-5.5 item.claimed
+2026-10-06T02:18:12.352Z claude-code/opus-5.5 fork.created
+2026-10-06T02:51:17.563Z claude-code/opus-5.5 push.observed
+2026-10-06T02:52:41.545Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:52:44.376Z claude-code/opus-5.5 evidence.observed
+2026-10-06T02:52:45.002Z claude-code/opus-5.5 item.submitted
+2026-10-06T02:55:27.415Z antigravity/gemini-3.1-pro review.approved
+2026-10-06T02:55:27.925Z pavi review.approved
+2026-10-06T02:55:28.637Z pavi item.accepted
