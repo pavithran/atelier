@@ -330,11 +330,16 @@ npx wrangler secret put ATELIER_TOKEN
 Then sign in once. `atelier login --server URL` asks for the token (typed
 without echo at a terminal, or piped in on stdin), checks it against the
 server, and only then stores it and records the server, saying where. The
-stored token is sent to that server alone: `login --server` naming another
-server asks for a token for it and changes nothing until that server accepts
-it, and `ATELIER_SERVER` naming another server needs `ATELIER_TOKEN` for it.
-`atelier login --store` names the store in use and whether it holds a token,
-without showing it.
+stored token and the recorded server are a pair: the token is sent to that
+server alone, and `ATELIER_SERVER` naming another server needs
+`ATELIER_TOKEN` for it. `login --server` sends the named server only a token
+already given for it, `ATELIER_TOKEN` when `ATELIER_SERVER` (or else the
+recorded server) names it and the stored token when the recorded server is
+the one named, and otherwise asks for one; it changes nothing until that
+server accepts the token, and when the server changes, the token it accepted,
+`ATELIER_TOKEN` included, replaces the stored one, so the pair is never half
+rewritten. `atelier login --store` names the store in use and whether it
+holds a token, without showing it.
 
 ```bash
 atelier login --server https://atelier.example.com
