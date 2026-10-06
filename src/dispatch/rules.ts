@@ -5,6 +5,7 @@
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
 import { RuleError, validActor, type Item } from "../rules.ts";
+import { assertLength, OWNER_TEXT_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
 export const RUNNER_KINDS: RunnerKind[] = ["cloud", "home"];
@@ -69,7 +70,11 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   const model = optional(input.model, "model");
   if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
   if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
-  return { to: to as Dispatch["to"], agent, model, by, at, note: String(input.note ?? "").slice(0, 500) };
+  // The note is the owner's and is stored with the dispatch for every runner
+  // to read, so one over its limit is refused, never cut.
+  const note = String(input.note ?? "");
+  assertLength(note, OWNER_TEXT_MAX, "the dispatch note");
+  return { to: to as Dispatch["to"], agent, model, by, at, note };
 }
 
 export function assertDispatchable(item: Item): void {

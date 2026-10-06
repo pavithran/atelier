@@ -336,6 +336,13 @@ test("actor names allow a :profile suffix on the model, never on the harness", (
   assert.equal(validActor("opencode/mlx-community/Qwen3"), false);
 });
 
+test("an actor name is at most 200 characters, whatever its shape", () => {
+  assert.ok(validActor("h/" + "m".repeat(198)), "a harness and model naming exactly 200");
+  assert.equal(validActor("h/" + "m".repeat(199)), false);
+  assert.ok(validActor("a".repeat(200)), "a harness alone naming exactly 200");
+  assert.equal(validActor("a".repeat(201)), false);
+});
+
 const governed: ProjectPolicy = {
   ...policy,
   agents: {
