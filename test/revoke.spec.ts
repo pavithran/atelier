@@ -83,6 +83,51 @@ async function setup(name: string, items: number) {
 
 const errorOf = async (res: Response) => ((await res.clone().json()) as { error?: string }).error;
 
+// Posts the owner's form for one item, signed in with the owner's cookie,
+// against the given Artifacts and, if given, Ledger namespace.
+function ownerForm(name: string, artifacts: Artifacts, ledger: typeof env.LEDGER = env.LEDGER) {
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts, LEDGER: ledger } as typeof env;
+  return async (id: string, verb: string, fields: string) => {
+    const cookie = `atelier=${[...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+    return worker.fetch(new Request(`https://atelier.test/ui/${name}/${id}/${verb}`, {
+      method: "POST", headers: { cookie, origin: "https://atelier.test", "content-type": "application/x-www-form-urlencoded" }, body: fields,
+    }), bindings);
+  };
+}
+
+// The Ledger namespace, with stubs that can hold the next tokenId call open
+// before it reads anything, so a test can change the item between a
+// request's earlier reads and its read of the token id.
+function holdingLedger() {
+  let held: { entered: () => void; gate: Promise<void> } | null = null;
+  const namespace = {
+    idFromName: (n: string) => env.LEDGER.idFromName(n),
+    get: (id: DurableObjectId) => {
+      const stub = env.LEDGER.get(id);
+      return new Proxy(stub, {
+        get(target, prop) {
+          if (prop === "tokenId" && held) {
+            const h = held;
+            held = null;
+            return async (item: string) => { h.entered(); await h.gate; return target.tokenId(item); };
+          }
+          // Every other method is the stub's own, called on the stub.
+          if (typeof prop !== "string" || prop === "then") return Reflect.get(target, prop);
+          return (...args: unknown[]) => (target as unknown as Record<string, (...a: unknown[]) => unknown>)[prop](...args);
+        },
+      });
+    },
+  } as unknown as typeof env.LEDGER;
+  function holdNextTokenId() {
+    let open!: () => void, entered!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const reached = new Promise<void>((r) => (entered = r));
+    held = { entered, gate };
+    return { reached, release: () => open() };
+  }
+  return { namespace, holdNextTokenId };
+}
+
 it("handoff and release fail with nothing changed when Artifacts cannot revoke the old token", async () => {
   const { L, fa, agentA, held, base } = await setup("revoke-fails", 2);
   fa.state.revoking = "fails";
@@ -110,10 +155,7 @@ it("the owner's abandon, and the owner's release and handoff forms, fail with no
   fa.state.revoking = "fails";
   const abandoned = await owner("POST", `${base}/t1/abandon`, { note: "not needed" });
   expect({ status: abandoned.status, error: await errorOf(abandoned) }).toEqual({ status: 503, error: "revoke_failed" });
-  const cookie = `atelier=${[...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TOKEN)))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-  const form = (id: string, verb: string, fields: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/${id}/${verb}`, {
-    method: "POST", headers: { cookie, origin: "https://atelier.test", "content-type": "application/x-www-form-urlencoded" }, body: fields,
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: fa.artifacts } as typeof env);
+  const form = ownerForm(name, fa.artifacts);
   const released = await form("t2", "release", `note=done&head=${H0}`);
   const handed = await form("t3", "handoff", `note=yours&head=${H0}&to=${encodeURIComponent(B)}`);
   expect([released.status, handed.status]).toEqual([503, 503]);
@@ -152,3 +194,61 @@ it("a handoff or release the Ledger would refuse revokes nothing", async () => {
   expect({ owner: (await L.item("t1")).owner, token: await L.tokenId("t1"), live: fa.live(held.t1) })
     .toEqual({ owner: A, token: held.t1, live: true });
 });
+
+it("a claim the Ledger refuses revokes nothing: the holder keeps the item and its token", async () => {
+  const { L, fa, owner, agentB, held, base } = await setup("revoke-claim-refused", 1);
+  // A holds t1; neither B nor the project owner may claim it.
+  const byB = await agentB("POST", `${base}/t1/claim`);
+  const byOwner = await owner("POST", `${base}/t1/claim`);
+  expect({
+    byB: byB.status, byBError: await errorOf(byB), byOwner: byOwner.status, byOwnerError: await errorOf(byOwner),
+    owner: (await L.item("t1")).owner, token: await L.tokenId("t1"), live: fa.live(held.t1), writes: fa.writes("revoke-claim-refused--t1"),
+  }).toEqual({
+    byB: 409, byBError: "owned", byOwner: 409, byOwnerError: "owned",
+    owner: A, token: held.t1, live: true, writes: [held.t1],
+  });
+});
+
+it("the owner's release, handoff and abandon forms revoke the holder's token and change the owner", async () => {
+  const name = "revoke-owner-forms-ok";
+  const { L, fa, held } = await setup(name, 3);
+  const form = ownerForm(name, fa.artifacts);
+  const released = await form("t1", "release", `note=done&head=${H0}`);
+  const handed = await form("t2", "handoff", `note=yours&head=${H0}&to=${encodeURIComponent(B)}`);
+  const abandoned = await form("t3", "abandon", `note=not+needed&head=${H0}`);
+  expect([released.status, handed.status, abandoned.status]).toEqual([303, 303, 303]);
+  const after = async (id: string) => {
+    const item = await L.item(id);
+    return { state: item.state, owner: item.owner, token: await L.tokenId(id), live: fa.live(held[id]) };
+  };
+  expect({ t1: await after("t1"), t2: await after("t2"), t3: await after("t3") }).toEqual({
+    t1: { state: "open", owner: null, token: null, live: false },
+    t2: { state: "claimed", owner: B, token: null, live: false },
+    t3: { state: "abandoned", owner: null, token: null, live: false },
+  });
+});
+
+// A form reads the item before the token id. If a claim makes the workspace
+// and records its token in between, the form must still revoke that token,
+// in the workspace the claim made, before it takes the token off the record.
+for (const verb of ["release", "handoff", "abandon"] as const) {
+  it(`the owner's ${verb} form revokes a token a claim recorded after the form first read the item`, async () => {
+    const name = `revoke-form-race-${verb}`;
+    const { L, fa, agentA } = await setup(name, 0);
+    await L.newItem("Race", [], "owner");
+    await L.claim("t1", A);
+    const ledger = holdingLedger();
+    const hold = ledger.holdNextTokenId();
+    const posted = ownerForm(name, fa.artifacts, ledger.namespace)("t1", verb, `note=x${verb === "handoff" ? `&to=${encodeURIComponent(B)}` : ""}`);
+    // The form has read t1, which has no workspace yet, and waits for the token id.
+    await hold.reached;
+    await L.setFork("t1", `${name}--t1`, H0, A);
+    const claimed = await agentA("POST", `/projects/${name}/items/t1/claim`);
+    expect(claimed.status).toBe(200);
+    const token = ((await claimed.json()) as { workspace: { token: string } }).workspace.token.replace("art_secret_", "");
+    expect(await L.tokenId("t1")).toBe(token);
+    hold.release();
+    const res = await posted;
+    expect({ form: res.status, recorded: await L.tokenId("t1"), live: fa.live(token) }).toEqual({ form: 303, recorded: null, live: false });
+  });
+}
