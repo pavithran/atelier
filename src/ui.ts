@@ -133,6 +133,8 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
   stale: ["Needs a handoff", "ask"],
   overlap: ["Overlapping work", "ask"],
   failing: ["Checks failed", "bad"],
+  "approve-plan": ["Plan to approve", "ask"],
+  "plan-blocked": ["Plan blocked", "bad"],
 };
 
 // ── where evidence came from ───────────────────────────────────────────────

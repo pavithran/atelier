@@ -23,6 +23,22 @@ export interface Item {
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
+  // A plan, or a part of one (docs/orchestrator.md). An ordinary task
+  // carries none of these four fields.
+  kind?: "plan" | "part";
+  plan?: string;            // a part's plan item, tP
+  partKey?: string;         // a part's key in the approved plan
+  deps?: string[];          // the keys of the parts a part depends on
+}
+
+// Whether two items belong to one plan: two parts of it, or a part and the
+// plan item. The plan item stands for all its parts' work, and validation
+// lets parts share paths only when one depends on the other, so overlap
+// between them is ordered by the plan already.
+export function samePlan(a: Pick<Item, "id" | "kind" | "plan">, b: Pick<Item, "id" | "kind" | "plan">): boolean {
+  const planOf = (i: Pick<Item, "id" | "kind" | "plan">) => (i.kind === "plan" ? i.id : i.kind === "part" ? i.plan ?? null : null);
+  const pa = planOf(a);
+  return pa !== null && pa === planOf(b);
 }
 
 // The project owner's override of the independent review a change needs,
@@ -326,10 +342,11 @@ export function assertClaimable(item: Item, actor: string): void {
   }
 }
 
-// Role policy takes precedence over legacy harness eligibility.
-export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER): void {
+// Role policy takes precedence over legacy harness eligibility. Taking work
+// needs the executor role; planning a plan needs the planner role.
+export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   if (policy.agents) {
-    if (!hasRole(actor, policy, "executor")) throw new RuleError("ineligible", `${actor} needs an available agent with the executor role`, 403);
+    if (!hasRole(actor, policy, role)) throw new RuleError("ineligible", `${actor} needs an available agent with the ${role} role`, 403);
     return;
   }
   if (actor === owner || !policy.eligible?.length) return;
@@ -448,16 +465,17 @@ export function reviewOverrideFor(
   return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
 }
 
-// Live items held by someone else whose scope overlaps this one.
+// Live items held by someone else whose scope overlaps this one. Items of
+// one plan are not counted against each other (samePlan).
 export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
   return items.filter(
-    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && scopesOverlap(item.scope, o.scope),
+    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
 }
 
-export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER): void {
+export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
-  assertEligible(actor, policy, owner);
+  assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
     const clash = overlappingLive(item, items, actor);
     if (clash.length) {
@@ -590,10 +608,15 @@ export interface InboxEntry {
   project: string;
   itemId: string;
   title: string;
-  kind: "accept" | "assess" | "merge" | "stale" | "overlap" | "scope" | "failing";
+  kind: "accept" | "assess" | "merge" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
 }
+
+// The weights of a plan's own entries, which the Ledger adds beside
+// inboxFor's (src/plans/state.ts): approving a proposed split, and deciding
+// for a blocked plan.
+export const PLAN_INBOX_WEIGHTS = { "approve-plan": 95, "plan-blocked": 85 } as const;
 
 const STALE_HOURS = 12;
 
@@ -616,12 +639,16 @@ export function inboxFor(
     // entry says so and gives its reason. An accepted item is read as
     // accept() reads it, as if still submitted.
     const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the project owner: ${g.overridden.reason}` : "");
+    // A part is reported through its plan (the Ledger's planView), so it
+    // never appears as an accept, assess, failing, scope or stale entry. An
+    // accepted part still asks to be merged.
+    const part = item.kind === "part";
     if (item.state === "accepted") {
       const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner);
       out.push({ ...base, kind: "merge", reason: `accepted${overrode(g)}; run \`atelier merge\` in the project checkout`, weight: 90 });
       continue;
     }
-    if (item.state === "submitted") {
+    if (item.state === "submitted" && !part) {
       const g = gate(item, policy, ev, rv, owner);
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
@@ -634,7 +661,7 @@ export function inboxFor(
         out.push({ ...base, kind: "scope", reason: `changes outside its scope: ${g.outOfScope.slice(0, 3).join(", ")}`, weight: 60 });
       }
     }
-    if (item.state === "claimed") {
+    if (item.state === "claimed" && !part) {
       const last = new Date(item.lastPushAt ?? item.updatedAt);
       const hours = (now.getTime() - last.getTime()) / 3_600_000;
       if (hours > STALE_HOURS) {
@@ -644,7 +671,7 @@ export function inboxFor(
   }
   for (let i = 0; i < live.length; i++) {
     for (let j = i + 1; j < live.length; j++) {
-      if (scopesOverlap(live[i].scope, live[j].scope)) {
+      if (!samePlan(live[i], live[j]) && scopesOverlap(live[i].scope, live[j].scope)) {
         out.push({
           project, itemId: live[i].id, title: live[i].title, kind: "overlap",
           reason: `scope overlaps ${live[j].id} (${live[j].owner ?? "unowned"})`, weight: 40,

@@ -197,10 +197,22 @@ export const ORCHESTRATOR: Part[] = [
     code: [{ file: "src/plans/phase.ts", symbol: "planPhase" }, { file: "src/plans/phase.ts", symbol: "planActions" }, { file: "src/plans/phase.ts", symbol: "partAttempts" }],
   },
   {
-    name: "Plan ledger, routes and command", stage: "t15, build steps 5 to 7", built: false,
-    what: "The ledger's plan records, running `planActions` after each change to a plan and acting on its answer, the inbox entries for approving a plan and for a blocked one, the routes and the `atelier plan` command, the brief the server writes for each part, and the runner's plan job.",
-    files: ["src/plans/brief.ts", "test/plans.spec.ts", "test/plan-cli.test.mjs"],
-    code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/index.ts", symbol: "job-brief" }],
+    name: "Plan ledger", stage: "t15, build step 5", built: true,
+    what: "The project's ledger keeps plans. A plan is an item whose planner is dispatched as a plan job and posts a plan document; each valid proposal is kept, unchanged, and an invalid one gets the planner one more attempt before the plan blocks. The owner approves the newest proposal by its hash, once: the routing of each part is fixed then, with the limits (2 parts live, 3 attempts a part, 4 dispatches a part, 24 hours), and the parts become items. After each push, check, review, submit, release, merge or abandon of a part, and at the deadline, the ledger runs `planActions` and dispatches what may start, as `atelier/orchestrator`, or blocks the plan with the reason. The inbox gains `approve-plan` and `plan-blocked`; a part never appears there to accept, review, fix, rescope or hand off, and items of one plan are not flagged as overlapping. Until the integration branch exists, each part reaches main by the owner's own merge, and the plan is complete when every part has merged.",
+    files: ["src/plans/state.ts", "test/plans.spec.ts"],
+    code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/ledger.ts", symbol: "postPlan" }],
+  },
+  {
+    name: "Plan routes and command", stage: "t15, build step 6", built: false,
+    what: "The routes for starting, posting, approving, revising, rerouting, retrying and stopping a plan, and the `atelier plan` command that calls them.",
+    files: ["test/plan-cli.test.mjs"],
+    code: [{ file: "src/index.ts", symbol: "approvePlan" }, { file: "src/usage.ts", symbol: "plan approve" }],
+  },
+  {
+    name: "Server briefs and runner jobs", stage: "t15, build step 7", built: false,
+    what: "The brief the server writes for each part and for the planner, and the runner's plan job, which writes the plan document and posts it. Until then no runner takes a plan job, and a part's runner gets the brief it gives any task.",
+    files: ["src/plans/brief.ts"],
+    code: [{ file: "src/index.ts", symbol: "job-brief" }, { file: "cli/runner.mjs", symbol: "plan_file" }],
   },
   {
     name: "Review rules", stage: "t39, build step 8", built: true,
