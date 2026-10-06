@@ -220,10 +220,13 @@ it("an agent claims, pushes, records checks, hands off and reviews as itself", a
   const name = "token-workflow";
   await project(name);
   const { token } = await issue([name]);
-  let head = "0".repeat(40);
+  // The fork's history as the push route reads it: the pushed head on top
+  // of the base the fork started from, so the push holds the recorded head.
+  const base = "0".repeat(40);
+  let head = base;
   const ARTIFACTS = {
     get: async () => ({
-      fork: async () => ({}), log: async () => [{ hash: head }],
+      fork: async () => ({}), log: async () => (head === base ? [{ hash: base, parents: [] }] : [{ hash: head, parents: [base] }, { hash: base, parents: [] }]),
       info: async () => ({ remote: "https://example.test/r.git", defaultBranch: "main" }),
       createToken: async () => ({ plaintext: "git-token", id: "git-id", expiresAt: "later" }),
       revokeToken: async () => undefined,
