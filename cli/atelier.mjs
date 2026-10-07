@@ -3210,7 +3210,8 @@ const commands = {
     // The runner queue and the offers each runner last asked with, so the
     // waiting section can say when a queued job — a review routed to a model
     // no live runner offers, say — can never be claimed, not merely waits
-    // (t240). Either read failing leaves the listing as it was.
+    // (t240), and the Runners section can list what each offers (t246).
+    // Either read failing leaves the listing as it was.
     const [queue, offers] = await Promise.all([
       request("GET", "/queue", undefined, OWNER).catch(() => null),
       request("GET", "/runners", undefined, OWNER).catch(() => null),

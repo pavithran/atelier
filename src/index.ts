@@ -27,7 +27,7 @@ import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "
 import { renderUsage } from "./usage/page.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
-import { baseRepoOf, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
+import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
@@ -417,9 +417,10 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
 // head holds nothing of the recorded one. The search stops at a budget of
 // commits and of reads, and then answers null: it has shown neither that
 // the target is held nor that it is not, and recordPush (ledger.ts) refuses
-// such a push unless it declares a rebase.
+// such a push unless it declares a rebase. A caller may pass a smaller
+// budget of commits and reads.
 const HISTORY_COMMITS = 10_000, HISTORY_READS = 100, HISTORY_PAGE = 1000;
-async function holdsCommit(env: Env, repo: string, from: string, target: string): Promise<{ holds: boolean | null; searched: number }> {
+async function holdsCommit(env: Env, repo: string, from: string, target: string, budget = { commits: HISTORY_COMMITS, reads: HISTORY_READS }): Promise<{ holds: boolean | null; searched: number }> {
   if (from === target) return { holds: true, searched: 0 };
   using r = await env.ARTIFACTS.get(repo);
   const seen = new Set<string>();
@@ -428,9 +429,9 @@ async function holdsCommit(env: Env, repo: string, from: string, target: string)
   while (starts.length) {
     const start = starts.shift()!;
     if (seen.has(start)) continue;
-    if (reads >= HISTORY_READS || seen.size >= HISTORY_COMMITS) return { holds: null, searched: seen.size };
+    if (reads >= budget.reads || seen.size >= budget.commits) return { holds: null, searched: seen.size };
     reads++;
-    const page = await r.log({ ref: start, limit: HISTORY_PAGE });
+    const page = await r.log({ ref: start, limit: Math.min(HISTORY_PAGE, budget.commits) });
     const branches: string[] = [];
     let next: string | undefined;
     for (const c of page) {
@@ -565,19 +566,31 @@ async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<strin
 // integrator is sent to merge it (docs/orchestrator.md, section 5). Null when
 // no conflict is predicted or the branch cannot be read, so a failure to read
 // only costs a runner trip, never a blocked integration.
+// The merge base is the newest plan-branch commit the part's head holds: a
+// part head that holds the branch's head merges cleanly; otherwise the base
+// is the plan head the part's last rework merged (`planHead`), when the part
+// head holds it, else the commit the part forked from. The history search is
+// bounded by PREDICT_BUDGET, and a search that stops at it falls back to the
+// fork point.
+const PREDICT_BUDGET = { commits: 500, reads: 5 };
 async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; fork: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
   const key = plan.dispatch?.part, head = plan.dispatch?.head;
   if (!key || !plan.fork || !head) return null;
-  const { part } = await L.integrationTarget(plan.id, key);
+  const { part, planHead } = await L.integrationTarget(plan.id, key);
   if (!part.fork || !part.head || !part.base) return null;
+  const partFork = part.fork, partHead = part.head;
   try {
     using planRepo = await env.ARTIFACTS.get(plan.fork);
-    using partRepo = await env.ARTIFACTS.get(part.fork);
-    const [planTop, baseCommit, partCommit] = await Promise.all([
-      planRepo.log({ limit: 1 }), planRepo.readCommit(part.base), partRepo.readCommit(part.head),
-    ]);
-    if (!planTop[0] || !baseCommit || !partCommit) return null;
-    const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop[0].treeHash, partCommit.treeHash);
+    using partRepo = await env.ARTIFACTS.get(partFork);
+    const [planTop] = await planRepo.log({ limit: 1 });
+    if (!planTop) return null;
+    const holds = (target: string) => holdsCommit(env, partFork, partHead, target, PREDICT_BUDGET);
+    const top = await holds(planTop.hash);
+    if (top.holds === true) return null;
+    const base = mergeBaseFor(top.holds, planHead, part.base, planHead && planHead !== part.base ? (await holds(planHead)).holds : null);
+    const [baseCommit, partCommit] = await Promise.all([planRepo.readCommit(base), partRepo.readCommit(partHead)]);
+    if (!baseCommit || !partCommit) return null;
+    const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop.treeHash, partCommit.treeHash);
     return m.clean ? null : m.conflicts.map((c) => `${c.path}: ${c.reason}`).join("; ");
   } catch {
     return null;
@@ -739,7 +752,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const offer = m === "POST" ? runnerOffer(body) : null;
     // Each ask records what the runner can run (putRunnerOffer), so the
     // server can say when a dispatch names a model or a job no live runner
-    // offers, instead of letting it wait as though merely unclaimed.
+    // offers, instead of letting it wait as though merely unclaimed, and plan
+    // routing picks from the models live runners offer (src/plans/route.ts).
     if (offer) await index(env).putRunnerOffer(offer, new Date().toISOString());
     const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
@@ -767,7 +781,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // runner asked the queue for work, newest ask per runner. The owner's
   // surfaces read it to say when a dispatch no live runner offers can never
   // be claimed (unoffered in src/dispatch/rules.ts): atelier land while it
-  // waits for a verdict, plan show for a routed review, status for the queue.
+  // waits for a verdict, plan show for a routed review, status for the queue
+  // and its Runners section. Plan routing reads the same offers on the index
+  // (t246), picking builders and reviewers only from what live runners offer.
   if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
     requireOwner(env, actor);
     return json(await index(env).runnerOffers());

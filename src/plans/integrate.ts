@@ -301,3 +301,11 @@ export function planGate(input: PlanGateInput): Gate {
   }
   return { ...g, ready: blockers.length === 0, blockers };
 }
+
+// The merge base predictConflict measures from: the plan-branch head the
+// part's last rework merged, when the part's head holds it and the plan
+// branch's top is not known to be held (not held, or the bounded search ran
+// out), else the part's fork point.
+export function mergeBaseFor(topHeld: boolean | null, planHead: string | null | undefined, partBase: string, planHeadHeld: boolean | null): string {
+  return topHeld !== true && planHead && planHead !== partBase && planHeadHeld === true ? planHead : partBase;
+}
