@@ -837,10 +837,15 @@ export class Ledger extends DurableObject<Env> {
   // be sent back to a runner too: the holder is released and the task queued
   // in one step, keeping its workspace and commits for the next builder. The
   // caller revokes the holder's write token first (see checkDispatch), and
-  // passes its id as `token`.
+  // passes its id as `token`. A dispatch naming the merge-main job sends a
+  // task whose landing conflicted with main back to its builder (t243): the
+  // runner merges main at the dispatch's head into the workspace and leaves
+  // the conflicts for it to resolve, where a plain rework would reset the
+  // workspace to a head that cannot reach main.
   dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
     const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
+    this.assertMergeMainWorkspace(item, d);
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -848,8 +853,18 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note }, d.at);
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}) }, d.at);
     return this.item(id);
+  }
+
+  // A merge-main job merges main into the task's workspace, so a task with
+  // none — never claimed, or claimed without a fork — has nothing for its
+  // builder to resolve (t243). Checked wherever the dispatch is validated,
+  // before a holder's token is revoked for it.
+  private assertMergeMainWorkspace(item: Item, d: Dispatch): void {
+    if (d.job === "merge-main" && !item.fork) {
+      throw new RuleError("no_fork", `${item.id} has no workspace yet, so there is nothing for its builder to merge main into`, 409);
+    }
   }
 
   // What a dispatch checks alone, so the caller can revoke a holder's token
@@ -859,7 +874,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     this.assertNotPlanned(item);
     if (!this.holds(item)) assertDispatchable(item);
-    if (input) makeDispatch(input, actor, new Date().toISOString());
+    if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
     return item;
   }
 

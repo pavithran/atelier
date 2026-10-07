@@ -20,9 +20,10 @@ export interface Dispatch {
   // A job other than building the item: "plan" asks the runner to write the
   // plan item's plan document (docs/orchestrator.md, section 2), "integrate"
   // and "refresh" ask atelier/integrator to merge a part onto the plan's
-  // branch or main into it (section 5), and "merge-main" asks a part's
-  // builder to merge main into the part's workspace and resolve what
-  // conflicts. Absent for ordinary work.
+  // branch or main into it (section 5), and "merge-main" asks the builder of
+  // a part or a task to merge main into its workspace and resolve what
+  // conflicts. Absent for ordinary work. The owner writes none of these by
+  // hand but merge-main (t243): the plan's own jobs are the plan's.
   job?: "plan" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
@@ -71,7 +72,7 @@ export function parseRunner(header: string | null): { runner: string; kind: Runn
   return { runner: header.toLowerCase(), kind: kind.toLowerCase() as RunnerKind };
 }
 
-export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown }, by: string, at: string): Dispatch {
+export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown; job?: unknown; head?: unknown }, by: string, at: string): Dispatch {
   const to = String(input.to ?? "any");
   if (to !== "any" && !RUNNER_KINDS.includes(to as RunnerKind)) {
     throw new RuleError("bad_dispatch", `send to cloud, home or any, not "${to}"`, 400);
@@ -86,11 +87,26 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   const model = optional(input.model, "model");
   if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
   if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
+  // One job the owner may dispatch by hand: merge-main, a task's builder
+  // merging main at a named head into its workspace and resolving what
+  // conflicts (t243), as a conflicted plan's part does. The plan, integrate
+  // and refresh jobs are dispatched by the plan itself, never written here.
+  const job = input.job === undefined || input.job === null || input.job === "" ? null : String(input.job);
+  if (job !== null && job !== "merge-main") {
+    throw new RuleError("bad_dispatch", `"${job}" is not a job a dispatch names; only merge-main is dispatched by hand (atelier dispatch ID --job merge-main), and the plan, integrate and refresh jobs are the plan's own`, 400);
+  }
+  const head = input.head === undefined || input.head === null || input.head === "" ? null : String(input.head);
+  if (job === "merge-main" && !/^[a-f0-9]{40,64}$/.test(head ?? "")) {
+    throw new RuleError("bad_head", "a merge-main dispatch names main's head to merge as the full commit hash git rev-parse prints", 400);
+  }
+  if (job === null && head !== null) {
+    throw new RuleError("bad_dispatch", `head names the main head a merge-main job merges; give it with --job merge-main, not alone`, 400);
+  }
   // The note is the owner's and is stored with the dispatch for every runner
   // to read, so one over its limit is refused, never cut.
   const note = String(input.note ?? "");
   assertLength(note, OWNER_TEXT_MAX, "the dispatch note");
-  return { to: to as Dispatch["to"], agent, model, by, at, note };
+  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head! } : {}) };
 }
 
 export function assertDispatchable(item: Item): void {

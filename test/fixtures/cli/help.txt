@@ -17,7 +17,7 @@ Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json
            plan reroute ID --to H/M · plan retry ID · plan refresh ID [--resolve [--to H/M]] · plan stop ID [--note TEXT]
            plan post ID FILE
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models remove ID
-           dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue
+           dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] · undispatch ID · queue
 Projects   projects rename OLD NEW · projects remove NAME [--force] · showcase set NAME [--named|--anonymous] · showcase remove NAME · init --name NAME --rename-local
            
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)

@@ -65,6 +65,25 @@ test("a dispatch note over its limit is refused, never cut", () => {
   assert.throws(() => makeDispatch({ note: "n".repeat(501) }, "pavi", T), /the dispatch note is 501 characters; the limit is 500\. Shorten it and send it again/);
 });
 
+// A merge-main dispatch (t243) sends a task whose landing conflicted with
+// main back to its builder, naming the main head its job merges.
+test("the owner may dispatch one job by hand: merge-main, naming main's head", () => {
+  const M = "5".repeat(40);
+  const d = makeDispatch({ job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" }, "pavi", T);
+  assert.deepEqual(d, { to: "any", agent: "opencode", model: "glm-5.3-flash", by: "pavi", at: T, note: "", job: "merge-main", head: M });
+  // A runner that offers the merge-main job takes it; one that does not never sees it.
+  const offers: RunnerOffer = { runner: "home:studio", kind: "home", agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], jobs: ["merge-main"] };
+  assert.equal(assign(d, offers)?.actor, "opencode/glm-5.3-flash");
+  assert.equal(assign(d, { ...offers, jobs: [] }), null);
+  assert.throws(() => makeDispatch({ job: "plan" }, "pavi", T), /only merge-main is dispatched by hand/);
+  assert.throws(() => makeDispatch({ job: "merge-main" }, "pavi", T), /names main's head to merge as the full commit hash/);
+  assert.throws(() => makeDispatch({ job: "merge-main", head: "not-a-hash" }, "pavi", T), /full commit hash/);
+  assert.throws(() => makeDispatch({ job: "merge-main", head: M.slice(1) }, "pavi", T), /full commit hash/);
+  assert.throws(() => makeDispatch({ head: M }, "pavi", T), /head names the main head a merge-main job merges/);
+  // An ordinary dispatch carries no job and no head, as before.
+  assert.deepEqual(makeDispatch({}, "pavi", T), { to: "any", agent: null, model: null, by: "pavi", at: T, note: "" });
+});
+
 test("a dispatch describes itself plainly", () => {
   assert.equal(describe(makeDispatch({ to: "home", agent: "opencode", model: "glm-5.3-flash" }, "pavi", T)), "a home runner, opencode with glm-5.3-flash");
   assert.equal(describe(makeDispatch({}, "pavi", T)), "any runner, its choice of agent");
