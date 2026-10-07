@@ -22,10 +22,11 @@ export function offerFrom(config, name) {
   // under "merge-main-task" (t243) — and a part sent back after its
   // integration conflicted (startMergePlan), under "merge-plan". With it the
   // runner takes exactly the jobs the config lists, so ["review"] keeps a
-  // runner for reviews alone (t252). A dispatch for a job the offer lacks is
-  // never offered to it, but the server hands a plain build to any runner
-  // with the agents for it, so the loop below passes such builds by when the
-  // offer does not name "build" (jobOf).
+  // runner for reviews alone (t252). The server never offers a dispatch for
+  // a job the offer lacks, a plain build included, but a server from before
+  // t252's fix hands a plain build to any runner with the agents for it, so
+  // the loop below passes such builds by when the offer does not name
+  // "build" (jobOf).
   return { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
 }
 
@@ -532,10 +533,11 @@ export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 // merge jobs a build carries (a task's merge-main under "merge-main-task",
 // a part returned after an integration conflict under "merge-plan"), or a
 // plain build. The loop takes an assignment only when its offer lists the
-// job: the server never offers a job the offer lacks (assign in
-// src/dispatch/rules.ts), but a plain build it offers to any runner with the
-// agents for it, so the runner itself passes builds by when its config keeps
-// it off them (t252), leaving them in the queue for a runner that takes them.
+// job: the server never offers a job the offer lacks, a plain build included
+// (assign in src/dispatch/rules.ts), but one from before t252's fix offers a
+// plain build to any runner with the agents for it, so the runner itself
+// passes builds by when its config keeps it off them, leaving them in the
+// queue for a runner that takes them.
 export function jobOf(task) {
   const d = task?.item?.dispatch ?? {};
   if (d.job === "merge-main" && d.task) return "merge-main-task";
@@ -1110,8 +1112,9 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         // Review jobs come first, in the queue's order, then the rest in
         // theirs, so a review atelier land waits on is not held behind builds
         // (t213). A job the offer does not name the runner never takes
-        // (jobOf), so one kept for reviews passes builds by and they stay in
-        // the queue for a runner that takes them (t252).
+        // (jobOf), so one kept for reviews passes by the builds a server from
+        // before t252's fix still lists, and they stay in the queue for a
+        // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
         for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {

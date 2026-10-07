@@ -86,6 +86,21 @@ test("the owner may dispatch one job by hand: merge-main, naming main's head", (
   assert.deepEqual(makeDispatch({}, "pavi", T), { to: "any", agent: null, model: null, by: "pavi", at: T, note: "" });
 });
 
+// t252: a plain build is a job the offer names like any other, so a runner
+// kept for reviews alone is never handed one, while an older runner's offer,
+// which names no job at all (the server keeps an empty list for the ask),
+// still takes builds as it always did.
+test("a plain build goes only to an offer naming the build job, and an older runner's offer, which names none, takes it", () => {
+  const d = makeDispatch({ to: "home", agent: "opencode", model: "glm-5.3-flash" }, "pavi", T);
+  const offer = (jobs?: string[]) => ({ runner: "home:x", kind: "home" as const, agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], ...(jobs ? { jobs } : {}) });
+  const takes = { agent: "opencode", model: "glm-5.3-flash", actor: "opencode/glm-5.3-flash" };
+  assert.equal(assign(d, offer(["review"])), null);
+  assert.equal(assign(d, offer(["plan", "merge-main", "merge-main-task", "merge-plan", "review"])), null);
+  assert.deepEqual(assign(d, offer(["build"])), takes);
+  assert.deepEqual(assign(d, offer()), takes, "an older runner's offer, with no jobs at all");
+  assert.deepEqual(assign(d, offer([])), takes, "the empty list the server keeps for such an ask");
+});
+
 test("a dispatch describes itself plainly", () => {
   assert.equal(describe(makeDispatch({ to: "home", agent: "opencode", model: "glm-5.3-flash" }, "pavi", T)), "a home runner, opencode with glm-5.3-flash");
   assert.equal(describe(makeDispatch({}, "pavi", T)), "any runner, its choice of agent");
