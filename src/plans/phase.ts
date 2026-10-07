@@ -6,6 +6,7 @@
 // tick at the end of each route) is step 5, a later task.
 
 import type { LedgerEvent } from "../ledger.ts";
+import { modelKey } from "../rules.ts";
 import type { PartRoute } from "./route.ts";
 import type { Plan } from "./schema.ts";
 
@@ -65,6 +66,10 @@ export interface TickInput {
   maxParallel?: number;             // how many parts may be live at once; default 2
   deadline?: string | null;         // an ISO timestamp; the plan blocks once now is past it
   budget?: Budget | null;           // the spend budget; the plan blocks once used reaches cap
+  reviewers?: ReadonlyMap<string, readonly string[]>;  // by part key, the actors that reviewed it (partReviewers)
+  // Part keys that go first: while one of them is not integrated, merged or
+  // abandoned, no other part is dispatched (parts already live go on).
+  holds?: readonly string[];
   now: string;                      // an ISO timestamp; the tick's moment
 }
 
@@ -150,14 +155,19 @@ function histories(events: readonly LedgerEvent[]): Map<string, PartHistory> {
         h.waiting = false;
         break;
       }
-      // An integration that failed or conflicted sent the part back to its
-      // builder, as a review rejection does; the builder's finished attempt
-      // becomes a failed one, so the next dispatch retries the builder once
-      // with the failing output, then moves to an alternate, then blocks.
+      // An integration that failed sent the part back to its builder. A
+      // merge conflict or failing checks are the builder's, as a review
+      // rejection is: the builder's finished attempt becomes a failed one, so
+      // the next dispatch retries the builder once with the failing output,
+      // then moves to an alternate, then blocks. A failure of any other kind,
+      // or one that names none, charges the builder nothing: its finished
+      // attempt is taken back, so the part returns to it as if never submitted.
       case "integration.failed": {
         const builder = typeof event.data.builder === "string" ? event.data.builder : holder.get(key);
         const last = h.attempts.at(-1);
-        if (last && last.outcome === "finished" && last.actor === builder) last.outcome = "failed";
+        const finished = last && last.outcome === "finished" && last.actor === builder;
+        if (!chargesBuilder(event.data.kind)) { if (finished) h.attempts.pop(); }
+        else if (finished) last.outcome = "failed";
         else if (builder) h.attempts.push({ actor: builder, outcome: "failed" });
         holder.set(key, null);
         committed.set(key, false);
@@ -187,6 +197,53 @@ function histories(events: readonly LedgerEvent[]): Map<string, PartHistory> {
   return byPart;
 }
 
+// The kinds of integration failure that are the part's own: its merge
+// conflicted with the plan's branch, or the plan's checks failed with it
+// merged. Only these charge its builder an attempt.
+export const BUILDER_INTEGRATION_FAILURES = ["conflict", "checks"] as const;
+export type IntegrationFailureKind = (typeof BUILDER_INTEGRATION_FAILURES)[number];
+export const chargesBuilder = (kind: unknown): kind is IntegrationFailureKind => (BUILDER_INTEGRATION_FAILURES as readonly unknown[]).includes(kind);
+
+// The actors that recorded a review of each part, approving or rejecting,
+// from the event log. Rework never goes to one of them (nextActor).
+export function partReviewers(events: readonly LedgerEvent[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const e of events) {
+    if (e.itemId === null || (e.kind !== "review.approved" && e.kind !== "review.rejected")) continue;
+    const seen = out.get(e.itemId) ?? [];
+    if (!seen.includes(e.actor)) seen.push(e.actor);
+    out.set(e.itemId, seen);
+  }
+  return out;
+}
+
+// A part's latest integration failure: why, of which kind (null when the
+// event names none) and when.
+export interface IntegrationFailure { reason: string; kind: string | null; at: string }
+
+export function integrationFailures(events: readonly LedgerEvent[]): Map<string, IntegrationFailure> {
+  const out = new Map<string, IntegrationFailure>();
+  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (e.itemId === null || e.kind !== "integration.failed") continue;
+    out.set(e.itemId, { reason: typeof e.data.reason === "string" ? e.data.reason : "", kind: typeof e.data.kind === "string" ? e.data.kind : null, at: e.at });
+  }
+  return out;
+}
+
+// The parts whose latest integration failure since their last finished
+// attempt was a merge conflict with the plan's branch: their rework starts
+// by merging the plan's branch into the workspace. A later submission,
+// acceptance or merge, or a failure of another kind, ends it.
+export function conflictedParts(events: readonly LedgerEvent[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (e.itemId === null) continue;
+    if (e.kind === "integration.failed" && e.data.kind === "conflict") out.add(e.itemId);
+    else if (e.kind === "integration.failed" || e.kind === "item.submitted" || e.kind === "item.accepted" || e.kind === "item.merged") out.delete(e.itemId);
+  }
+  return out;
+}
+
 // How many times each part has been attempted and by whom, from the event log.
 export function partAttempts(events: readonly LedgerEvent[]): Map<string, Attempt[]> {
   return new Map([...histories(events)].map(([key, h]) => [key, h.attempts]));
@@ -195,14 +252,21 @@ export function partAttempts(events: readonly LedgerEvent[]): Map<string, Attemp
 // The actor to dispatch a part to next, or why it is stuck. Frozen routing
 // keeps the attempt order aligned with [builder, ...alternates], so the walk
 // just counts: each actor gets two attempts (two give-ups, or one failed
-// finish retried once) before the tick moves to the next alternate.
-function nextActor(key: string, route: PartRoute, attempts: readonly Attempt[]): { to: string; reason: string } | { blocked: string } {
+// finish retried once) before the tick moves to the next alternate. A model
+// that reviewed the part (by modelKey, whatever its harness) is left out of
+// that order, so a reviewer never becomes a contributor to what it judged.
+function nextActor(key: string, route: PartRoute, attempts: readonly Attempt[], reviewers: readonly string[] = []): { to: string; reason: string } | { blocked: string } {
   if (route.builder === null) return { blocked: `part ${key} is unrouted: ${route.unrouted}` };
-  const actors = [route.builder.actor, ...route.alternates.map((a) => a.actor)];
+  const reviewed = new Set(reviewers.map(modelKey));
+  const routed = [route.builder.actor, ...route.alternates.map((a) => a.actor)];
+  const actors = routed.filter((actor) => !reviewed.has(modelKey(actor)));
   if (attempts.length >= 3) return { blocked: `part ${key} has reached 3 attempts` };
   const index = Math.floor(attempts.length / 2);
   const used = attempts.length % 2;
-  if (index >= actors.length) return { blocked: `part ${key} has no alternates left` };
+  if (index >= actors.length) {
+    const left = routed.filter((actor) => !actors.includes(actor));
+    return { blocked: `part ${key} has no alternates left${left.length ? ` (${left.join(", ")} reviewed it)` : ""}` };
+  }
   const actor = actors[index];
   const last = attempts[attempts.length - 1];
   if (!last) return { to: actor, reason: "the routed builder" };
@@ -243,7 +307,7 @@ export function planActions(input: TickInput): TickResult {
     if (state !== "open") continue; // claimed, submitted and accepted parts are not re-dispatched here
     const route = routes.get(part.key);
     if (!route) continue; // routeParts returns one entry per part; this is defensive
-    const decision = nextActor(part.key, route, history.get(part.key)?.attempts ?? []);
+    const decision = nextActor(part.key, route, history.get(part.key)?.attempts ?? [], input.reviewers?.get(part.key));
     if ("blocked" in decision) return { blocked: decision.blocked, dispatch: [] };
   }
 
@@ -258,15 +322,17 @@ export function planActions(input: TickInput): TickResult {
     return state === "open" && (history.get(p.key)?.waiting ?? false);
   }).length;
 
+  const holding = new Set((input.holds ?? []).filter((key) => states.has(key) && !settled(states.get(key))));
   const dispatch: DispatchAction[] = [];
   for (const part of input.plan.parts) {
     if (live >= maxParallel) break;
+    if (holding.size && !holding.has(part.key)) continue; // a part that goes first is not settled
     if (states.get(part.key) !== "open") continue;
     if (history.get(part.key)?.waiting) continue; // already dispatched and waiting
     if (!part.dependsOn.every((dep) => settled(states.get(dep)))) continue; // dependencies not landed
     const route = routes.get(part.key);
     if (!route) continue;
-    const decision = nextActor(part.key, route, history.get(part.key)?.attempts ?? []);
+    const decision = nextActor(part.key, route, history.get(part.key)?.attempts ?? [], input.reviewers?.get(part.key));
     if ("blocked" in decision) continue; // the blocker pass already caught this
     dispatch.push({ part: part.key, to: decision.to, reason: decision.reason });
     live++;

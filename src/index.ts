@@ -3,13 +3,13 @@ import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions,
 import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -25,8 +25,9 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
-import { baseRepoOf, rollbackFor, verifyIntegration, type LogCommit } from "./plans/integrate.ts";
+import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
@@ -162,7 +163,10 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   const imported = await importedAll(env, shown.map((s) => s.project), cutoffs);
   const stories = shown.map((s) => s.story);
   const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), shown.length < entries.length, imported, shown));
-  res.headers.set("cache-control", "public, max-age=60");
+  // The zone and browsers may hold the page for a minute at most, so a
+  // project removed from the showcase disappears within a minute.
+  res.headers.set("cache-control", "public, max-age=60, s-maxage=60");
+  res.headers.set("cdn-cache-control", "max-age=60");
   // A copy the cache refuses is not an error: the page is still served.
   await caches.default.put(key, res.clone()).catch(() => undefined);
   return res;
@@ -413,9 +417,10 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
 // head holds nothing of the recorded one. The search stops at a budget of
 // commits and of reads, and then answers null: it has shown neither that
 // the target is held nor that it is not, and recordPush (ledger.ts) refuses
-// such a push unless it declares a rebase.
+// such a push unless it declares a rebase. A caller may pass a smaller
+// budget of commits and reads.
 const HISTORY_COMMITS = 10_000, HISTORY_READS = 100, HISTORY_PAGE = 1000;
-async function holdsCommit(env: Env, repo: string, from: string, target: string): Promise<{ holds: boolean | null; searched: number }> {
+async function holdsCommit(env: Env, repo: string, from: string, target: string, budget = { commits: HISTORY_COMMITS, reads: HISTORY_READS }): Promise<{ holds: boolean | null; searched: number }> {
   if (from === target) return { holds: true, searched: 0 };
   using r = await env.ARTIFACTS.get(repo);
   const seen = new Set<string>();
@@ -424,9 +429,9 @@ async function holdsCommit(env: Env, repo: string, from: string, target: string)
   while (starts.length) {
     const start = starts.shift()!;
     if (seen.has(start)) continue;
-    if (reads >= HISTORY_READS || seen.size >= HISTORY_COMMITS) return { holds: null, searched: seen.size };
+    if (reads >= budget.reads || seen.size >= budget.commits) return { holds: null, searched: seen.size };
     reads++;
-    const page = await r.log({ ref: start, limit: HISTORY_PAGE });
+    const page = await r.log({ ref: start, limit: Math.min(HISTORY_PAGE, budget.commits) });
     const branches: string[] = [];
     let next: string | undefined;
     for (const c of page) {
@@ -453,6 +458,40 @@ async function pushLineage(env: Env, fork: string, observed: string, recorded: s
   const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, fork, observed, recorded);
   const rebasedFrom = typeof declared === "string" && /^[a-f0-9]{40,64}$/.test(declared) ? declared : null;
   return { holdsRecorded: holds, searched, rebasedFrom };
+}
+
+// The commits a push brought, each with the actor its final "Agent:
+// harness/model" line names (agentLine), for the Ledger to record those by
+// another actor than the holder (recordPush). It reads the fork's
+// first-parent line from the new head back to the head recorded before it,
+// or to the item's base, and stops at any commit on the first-parent line of
+// the repository the item is measured against, so commits a merge or a
+// rebase brought from main are never taken for the task's. At most
+// PUSH_AUTHORS_MAX commits are read; a commit naming no actor is skipped.
+const PUSH_AUTHORS_MAX = 200;
+async function pushedAuthors(env: Env, fork: string, observed: string, item: { head: string | null; base: string | null }, againstRepo: string): Promise<PushAuthor[]> {
+  if (observed === item.head) return [];
+  using r = await env.ARTIFACTS.get(fork);
+  using against = await env.ARTIFACTS.get(againstRepo);
+  const stop = new Set((await against.log({ limit: HISTORY_PAGE })).map((c) => c.hash));
+  for (const h of [item.head, item.base]) if (h) stop.add(h);
+  const authors: PushAuthor[] = [];
+  let next: string | undefined = observed, read = 0;
+  while (next && !stop.has(next) && read < PUSH_AUTHORS_MAX) {
+    const commits: ArtifactsCommitMetadata[] = await r.log({ ref: next, limit: 50 });
+    const page: Map<string, ArtifactsCommitMetadata> = new Map(commits.map((c) => [c.hash, c] as const));
+    let c: ArtifactsCommitMetadata | undefined = page.get(next);
+    if (!c) break;
+    // Follow first parents through the page; a parent the page does not hold starts the next read.
+    while (c && !stop.has(c.hash) && read < PUSH_AUTHORS_MAX) {
+      read++;
+      const actor = agentLine(c.message ?? "");
+      if (actor) authors.push({ commit: c.hash, actor });
+      next = c.parents?.[0];
+      c = next ? page.get(next) : undefined;
+    }
+  }
+  return authors;
 }
 
 // The branch Atelier reads in a project's baseline and in every fork of it:
@@ -487,6 +526,18 @@ function approvalArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's review bar, as every review brief states it: one paragraph,
+// its controls and runs of white space each read as one space. Null or ""
+// clears it, and the briefs state the default bar again.
+function reviewBarArg(value: unknown): string | null {
+  if (value !== null && typeof value !== "string") {
+    throw new RuleError("bad_review_bar", "the review bar is text saying what may block a review, or \"\" to clear it", 400);
+  }
+  const text = (value ?? "").replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim();
+  assertLength(text, REVIEW_BAR_MAX, "the review bar");
+  return text || null;
+}
+
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
@@ -505,23 +556,41 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
   return baseRepoOf(item, baselineRepo, planFork);
 }
 
+// Main's head as the baseline holds it now, for the Ledger, which cannot read
+// Artifacts; null when the baseline cannot be read, so a view still renders.
+async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<string | null> {
+  try { return await headOf(env, (await L.project()).repo); } catch { return null; }
+}
+
 // A predicted conflict between a part and its plan's branch, before the
 // integrator is sent to merge it (docs/orchestrator.md, section 5). Null when
 // no conflict is predicted or the branch cannot be read, so a failure to read
 // only costs a runner trip, never a blocked integration.
+// The merge base is the newest plan-branch commit the part's head holds: a
+// part head that holds the branch's head merges cleanly; otherwise the base
+// is the plan head the part's last rework merged (`planHead`), when the part
+// head holds it, else the commit the part forked from. The history search is
+// bounded by PREDICT_BUDGET, and a search that stops at it falls back to the
+// fork point.
+const PREDICT_BUDGET = { commits: 500, reads: 5 };
 async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; fork: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
   const key = plan.dispatch?.part, head = plan.dispatch?.head;
   if (!key || !plan.fork || !head) return null;
-  const { part } = await L.integrationTarget(plan.id, key);
+  const { part, planHead } = await L.integrationTarget(plan.id, key);
   if (!part.fork || !part.head || !part.base) return null;
+  const partFork = part.fork, partHead = part.head;
   try {
     using planRepo = await env.ARTIFACTS.get(plan.fork);
-    using partRepo = await env.ARTIFACTS.get(part.fork);
-    const [planTop, baseCommit, partCommit] = await Promise.all([
-      planRepo.log({ limit: 1 }), planRepo.readCommit(part.base), partRepo.readCommit(part.head),
-    ]);
-    if (!planTop[0] || !baseCommit || !partCommit) return null;
-    const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop[0].treeHash, partCommit.treeHash);
+    using partRepo = await env.ARTIFACTS.get(partFork);
+    const [planTop] = await planRepo.log({ limit: 1 });
+    if (!planTop) return null;
+    const holds = (target: string) => holdsCommit(env, partFork, partHead, target, PREDICT_BUDGET);
+    const top = await holds(planTop.hash);
+    if (top.holds === true) return null;
+    const base = mergeBaseFor(top.holds, planHead, part.base, planHead && planHead !== part.base ? (await holds(planHead)).holds : null);
+    const [baseCommit, partCommit] = await Promise.all([planRepo.readCommit(base), partRepo.readCommit(partHead)]);
+    if (!baseCommit || !partCommit) return null;
+    const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop.treeHash, partCommit.treeHash);
     return m.clean ? null : m.conflicts.map((c) => `${c.path}: ${c.reason}`).join("; ");
   } catch {
     return null;
@@ -681,6 +750,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // what it can run and gets back the tasks it may claim, with the name to claim under.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
+    // Each ask records what the runner can run (putRunnerOffer), so the
+    // server can say when a dispatch names a model or a job no live runner
+    // offers, instead of letting it wait as though merely unclaimed, and plan
+    // routing picks from the models live runners offer (src/plans/route.ts).
+    if (offer) await index(env).putRunnerOffer(offer, new Date().toISOString());
     const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
@@ -702,6 +776,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
     return res;
+  }
+  // What each runner last said it can run, as the server recorded it when the
+  // runner asked the queue for work, newest ask per runner. The owner's
+  // surfaces read it to say when a dispatch no live runner offers can never
+  // be claimed (unoffered in src/dispatch/rules.ts): atelier land while it
+  // waits for a verdict, plan show for a routed review, status for the queue
+  // and its Runners section. Plan routing reads the same offers on the index
+  // (t246), picking builders and reviewers only from what live runners offer.
+  if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await index(env).runnerOffers());
   }
   if (parts[0] !== "projects") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 1 && m === "GET") return json((await index(env).projects()).filter((p) => inScope(c.token, namesOf(p))));
@@ -747,6 +832,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           : typeof body.regenerate === "string" && body.regenerate.trim() ? body.regenerate
             : (() => { throw new RuleError("bad_regenerate", "regenerate must be the command that regenerates the project's fixtures, or \"\" to clear it", 400); })(),
       } : {}),
+      // What may block a review, stated in every review brief: text, or
+      // null or "" to clear it and state the default bar.
+      ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
@@ -828,12 +916,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
   // One landing at a time per project (atelier land, t187): GET reads who
   // holds the lease; POST takes it for one task, refusing while another live
-  // task's landing holds it, and { cancel: true } releases it.
+  // task's landing holds it and naming a lapsed lease it took over,
+  // { item, renew: true } is the holder's heartbeat, and { cancel: true, item }
+  // releases that task's lease, answering which task held it since when, and
+  // leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
     if (m === "GET") return json({ lease: await L.readProjectLanding() });
     requireOwner(env, actor);
-    if (body.cancel === true) return json(await L.cancelProjectLanding(actor));
-    return json({ item: await L.beginProjectLanding(String(body.item ?? ""), actor) });
+    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
+    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
+    return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -898,7 +990,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
-  if (verb === "plan" && parts.length === 5 && m === "GET") return json(await L.planView(id, await index(env).models()));
+  // The runner offers come with it, so an open review request is judged
+  // against what live runners offer rather than read as merely unclaimed.
+  if (verb === "plan" && parts.length === 5 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await L.planView(id, await index(env).models(), await mainHeadOf(env, L), await index(env).runnerOffers()));
+  }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
@@ -910,7 +1007,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
-          await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict);
+          await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict, "conflict");
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
         }
       }
@@ -986,7 +1083,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      return json(await L.recordPush(id, actor, observed, reported, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
+      const lineage = await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom);
+      // A rewrite the push does not declare is refused by the Ledger, so no
+      // more history is read for it.
+      const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
+      const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
+      return json(await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors));
     }
     case "evidence": {
       const item = await L.item(id);
@@ -1083,8 +1185,24 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
       return json({ runId, state }, 202);
     }
-    case "dispatch":
-      return json(await L.dispatch(id, actor, body));
+    case "dispatch": {
+      // A merge-main dispatch names the main head its job merges. The owner
+      // names none after a landing conflicted, so the head is main's as the
+      // baseline holds it now (read as plan refresh reads it, t243): a newer
+      // head than the one the landing saw meets the same conflict, and an
+      // unreadable baseline is refused rather than guessed at.
+      if (body.job === "merge-main" && !body.head) {
+        const main = await mainHeadOf(env, L);
+        if (!main) throw new RuleError("bad_head", "main's head could not be read from the baseline to name the merge-main job's head; try again, or name it: atelier dispatch ID --job merge-main --head FULL_HASH", 503);
+        body.head = main;
+      }
+      // A held task is released as it is queued, so its holder's write token
+      // is revoked first, as for a release.
+      const oldToken = await L.tokenId(id);
+      const before = await L.checkDispatch(id, actor, body);
+      if (before.owner) await revoke(env, before.fork, oldToken);
+      return json(await L.dispatch(id, actor, body, oldToken));
+    }
     case "undispatch":
       return json(await L.undispatch(id, actor));
     // The owner's framing of a task: agentRoute gives an agent token no edit
@@ -1112,10 +1230,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-claim": {
       const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
       // The review job clones the part read-only, so the claim also carries a
-      // read token for the fork, as the read-token route mints one.
+      // read token for the fork, as the read-token route mints one. It also
+      // carries a read token for the branch the item merges into (the plan's
+      // integration branch for a part, the baseline's for any other item, as
+      // base-token chooses), so the job can diff from the merge base of the
+      // head and that branch rather than from the fork point, which a merge
+      // of main into the task leaves behind (t230).
       if (claim.item.fork) {
-        const t = await mint(env, claim.item.fork, "read", await projectBranch(env, await L.project()));
-        return json({ ...claim, readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch } });
+        const p = await L.project();
+        const branch = await projectBranch(env, p);
+        const t = await mint(env, claim.item.fork, "read", branch);
+        const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
+        return json({
+          ...claim,
+          readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
+          target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
+        });
       }
       return json(claim);
     }
@@ -1125,11 +1255,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or
-    // letting the pool pick one, and the landing waits for the verdict.
+    // letting the pool pick one, and the landing waits for the verdict. With
+    // `wanted` and a reviewer the request is made even where the gate needs
+    // none, since a reviewer the owner names is a review the owner asks for.
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models()));
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).
@@ -1148,21 +1280,71 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // branch's first-parent line and its parents include the part's head.
       const partKey = String(body.part ?? "");
       const mergeCommit = String(body.mergeCommit ?? "");
-      const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
+      const { plan, part, integrationHead, mainHead } = await L.integrationTarget(id, partKey);
       if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409);
       if (!part.head) throw new RuleError("no_head", `part ${partKey} has no verified head`, 409);
       using repo = await env.ARTIFACTS.get(plan.fork);
       const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
       const reasons = verifyIntegration({ log, integrationHead: integrationHead ?? plan.base ?? "", partHead: part.head, mergeCommit });
       if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409);
-      return json(await L.integratePart(id, actor, partKey, mergeCommit, true));
+      // A merge-main part's integration puts its main head on the plan's
+      // branch when the merge commit holds it, which is read from the branch.
+      const holdsMain = mainHead ? (await holdsCommit(env, plan.fork, mergeCommit, mainHead)).holds === true : false;
+      // The integration may let the tick dispatch a part that depends on it,
+      // and the tick refreshes the branch first when main has moved, so main's
+      // head is read now for it to compare.
+      const main = await mainHeadOf(env, L);
+      if (main) await L.noteMainHead(main);
+      return json(await L.integratePart(id, actor, partKey, mergeCommit, true, holdsMain));
+    }
+    case "refreshed": {
+      // The integrator reports a refresh: main's head merged into the plan's
+      // branch, verified against the branch's log as an integration is
+      // (verifyRefresh), or, with no merge commit, found already held there.
+      const mainHead = String(body.mainHead ?? "");
+      const mergeCommit = body.mergeCommit === undefined || body.mergeCommit === null ? null : String(body.mergeCommit);
+      const { plan, integrationHead } = await L.refreshTarget(id);
+      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409);
+      if (mergeCommit) {
+        using repo = await env.ARTIFACTS.get(plan.fork);
+        const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
+        const reasons = verifyRefresh({ log, integrationHead: integrationHead ?? plan.base ?? "", mainHead, mergeCommit });
+        if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409);
+      } else {
+        const top = await headOf(env, plan.fork);
+        const held = top && /^[a-f0-9]{40,64}$/.test(mainHead) ? (await holdsCommit(env, plan.fork, top, mainHead)).holds : false;
+        if (held !== true) throw new RuleError("unverified_merge", `the plan's branch does not hold main's head ${mainHead.slice(0, 8)}, and no merge commit was reported`, 409);
+      }
+      return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
+    }
+    case "refresh-failed": {
+      // The integrator reports a refresh that conflicted or failed the plan's
+      // checks. The Worker checks the branch was restored to its integration
+      // head first, as for a failed integration. No part is charged.
+      const mainHead = String(body.mainHead ?? "");
+      if (body.kind !== undefined && !chargesBuilder(body.kind)) {
+        throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
+      }
+      const { plan, integrationHead } = await L.refreshTarget(id);
+      if (plan.fork && /^[a-f0-9]{40,64}$/.test(mainHead)) {
+        using repo = await env.ARTIFACTS.get(plan.fork);
+        const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
+        const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", mainHead);
+        if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
+      }
+      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null));
     }
     case "integration-failed": {
       // The integrator reports a failed merge. The Worker checks the branch was
       // restored to its integration head before the part is sent back, so a
-      // failure never leaves another part's commits discarded.
+      // failure never leaves another part's commits discarded. `kind` names a
+      // failure that is the part's own, a merge conflict or failing checks,
+      // which charges its builder an attempt; a report without it charges none.
       const partKey = String(body.part ?? "");
       const reason = String(body.reason ?? "");
+      if (body.kind !== undefined && !chargesBuilder(body.kind)) {
+        throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
+      }
       const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
       if (plan.fork && part.head) {
         using repo = await env.ARTIFACTS.get(plan.fork);
@@ -1170,7 +1352,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", part.head);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
       }
-      return json(await L.integrationFailed(id, actor, partKey, reason));
+      return json(await L.integrationFailed(id, actor, partKey, reason, body.kind ?? null));
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.
@@ -1208,8 +1390,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // overrideReview, when sent, is the reason for the owner's override of
       // a missing independent review. Anything but text arrives as a blank
       // reason, which the Ledger refuses.
+      // note, when sent, is the owner's own word on the acceptance, kept
+      // with it in the ledger (land.sh records the session's note there).
       return json(await L.accept(id, actor, String(body.head ?? ""),
-        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : ""));
+        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "",
+        typeof body.note === "string" ? body.note : undefined));
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
@@ -1246,11 +1431,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "abandon": {
       requireOwner(env, actor);
       const note = String(body.note ?? "");
+      if (body.deliveredBy !== undefined && (typeof body.deliveredBy !== "string" || !/^t\d+$/.test(body.deliveredBy))) throw new RuleError("bad_delivered_by", "deliveredBy must be a task id such as t5", 400);
+      const deliveredBy = body.deliveredBy as string | undefined;
       const oldToken = await L.tokenId(id);
-      await L.checkAbandon(id, actor, note);
+      await L.checkAbandon(id, actor, note, deliveredBy);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.abandon(id, actor, note, oldToken);
+      const item = await L.abandon(id, actor, note, oldToken, deliveredBy);
       return json(item);
     }
     case "defect": {
@@ -1300,6 +1487,25 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
     case "retry":
       await L.retryPlan(id, actor);
       return json(await L.planView(id));
+    case "refresh": {
+      // The owner asks the integrator to merge main's head into the plan's
+      // branch (docs/orchestrator.md, section 5), or, with `resolve`, adds
+      // the merge-main part for it, built by `to` when named. Main's head is
+      // read from the baseline, and whether the branch already holds it from
+      // the plan's fork.
+      if (body.resolve !== undefined && typeof body.resolve !== "boolean") throw new RuleError("bad_resolve", "resolve must be true or false", 400);
+      if (body.to !== undefined && body.resolve !== true) throw new RuleError("bad_to", "to names the builder of the part plan refresh --resolve adds; give it with resolve", 400);
+      const p = await L.project();
+      const main = await headOf(env, p.repo);
+      if (!main) throw new RuleError("empty", "the baseline has no commits", 409);
+      await L.noteMainHead(main);
+      const plan = await L.item(id);
+      const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
+      const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
+      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to);
+      else await L.planRefresh(id, actor, main, holds);
+      return json(await L.planView(id, null, main));
+    }
     case "stop": {
       const targets = await L.stopTargets(id, actor);
       for (const t of targets) await revoke(env, t.fork, t.tokenId);
@@ -1312,6 +1518,17 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
 const MODEL_EVENTS = 1000;
+
+// Every event of a project, read a page at a time, newest page first.
+async function allEvents(L: { events(id?: string, limit?: number, before?: number): Promise<unknown> }): Promise<LedgerEvent[]> {
+  const out: LedgerEvent[] = [];
+  for (let before: number | undefined; ;) {
+    const page = (await L.events(undefined, MODEL_EVENTS, before)) as unknown as LedgerEvent[];
+    out.push(...page);
+    if (page.length < MODEL_EVENTS) return out;
+    before = page[page.length - 1].seq;
+  }
+}
 
 // The Models page, and its two forms: add (or replace) an entry, and remove one.
 async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
@@ -1344,7 +1561,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
 }
 
-// Each model's record is read from every project's most recent events, and
+// Each model's record is read from every event of every project, and
 // its reliability from those and the runners' reports. The pages and the
 // API say how many events, and which projects could not be read.
 async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; events: number; unread: ProjectRecord[] }> {
@@ -1352,10 +1569,10 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
-    try { return { project: p.name, events: (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[] }; }
+    try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
-  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: MODEL_EVENTS, unread };
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -1544,15 +1761,16 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // one the token was made for, even if a claim made both after `before`
     // was read. With `before.fork` that token would go unrevoked, and the
     // change would then take it off the record while it still works.
-    const moving = verb === "abandon" || verb === "release" || verb === "handoff";
+    const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
     if (moving) {
-      if (verb === "abandon") await L.checkAbandon(id, owner, note);
+      if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+      else if (verb === "abandon") await L.checkAbandon(id, owner, note);
       else if (verb === "release") await L.checkRelease(id, owner, note);
       else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
       const { fork } = await L.item(id);
       await revoke(env, fork, oldToken);
     }
-    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
     else if (verb === "undispatch") await L.undispatch(id, owner);
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
@@ -1819,7 +2037,8 @@ export default {
               // progress (observePush); the compare-and-set retry is for a
               // head that should have moved and did not.
               const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded);
+              const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
+              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors);
               if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
             }
             break;

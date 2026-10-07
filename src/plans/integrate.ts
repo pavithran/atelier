@@ -17,7 +17,7 @@
 // what was recorded.
 
 import {
-  contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval,
+  contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval, unprovedBlocker, unprovedReview,
   type Evidence, type Gate, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "../rules.ts";
 
@@ -96,6 +96,8 @@ function reviewBlockers(part: Part, head: string, reviews: Review[], policy: Pro
   const contributors = contributorsOf(part);
   const approved = counting.some((r) => independentApproval(r, "protected", contributors, owner));
   const blockers = approved ? [] : [`${named(part)} has no approval from another model family at ${short(head)}`];
+  // An owner-recorded approval no claimed request backs is named, as gate() names it.
+  if (!approved) for (const r of counting) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, "protected", contributors, owner)) blockers.push(`${named(part)}: ${unprovedBlocker(r)}`);
   for (const r of counting) if (!r.approve) blockers.push(`${named(part)} was rejected at ${short(head)} by ${r.by}: ${r.note || "no note"}`);
   return blockers;
 }
@@ -168,6 +170,35 @@ export function verifyIntegration(claim: IntegrationClaim): string[] {
   }
   if (count !== 2) reasons.push(`${merge} has ${count} parent${count === 1 ? "" : "s"}; an integration merges one part, so it has two`);
   if (partHead === integrationHead) reasons.push("the part's head is the plan's integration head; there is nothing to merge");
+  return reasons;
+}
+
+export interface RefreshClaim {
+  log: readonly LogCommit[];  // the plan branch's log, newest first; log[0] is its head
+  integrationHead: string;    // the plan branch's integration head before this refresh
+  mainHead: string;           // the main head the refresh was dispatched to merge
+  mergeCommit: string;        // the commit the integrator reports
+}
+
+// Whether a refresh the integrator reports holds, as verifyIntegration asks
+// of an integration: the merge commit is on the plan branch's first-parent
+// line, its first parent is the integration head and its second is the main
+// head the refresh was dispatched for, and it has exactly those two parents.
+// Recorded, it becomes the integration head that later parts fork from and
+// later integrations sit on. Returns the reasons it fails; empty when it holds.
+export function verifyRefresh(claim: RefreshClaim): string[] {
+  const { log, integrationHead, mainHead, mergeCommit } = claim;
+  if (!HASH.test(mergeCommit)) return ["the merge commit is not a full commit hash"];
+  const commit = log.find((c) => c.hash === mergeCommit);
+  if (!commit) return [`${short(mergeCommit)} is not in the plan branch's log`];
+  const reasons: string[] = [];
+  const merge = short(mergeCommit), count = commit.parents.length;
+  if (!firstParentLine(log).has(mergeCommit)) reasons.push(`${merge} is not on the plan branch's first-parent line`);
+  if (commit.parents[0] !== integrationHead) {
+    reasons.push(`${merge}'s first parent is ${count ? short(commit.parents[0]) : "missing"}, not the plan's integration head ${short(integrationHead)}`);
+  }
+  if (commit.parents[1] !== mainHead) reasons.push(`${merge}'s second parent is ${count > 1 ? short(commit.parents[1]) : "missing"}, not main's head ${short(mainHead)}, which the refresh was dispatched to merge`);
+  if (count !== 2) reasons.push(`${merge} has ${count} parent${count === 1 ? "" : "s"}; a refresh merges main's head alone, so it has two`);
   return reasons;
 }
 
@@ -269,4 +300,12 @@ export function planGate(input: PlanGateInput): Gate {
     blockers.push(`the plan's head ${short(plan.head)} is not its integration head ${integrationHead ? short(integrationHead) : "(none recorded)"}; the branch has commits no integration recorded`);
   }
   return { ...g, ready: blockers.length === 0, blockers };
+}
+
+// The merge base predictConflict measures from: the plan-branch head the
+// part's last rework merged, when the part's head holds it and the plan
+// branch's top is not known to be held (not held, or the bounded search ran
+// out), else the part's fork point.
+export function mergeBaseFor(topHeld: boolean | null, planHead: string | null | undefined, partBase: string, planHeadHeld: boolean | null): string {
+  return topHeld !== true && planHead && planHead !== partBase && planHeadHeld === true ? planHead : partBase;
 }

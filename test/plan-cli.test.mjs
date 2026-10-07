@@ -48,6 +48,11 @@ async function fixture(t) {
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/approve") data = approvedView;
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/revise") data = { ...proposedView, proposal: { ...proposedView.proposal, answered: false } };
     else if (req.method === "POST" && /^\/api\/projects\/proj\/items\/t2\/plan\/(reroute|retry)$/.test(p)) data = approvedView;
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t3/plan/reroute") data = { ...approvedView, parts: [{ ...partView, id: "t3", state: "submitted", dispatch: null }] };
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t4/plan/reroute") data = { ...approvedView, parts: [{ ...partView, id: "t4", state: "blocked", dispatch: null, blocked: { reason: "the owner holds it", by: "owner" } }] };
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/refresh" && body?.resolve === true) data = { ...approvedView, item, refresh: { taken: "0".repeat(40), main: "1".repeat(40), last: null, running: false }, parts: [partView, { ...partView, id: "t6", key: "merge-main-11111111", dispatch: { ...dispatch, job: "merge-main", head: "1".repeat(40) }, added: { mainHead: "1".repeat(40), by: "owner", at: AT } }] };
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/refresh") data = { ...approvedView, item: { ...item, dispatch: { ...dispatch, agent: "atelier", model: "integrator", by: "owner", job: "refresh", head: "1".repeat(40) } }, refresh: { taken: "0".repeat(40), main: "1".repeat(40), last: { mainHead: "1".repeat(40), state: "dispatched", by: "owner", at: AT }, running: false } };
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t5/plan/refresh") { status = 409; data = { error: "up_to_date", detail: "t5's branch already holds main's head 11111111; there is nothing to refresh" }; }
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/stop") data = { ...approvedView, item: { ...item, state: "abandoned" }, parts: [{ ...partView, state: "abandoned" }] };
     else status = 404;
     res.writeHead(status, { "content-type": "application/json" });
@@ -86,6 +91,14 @@ test("plan \"goal\" starts a plan as the owner with its scope and planner, and s
   assert.equal(f.requests.length, 1);
 });
 
+test("an unquoted goal that begins with a subcommand word is refused with a hint to quote it", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["plan", "show", "me", "the", "feature"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /"show me the feature" reads as plan show with too many words; plan show takes one id\. If that phrase is the goal, quote it: atelier plan "show me the feature"/);
+  assert.equal(f.requests.length, 0);
+});
+
 test("plan show prints the plan, or its JSON, and each subcommand refuses flags it does not take", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["plan", "show", "t1"]);
@@ -100,7 +113,7 @@ test("plan show prints the plan, or its JSON, and each subcommand refuses flags 
     [["plan", "retry", "t2", "--note", "x"], "plan retry does not take --note; see atelier plan --help"],
     [["plan", "Ship", "--json"], "plan does not take --json; see atelier plan --help"],
     [["plan", "show"], "usage: atelier plan"],
-    [["plan", "show", "t1", "t2"], "usage: atelier plan"],
+    [["plan", "show", "t1", "t2"], "quote it"],
   ]) {
     const refused = await f.run(argv);
     assert.equal(refused.status, 1, argv.join(" "));
@@ -137,6 +150,19 @@ test("plan approve sends the full hash and allowPaid; revise, reroute, retry and
   ]);
 });
 
+test("plan reroute of a submitted or blocked part says who reviews it from now on", async (t) => {
+  const f = await fixture(t);
+  const submitted = await f.run(["plan", "reroute", "t3", "--to", "antigravity/gemini-3.1-pro"]);
+  assert.equal(submitted.status, 0, submitted.stderr);
+  assert.equal(submitted.stdout.trim(), "t3 is reviewed by antigravity/gemini-3.1-pro from now on; the plan asks it for the next review the part needs.");
+  const blocked = await f.run(["plan", "reroute", "t4", "--to", "antigravity/gemini-3.1-pro"]);
+  assert.equal(blocked.stdout.trim(), "t4 is reviewed by antigravity/gemini-3.1-pro from now on; it is still blocked: the owner holds it.");
+  assert.deepEqual(f.requests.map((r) => [r.path.replace("/api/projects/proj/items/", ""), r.body]), [
+    ["t3/plan/reroute", { to: "antigravity/gemini-3.1-pro" }],
+    ["t4/plan/reroute", { to: "antigravity/gemini-3.1-pro" }],
+  ]);
+});
+
 test("plan post sends the file's document as the planner, and prints every error of a refused one", async (t) => {
   const f = await fixture(t);
   const file = join(f.root, "plan.json");
@@ -161,4 +187,38 @@ test("atelier show prints a plan item's brief, as it prints any item's", async (
   const r = await f.run(["show", "t1"]);
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.startsWith("proj/t1  Ship the feature\nApprove plan t1's split of: Ship the feature\nPhase: proposed.\nRecommendation: decide. Read the split with atelier plan show t1.\n"));
+});
+
+test("plan refresh asks the server as the owner and says what is queued; a refusal is printed and nothing else is sent", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["plan", "refresh", "t1"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests, [{ method: "POST", path: "/api/projects/proj/items/t1/plan/refresh", actor: "owner", body: {} }]);
+  assert.equal(r.stdout.split("\n")[0], "t1's refresh from main at 11111111 is queued for atelier/integrator; the branch last took main at 00000000. A runner started with --integrate merges it; parts wait for it before they are dispatched.");
+  assert.match(r.stdout, /Follow it with atelier plan show t1 --project proj/);
+  const flagged = await f.run(["plan", "refresh", "t1", "--note", "x"]);
+  assert.notEqual(flagged.status, 0);
+  assert.match(flagged.stderr, /plan refresh does not take --note/);
+  const held = await f.run(["plan", "refresh", "t5"]);
+  assert.notEqual(held.status, 0);
+  assert.match(held.stderr, /already holds main's head 11111111/);
+  assert.equal(f.requests.length, 2, "the flag is refused before anything is sent");
+});
+
+test("plan refresh --resolve asks the server to add the merge-main part, with --to as its builder, and says what is queued", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["plan", "refresh", "t1", "--resolve", "--to", "zcode/glm-5.3"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests, [{ method: "POST", path: "/api/projects/proj/items/t1/plan/refresh", actor: "owner", body: { resolve: true, to: "zcode/glm-5.3" } }]);
+  assert.equal(r.stdout.split("\n")[0], "t1 has part t6 (merge-main-11111111) to merge main at 11111111 into its branch: queued for zcode/glm-5.3. Its builder resolves the conflicts; no other part is dispatched until it is integrated.");
+  const bare = await f.run(["plan", "refresh", "t1", "--resolve"]);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.deepEqual(f.requests[1].body, { resolve: true });
+  // --to is refused without --resolve, and a malformed one before anything is sent.
+  for (const argv of [["plan", "refresh", "t1", "--to", "zcode/glm-5.3"], ["plan", "refresh", "t1", "--resolve", "--to", "glm"]]) {
+    const refused = await f.run(argv);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /--to/);
+  }
+  assert.equal(f.requests.length, 2);
 });

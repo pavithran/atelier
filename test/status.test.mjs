@@ -5,7 +5,8 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { formatStatus } from "../cli/status.mjs";
+import { formatRunners, formatStatus, isLive, runnerLine, statusJson } from "../cli/status.mjs";
+import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
 const entry = (itemId, kind, over = {}) => ({ project: "demo", itemId, title: `Task ${itemId}`, kind, reason: `because ${kind}`, weight: 1, ...over });
@@ -52,6 +53,126 @@ test("an undelivered merge's entry names the dry run, and the merged task itself
   assert.ok(out.includes("    t1  ship  Task t1"));
   assert.ok(out.includes("      next: atelier ship --dry-run --project demo"));
   assert.ok(!out.includes("In progress"));
+});
+
+test("three live tasks where t1 overlaps t2 and t3 print two pair lines, each pair once, after the owner's waits and under the heading", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [
+      item("t1", "claimed", { owner: "claude-code/opus-5.5" }),
+      item("t2", "claimed", { owner: "codex/gpt-6" }),
+      item("t3", "claimed", { owner: "opencode/glm-5.3" }),
+    ],
+    inbox: [
+      entry("t4", "accept"),
+      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
+      entry("t1", "overlap", { reason: "scope overlaps t3 (opencode/glm-5.3)" }),
+    ],
+  }]).split("\n");
+  assert.ok(out.includes("    t4  accept  Task t4"), "the owner's waits stay where they are");
+  assert.ok(out.includes("      next: atelier accept t4 --project demo"));
+  assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 2, "one line per pair");
+  assert.ok(out.includes("    t1 and t2 name overlapping paths"));
+  assert.ok(out.includes("    t1 and t3 name overlapping paths"));
+  const heading = out.indexOf("  Overlapping scopes");
+  const lastWait = out.indexOf("      next: atelier accept t4 --project demo");
+  assert.ok(heading > lastWait, "the pairs print after every wait that needs the owner");
+  assert.ok(out.includes("    Expect a merge conflict when the second lands; nothing waits on you."));
+});
+
+test("a pair seen from both sides is printed once", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" }), item("t2", "claimed", { owner: "codex/gpt-6" })],
+    inbox: [
+      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
+      entry("t2", "overlap", { reason: "scope overlaps t1 (claude-code/opus-5.5)" }),
+    ],
+  }]).split("\n");
+  assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 1);
+  assert.ok(out.includes("    t1 and t2 name overlapping paths"));
+});
+
+test("an overlap whose reason names no pair stays a plain decision, so nothing the server says is lost", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" }), item("t2", "claimed", { owner: "codex/gpt-6" })],
+    inbox: [
+      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
+      entry("t7", "overlap", { reason: "its paths are shared with other live work" }),
+    ],
+  }]).split("\n");
+  assert.ok(out.includes("    t1 and t2 name overlapping paths"), "the pair still stands under its heading");
+  const wait = out.indexOf("  Waiting for you");
+  const said = out.indexOf("    t7  overlap  Task t7");
+  assert.ok(said > wait, "the entry stands with the owner's decisions");
+  assert.ok(out.includes("      its paths are shared with other live work"), "its reason is shown");
+  assert.ok(!out.some((l) => l.includes("next:")), "an overlap still offers no command");
+});
+
+test("a project whose only entries are overlaps says nothing waits on the owner, then lists the scopes", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "open"), item("t2", "open")],
+    inbox: [entry("t1", "overlap", { reason: "scope overlaps t2 (unowned)" })],
+  }]).split("\n");
+  assert.ok(!out.includes("  Nothing waiting."), "the bare idle line is gone");
+  const idle = out.indexOf("  Nothing waiting on you.");
+  const heading = out.indexOf("  Overlapping scopes");
+  const pair = out.indexOf("    t1 and t2 name overlapping paths");
+  assert.ok(idle > -1 && idle < heading && heading < pair, "the idle line, the heading, then the scopes");
+});
+
+test("--json carries the sorted pairs, each once, beside an unchanged inbox", () => {
+  const read = statusJson([{
+    name: "demo",
+    items: [item("t1", "claimed"), item("t2", "claimed"), item("t3", "claimed")],
+    inbox: [
+      entry("t2", "overlap", { reason: "scope overlaps t1 (unowned)" }),
+      entry("t1", "overlap", { reason: "scope overlaps t3 (unowned)" }),
+      entry("t3", "overlap", { reason: "scope overlaps t1 (unowned)" }),
+      entry("t9", "accept", { project: "other" }),
+    ],
+  }]);
+  assert.deepEqual(read[0].overlaps, [["t1", "t2"], ["t1", "t3"]]);
+  assert.equal(read[0].inbox.length, 3, "the inbox itself is unchanged");
+});
+
+test("a status with no overlaps prints no heading", () => {
+  const out = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "accept")] }]);
+  assert.ok(!out.includes("Overlapping scopes"));
+});
+
+// The queue and the runner offers (t240): each open review request waits with
+// the runner work, naming its reviewer, and a queued job no live runner
+// offers says it can never be claimed — a mismatch, not a wait.
+test("with the queue and the runners' offers, open reviews wait with the runner work and unoffered jobs say so", () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const offers = [
+    { runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: now.toISOString() },
+  ];
+  const review = (agent, model) => ({ to: "home", agent, model, by: "atelier/orchestrator", at: now.toISOString(), note: "", job: "review" });
+  const queue = [
+    { project: "demo", item: { id: "t7", title: "Task t7", dispatch: review("claude-code", "fable-5.1") } },
+    { project: "other", item: { id: "t9", title: "Elsewhere", dispatch: review("antigravity", "gemini-3.1-pro") } },
+  ];
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", by: "owner", at: now.toISOString(), note: "" } }), item("t4", "open", { dispatch: { to: "home", agent: "opencode", model: "glm-5.3", by: "owner", at: now.toISOString(), note: "" } })],
+    inbox: [],
+  }], { queue, offers, now }).split("\n");
+  assert.ok(out.includes("    t3  for home codex/gpt-6-astra  Task t3"));
+  assert.ok(out.includes("      No live runner can take it: home:studio offers build as opencode/glm-5.3."));
+  assert.ok(out.includes("    t4  for home opencode/glm-5.3  Task t4"), "a job a live runner offers says no more");
+  assert.ok(out.includes("    t7  review by claude-code/fable-5.1  Task t7"));
+  assert.ok(out.includes("      No live runner can take it: home:studio offers review as opencode/glm-5.3."));
+  assert.ok(!out.some((l) => l.includes("t9")), "another project's review waits in its own section");
+  // Without the offers, the reviews still wait and nothing is judged.
+  const unread = formatStatus([{ name: "demo", items: [], inbox: [] }], { queue, now }).split("\n");
+  assert.ok(unread.includes("    t7  review by claude-code/fable-5.1  Task t7"));
+  assert.ok(!unread.some((l) => l.includes("No live runner")));
+  // A project with nothing but a queued review no longer says nothing waits.
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { queue, offers, now }).includes("Nothing waiting."));
 });
 
 // `atelier status --project demo` against a stand-in server, with the CLI's
@@ -238,4 +359,57 @@ test("a workspace that is not a Git folder is reported as unreadable, and a leas
   assert.equal(r.code, 0, r.output);
   assert.ok(r.output.includes("  t7  its workspace cannot be read: not a Git repository\n"), r.output);
   assert.ok(r.output.includes("the server's landing lease could not be read"), r.output);
+});
+
+// The runners section (t246): what plan routing could pick from, as the
+// server recorded each runner's last ask.
+const NOW = Date.parse("2026-10-07T12:00:00.000Z");
+const ask = (runner, agents, secondsAgo, jobs) =>
+  ({ runner, kind: runner.startsWith("cloud") ? "cloud" : "home", agents, jobs, at: new Date(NOW - secondsAgo * 1000).toISOString() });
+
+test("a runner is live while it asked within the offer window; a line says who offered what and when", () => {
+  const studio = ask("home:studio", [{ agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }], 30, ["build", "plan", "review"]);
+  assert.ok(isLive(studio, NOW));
+  assert.equal(runnerLine(studio, NOW), "home:studio  live, asked 30s ago  offers claude-code/opus-5.5, claude-code/sonnet-5.5  jobs: build, plan, review");
+  const gone = ask("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 60 * 60);
+  assert.equal(isLive(gone, NOW), false);
+  assert.equal(runnerLine(gone, NOW), "home:laptop  not live, last asked 3h ago  offers zcode/glm-5.3");
+  // A runner that offers no model says so, and an unreadable time is not live.
+  assert.equal(runnerLine({ ...studio, agents: [] }, NOW), "home:studio  live, asked 30s ago  offers no model  jobs: build, plan, review");
+  assert.equal(isLive({ ...studio, at: "not a time" }, NOW), false);
+  // A runner busy on a task asks again only when it ends, so an hour and a half
+  // since its last ask is still live (OFFER_LIVE_MS).
+  assert.ok(isLive(ask("home:busy", [], 90 * 60), NOW));
+});
+
+test("the runners section lists live runners first, and formatStatus appends it once, after the projects", () => {
+  const lines = formatRunners([
+    ask("cloud:atelier", [{ agent: "codex", models: ["gpt-6-astra"] }], 2 * 60),
+    ask("home:studio", [{ agent: "claude-code", models: ["opus-5.5"] }], 30),
+  ], NOW);
+  assert.deepEqual(lines, [
+    "Runners:",
+    "  cloud:atelier  live, asked 2m ago  offers codex/gpt-6-astra",
+    "  home:studio  live, asked 30s ago  offers claude-code/opus-5.5",
+  ]);
+  // Stale runners stand after the live ones, whatever their names.
+  const ordered = formatRunners([
+    ask("home:zulu", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 9 * 60),
+    ask("home:alpha", [{ agent: "opencode", models: ["qwen3-coder"] }], 60),
+  ], NOW);
+  assert.deepEqual(ordered, [
+    "Runners:",
+    "  home:alpha  live, asked 1m ago  offers opencode/qwen3-coder",
+    "  home:zulu  not live, last asked 2h ago  offers zcode/glm-5.3",
+  ]);
+  const out = formatStatus(
+    [{ name: "demo", items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6" } })], inbox: [] }],
+    { offers: [{ runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date().toISOString() }] },
+  ).split("\n");
+  assert.ok(out.includes("demo"));
+  assert.equal(out.slice(-2)[0], "Runners:");
+  assert.match(out.slice(-2)[1], /^  home:studio  live, asked \d+s ago  offers claude-code\/opus-5\.5$/);
+  // Without offers there is no section, as a server too old to have them.
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }]).includes("Runners:"));
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { offers: [] }).includes("Runners:"), "no runner recorded yet says nothing");
 });

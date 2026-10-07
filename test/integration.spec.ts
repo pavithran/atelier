@@ -152,6 +152,52 @@ it("an unverified integration is refused, and a failed integration sends the par
   });
 });
 
+it("a failed integration records its kind, charges the builder only for a conflict or failing checks, and plan show reads the reason", async () => {
+  const L = await setup("integrate-fail-kind");
+  const { id, partId, builder } = await readyPart(L);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  // A failure with no kind is not the builder's: the part goes back to it uncharged.
+  await L.integrationFailed(id, INTEGRATOR, "a", "the integrator could not run the checks");
+  let view = await L.planView(id);
+  expect(view.parts[0].attempts).toEqual([]);
+  expect(view.parts[0].integrationFailure).toMatchObject({ reason: "the integrator could not run the checks", kind: null });
+  expect((await L.item(partId)).dispatch).toMatchObject({ agent: builder.split("/")[0], model: builder.split("/")[1] });
+  // Failing checks are: the event carries the kind and the builder's attempt fails.
+  const head = "b".repeat(40);
+  await L.claim(partId, builder, RUNNER);
+  await L.recordPush(partId, builder, head, head);
+  await L.submit(partId, builder);
+  await L.integrationFailed(id, INTEGRATOR, "a", "the plan's checks failed after the merge: FAIL npm test", "checks");
+  expect((await events(L, partId)).filter((e) => e.kind === "integration.failed").sort((a, b) => a.seq - b.seq).at(-1)).toMatchObject({
+    data: { reason: "the plan's checks failed after the merge: FAIL npm test", kind: "checks", builder },
+  });
+  view = await L.planView(id);
+  expect(view.parts[0].attempts).toEqual([{ actor: builder, outcome: "failed" }]);
+  expect(view.parts[0].integrationFailure).toMatchObject({ kind: "checks", reason: "the plan's checks failed after the merge: FAIL npm test" });
+});
+
+it("rework after failed integrations never goes to the model that reviewed the part", async () => {
+  const L = await setup("integrate-rework-reviewer");
+  const { id, partId, builder } = await readyPart(L);
+  const reviewer = (await events(L, partId)).find((e) => e.kind === "review.approved")!.actor;
+  const route = (await L.planView(id)).parts[0].route!;
+  // The routing puts the reviewer first among the alternates, where the walk goes after two failed attempts.
+  expect(route.alternates.map((a) => a.actor)).toContain(reviewer);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  for (const [n, head] of [[1, "b".repeat(40)], [2, "c".repeat(40)]] as const) {
+    await L.integrationFailed(id, INTEGRATOR, "a", `conflict ${n}`, "conflict");
+    if (n === 2) break;
+    await L.claim(partId, builder, RUNNER);
+    await L.recordPush(partId, builder, head, head);
+    await L.submit(partId, builder);
+  }
+  const next = (await L.item(partId)).dispatch!;
+  const to = `${next.agent}/${next.model}`;
+  expect(to).not.toBe(reviewer);
+  expect(to).not.toBe(builder);
+  expect(route.alternates.map((a) => a.actor)).toContain(to);
+});
+
 it("planGate blocks the plan until every part is integrated and approved at its integrated head", async () => {
   const L = await setup("integrate-gate");
   const { id, partId } = await readyPart(L, doc(part("a"), part("b", { dependsOn: ["a"] })));
