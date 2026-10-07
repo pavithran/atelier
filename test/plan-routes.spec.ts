@@ -30,6 +30,14 @@ async function project(name: string) {
   for (const [id, harness] of [["opus-5.5", "claude-code"], ["gpt-6-astra", "codex"], ["glm-5.3", "zcode"]]) {
     await index().putModel({ id, harness, where: "cloud", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
   }
+  // A standing runner offers every pool model for build, plan and review, so
+  // the plans this file approves through the Worker route reviewers the
+  // offers count (t250); a test that stages an unoffered reviewer replaces
+  // this offer under the same runner name.
+  await call("POST", "/queue", "owner", {
+    runner: "home:pool", kind: "home", jobs: ["build", "plan", "review"],
+    agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }, { agent: "zcode", models: ["glm-5.3"] }],
+  });
 }
 
 async function agentToken(actor: string) {
@@ -127,6 +135,40 @@ it("the holder posts its plan through the route, and an invalid one is a 422 tha
   const card = /<p class="card-brief">(.*?)<\/p>/s.exec(html)?.[1] ?? "";
   expect(card).toContain("decide");
   expect(card).toContain(`atelier plan show ${id} --project ${name}`);
+});
+
+// The reviewer an approval routes counts only when a live runner offers it
+// for the review job (t250, the t210 case of 2026-10-07): the offers the
+// runners record as they ask the queue for work come with the pool at the
+// approve route, so a model only a build runner offers never reviews, and
+// the approval says why instead of queueing a review nothing can claim.
+it("approve routes a reviewer only to a model a live runner offers for the review job", async () => {
+  const name = "plan-routes-offers";
+  const id = await started(name);
+  const L = ledger(name);
+  const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a")));
+  const hash = post.valid ? post.hash : "";
+  await L.release(id, "claude-code/opus-5.5", "proposed");
+  // The standing pool runner is replaced by one that names the cross-family
+  // model but offers no review job: a review routed to it could never be
+  // claimed, however long it waited.
+  await call("POST", "/queue", "owner", { runner: "home:pool", kind: "home", jobs: ["build", "plan"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] });
+  const view = await (await call("GET", `/projects/${name}/items/${id}/plan`, "owner")).json() as PlanView;
+  expect(view.preview?.[0]).toMatchObject({ builder: { actor: "zcode/glm-5.3" }, reviewer: null });
+  const unoffered = (actor: string) => `no live runner offers ${actor} for the review job: home:pool offers no review job; home:studio offers no review job`;
+  expect(view.preview?.[0].unrouted).toBe(`no reviewer of another family than zai (zcode/glm-5.3): codex/gpt-6-astra (${unoffered("codex/gpt-6-astra")}), claude-code/opus-5.5 (${unoffered("claude-code/opus-5.5")})`);
+  const refused = await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash });
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toMatchObject({ error: "unrouted", detail: expect.stringContaining("no live runner offers codex/gpt-6-astra for the review job") });
+  // A runner that offers the review job under another cross-family model
+  // unblocks the approval, and the reviewer routed is the model it offers.
+  await call("POST", "/queue", "owner", { runner: "home:studio", kind: "home", jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }] });
+  const approved = await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash });
+  expect(approved.status).toBe(200);
+  const after = await approved.json() as PlanView;
+  expect(after.phase).toBe("building");
+  expect(after.parts[0].route?.reviewer?.actor).toBe("claude-code/opus-5.5");
+  expect(after.parts[0].route?.reviewer?.reasons).toContain("Offered for the review job by home:studio");
 });
 
 it("the owner approves by hash, reroutes and retries a part, and a stop revokes the write tokens of what it closes", async () => {
