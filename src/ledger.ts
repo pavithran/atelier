@@ -21,11 +21,11 @@ import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelecti
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
-import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
+import { integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
-  plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
+  byPartKey, plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
 } from "./plans/state.ts";
 import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanView } from "./plans/show.ts";
@@ -1997,6 +1997,7 @@ export class Ledger extends DurableObject<Env> {
     const all = approval ? this.partEvents(item.id) : [];
     const attempts = partAttempts(tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!]))));
     const ids = new Map(parts.map((p) => [p.partKey!, p.id]));
+    const failures = integrationFailures(byPartKey(all, parts));
     // The planner's last release note, when the harness failed before posting
     // a proposal: plan show tells the owner the harness failed, distinct from
     // an invalid proposal, which blocks the plan instead.
@@ -2026,6 +2027,7 @@ export class Ledger extends DurableObject<Env> {
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
           integration: this.partIntegration(p.id),
+          integrationFailure: failures.get(p.partKey!) ?? null,
           blocked: p.state === "blocked" && p.blocked ? { reason: p.blocked.reason, by: p.blocked.by } : null,
         };
       }),
@@ -2285,6 +2287,7 @@ export class Ledger extends DurableObject<Env> {
       parts: parts.map((p) => ({ key: p.partKey!, state: p.state })),
       routes: approval.routes.map((r) => rerouted(r, record)),
       events, maxParallel: approval.limits.maxParallel, deadline: approval.deadline, budget: null, now: at,
+      reviewers: partReviewers(byPartKey(all, parts)),
     });
     let blocked = result.blocked, chosen = result.dispatch;
     if (!blocked && chosen.length) {
@@ -2674,10 +2677,11 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A failed integration sends the part back to its builder for rework, as a
-  // review rejection does: the builder's finished attempt becomes a failed one
-  // (phase.ts reads the integration.failed event), and the tick redispatches
-  // the part. The integrate job clears, and nothing is recorded as integrated.
-  integrationFailed(id: string, actor: string, partKey: string, reason: string): Item {
+  // review rejection does, and the tick redispatches the part. `kind` says
+  // whether the failure was the part's own, a merge conflict or failing
+  // checks; only then does the builder's finished attempt become a failed one
+  // (phase.ts reads the integration.failed event). The integrate job clears, and nothing is recorded as integrated.
+  integrationFailed(id: string, actor: string, partKey: string, reason: string, kind: IntegrationFailureKind | null = null): Item {
     if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration failure`, 403);
     const plan = this.planItem(id);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
@@ -2687,7 +2691,7 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const builder = part.owner;
     this.update(part.id, { owner: null, state: "open" }, at);
-    this.log(part.id, ORCHESTRATOR, "integration.failed", { reason: reason.slice(0, 500), builder }, at);
+    this.log(part.id, ORCHESTRATOR, "integration.failed", { reason: reason.slice(0, 500), builder, ...(kind ? { kind } : {}) }, at);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     this.afterPlanChange(id);
     return this.item(id);

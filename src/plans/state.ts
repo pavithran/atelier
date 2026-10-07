@@ -227,6 +227,14 @@ export function tickEvents(events: readonly LedgerEvent[], keys: ReadonlyMap<str
   return out;
 }
 
+// A plan's part events with each one naming its part by key, every event
+// kept: what a part has been through whatever the owner decided since, as
+// its reviewers and its last integration failure are read.
+export function byPartKey(events: readonly LedgerEvent[], parts: readonly { id: string; partKey?: string | null }[]): LedgerEvent[] {
+  const keys = new Map(parts.flatMap((p) => (p.partKey ? [[p.id, p.partKey] as const] : [])));
+  return events.flatMap((e) => (e.itemId !== null && keys.has(e.itemId) ? [{ ...e, itemId: keys.get(e.itemId)! }] : []));
+}
+
 // The parts that wait on an open dispatch in those events: their last event
 // that starts or ends an attempt is a dispatch. This is the waiting phase.ts
 // reads; the Ledger compares it with each part's dispatch record.

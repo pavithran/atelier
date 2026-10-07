@@ -149,7 +149,7 @@ it("a rejection with a blocker sends the part back with the findings, then an al
   const L = await setup("review-rework");
   const { id, partId } = await approved(L);
   const route = (await L.planView(id)).parts[0].route!;
-  const builder = route.builder!.actor, alternate = route.alternates[0].actor;
+  const builder = route.builder!.actor;
 
   // Round 1: the routed builder submits; the review rejects with a blocker.
   const head1 = "a".repeat(40);
@@ -175,7 +175,9 @@ it("a rejection with a blocker sends the part back with the findings, then an al
   const reviewer2 = await routedReviewer(L, partId);
   await L.claimReview(partId, reviewer2, RUNNER);
   await L.addReview({ itemId: partId, by: reviewer2, head: head2, approve: false, note: "Still broken.", findings: [blocker()], at: new Date().toISOString() });
-  // After two rounds the alternate builder takes over.
+  // After two rounds an alternate builder takes over: the first that reviewed none of the rounds.
+  const alternate = route.alternates.map((a) => a.actor).find((a) => a !== reviewer1 && a !== reviewer2)!;
+  expect(alternate).toBeDefined();
   expect((await L.item(partId)).dispatch).toMatchObject({ agent: alternate.split("/")[0], model: alternate.split("/")[1] });
 
   // Round 3: the alternate submits; the review rejects again, and the plan blocks.
