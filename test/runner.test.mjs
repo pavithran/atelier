@@ -59,7 +59,7 @@ test("parseConfig reports malformed config and invalid entries", () => {
 
 test("offerFrom includes only the server capability shape", () => {
   assert.deepEqual(offerFrom(config, "HOME:studio"), {
-    runner: "home:studio", kind: "home", jobs: ["build", "plan", "merge-main"],
+    runner: "home:studio", kind: "home", jobs: ["build", "plan", "merge-main", "merge-plan"],
     agents: [{ agent: entry.agent, models: entry.models }],
   });
   assert.equal(offerFrom(config, "home:Studio").runner, "home:studio", "the whole name is normalized, as the server stores it");
