@@ -410,13 +410,16 @@ export async function runReview(assignment, config, name, io) {
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
     await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
     if (io.stopped()) throw new Error("interrupted");
-    const diff = await io.diff(workspace, claimed.item.base, claimed.head);
+    const compare = await reviewBase(io, workspace, claimed);
+    if (io.stopped()) throw new Error("interrupted");
+    if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
+    const diff = await io.diff(workspace, compare.from, claimed.head);
     if (!claimed.need) {
       await release("the review request no longer needs an answer");
       return { phase: "failed", reason: "the review request no longer needs an answer", taskFailure: true };
     }
     const text = reviewBrief({
-      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner,
+      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner, compare,
     });
     brief = await io.brief(workspace, text);
     diffFile = await io.writeDiff(workspace, diff);
@@ -467,6 +470,28 @@ export async function runReview(assignment, config, name, io) {
     if (diffFile) io.removeDiff(diffFile);
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
+  }
+}
+
+// The commit a review diffs from: the merge base of the reviewed head and the
+// branch the item merges into, which the claim names with a read token (the
+// plan's integration branch for a part, the project's main otherwise). A
+// task that merged main after it forked holds main's newer commits, and a
+// diff from its fork point would show them as the task's own; the merge
+// base leaves them out, as git merge-base HEAD main does in
+// bin/orchestrate/review.sh. When the branch cannot be fetched or shares no
+// history with the head, the diff runs from the fork point and the reason is
+// returned, for the brief to say so.
+export async function reviewBase(io, workspace, claimed) {
+  const forkPoint = (fallback) => ({ from: claimed.item.base, fallback });
+  const target = claimed.target;
+  if (!target?.remote || !target?.branch) return forkPoint("the review claim named no branch the task merges into");
+  try {
+    await io.fetch(workspace, target.remote, target.token, target.branch);
+    const from = (await io.mergeBase(workspace, "FETCH_HEAD", claimed.head)).trim();
+    return from ? { from, branch: target.branch } : forkPoint(`the head shares no history with ${target.branch}`);
+  } catch (error) {
+    return forkPoint(`the merge base with ${target.branch} could not be found: ${error.message}`);
   }
 }
 
@@ -777,6 +802,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
+    mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
     // The integrate job's git operations: fetch a head, merge it onto the
     // plan's branch, push, and roll the branch back on a failure.
     fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: gitAuth(token), signal: controller.signal, step: "fetch" }, executeChild),

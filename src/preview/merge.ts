@@ -280,7 +280,7 @@ export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: str
   const [log, forkLog] = await Promise.all([baseline.log({ limit: MAIN_LOG }), fork.log({ limit: FORK_LOG })]);
   const head = log[0], theirs = forkLog[0];
   if (!head || !theirs) return null;
-  const base = mergeBase(forkLog.map((c) => c.hash), log.map((c) => c.hash));
+  const base = mergeBase(forkLog, log.map((c) => c.hash));
   if (!base) return null;
   const baseTree = (forkLog.find((c) => c.hash === base) ?? log.find((c) => c.hash === base))!.treeHash;
   const { ahead, capped } = commitsSince(log, base, log.length >= MAIN_LOG);
@@ -301,7 +301,7 @@ export async function mergeTrees(baseline: ArtifactsRepo, fork: ArtifactsRepo): 
   const [log, forkLog] = await Promise.all([baseline.log({ limit: MAIN_LOG }), fork.log({ limit: FORK_LOG })]);
   const main = log[0], head = forkLog[0];
   if (!main || !head) return null;
-  const base = mergeBase(forkLog.map((c) => c.hash), log.map((c) => c.hash));
+  const base = mergeBase(forkLog, log.map((c) => c.hash));
   if (!base) return null;
   const baseTree = (forkLog.find((c) => c.hash === base) ?? log.find((c) => c.hash === base))!.treeHash;
   return { base, baseTree, main: main.hash, mainTree: main.treeHash, head: head.hash, headTree: head.treeHash };
