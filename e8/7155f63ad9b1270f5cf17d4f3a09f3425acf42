@@ -1,0 +1,29 @@
+atelier atelier/t239 "test/land.test.mjs 'a refused renewal stops the heartbeat…' is flaky on main (seen 2026-10-07 at 099f25f during t238's build): make it deterministic (inject the timer or wait on the renewal call rather than on wall-clock time) and check it passes 50 runs in a row"
+accepted head 40d369a7461dddbd93ed828b38997f1449fef276
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T09:45:34.688Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T09:45:37.086Z
+REVIEW approve by antigravity/gemini-3.1-pro at 40d369a7461dddbd93ed828b38997f1449fef276, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T08:52:54.400Z pavi item.created
+2026-10-07T08:52:54.705Z pavi item.dispatched
+2026-10-07T08:53:01.269Z opencode/glm-5.3 item.claimed
+2026-10-07T08:53:08.988Z opencode/glm-5.3 fork.created
+2026-10-07T09:09:00.497Z opencode/glm-5.3 push.observed
+2026-10-07T09:10:44.525Z opencode/glm-5.3 evidence.observed
+2026-10-07T09:10:46.585Z opencode/glm-5.3 evidence.observed
+2026-10-07T09:10:47.027Z opencode/glm-5.3 item.submitted
+2026-10-07T09:43:26.399Z pavi land.lease
+2026-10-07T09:43:29.743Z pavi land.merge
+2026-10-07T09:43:37.752Z pavi land.regenerate
+2026-10-07T09:43:40.087Z opencode/glm-5.3 push.observed
+2026-10-07T09:43:40.174Z pavi land.push
+2026-10-07T09:45:34.825Z opencode/glm-5.3 evidence.observed
+2026-10-07T09:45:37.217Z opencode/glm-5.3 evidence.observed
+2026-10-07T09:45:37.728Z pavi land.check
+2026-10-07T09:45:38.091Z opencode/glm-5.3 item.submitted
+2026-10-07T09:45:38.305Z pavi land.submit
+2026-10-07T09:45:38.400Z pavi review.requested
+2026-10-07T09:45:44.574Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T09:49:45.569Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T09:49:50.810Z pavi land.review
+2026-10-07T09:49:51.549Z pavi item.accepted
+2026-10-07T09:49:51.654Z pavi land.accept
