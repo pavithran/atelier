@@ -1,0 +1,31 @@
+atelier atelier/t223 "atelier land --wait queues for the project's landing lease instead of refusing while another task holds it: it polls the lease, says whose landing it waits behind, and starts as soon as the lease is free, so several landings can be started at once and run in turn without a session's own queue scripts (2026-10-07: three hand-written queue scripts were needed, two of which would have waited forever on their own command lines)"
+accepted head f36c0919909487e6d96ee9b7888f18498a4aecf4
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T03:38:26.646Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T03:38:29.693Z
+REVIEW approve by antigravity/gemini-3.1-pro at f36c0919909487e6d96ee9b7888f18498a4aecf4, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T00:27:09.010Z pavi item.created
+2026-10-07T01:01:40.386Z pavi item.dispatched
+2026-10-07T01:52:56.521Z claude-code/opus-5.5 item.claimed
+2026-10-07T01:53:01.683Z claude-code/opus-5.5 fork.created
+2026-10-07T02:04:41.973Z claude-code/opus-5.5 push.observed
+2026-10-07T02:06:53.457Z claude-code/opus-5.5 evidence.observed
+2026-10-07T02:06:56.424Z claude-code/opus-5.5 evidence.observed
+2026-10-07T02:06:57.091Z claude-code/opus-5.5 item.submitted
+2026-10-07T02:56:16.056Z pavi land.lease
+2026-10-07T02:56:18.377Z pavi land.merge
+2026-10-07T03:34:50.668Z pavi land.lease
+2026-10-07T03:34:53.331Z pavi land.merge
+2026-10-07T03:35:01.472Z pavi land.regenerate
+2026-10-07T03:35:05.616Z claude-code/opus-5.5 push.observed
+2026-10-07T03:35:05.807Z pavi land.push
+2026-10-07T03:38:27.017Z claude-code/opus-5.5 evidence.observed
+2026-10-07T03:38:30.122Z claude-code/opus-5.5 evidence.observed
+2026-10-07T03:38:30.596Z pavi land.check
+2026-10-07T03:38:30.976Z claude-code/opus-5.5 item.submitted
+2026-10-07T03:38:31.191Z pavi land.submit
+2026-10-07T03:38:31.310Z pavi review.requested
+2026-10-07T03:38:39.398Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T03:43:15.346Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T03:43:17.448Z pavi land.review
+2026-10-07T03:43:18.373Z pavi item.accepted
+2026-10-07T03:43:19.025Z pavi land.accept
