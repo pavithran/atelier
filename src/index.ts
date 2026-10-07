@@ -27,7 +27,7 @@ import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "
 import { renderUsage } from "./usage/page.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
-import { baseRepoOf, rollbackFor, verifyIntegration, type LogCommit } from "./plans/integrate.ts";
+import { baseRepoOf, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
@@ -543,6 +543,12 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
   return baseRepoOf(item, baselineRepo, planFork);
 }
 
+// Main's head as the baseline holds it now, for the Ledger, which cannot read
+// Artifacts; null when the baseline cannot be read, so a view still renders.
+async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<string | null> {
+  try { return await headOf(env, (await L.project()).repo); } catch { return null; }
+}
+
 // A predicted conflict between a part and its plan's branch, before the
 // integrator is sent to merge it (docs/orchestrator.md, section 5). Null when
 // no conflict is predicted or the branch cannot be read, so a failure to read
@@ -942,7 +948,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // pool, a plan not yet approved also shows the routing an approval would fix.
   if (verb === "plan" && parts.length === 5 && m === "GET") {
     requireOwner(env, actor);
-    return json(await L.planView(id, await index(env).models()));
+    return json(await L.planView(id, await index(env).models(), await mainHeadOf(env, L)));
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -1225,7 +1231,49 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
       const reasons = verifyIntegration({ log, integrationHead: integrationHead ?? plan.base ?? "", partHead: part.head, mergeCommit });
       if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409);
+      // The integration may let the tick dispatch a part that depends on it,
+      // and the tick refreshes the branch first when main has moved, so main's
+      // head is read now for it to compare.
+      const main = await mainHeadOf(env, L);
+      if (main) await L.noteMainHead(main);
       return json(await L.integratePart(id, actor, partKey, mergeCommit, true));
+    }
+    case "refreshed": {
+      // The integrator reports a refresh: main's head merged into the plan's
+      // branch, verified against the branch's log as an integration is
+      // (verifyRefresh), or, with no merge commit, found already held there.
+      const mainHead = String(body.mainHead ?? "");
+      const mergeCommit = body.mergeCommit === undefined || body.mergeCommit === null ? null : String(body.mergeCommit);
+      const { plan, integrationHead } = await L.refreshTarget(id);
+      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409);
+      if (mergeCommit) {
+        using repo = await env.ARTIFACTS.get(plan.fork);
+        const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
+        const reasons = verifyRefresh({ log, integrationHead: integrationHead ?? plan.base ?? "", mainHead, mergeCommit });
+        if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409);
+      } else {
+        const top = await headOf(env, plan.fork);
+        const held = top && /^[a-f0-9]{40,64}$/.test(mainHead) ? (await holdsCommit(env, plan.fork, top, mainHead)).holds : false;
+        if (held !== true) throw new RuleError("unverified_merge", `the plan's branch does not hold main's head ${mainHead.slice(0, 8)}, and no merge commit was reported`, 409);
+      }
+      return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
+    }
+    case "refresh-failed": {
+      // The integrator reports a refresh that conflicted or failed the plan's
+      // checks. The Worker checks the branch was restored to its integration
+      // head first, as for a failed integration. No part is charged.
+      const mainHead = String(body.mainHead ?? "");
+      if (body.kind !== undefined && !chargesBuilder(body.kind)) {
+        throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
+      }
+      const { plan, integrationHead } = await L.refreshTarget(id);
+      if (plan.fork && /^[a-f0-9]{40,64}$/.test(mainHead)) {
+        using repo = await env.ARTIFACTS.get(plan.fork);
+        const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
+        const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", mainHead);
+        if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
+      }
+      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null));
     }
     case "integration-failed": {
       // The integrator reports a failed merge. The Worker checks the branch was
@@ -1380,6 +1428,20 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
     case "retry":
       await L.retryPlan(id, actor);
       return json(await L.planView(id));
+    case "refresh": {
+      // The owner asks the integrator to merge main's head into the plan's
+      // branch (docs/orchestrator.md, section 5). Main's head is read from
+      // the baseline, and whether the branch already holds it from the plan's fork.
+      const p = await L.project();
+      const main = await headOf(env, p.repo);
+      if (!main) throw new RuleError("empty", "the baseline has no commits", 409);
+      await L.noteMainHead(main);
+      const plan = await L.item(id);
+      const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
+      const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
+      await L.planRefresh(id, actor, main, holds);
+      return json(await L.planView(id, null, main));
+    }
     case "stop": {
       const targets = await L.stopTargets(id, actor);
       for (const t of targets) await revoke(env, t.fork, t.tokenId);

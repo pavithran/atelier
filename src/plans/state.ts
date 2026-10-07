@@ -93,6 +93,50 @@ export interface PlanRecord {
   // merge commit of its latest recorded integration or refresh, or null when
   // none is recorded (the branch then sits at the commit the plan forked from).
   integrationHead?: string | null;
+  // The main head the branch last took: the one its latest recorded refresh
+  // merged in, or found already held. Absent until a refresh is recorded;
+  // the branch then holds main as it stood when the plan forked (the plan
+  // item's base).
+  mainTaken?: string | null;
+  // The plan's latest refresh, dispatched, recorded or failed.
+  refresh?: PlanRefresh | null;
+}
+
+// One refresh of a plan's branch (docs/orchestrator.md, section 5): the
+// integrator merges main's head into the branch, so later parts fork from
+// it and later integrations build on it. `by` is the owner, who ran
+// atelier plan refresh, or the orchestrator, whose tick dispatched it.
+export interface PlanRefresh {
+  mainHead: string;                 // the main head the refresh merges
+  state: "dispatched" | "refreshed" | "failed";
+  by: string;
+  at: string;                       // when it was dispatched
+  endedAt?: string;                 // when it was recorded or failed
+  mergeCommit?: string | null;      // the merge on the branch; null when the branch already held main's head
+  reason?: string;                  // why it failed
+  kind?: string | null;             // a failure's kind, conflict or checks, or null when the report names none
+}
+
+// The main head a plan's branch holds: its latest recorded refresh's, or
+// else the commit the plan forked from.
+export function mainTakenOf(record: PlanRecord, plan: Pick<Item, "base">): string | null {
+  return record.mainTaken ?? plan.base ?? null;
+}
+
+// What the tick does about main before it dispatches a part:
+//   wait: a refresh is in flight, or one is wanted and the plan item is busy
+//     with an integration, so no part is dispatched until it is done;
+//   dispatch: main has moved past what the branch holds, and no refresh has
+//     been tried for main's head, so the refresh is dispatched first;
+//   none: the branch holds main's head, main's head is not known, or a
+//     refresh for this head was already tried. A failed refresh is not tried
+//     again for the same head; the owner runs atelier plan refresh for that.
+export function refreshDecision(input: { main: string | null; taken: string | null; last: PlanRefresh | null; busy: boolean }): "none" | "wait" | "dispatch" {
+  const { main, taken, last, busy } = input;
+  if (last?.state === "dispatched") return "wait";
+  if (!main || main === taken) return "none";
+  if (last && last.mainHead === main) return "none";
+  return busy ? "wait" : "dispatch";
 }
 
 // A goal as the plan stores it: text in NFC with controls and invisible
