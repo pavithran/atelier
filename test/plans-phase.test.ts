@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
 import {
-  integrationFailures, partAttempts, partReviewers, planActions, planPhase, type Attempt, type ItemState, type PartView, type TickInput, type TickResult,
+  conflictedParts, integrationFailures, partAttempts, partReviewers, planActions, planPhase, type Attempt, type ItemState, type PartView, type TickInput, type TickResult,
 } from "../src/plans/phase.ts";
 import type { PartRoute } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
@@ -231,6 +231,22 @@ test("integrationFailures keeps each part's latest failure with its kind", () =>
   const failures = integrationFailures(events);
   assert.deepEqual(failures.get("a"), { reason: "the plan's checks failed after the merge: FAIL npm test", kind: "checks", at: AT });
   assert.deepEqual(failures.get("b"), { reason: "old", kind: null, at: AT });
+});
+
+test("conflictedParts names the parts whose latest integration failure since their last submission was a conflict", () => {
+  const conflict = (seq: number, key: string) => event(seq, "atelier/orchestrator", "integration.failed", { reason: "CONFLICT", kind: "conflict" }, key);
+  const events = [
+    event(1, actor("a"), "item.submitted", {}, "a"), conflict(2, "a"),
+    event(3, actor("b"), "item.submitted", {}, "b"), conflict(4, "b"), event(5, actor("b"), "item.submitted", {}, "b"),
+    event(6, actor("c"), "item.submitted", {}, "c"), conflict(7, "c"), event(8, actor("c"), "item.submitted", {}, "c"),
+    event(9, "atelier/orchestrator", "integration.failed", { reason: "FAIL", kind: "checks" }, "c"),
+    event(10, actor("d"), "item.submitted", {}, "d"), event(11, "atelier/orchestrator", "integration.failed", { reason: "x" }, "d"),
+    // a's rework attempt is claimed and released without a submission: still conflicted.
+    event(12, actor("a"), "item.claimed", {}, "a"), event(13, actor("a"), "item.released", {}, "a"),
+  ];
+  assert.deepEqual([...conflictedParts(events)], ["a"]);
+  // Order is by seq, not by the array.
+  assert.deepEqual([...conflictedParts([...events].reverse())], ["a"]);
 });
 
 // A part that goes first (a merge-main part the Ledger added): while it is
