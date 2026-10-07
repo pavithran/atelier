@@ -25,6 +25,7 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, rollbackFor, verifyIntegration, type LogCommit } from "./plans/integrate.ts";
 import { INTEGRATOR } from "./plans/state.ts";
@@ -954,7 +955,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
-          await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict);
+          await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict, "conflict");
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
         }
       }
@@ -1229,9 +1230,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "integration-failed": {
       // The integrator reports a failed merge. The Worker checks the branch was
       // restored to its integration head before the part is sent back, so a
-      // failure never leaves another part's commits discarded.
+      // failure never leaves another part's commits discarded. `kind` names a
+      // failure that is the part's own, a merge conflict or failing checks,
+      // which charges its builder an attempt; a report without it charges none.
       const partKey = String(body.part ?? "");
       const reason = String(body.reason ?? "");
+      if (body.kind !== undefined && !chargesBuilder(body.kind)) {
+        throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
+      }
       const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
       if (plan.fork && part.head) {
         using repo = await env.ARTIFACTS.get(plan.fork);
@@ -1239,7 +1245,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", part.head);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
       }
-      return json(await L.integrationFailed(id, actor, partKey, reason));
+      return json(await L.integrationFailed(id, actor, partKey, reason, body.kind ?? null));
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.
