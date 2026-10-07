@@ -247,7 +247,7 @@ export const FLAGS = {
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
-  abandon: { note: false },
+  abandon: { note: false, "delivered-by": false },
   defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
   finding: { head: false, index: false, verdict: '--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed', note: false },
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
@@ -1610,6 +1610,19 @@ const commands = {
     try {
       await runRunner(args, {
         workspacePath,
+        // The server's route level against the CLI's, checked once at start:
+        // a server behind this CLI would fail the runner's calls one by one.
+        // A server that cannot be read is refused as land refuses it, with
+        // the same "does not answer" message (GET /api/version is public).
+        async version(signal) {
+          try {
+            const res = await fetch(server() + "/api/version", { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+            if (!res.ok) return null;
+            return await res.json();
+          } catch {
+            return null;
+          }
+        },
         async queue(offer, signal) {
           await resolveTokenActor();
           const res = await fetch(server() + "/api/queue", {
@@ -2313,7 +2326,7 @@ const commands = {
   async abandon() {
     const name = project(), id = itemArg();
     const { item: before } = await call("GET", I(name, id), undefined, OWNER);
-    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
+    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "", ...(typeof args["delivered-by"] === "string" ? { deliveredBy: args["delivered-by"] } : {}) }, OWNER);
     console.log(before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`);
   },
 

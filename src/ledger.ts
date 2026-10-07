@@ -1115,7 +1115,7 @@ export class Ledger extends DurableObject<Env> {
   // its limit is refused before the token is revoked.
   checkHandoff(id: string, from: string, to: string, note: string): void { this.handoffAllowed(id, from, to, note); }
   checkRelease(id: string, actor: string, note: string): void { this.releaseAllowed(id, actor, note); }
-  checkAbandon(id: string, actor: string, note: string): void { this.abandonAllowed(id, actor, note); }
+  checkAbandon(id: string, actor: string, note: string, deliveredBy?: string): void { this.abandonAllowed(id, actor, note, deliveredBy); }
 
   private handoffAllowed(id: string, from: string, to: string, note: string): Item {
     assertLength(note, NOTE_MAX, "the handoff note");
@@ -1165,10 +1165,16 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
-  private abandonAllowed(id: string, actor: string, note: string): Item {
+  private abandonAllowed(id: string, actor: string, note: string, deliveredBy?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
     assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
+    // A task closed as delivered by another names a task that has merged.
+    if (deliveredBy !== undefined) {
+      if (deliveredBy === id) throw new RuleError("bad_delivered_by", `${id} cannot be delivered by itself`, 400);
+      const by = this.item(deliveredBy);
+      if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409);
+    }
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     // A plan's parts go with it; stopping the plan closes them in one step.
     const open = item.kind === "plan" ? this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned") : [];
@@ -1403,13 +1409,13 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  abandon(id: string, actor: string, note: string, token?: string | null): Item {
-    this.abandonAllowed(id, actor, note);
+  abandon(id: string, actor: string, note: string, token?: string | null, deliveredBy?: string): Item {
+    this.abandonAllowed(id, actor, note, deliveredBy);
     this.dropToken(id, token);
     // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
-    this.log(id, actor, "item.abandoned", { note }, at);
+    this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}) }, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -1529,10 +1535,12 @@ export class Ledger extends DurableObject<Env> {
     return actionRuns(this.sql, limit);
   }
 
-  events(id?: string, limit = 200): LedgerEvent[] {
+  // Newest first. `before` pages back: only events with a lower seq than it.
+  events(id?: string, limit = 200, before?: number): LedgerEvent[] {
+    const below = before === undefined ? Number.MAX_SAFE_INTEGER : before;
     const rows = id
-      ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? ORDER BY seq DESC LIMIT ?`, id, limit).toArray()
-      : this.sql.exec(`SELECT * FROM events ORDER BY seq DESC LIMIT ?`, limit).toArray();
+      ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`, id, below, limit).toArray()
+      : this.sql.exec(`SELECT * FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?`, below, limit).toArray();
     return rows.map((r) => ({
       seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
       ...(r.proved === 1 ? { proved: true as const } : {}),
