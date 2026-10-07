@@ -356,6 +356,10 @@ export class Ledger extends DurableObject<Env> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, head TEXT NOT NULL, dispatch TEXT NOT NULL,
       claimedBy TEXT, runner TEXT, briefHash TEXT, state TEXT NOT NULL, claimedAt TEXT
     )`);
+    // Set on a request the owner asked for by name (atelier land --reviewer),
+    // which stands even where the gate needs no review; claimReview reads it.
+    const requestColumns = this.sql.exec(`PRAGMA table_info(review_requests)`).toArray().map((c) => c.name);
+    if (!requestColumns.includes("wanted")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN wanted INTEGER`);
     this.backfillReviewProvenance();
   }
 
@@ -2220,7 +2224,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(itemId);
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (contributorsOf(item).some((c) => sameActor(c, actor))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
-    const row = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id LIMIT 1`, itemId).toArray()[0];
+    const row = this.sql.exec(`SELECT id, head, dispatch, wanted FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id LIMIT 1`, itemId).toArray()[0];
     if (!row) throw new RuleError("no_review", `${itemId} has no open review request`, 404);
     const head = row.head as string;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
@@ -2243,7 +2247,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy: this.project().policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
-      requests: [], now: new Date(at), owner: this.owner,
+      requests: [], wanted: !!row.wanted, now: new Date(at), owner: this.owner,
     });
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
@@ -2261,11 +2265,15 @@ export class Ledger extends DurableObject<Env> {
   // tick picks one for a part. A live request for the current head is
   // returned as it stands, never duplicated, with the time the waiting
   // started. `at` in the answer is where the caller counts new verdicts from.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  // With `wanted` the owner asks for the review of the named reviewer even
+  // where the gate needs none; only a gate that cannot proceed (checks not
+  // passing, a rejection at this head, no push) refuses, with its reason.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
     // retry with a different name never silently keeps the wrong reviewer.
+    if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
       if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
@@ -2277,7 +2285,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
-      requests: this.reviewRequests(id), now: new Date(at), owner: this.owner,
+      requests: this.reviewRequests(id), wanted, now: new Date(at), owner: this.owner,
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
@@ -2291,6 +2299,7 @@ export class Ledger extends DurableObject<Env> {
         }
         return { needed: true, requested: false, reason: need.reason, at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
       }
+      if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
       return { needed: false, reason: need.reason };
     }
     let chosen: string;
@@ -2310,8 +2319,8 @@ export class Ledger extends DurableObject<Env> {
     }
     const slash = chosen.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state) VALUES (?, ?, ?, ?, 'open')`, id, need.head, JSON.stringify(dispatch), null);
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land" }, at, proved);
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted) VALUES (?, ?, ?, ?, 'open', ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(wanted ? { wanted: true } : {}) }, at, proved);
     return { needed: true, requested: true, reason: need.reason, at, head: need.head, reviewer: chosen };
   }
 
