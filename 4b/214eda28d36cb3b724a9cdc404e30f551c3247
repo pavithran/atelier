@@ -1,0 +1,24 @@
+atelier atelier/t294 "The AI Gateway pull reports added: 0 with no error on its first pull (2026-10-07 22:50 UTC) although two calls went through the gateway at about 22:05, so either the logs route answered no logs or parseLog dropped them, and nothing says which. Record on each pull how many logs the route answered and how many could not be read (no id, bad time), with the first unreadable log's field names (never values), and show them on the Models page and in atelier runner --usage"
+accepted head 22b18e27bc5da60c57abe965547a03e53c6fc7b7
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T23:19:20.159Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T23:19:24.114Z
+REVIEW approve by antigravity/gemini-3.1-pro at 22b18e27bc5da60c57abe965547a03e53c6fc7b7, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T23:04:38.310Z pavi item.created
+2026-10-07T23:04:38.735Z claude-code/opus-5.5 item.claimed
+2026-10-07T23:04:44.120Z claude-code/opus-5.5 fork.created
+2026-10-07T23:15:56.183Z pavi land.lease
+2026-10-07T23:15:58.827Z pavi land.merge
+2026-10-07T23:16:06.509Z pavi land.regenerate
+2026-10-07T23:16:08.730Z claude-code/opus-5.5 push.observed
+2026-10-07T23:16:08.884Z pavi land.push
+2026-10-07T23:19:21.165Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:19:24.378Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:19:25.049Z pavi land.check
+2026-10-07T23:19:25.540Z claude-code/opus-5.5 item.submitted
+2026-10-07T23:19:25.811Z pavi land.submit
+2026-10-07T23:19:25.953Z pavi review.requested
+2026-10-07T23:19:44.326Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T23:24:25.628Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T23:24:29.566Z pavi land.review
+2026-10-07T23:24:30.339Z pavi item.accepted
+2026-10-07T23:24:30.479Z pavi land.accept
