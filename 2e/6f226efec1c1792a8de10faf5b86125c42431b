@@ -1,0 +1,34 @@
+atelier atelier/t215 "Honest review records (audit 2026-10-06 #7, #8, #9; PAVI's decisions): each review records who recorded it and whether its token proved the actor; an owner-recorded review counts for the gate only when it answers a claimed review request at that head; provenance notes carry reviewer, verdict and head but no review text or override reasons; land.sh records the reviewer's own summary, names the reviewer from the model that ran, and binds review and accept to the reviewed head; commits whose Agent: line names someone other than the holder join the task's contributors"
+accepted head 2c84434530be244b9a331500d4094e4953d47a92
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T00:06:02.554Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T00:06:06.174Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T00:13:12.033Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T00:13:15.723Z
+REVIEW approve — antigravity/gemini-3.1-pro: I verified that review provenance, unproved review blockers, and agent co-authorship are securely tracked, properly backfilled, and appropriately credited, with no correctness or security defects introduced.
+2026-10-06T23:15:10.177Z pavi item.created
+2026-10-06T23:15:47.760Z claude-code/opus-5.5 item.claimed
+2026-10-06T23:15:52.100Z claude-code/opus-5.5 fork.created
+2026-10-07T00:04:02.396Z pavi land.lease
+2026-10-07T00:04:06.027Z pavi land.merge
+2026-10-07T00:04:14.016Z pavi land.regenerate
+2026-10-07T00:04:17.889Z claude-code/opus-5.5 push.observed
+2026-10-07T00:04:18.032Z pavi land.push
+2026-10-07T00:06:03.806Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:06:06.583Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:06:07.058Z pavi land.check
+2026-10-07T00:06:07.493Z claude-code/opus-5.5 item.submitted
+2026-10-07T00:06:07.763Z pavi land.submit
+2026-10-07T00:06:07.900Z pavi land.review
+2026-10-07T00:11:01.269Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T00:11:02.139Z pavi land.lease
+2026-10-07T00:11:03.527Z pavi land.merge
+2026-10-07T00:11:11.507Z pavi land.regenerate
+2026-10-07T00:11:13.246Z pavi land.push
+2026-10-07T00:13:13.137Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:13:16.266Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:13:16.767Z pavi land.check
+2026-10-07T00:13:17.224Z claude-code/opus-5.5 item.submitted
+2026-10-07T00:13:17.513Z pavi land.submit
+2026-10-07T00:13:17.807Z pavi land.review
+2026-10-07T00:13:18.575Z pavi item.accepted
+2026-10-07T00:13:18.723Z pavi land.accept
