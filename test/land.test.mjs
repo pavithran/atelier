@@ -12,7 +12,9 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // atelier land (t187) against a stand-in server and local bare repositories,
 // as the other CLI tests run merge: the landing lease refuses a second
 // landing naming who holds it and since when, a conflict stops with the
-// files named and the merge left in the workspace, a clean landing merges
+// files named and the merge left in the workspace (unless every conflicted
+// file is one the regenerate command rewrites, when either side is taken,
+// the command runs and the landing goes on), a clean landing merges
 // main, regenerates the project's fixtures, pushes, checks, waits for the
 // review verdict, accepts and merges, --dry-run changes nothing, and a
 // server whose route level is lower than the CLI's, or none at all, refuses
@@ -261,6 +263,8 @@ test("a conflict stops the landing with the files named and the merge left for t
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
   assert.match(r.output, /The merge is left in the workspace for you to resolve/);
+  // The regeneration was tried and could not settle the conflict, and says so.
+  assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it/);
   // The merge is in progress in the workspace, nothing was pushed or merged.
   assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
   assert.equal(f.forkHead("t1"), before.fork);
@@ -272,9 +276,87 @@ test("a conflict stops the landing with the files named and the merge left for t
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.equal(merge.body.failed, true); assert.deepEqual(merge.body.conflicts, ["work.txt"]);
   assert.equal(merge.body.resolvedBy, "the project owner, by hand");
+  assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
   // The lease was taken and released.
   assert.ok(f.posts("/landing-lease").some((x) => x.body.item === "t1"));
   assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
+});
+
+test("a conflict only in files the regenerate command rewrites is settled by taking either side and regenerating, and the landing goes on", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
+  // The task's own regeneration of the same file, so the two sides conflict in it.
+  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  const before = { fork: f.forkHead("t1"), checkout: git(f.checkout, "rev-parse", "HEAD") };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /taking either side and regenerating with `echo generated > gen-fixtures\.txt`/);
+  assert.match(r.output, /took either side and let the command write them again/);
+  // The workspace holds the merge, with what the command wrote as the resolution.
+  assert.match(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Merge main into t1/);
+  assert.equal(readFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "utf8"), "generated\n");
+  // The registered checkout and the baseline hold a merge of the task's head.
+  const merged = git(f.checkout, "rev-parse", "HEAD");
+  const parents = git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ");
+  assert.equal(parents[1], before.checkout);
+  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), merged);
+  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.box.lease, null);
+  // The whole landing ran, and the merge step records the conflicts it settled and how.
+  const events = f.posts("/land");
+  assert.deepEqual(events.map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
+  const merge = events.find((x) => x.body.step === "merge");
+  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
+  assert.equal(merge.body.resolvedBy, "atelier land, taking either side and regenerating");
+  assert.equal(merge.body.failed, undefined);
+  // The regeneration had already settled the file, so the second run changed nothing.
+  assert.equal(events.find((x) => x.body.step === "regenerate").body.changed, false);
+});
+
+test("a conflict that also touches a file the regenerate command does not rewrite still stops, naming what regeneration left", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
+  // Both sides also regenerate the fixture, so one conflict is generated and one is not.
+  writeFileSync(join(f.checkout, "gen-fixtures.txt"), "from main\n");
+  git(f.checkout, "add", "."); git(f.checkout, "commit", "-m", "Main regenerates the fixture"); git(f.checkout, "push", "-q", "origin", "main");
+  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt/);
+  assert.match(r.output, /the regenerate command left work\.txt as either side had it/);
+  // The conflicted merge is back in the workspace, markers and all; nothing moved on.
+  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
+  assert.match(readFileSync(join(f.workspace("t1"), "work.txt"), "utf8"), /^<{7} /m);
+  assert.equal(f.forkHead("t1"), before.fork);
+  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
+  assert.equal(f.box.states.t1, "submitted");
+  assert.deepEqual(f.posts("/push"), []); assert.deepEqual(f.posts("/merged"), []);
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.failed, true);
+  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt", "work.txt"]);
+  assert.equal(merge.body.resolvedBy, "the project owner, by hand");
+  assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
+});
+
+test("a regenerate command that fails while settling conflicts stops the landing with the failure named", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
+  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  f.box.regen = "echo boom >&2; exit 3";
+  const before = f.forkHead("t1");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command `echo boom >&2; exit 3` failed \(exit 3\)/);
+  assert.match(r.output, /boom/);
+  // The merge is left in the workspace, still conflicted, and nothing landed.
+  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
+  assert.equal(f.forkHead("t1"), before);
+  assert.equal(f.box.states.t1, "submitted");
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.failed, true);
+  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
+  assert.equal(merge.body.reason, "the regenerate command `echo boom >&2; exit 3` failed (exit 3)");
 });
 
 test("--dry-run prints the steps and the refusals without changing anything", async (t) => {
