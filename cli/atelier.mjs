@@ -247,7 +247,7 @@ export const FLAGS = {
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
-  abandon: { note: false },
+  abandon: { note: false, "delivered-by": false },
   defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
   finding: { head: false, index: false, verdict: '--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed', note: false },
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
@@ -257,7 +257,7 @@ export const FLAGS = {
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
-  land: { reviewer: false, "no-review": true, "dry-run": true },
+  land: { reviewer: false, "no-review": true, "dry-run": true, "release-lease": true },
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
@@ -1610,6 +1610,19 @@ const commands = {
     try {
       await runRunner(args, {
         workspacePath,
+        // The server's route level against the CLI's, checked once at start:
+        // a server behind this CLI would fail the runner's calls one by one.
+        // A server that cannot be read is refused as land refuses it, with
+        // the same "does not answer" message (GET /api/version is public).
+        async version(signal) {
+          try {
+            const res = await fetch(server() + "/api/version", { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+            if (!res.ok) return null;
+            return await res.json();
+          } catch {
+            return null;
+          }
+        },
         async queue(offer, signal) {
           await resolveTokenActor();
           const res = await fetch(server() + "/api/queue", {
@@ -2313,7 +2326,7 @@ const commands = {
   async abandon() {
     const name = project(), id = itemArg();
     const { item: before } = await call("GET", I(name, id), undefined, OWNER);
-    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
+    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "", ...(typeof args["delivered-by"] === "string" ? { deliveredBy: args["delivered-by"] } : {}) }, OWNER);
     console.log(before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`);
   },
 
@@ -2734,7 +2747,9 @@ const commands = {
       } catch (error) { throw new Error(`server request failed: ${error.message}`); }
       let data;
       try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-      if (!res.ok) throw new Error(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`);
+      // The status rides on the error, so a landing can tell a refusal
+      // (the server answered, and said no) from a failure to reach it.
+      if (!res.ok) throw Object.assign(new Error(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`), { status: res.status });
       return data;
     };
     // A git runner that throws rather than dies, for the same reason. With
@@ -2932,6 +2947,12 @@ const commands = {
       if (typeof args.to !== "string" || !args.to.trim()) die(`--to needs harness/model: atelier plan reroute ${id} --to claude-code/opus-5.5`);
       const view = await call("POST", `${I(name, id)}/plan/reroute`, { to: args.to }, OWNER);
       const part = view.parts.find((p) => p.id === id);
+      // Only an open part's builder is rerouted, so a part submitted or
+      // blocked now had its reviewer named.
+      if (part && (part.state === "submitted" || part.state === "blocked")) {
+        console.log(`${id} is reviewed by ${args.to.trim()} from now on; ${part.state === "blocked" ? `it is still blocked: ${flat(part.blocked?.reason ?? "")}` : "the plan asks it for the next review the part needs"}.`);
+        return;
+      }
       console.log(part ? `${id} is built by ${args.to} from now on; ${part.dispatch && part.state === "open" ? "it is queued for it" : `it is ${part.state}, and the plan dispatches it when it may start`}.` : `${id}'s planner is now ${view.planner}, and the plan job is queued for it.`);
       return;
     }
