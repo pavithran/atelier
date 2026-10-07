@@ -1,0 +1,24 @@
+atelier atelier/t222 "A plan part's reviewer is fixed at approval and never re-picked: t209's review stayed routed to opencode/glm-5.3 after GLM had worked on t209 (a build that stalled before the part was rerouted to Fable), so every review job was refused as self_review and the runner gave up after three tries. When the routed reviewer has become a contributor (or the part's family set changed), pick the next eligible reviewer of another family than every contributor, as requestReview does for tasks, record why in the plan's routing, and show it in plan show (found on t197, 2026-10-07)"
+accepted head bd8676803a3841f4ddd26cff211de12c0f464c53
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T00:50:56.226Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T00:50:59.832Z
+REVIEW approve by antigravity/gemini-3.1-pro at bd8676803a3841f4ddd26cff211de12c0f464c53, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T00:15:36.075Z pavi item.created
+2026-10-07T00:15:40.318Z claude-code/opus-5.5 item.claimed
+2026-10-07T00:15:50.559Z claude-code/opus-5.5 fork.created
+2026-10-07T00:48:02.913Z pavi land.lease
+2026-10-07T00:48:06.170Z pavi land.merge
+2026-10-07T00:48:16.076Z pavi land.regenerate
+2026-10-07T00:48:19.090Z claude-code/opus-5.5 push.observed
+2026-10-07T00:48:19.227Z pavi land.push
+2026-10-07T00:50:57.227Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:51:00.153Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:51:00.676Z pavi land.check
+2026-10-07T00:51:01.126Z claude-code/opus-5.5 item.submitted
+2026-10-07T00:51:01.891Z pavi land.submit
+2026-10-07T00:51:02.774Z pavi review.requested
+2026-10-07T00:51:13.576Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T00:58:57.690Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T00:59:00.374Z pavi land.review
+2026-10-07T00:59:01.048Z pavi item.accepted
+2026-10-07T00:59:01.186Z pavi land.accept
