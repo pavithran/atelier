@@ -1796,12 +1796,23 @@ async function onMainLine(env: Env, repo: string, commit: string): Promise<boole
 // now, previewed from the plan's fork as the merge preview reads a task's
 // workspace (previewAgainstMain). A conflict would stop atelier merge after
 // the acceptance, so the owner is told to take main into the branch first,
-// with plan refresh. A preview that cannot be read holds nothing back:
-// atelier merge still stops on a conflict, and withdraws the acceptance then.
+// with plan refresh. A branch whose history holds main's head (holdsCommit,
+// which follows every merge parent) merges as a fast-forward or cleanly and
+// is accepted without a preview; the preview itself follows merges' further
+// parents too (mergedHistory in src/preview/merge.ts), so main taken in by
+// an integrated merge-main part is its fork point (t274). A preview that
+// cannot be read holds nothing back: atelier merge still stops on a
+// conflict, and withdraws the acceptance then.
 async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<void> {
   const item = await L.item(id);
   if (item.kind !== "plan" || !item.fork) return;
   const { repo } = await L.project();
+  try {
+    const [main, head] = await Promise.all([headOf(env, repo), headOf(env, item.fork)]);
+    if (main && head && (await holdsCommit(env, item.fork, head, main)).holds) return;
+  } catch (err) {
+    console.error("plan history unavailable", err);
+  }
   let preview: Awaited<ReturnType<typeof previewAgainstMain>>;
   try {
     preview = await previewAgainstMain(env.ARTIFACTS, repo, item.fork);
