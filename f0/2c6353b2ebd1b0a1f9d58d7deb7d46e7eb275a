@@ -1,0 +1,24 @@
+atelier atelier/t201 "atelier land ignores --reviewer when the gate needs no review: t193 was accepted unreviewed although the owner named antigravity/gemini-3.1-pro. A named reviewer is the owner asking for a review, so land requests it and waits for the verdict whatever the gate requires; --no-review stays the way to skip one (found landing t193, 2026-10-06)"
+accepted head 4457ec65903c180fe6fb300aa99b839a20b21c2e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-07T00:41:35.802Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-07T00:41:39.146Z
+REVIEW approve by antigravity/gemini-3.1-pro at 4457ec65903c180fe6fb300aa99b839a20b21c2e, recorded by an unrecorded actor
+2026-10-06T22:11:41.474Z pavi item.created
+2026-10-07T00:16:35.337Z claude-code/sonnet-5.5 item.claimed
+2026-10-07T00:16:40.269Z claude-code/sonnet-5.5 fork.created
+2026-10-07T00:39:33.501Z pavi land.lease
+2026-10-07T00:39:35.664Z pavi land.merge
+2026-10-07T00:39:43.766Z pavi land.regenerate
+2026-10-07T00:39:47.420Z claude-code/sonnet-5.5 push.observed
+2026-10-07T00:39:47.556Z pavi land.push
+2026-10-07T00:41:36.978Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T00:41:39.576Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T00:41:40.144Z pavi land.check
+2026-10-07T00:41:40.718Z claude-code/sonnet-5.5 item.submitted
+2026-10-07T00:41:40.968Z pavi land.submit
+2026-10-07T00:41:41.124Z pavi review.requested
+2026-10-07T00:41:43.168Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T00:44:59.828Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T00:45:01.109Z pavi land.review
+2026-10-07T00:45:01.744Z pavi item.accepted
+2026-10-07T00:45:01.901Z pavi land.accept
