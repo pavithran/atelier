@@ -564,8 +564,18 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
 // workspace's remote, and the Ledger records the new head as the part's base
 // and head. A fork with a head of its own, in the Ledger or in Artifacts, is
 // left as it is; a fork found missing, which a move that did not finish
-// leaves, is forked again. True when the fork was moved: the repository and
-// every token it had are gone.
+// leaves, is forked again. A move that forked again but failed to record it
+// leaves a fork whose head is a later commit of the plan's branch than the
+// recorded base: that head is on the plan's branch and holds the base, so
+// the fork holds nothing of its own, and the move is finished, by recording
+// it when it is the branch's head and by forking again otherwise. A head
+// the search cannot place on the plan's branch within MOVE_BUDGET is taken
+// for the builder's own and kept. The fork's head is read again just before
+// it is deleted, and a head that changed in between, as a push would, is
+// kept. True when the fork was moved: the repository and every token it had
+// are gone. A move that only records the head returns false: the fork and
+// its tokens stand.
+const MOVE_BUDGET = { commits: 500, reads: 5 };
 async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean): Promise<boolean> {
   if (item.kind !== "part" || !item.plan || !item.fork) return false;
   if (item.head && item.head !== item.base) return false;
@@ -573,13 +583,25 @@ async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, 
   if (!planFork) return false;
   const planHead = await headOf(env, planFork);
   if (!planHead || planHead === item.base) return false;
-  let observed: string | null = null;
-  try {
-    observed = await headOf(env, item.fork);
-  } catch (err) {
-    if (!/NOT_FOUND|not found/i.test(codeOf(err))) throw err;
+  const forkHead = async () => {
+    try {
+      return await headOf(env, item.fork!);
+    } catch (err) {
+      if (!/NOT_FOUND|not found/i.test(codeOf(err))) throw err;
+      return null;
+    }
+  };
+  const observed = await forkHead();
+  if (observed && observed !== item.base) {
+    const onBranch = (await holdsCommit(env, planFork, planHead, observed, MOVE_BUDGET)).holds === true
+      && (!item.base || (await holdsCommit(env, planFork, observed, item.base, MOVE_BUDGET)).holds === true);
+    if (!onBranch) return false;
+    if (observed === planHead) {
+      await L.moveFork(item.id, actor, item.fork, item.base, observed, proved);
+      return false;
+    }
   }
-  if (observed && observed !== item.base) return false;
+  if ((await forkHead()) !== observed) return false;
   await env.ARTIFACTS.delete(item.fork);
   using plan = await env.ARTIFACTS.get(planFork);
   await plan.fork(item.fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
