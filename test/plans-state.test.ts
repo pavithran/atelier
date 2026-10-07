@@ -124,7 +124,7 @@ test("a plan's inbox entries: approve-plan for an answered proposal, plan-blocke
   });
   const plan = { id: "t1", title: "Ship", state: "open" as const };
   const proposal = { hash: "a".repeat(64), parts: 2 };
-  const one = (change: object) => planInboxEntries([{ project: "p", plan, record: record(), proposal, answered: true, ...change }]);
+  const one = (change: object, now = AT) => planInboxEntries([{ project: "p", plan, record: record(), proposal, answered: true, ...change }], now);
   assert.deepEqual(one({}).map((e) => [e.kind, e.weight]), [["approve-plan", 95]]);
   assert.match(one({})[0].reason, /^the planner proposed 2 parts, aaaaaaaaaaaa\. Read atelier plan show t1 --project p, then approve that hash/);
   assert.deepEqual(one({ answered: false }), []);
@@ -134,6 +134,9 @@ test("a plan's inbox entries: approve-plan for an answered proposal, plan-blocke
   assert.match(blocked[0].reason, /approve the last valid proposal \(aaaaaaaaaaaa\), revise it, retry or reroute the planner, or stop the plan$/);
   const approval = { hash: proposal.hash, at: AT, by: "owner", allowPaid: false, limits: limitsFor(2, false), deadline: AT, parts: [], routes: [] };
   assert.match(one({ record: record({ approval, blocked: "part a has reached 3 attempts" }) })[0].reason, /retry or reroute a part, abandon a part, or stop the plan$/);
+  // A deadline block can only be stopped, since the deadline is fixed at approval.
+  const late = { hash: proposal.hash, at: "2026-10-01T12:00:00.000Z", by: "owner", allowPaid: false, limits: limitsFor(2, false), deadline: "2026-10-02T12:00:00.000Z", parts: [], routes: [] };
+  assert.match(one({ record: record({ approval: late, blocked: "the deadline 2026-10-02T12:00:00.000Z passed" }) })[0].reason, /stop the plan$/);
   assert.deepEqual(one({ record: record({ approval }) }), []);
   assert.deepEqual(one({ plan: { ...plan, state: "abandoned" }, record: record({ blocked: "x" }) }), []);
 });

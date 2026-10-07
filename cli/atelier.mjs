@@ -257,7 +257,7 @@ export const FLAGS = {
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
-  land: { reviewer: false, "no-review": true, "dry-run": true, "release-lease": true },
+  land: { reviewer: false, "no-review": true, "dry-run": true, wait: true, "release-lease": true },
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
@@ -2914,7 +2914,10 @@ const commands = {
       return;
     }
     const id = words[1];
-    if (!id || words.length > (sub === "post" ? 3 : 2)) die(COMMAND_USAGE.plan);
+    if (!id) die(COMMAND_USAGE.plan);
+    if (words.length > (sub === "post" ? 3 : 2)) {
+      die(`"${words.join(" ")}" reads as ${form} with too many words; ${form} takes ${sub === "post" ? "an id and a file" : "one id"}. If that phrase is the goal, quote it: atelier plan "${words.join(" ")}"`);
+    }
     if (sub === "show") {
       const view = await call("GET", `${I(name, id)}/plan`, undefined, await actor(OWNER));
       return console.log(args.json ? JSON.stringify(view, null, 2) : planText(view, name));
@@ -2947,6 +2950,12 @@ const commands = {
       if (typeof args.to !== "string" || !args.to.trim()) die(`--to needs harness/model: atelier plan reroute ${id} --to claude-code/opus-5.5`);
       const view = await call("POST", `${I(name, id)}/plan/reroute`, { to: args.to }, OWNER);
       const part = view.parts.find((p) => p.id === id);
+      // Only an open part's builder is rerouted, so a part submitted or
+      // blocked now had its reviewer named.
+      if (part && (part.state === "submitted" || part.state === "blocked")) {
+        console.log(`${id} is reviewed by ${args.to.trim()} from now on; ${part.state === "blocked" ? `it is still blocked: ${flat(part.blocked?.reason ?? "")}` : "the plan asks it for the next review the part needs"}.`);
+        return;
+      }
       console.log(part ? `${id} is built by ${args.to} from now on; ${part.dispatch && part.state === "open" ? "it is queued for it" : `it is ${part.state}, and the plan dispatches it when it may start`}.` : `${id}'s planner is now ${view.planner}, and the plan job is queued for it.`);
       return;
     }

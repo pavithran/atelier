@@ -22,7 +22,7 @@ const proposed: PlanView = {
   item, phase: "proposed", goal: "Ship the feature", scope: ["src/**"], planner: "claude-code/opus-5.5", plannerReasons: [],
   blocked: null, completedAt: null, proposal: { hash: HASH, by: "claude-code/opus-5.5", at: AT, count: 2, answered: true },
   plan: { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [doc("a"), doc("b", { dependsOn: ["a"] })] },
-  approval: null, parts: [], preview: [route("a", "claude-code/opus-5.5"), { ...route("b", "claude-code/opus-5.5"), reviewer: null, unrouted: "no reviewer of another family" }], integration: { integrationHead: null }, harnessFailure: null,
+  approval: null, parts: [], preview: [route("a", "claude-code/opus-5.5"), { ...route("b", "claude-code/opus-5.5"), reviewer: null, unrouted: "no reviewer of another family" }], integration: { integrationHead: null }, harnessFailure: null, pastDeadline: false,
 };
 const part = (id: string, key: string, change: Partial<PlanPartView> = {}): PlanPartView => ({
   id, key, title: `Part ${key}`, state: "open", owner: null, head: null, acceptedHead: null, scope: [`src/${key}/**`], dependsOn: [],
@@ -83,8 +83,21 @@ test("once approved, plan show gives each part's state, routing, attempts and th
   const blocked = planText({ ...building, phase: "blocked", blocked: "part c has reached 3 attempts" }, "demo").split("\n");
   assert.ok(blocked.includes("Phase: blocked.") && blocked.includes("Blocked: part c has reached 3 attempts."));
   assert.ok(blocked.includes("  name who builds a part: atelier plan reroute tN --to H/M --project demo"));
+  assert.ok(blocked.includes("  name who reviews a submitted or blocked part: atelier plan reroute tN --to H/M --project demo"));
+  // A blocked part says why and by whom, and waits on the owner.
+  const held = planText({ ...building, parts: [part("t2", "a", { state: "blocked", blocked: { reason: "no eligible reviewer remains for part a. Name one with atelier plan reroute t2 --to H/M.", by: "atelier/orchestrator" } })] }, "demo").split("\n");
+  assert.ok(held.includes("      blocked by atelier/orchestrator: no eligible reviewer remains for part a. Name one with atelier plan reroute t2 --to H/M."));
+  assert.ok(held.includes("1 part waits on you; each line above gives its command."));
   const stuck = planText({ ...building, parts: [part("t2", "a", { state: "submitted", owner: "x/y", head: "h", gate: { ready: false, blockers: ["`npm test` failed when observed"] } })] }, "demo");
   assert.ok(stuck.split("\n").includes("      not ready: `npm test` failed when observed"));
+});
+
+test("a deadline block can only be stopped: plan show drops retry and reroute", () => {
+  const past = planText({ ...building, phase: "blocked", blocked: "the deadline 2026-10-07 12:00 UTC passed", pastDeadline: true }, "demo").split("\n");
+  assert.ok(past.includes("Phase: blocked.") && past.includes("Blocked: the deadline 2026-10-07 12:00 UTC passed."));
+  assert.ok(past.includes("  close the plan and its open parts: atelier plan stop t1 --project demo"));
+  assert.ok(!past.some((l) => l.includes("atelier plan retry")));
+  assert.ok(!past.some((l) => l.includes("atelier plan reroute")));
 });
 
 test("a plan's brief says what is decided and what it waits on, in the shape any item's brief has", () => {

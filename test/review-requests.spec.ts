@@ -285,7 +285,7 @@ it("a part with no eligible reviewer left is blocked with what the owner can do"
   const item = await L.item(partId);
   expect(item.state).toBe("blocked");
   expect(item.blocked).toMatchObject({ by: "atelier/orchestrator", from: "submitted" });
-  expect(item.blocked!.reason).toMatch(/^no eligible reviewer remains for part a\. .*atelier models add.*atelier plan stop t\d+/);
+  expect(item.blocked!.reason).toMatch(new RegExp(`^no eligible reviewer remains for part a\\. .*atelier plan reroute ${partId} --to H/M`));
   expect(await reviewWaiting(L)).toEqual([]);
   // The part is blocked, not the plan, so its other parts' work would go on.
   expect((await L.planView(id)).blocked).toBeNull();
@@ -406,4 +406,101 @@ it("a deploy ticks every open plan once, re-judging a review routed to a contrib
   // The same deploy again ticks nothing: the request stands as it is.
   await runInDurableObject(L, (l: Ledger) => l.retickDeployed("a1b2c3d4"));
   expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+});
+
+// The owner's way back for a part no reviewer in the frozen pool can review
+// (t224): plan reroute names a reviewer for a submitted or blocked part, in
+// the pool or not, so a model added after approval can review it.
+const GEMINI = "antigravity/gemini-3.1-pro";
+
+// A part whose builder's pushes name a model of every family in the pool, so
+// the plan blocks it for want of a reviewer.
+async function blockedForReviewer(L: L) {
+  const { id, partId, builder } = await approved(L);
+  const others = [OPUS, GPT, GLM].filter((a) => a !== builder);
+  const head = "a".repeat(40);
+  await L.claim(partId, builder, RUNNER);
+  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.recordPush(partId, builder, head, head, false, { holdsRecorded: true, rebasedFrom: null }, others.map((actor, n) => ({ commit: String(n).repeat(40), actor })));
+  await L.addEvidence(observed(partId, head));
+  await L.submit(partId, builder);
+  expect((await L.item(partId)).state).toBe("blocked");
+  return { id, partId, builder, head };
+}
+
+it("a part blocked for want of a reviewer is unblocked by naming one outside the pool, which is asked to review it", async () => {
+  const L = await setup("review-reroute-blocked");
+  const { id, partId, head } = await blockedForReviewer(L);
+  const routed = (await L.planView(id)).parts[0].route!.reviewer!.actor;
+  const shown = planText(await L.planView(id) as unknown as PlanView, "review-reroute-blocked");
+  expect(shown).toMatch(new RegExp(`blocked by atelier/orchestrator: no eligible reviewer remains for part a\\..*atelier plan reroute ${partId} --to H/M`));
+  expect(shown).toContain("1 part waits on you");
+  const attemptsBefore = (await L.planView(id)).parts[0].attempts;
+
+  const item = await L.reroutePlan(partId, "owner", GEMINI);
+  // The plan's block is lifted and the review is asked of the named model.
+  expect(item.state).toBe("submitted");
+  expect(item.blocked).toBeUndefined();
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "antigravity", model: "gemini-3.1-pro" }]);
+  const log = await events(L, partId);
+  expect(log.find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ actor: "owner", data: { from: routed, to: GEMINI, reason: "named by the project owner" } });
+  expect(log.find((e) => e.kind === "item.unblocked")).toMatchObject({ actor: "owner", data: { to: "submitted" } });
+  // Naming a reviewer is not a builder's reroute: the attempts stand.
+  expect(log.some((e) => e.kind === "plan.rerouted")).toBe(false);
+  const view = await L.planView(id);
+  expect(view.parts[0].attempts).toEqual(attemptsBefore);
+  expect(view.parts[0].route!.reviewer).toEqual({ actor: GEMINI, reasons: [`Named by the project owner in place of ${routed}`] });
+  expect(planText(view as unknown as PlanView, "review-reroute-blocked")).toContain(`reviewer ${GEMINI}, of another family, in place of ${routed}: named by the project owner`);
+  // The named reviewer claims the review, and its approval counts.
+  expect((await L.claimReview(partId, GEMINI, RUNNER) as unknown as ReviewClaim).head).toBe(head);
+  await L.addReview({ itemId: partId, by: GEMINI, head, approve: true, note: "Looks good", at: new Date().toISOString() });
+  await L.accept(partId, "owner");
+  expect((await L.item(partId)).state).toBe("accepted");
+});
+
+it("naming a reviewer is refused for a contributor's family, the owner, another's live claim, and anyone but the owner", async () => {
+  const L = await setup("review-reroute-refused");
+  const { partId, builder } = await blockedForReviewer(L);
+  await refusal(L.reroutePlan(partId, "owner", builder), "not_independent", /cannot review .*contributed to it/);
+  await refusal(L.reroutePlan(partId, "owner", "claude-code/sonnet-5.5"), "not_independent", /not of another family than every contributor/);
+  await refusal(L.reroutePlan(partId, "owner", "owner"), "bad_actor", /name the reviewer as harness\/model/);
+  await refusal(L.reroutePlan(partId, GEMINI, GEMINI), "not_project_owner", /only the project owner/);
+  expect((await L.item(partId)).state).toBe("blocked");
+  // Once the named reviewer has claimed the review, another name waits for it.
+  await L.reroutePlan(partId, "owner", GEMINI);
+  await L.claimReview(partId, GEMINI, RUNNER);
+  await refusal(L.reroutePlan(partId, "owner", "antigravity/gemini-3.1-flash"), "review_claimed", new RegExp(`${GEMINI} is reviewing ${partId} now`));
+});
+
+it("naming a reviewer for a submitted part withdraws the open request and asks the named one", async () => {
+  const L = await setup("review-reroute-submitted");
+  const { partId } = await approved(L);
+  const { reviewer, third } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  await L.reroutePlan(partId, "owner", third);
+  expect(await routedReviewer(L, partId)).toBe(third);
+  expect((await events(L, partId)).filter((e) => e.kind === "review.withdrawn")).toEqual([
+    expect.objectContaining({ actor: "owner", data: { head, reviewer, reason: `the project owner named ${third} to review it` } }),
+  ]);
+  expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+});
+
+it("a named reviewer who later contributes is passed over and the plan picks again", async () => {
+  const L = await setup("review-reroute-contributes");
+  const { partId } = await approved(L);
+  const { builder, reviewer, third } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  await L.reroutePlan(partId, "owner", third);
+  // The builder lets the part go; the named reviewer builds it instead.
+  await L.release(partId, "owner", "stalled");
+  await L.reroutePlan(partId, "owner", third);
+  await L.claim(partId, third, RUNNER);
+  await L.submit(partId, third);
+  // Neither the builder's family nor the named one's may review; the routed
+  // reviewer, of the remaining family, is asked.
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  expect(builder).not.toBe(reviewer);
 });
