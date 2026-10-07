@@ -1467,11 +1467,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
-    // Main is at the merge now. A plan's merge ends it, and a part merged
-    // onto main on its own is the path where the plan dispatches its
-    // dependants as its parts merge, so only another task's merge is taken
-    // as main moving under a plan.
-    if (item.kind !== "part" && item.kind !== "plan") this.setMainHead(mergeCommit, at);
+    // Main is at the merge now, so the record is made for the plans in
+    // flight to compare at their next tick. A plan's own merge closes it
+    // first, and nothing refreshes a closed plan, so it never takes its own
+    // merge as main moving under it; a part merged onto main on its own is
+    // the plan's own work landing while it still builds, and is not
+    // recorded, or the plan would refresh against a head its part made.
+    if (item.kind !== "part") this.setMainHead(mergeCommit, at);
     // A plan's merge lands its parts too: each integrated part is marked
     // merged with the plan it landed through (docs/orchestrator.md, section 5).
     if (item.kind === "plan") {
