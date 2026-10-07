@@ -1,0 +1,47 @@
+atelier atelier/t243 "A task that conflicts with main cannot go back to its builder: atelier land leaves the merge of main and its conflicts in the workspace for a session to resolve, and a runner rework resets the workspace to the task's head, where the builder cannot reach main (t234 had to be abandoned and refiled as t242, 2026-10-07). As t238 does for plan parts: atelier dispatch ID --merge-main (and land, when its merge of main stops on conflicts and a runner serves the holder) has the runner merge main at the named head into the workspace and leave the conflicts for the builder, briefed to keep both sides' behaviour; the result goes through land as usual"
+accepted head 100953471269ec26bd2e20be976da0052d0b7a3c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T11:40:39.477Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T11:40:43.013Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T13:02:04.145Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T13:02:08.163Z
+REVIEW approve by antigravity/gemini-3.1-pro at 100953471269ec26bd2e20be976da0052d0b7a3c, recorded by pavi with the owner token, answering a claimed review request
+REVIEW approve by antigravity/gemini-3.1-pro at 100953471269ec26bd2e20be976da0052d0b7a3c, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T09:43:48.795Z pavi item.created
+2026-10-07T09:43:51.767Z pavi item.dispatched
+2026-10-07T09:49:44.772Z opencode/glm-5.3 item.claimed
+2026-10-07T09:49:49.191Z opencode/glm-5.3 fork.created
+2026-10-07T10:18:42.698Z opencode/glm-5.3 push.observed
+2026-10-07T10:20:45.123Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:20:48.202Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:20:48.813Z opencode/glm-5.3 item.submitted
+2026-10-07T11:32:05.125Z pavi land.lease
+2026-10-07T11:32:09.561Z pavi land.merge
+2026-10-07T11:38:16.147Z pavi land.lease
+2026-10-07T11:38:17.802Z pavi land.merge
+2026-10-07T11:38:25.865Z pavi land.regenerate
+2026-10-07T11:38:28.851Z opencode/glm-5.3 push.observed
+2026-10-07T11:38:28.951Z pavi land.push
+2026-10-07T11:40:40.779Z opencode/glm-5.3 evidence.observed
+2026-10-07T11:40:43.255Z opencode/glm-5.3 evidence.observed
+2026-10-07T11:40:43.738Z pavi land.check
+2026-10-07T11:40:44.075Z opencode/glm-5.3 item.submitted
+2026-10-07T11:40:44.297Z pavi land.submit
+2026-10-07T11:40:44.407Z pavi review.requested
+2026-10-07T12:07:16.714Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T12:44:41.672Z pavi land.review
+2026-10-07T12:47:33.204Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T12:59:35.470Z pavi land.lease
+2026-10-07T12:59:37.170Z pavi land.merge
+2026-10-07T12:59:44.822Z pavi land.regenerate
+2026-10-07T12:59:46.897Z pavi land.push
+2026-10-07T13:02:05.749Z opencode/glm-5.3 evidence.observed
+2026-10-07T13:02:08.602Z opencode/glm-5.3 evidence.observed
+2026-10-07T13:02:09.215Z pavi land.check
+2026-10-07T13:02:09.602Z opencode/glm-5.3 item.submitted
+2026-10-07T13:02:09.858Z pavi land.submit
+2026-10-07T13:02:10.008Z pavi review.requested
+2026-10-07T13:02:31.316Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T13:06:08.878Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T13:06:13.157Z pavi land.review
+2026-10-07T13:06:13.883Z pavi item.accepted
+2026-10-07T13:06:14.017Z pavi land.accept
