@@ -23,6 +23,7 @@ export interface PlanPartReview {
   state: "open" | "claimed";
   claimedBy: string | null;
   claimedAt: string | null;      // ISO time the request was claimed
+  topTier?: boolean;             // the gate's request asked of a tier model, whose review serves as the tier review too
 }
 
 export interface PlanPartView {
@@ -128,7 +129,9 @@ function reviewLines(p: PlanPartView, v: PlanView, flag: string, now = new Date(
   const r = p.review;
   if (!r) return [];
   const head = r.head.slice(0, 8);
-  if (r.state === "claimed") return [`review of ${head} asked of ${r.reviewer}, claimed at ${r.claimedAt ? when(r.claimedAt) : "a time not recorded"}`];
+  // The gate's review asked of a tier model gives the tier review too.
+  const what = r.topTier ? "gate review, top tier," : "review";
+  if (r.state === "claimed") return [`${what} of ${head} asked of ${r.reviewer}, claimed at ${r.claimedAt ? when(r.claimedAt) : "a time not recorded"}`];
   const slash = r.reviewer.indexOf("/");
   const asked = v.offers
     ? unoffered(
@@ -138,10 +141,10 @@ function reviewLines(p: PlanPartView, v: PlanView, flag: string, now = new Date(
     : null;
   return asked
     ? [
-        `review of ${head} asked of ${r.reviewer}; the request is open, and ${asked}`,
+        `${what} of ${head} asked of ${r.reviewer}; the request is open, and ${asked}`,
         `it will not be claimed until a runner that offers ${r.reviewer} for the review job asks for work; name another reviewer: atelier plan reroute ${p.id} --to H/M ${flag}`,
       ]
-    : [`review of ${head} asked of ${r.reviewer}; the request is open`];
+    : [`${what} of ${head} asked of ${r.reviewer}; the request is open`];
 }
 
 // A part's live tier review request (src/review/tier.ts): a second opinion

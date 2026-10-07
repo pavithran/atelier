@@ -90,7 +90,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   if (reviews.length) {
     // Each review says who recorded it, where it says (recordedText).
     const recorded = (r: Review) => { const t = recordedText(r, detail.ownerActor ?? DEFAULT_OWNER); return t ? ` (${t})` : ""; };
-    lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${reviewer(detail, r.by)} ${r.approve ? "approved" : "asked for changes"}${r.tier ? " as the tier review" : ""}${recorded(r)}`).join(", ")}.` });
+    lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${reviewer(detail, r.by)} ${r.approve ? "approved" : "asked for changes"}${r.tier ? " as the tier review" : r.topTier ? " as the gate review, top tier" : ""}${recorded(r)}`).join(", ")}.` });
   }
   // A rejection is answered when a push was observed after it, as the stuck
   // rules read it; the head alone cannot say, since a head can return.
