@@ -114,7 +114,7 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 
 ## 3. Dispatch after approval
 
-`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm. `merged` is how a dependency lands until t16, and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
+`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm; a refused review claim runs it too (the request the claiming agent could not take is re-judged: withdrawn and asked again), the alarm fires not only for the deadline but for the moment a part's claimed review lapses, and a deploy ticks every open plan once, comparing the main commit it was built from (`DEPLOYED_MAIN`) with the last it ticked under, so changed tick logic reaches a plan waiting on nothing else. `merged` is how a dependency lands until t16, and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
 - its dependencies have landed;
 - the plan is not blocked;
 - fewer than `maxParallel` parts are live (default 2, one per Mac);
