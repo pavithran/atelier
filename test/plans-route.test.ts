@@ -42,7 +42,9 @@ test("the reviewer is from another family than the builder, the first such in ra
   assert.deepEqual(actors(r.alternates), ["claude-code/opus-5.5", "claude-code/sonnet-5.5"]);
   assert.equal(r.reviewer!.actor, "claude-code/opus-5.5");
   has(r.reviewer, /Another family \(anthropic\) than the builder's \(openai\)/);
-  has(r.builder, /Rank 1 of 3 eligible for feature work, score 1; equal scores go by model id, then actor name/);
+  has(r.builder, /Rank 1 of 3 eligible for feature work, score 1; equal scores spread across the plan's parts, then go by model id, then actor name/);
+  // A one-part plan has nothing to spread over, so the tie still says who shared it.
+  assert.equal(r.builder!.reasons[0], "Spread across the 3 models tied at score 1: builds 0 parts of this plan so far and its family openai 0 (claude-code/opus-5.5 0, claude-code/sonnet-5.5 0)");
   has(r.builder, /model-card from Task t14/);
   // A track record moves opus ahead; the reviewer then has to leave the anthropic family.
   const events = [event(1, "claude-code/opus-5.5", "item.claimed"), event(2, "atelier/sandbox", "evidence.observed", { passed: true })];
@@ -206,6 +208,51 @@ test("a part no model can take is unrouted with the reason, never silently", () 
   const led = [event(1, "opencode/mystery-1", "item.claimed"), event(2, "atelier/sandbox", "evidence.observed", { passed: true })];
   assert.equal(one([mystery, opus], { events: led }).unrouted, "no reviewer can be of another family than opencode/mystery-1, whose family is not recognised from its name");
   assert.equal(one([mystery, opus]).unrouted, "no reviewer of another family than anthropic (claude-code/opus-5.5): opencode/mystery-1 (family not recognised from its name)");
+});
+
+test("a plan's parts spread across the models tied at the top score, and across families, so one model is not the whole plan", () => {
+  // Three models tied at score 1 (a model card each) and seven parts, as t197
+  // had: in plan order each part goes to the tied model with the fewest parts
+  // so far, then the fewest in its family, then the first by model id.
+  const keys = ["a", "b", "c", "d", "e", "f", "g"];
+  const routes = routeParts(plan(...keys.map((k) => part(k))), input({ pool: [opus, sonnet, gpt] }));
+  assert.deepEqual(routes.map((r) => r.builder!.actor), [
+    "codex/gpt-6-astra", "claude-code/opus-5.5", "claude-code/sonnet-5.5",
+    "codex/gpt-6-astra", "claude-code/opus-5.5", "claude-code/sonnet-5.5", "codex/gpt-6-astra",
+  ]);
+  assert.deepEqual(routes.map((r) => r.unrouted), keys.map(() => null));
+  // The builder's first reason says what the tie was and why this model took the part.
+  assert.equal(routes[1].builder!.reasons[0], "Spread across the 3 models tied at score 1: builds 0 parts of this plan so far and its family anthropic 0 (codex/gpt-6-astra 1, claude-code/sonnet-5.5 0)");
+  assert.equal(routes[3].builder!.reasons[0], "Spread across the 3 models tied at score 1: builds 1 part of this plan so far and its family openai 1 (claude-code/opus-5.5 1, claude-code/sonnet-5.5 1)");
+  assert.match(routes[3].builder!.reasons[1], /^Rank 1 of 3 eligible for feature work, score 1; equal scores spread across the plan's parts, then go by model id, then actor name$/);
+  // Alternates stay in rank order behind the builder, so the tick's fallback is unchanged.
+  assert.deepEqual(actors(routes[1].alternates), ["codex/gpt-6-astra", "claude-code/sonnet-5.5"]);
+  // Reviewers spread the same way among the tied models of another family than each builder.
+  assert.deepEqual(routes.map((r) => r.reviewer!.actor), [
+    "claude-code/opus-5.5", "codex/gpt-6-astra", "codex/gpt-6-astra",
+    "claude-code/sonnet-5.5", "codex/gpt-6-astra", "codex/gpt-6-astra", "claude-code/opus-5.5",
+  ]);
+  assert.equal(routes[0].reviewer!.reasons[0], "Another family (anthropic) than the builder's (openai); spread across the 2 models tied at score 1: reviews 0 parts of this plan so far and its family anthropic 0 (claude-code/sonnet-5.5 0)");
+  assert.equal(routes[1].reviewer!.reasons[0], "Another family (openai) than the builder's (anthropic); the first such model in rank order");
+  assert.equal(routes[3].reviewer!.reasons[0], "Another family (anthropic) than the builder's (openai); spread across the 2 models tied at score 1: reviews 0 parts of this plan so far and its family anthropic 1 (claude-code/opus-5.5 1)");
+
+  // A better score wins every part outright: spreading never overrides the ranking.
+  const events = [event(1, "claude-code/opus-5.5", "item.claimed"), event(2, "atelier/sandbox", "evidence.observed", { passed: true })];
+  const led = routeParts(plan(...keys.map((k) => part(k))), input({ pool: [opus, sonnet, gpt], events }));
+  assert.deepEqual(led.map((r) => r.builder!.actor), keys.map(() => "claude-code/opus-5.5"));
+  assert.deepEqual(led.map((r) => r.reviewer!.actor), keys.map(() => "codex/gpt-6-astra"));
+  for (const r of led) assert.match(r.builder!.reasons[0], /^Rank 1 of 3 eligible/);
+
+  // A preference still wins its part, and counts as that model's share of the plan.
+  const prefer = { actor: "claude-code/opus-5.5", reason: "knows the module" };
+  const preferred = routeParts(plan(part("a", { prefer }), part("b"), part("c")), input({ pool: [opus, sonnet, gpt] }));
+  assert.deepEqual(preferred.map((r) => r.builder!.actor), ["claude-code/opus-5.5", "codex/gpt-6-astra", "claude-code/sonnet-5.5"]);
+  assert.equal(preferred[0].builder!.reasons[0], "Preferred by the plan (knows the module); passes every rule");
+  assert.equal(preferred[1].builder!.reasons[0], "Spread across the 3 models tied at score 1: builds 0 parts of this plan so far and its family openai 0 (claude-code/opus-5.5 1, claude-code/sonnet-5.5 0)");
+
+  // The spread is the same whatever order the pool is given in.
+  const again = routeParts(plan(...keys.map((k) => part(k))), input({ pool: [gpt, sonnet, opus] }));
+  assert.deepEqual(again, routes);
 });
 
 test("routing is deterministic, breaks ties by model id then actor name, and leaves its inputs alone", () => {
