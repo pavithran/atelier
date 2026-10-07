@@ -1,0 +1,40 @@
+atelier atelier/t256 "A plan part dispatched again keeps the fork it was first given, even when it has no commits of its own and the plan's branch has moved on: t208's workspace stayed at ee3f8a4 after t255 integrated main (with docs/using-atelier.md) onto the branch at 8cf909bc, so Fable stopped again for want of the file (2026-10-07). When a part is dispatched and its fork holds nothing beyond its recorded base, start it from the plan branch's current integration head: move the fork and the part's base there (or recreate the fork), so the builder sees every integrated part and every main merge; a part with work of its own keeps it (t245's plan-branch merge covers conflicts)"
+accepted head 33211a26c21d9a49a6e05e93141982a2859b551b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T14:50:48.284Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T14:50:51.444Z
+REVIEW approve by antigravity/gemini-3.1-pro at 33211a26c21d9a49a6e05e93141982a2859b551b, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T14:21:51.181Z pavi item.created
+2026-10-07T14:21:55.203Z claude-code/opus-5.5 item.claimed
+2026-10-07T14:22:06.150Z claude-code/opus-5.5 fork.created
+2026-10-07T14:36:33.762Z pavi land.lease
+2026-10-07T14:36:37.017Z pavi land.merge
+2026-10-07T14:36:44.557Z pavi land.regenerate
+2026-10-07T14:36:49.377Z claude-code/opus-5.5 push.observed
+2026-10-07T14:36:49.636Z pavi land.push
+2026-10-07T14:38:57.293Z claude-code/opus-5.5 evidence.observed
+2026-10-07T14:38:59.838Z claude-code/opus-5.5 evidence.observed
+2026-10-07T14:39:00.379Z pavi land.check
+2026-10-07T14:39:00.791Z claude-code/opus-5.5 item.submitted
+2026-10-07T14:39:01.106Z pavi land.submit
+2026-10-07T14:39:01.279Z pavi review.requested
+2026-10-07T14:39:14.527Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T14:43:11.286Z antigravity/gemini-3.1-pro review.rejected
+2026-10-07T14:43:14.134Z pavi land.review
+2026-10-07T14:48:08.444Z pavi review.finding
+2026-10-07T14:48:08.869Z pavi review.finding
+2026-10-07T14:48:09.791Z pavi land.lease
+2026-10-07T14:48:11.387Z pavi land.merge
+2026-10-07T14:48:22.145Z pavi land.regenerate
+2026-10-07T14:48:25.944Z claude-code/opus-5.5 push.observed
+2026-10-07T14:48:26.118Z pavi land.push
+2026-10-07T14:50:49.151Z claude-code/opus-5.5 evidence.observed
+2026-10-07T14:50:51.754Z claude-code/opus-5.5 evidence.observed
+2026-10-07T14:50:52.218Z pavi land.check
+2026-10-07T14:50:52.664Z claude-code/opus-5.5 item.submitted
+2026-10-07T14:50:52.994Z pavi land.submit
+2026-10-07T14:50:53.179Z pavi review.requested
+2026-10-07T14:51:22.813Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T14:57:00.598Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T14:57:02.914Z pavi land.review
+2026-10-07T14:57:03.721Z pavi item.accepted
+2026-10-07T14:57:03.893Z pavi land.accept
