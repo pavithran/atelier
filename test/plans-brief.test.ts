@@ -221,3 +221,57 @@ test("quoted text cannot close its block, and hidden characters are shown", asyn
     "Its output:\n`````\n```\n```` fail\n<U+202E>\n`````",
   );
 });
+
+// A merge-main part's brief: main has been merged into the workspace and the
+// conflicts are left in it; the builder keeps both sides' behaviour and
+// claims, removes the markers, runs the checks and commits the merge with
+// its message as it stands, which already carries the Agent line.
+test("a merge-main brief says main is merged with conflicts left, to keep both sides, and to commit the merge as it stands", async () => {
+  const M = "c".repeat(40);
+  const brief = await text({ mergeMain: { head: M }, dependencies: [], part: part({ key: "merge-main-cccccccc", title: "Merge main at cccccccc into the plan's branch", dependsOn: [] }) });
+  has(brief,
+    "## Rules\n\n- Work only in this workspace. Change only what resolving the merge needs; main's own changes come with the merge and are not yours to change.",
+    `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${GLM}.`,
+    "Do not start the merge again, abort it, rebase or reset it.",
+    "## Merging main",
+    `Main at cccccccc (${M}) conflicts with the plan's branch.`,
+    "the runner has merged main at cccccccc into it before you start. The conflicts remain in the files listed under \"Conflicts in this workspace\"",
+    "keeping both sides' behaviour",
+    "keep both sides' claims and merge their meaning; do not pick one side.",
+    "- Remove every conflict marker",
+    "- Run the checks, fix what the merge broke, then commit the merge.",
+  );
+  lacks(brief, "- Write tests for new behaviour.", "- Commit your work in this workspace");
+  assert.ok(brief.indexOf("## Rules") < brief.indexOf("## Merging main") && brief.indexOf("## Merging main") < brief.indexOf("## The plan"));
+  // Any other part's brief, and its hash, are as they were without the field.
+  assert.equal(await hash({ mergeMain: null }), await hash());
+  assert.notEqual(await hash({ mergeMain: { head: M } }), await hash());
+  lacks(await text(), "## Merging main");
+});
+
+// A part sent back after its integration conflicted with the plan's branch:
+// the runner has merged the branch's head into the workspace and left the
+// conflicts; the builder keeps both sides, removes the markers, runs the
+// checks and commits the merge with its message as it stands.
+test("a brief after an integration conflict says the plan's branch is merged with conflicts left, and other briefs are unchanged", async () => {
+  const P = "d".repeat(40);
+  const brief = await text({ job: "rework", mergePlan: { head: P } });
+  has(brief,
+    "## Merging the plan's branch",
+    `The runner has merged the plan's branch at dddddddd (${P}) into this workspace before you start. The conflicts remain in the files listed under "Conflicts in this workspace"`,
+    "keeping both sides' behaviour: what this part does and what the plan's branch does must both still hold.",
+    "keep both sides' claims and merge their meaning; do not pick one side.",
+    "- Remove every conflict marker",
+    "- Run the checks and fix what the merge broke.",
+    `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${GLM}.`,
+    "Do not start the merge again, abort it, rebase or reset it.",
+    "- Write tests for new behaviour.",
+  );
+  assert.ok(brief.indexOf("## Rules") < brief.indexOf("## Merging the plan's branch") && brief.indexOf("## Merging the plan's branch") < brief.indexOf("## The plan"));
+  // A merge-main part sent back the same way has both sections.
+  const both = await text({ job: "rework", mergeMain: { head: "c".repeat(40) }, mergePlan: { head: P } });
+  assert.ok(both.indexOf("## Merging main") < both.indexOf("## Merging the plan's branch"));
+  assert.equal(await hash({ mergePlan: null }), await hash());
+  assert.notEqual(await hash({ mergePlan: { head: P } }), await hash());
+  lacks(await text({ job: "rework" }), "## Merging the plan's branch");
+});

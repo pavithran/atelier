@@ -33,7 +33,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   { name: "Setup", lines: [[
     { form: "login --server URL", about: "Stores this server's address and the owner's token, asking for the token when none is stored for it. A token the server refuses is not stored." },
     { form: "login --store", about: "Names the token store in use and whether it holds a token. It never prints the token." },
-    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
+    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. `--review-bar` records what may block a review, which every review brief states; unset, the brief states the default bar (correctness, security or data-loss defects only). Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
     { form: "sync", about: "Refreshes the stored policy from the project's ControlPlane files. For a baseline built with `--history-since`, it also carries commits made in the checkout outside Atelier to the baseline." },
     { form: "publish", about: "Pushes the registered branch to the baseline with a write token. It is refused for a baseline that holds only part of the history; `sync` does that job." },
   ], [
@@ -44,10 +44,10 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it." },
   ], [
     { form: "ls [--all] [--json]", about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them." },
-    { form: "show ID [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--json` prints it for scripts." },
+    { form: "show ID [--reviews] [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--reviews` also prints each review at each head with its whole note and findings; `--json` prints the brief, carrying the reviews, for scripts." },
     { form: "owners [--json]", about: "Prints one line per live task: its state, its owner and since when." },
     { form: "inbox [--json]", about: "Prints the decision brief of each task that needs the project owner, most urgent first. `--json` prints the entries for scripts." },
-    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, and the same local facts under `local`." },
+    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, which pairs of live tasks name overlapping scopes (each pair once, nothing waiting on the owner), what is in progress and what waits for a runner, each open review request among it with its reviewer named, and, for any queued job no live runner offers, that it can never be claimed until a runner that offers it is started, which is a mismatch between the dispatch and the runners rather than a wait. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, the overlapping pairs under `overlaps` and the same local facts under `local`." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
@@ -56,7 +56,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   ], [
     { form: "claim ID --as H/M [--runner home:NAME]", about: "Takes ownership of a task, forks the baseline into the task's workspace, mints a write token for the claimant alone, clones the workspace and records the project's branch as the one it pushes to. Claiming again refreshes the token and that branch, saying when the branch changed. `--runner` names the runner when a runner claims a dispatched task." },
     { form: "finish [--sandbox] [--summary T]", about: "Run in the claimed workspace: pushes, runs the required checks and submits, only if they pass and the workspace has not changed meanwhile. `--sandbox` runs the checks in a Cloudflare container. `done` is `finish` with a required summary." },
-    { form: "push [--force]", about: "Pushes the workspace to the task's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease." },
+    { form: "push [--force | --rollback]", about: "Pushes the workspace to the task's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease. `--rollback` returns the fork to an earlier commit of the recorded history, as the plan integrator does after a failed integration." },
     { form: "update", about: "Rebases the workspace onto whatever has merged to the baseline since the fork, then names the next step, `atelier push --force`, whose lease refuses to overwrite anything pushed since the workspace last fetched." },
     { form: "check [--sandbox] [--merged] [-- CMD]", about: "Runs each required check, or the command after `--`, in a clean clone of exactly the head Artifacts holds, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs them in a Cloudflare container instead. `--merged` runs them on the would-be merge, the head merged with main as main is now, in a temporary merge commit that is never pushed; the result is recorded against both revisions, shown beside the merge preview, and goes stale when either moves. A local check runs with the caller's file access, so it can read their files and Keychain and reach the network; it is given only the environment variables toolchains need, and Atelier's tokens are redacted from its output before upload. Run untrusted code with `--sandbox`." },
     { form: "report [ID] \"what you verified and how\" [--item ID] [--project P]", about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the task named, else on the workspace's task; in a workspace, another task's id needs `--item ID`. It is shown and never counted as a check." },
@@ -74,14 +74,16 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "read-token ID", about: "Reads a token for the task's own fork, with its head and base, for a job that clones it outside a task or a review." },
     { form: "base-token ID", about: "Reads a token for the repository the task is measured against: the plan's fork for a part, the baseline otherwise." },
     { form: "integrated ID --part KEY --merge-commit SHA", about: "The integrator reports a verified merge of one part onto the plan's branch; the server checks the commit against the branch before recording it." },
-    { form: "integration-failed ID --part KEY --reason TEXT", about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason." },
+    { form: "integration-failed ID --part KEY --reason TEXT [--kind conflict|checks]", about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason. `--kind` says the failure was the part's own, a merge conflict or failing checks, which charges its builder an attempt; without it the builder is charged nothing." },
+    { form: "refreshed ID --main-head SHA [--merge-commit SHA]", about: "The integrator reports a refresh: main's head, the one the refresh job names, merged into the plan's branch. The server checks the merge commit against the branch before recording it, and it becomes the commit later parts fork from and later integrations build on. Without `--merge-commit` the branch already held main's head, which the server checks." },
+    { form: "refresh-failed ID --main-head SHA --reason TEXT [--kind conflict|checks]", about: "The integrator reports a refresh that conflicted or failed the plan's checks, after rolling the branch back. It is recorded on the plan with the reason and charges no part's builder; the tick does not try it again for that main head." },
   ]] },
   { name: "Owner", lines: [[
-    { form: "accept ID [--head SHA] [--override-review REASON]", about: "The project owner accepts the task at its current head; `--head` names that head, and any other is refused. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
+    { form: "accept ID [--head SHA] [--override-review REASON] [--note TEXT]", about: "The project owner accepts the task at its current head; `--head` names that head, and any other is refused. `--note` keeps the owner's word on the acceptance with it in the ledger. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
     { form: "merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON]] [--policy-changed-ok]", about: "The project owner lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted task is accepted at that exact revision first: `--approve` records the owner's review, with `--note` as its reason, which is not the independent review, and `--override-review` accepts with the owner's override, as `accept` does. Run again, it resumes an interrupted merge; `--cancel` ends one." },
     { form: "merge ID --cancel [--discard-local]", about: "Ends an interrupted merge: the landing lease is released, so the task's owner can push again. An unpublished merge commit in the checkout is kept unless `--discard-local` removes it and returns the branch to where the merge began." },
-    { form: "land ID [--reviewer H/M] [--no-review] [--dry-run]", about: "The project owner lands one task whole. It takes the project's landing lease on the server, so two sessions never race main, then merges main into the task's workspace, stopping on conflicts and leaving them for the owner, naming the files. It regenerates the project's fixtures when the policy declares how (`init --regenerate`), pushes, runs the required checks and submits. It requests the independent review the gate needs through the review-request routes and waits for the verdict, then accepts and merges. Each step, its duration and the commits that came from main are recorded as land.* events, for the integration record. It refuses to start when the server's route level is lower than this CLI's, saying to deploy. `--reviewer` names the reviewer; `--no-review` leaves the task submitted; `--dry-run` prints the steps and the refusals without changing anything." },
-    { form: "abandon ID [--note TEXT]", about: "Closes the task without merging it. The holder's write token is revoked; the history and evidence stay. `--note` says why." },
+    { form: "land ID [--reviewer H/M] [--no-review] [--wait] [--dry-run] [--release-lease]", about: "The project owner lands one task whole. It takes the project's landing lease on the server, so two sessions never race main, then merges main into the task's workspace, stopping on conflicts and leaving them for the owner, naming the files. It regenerates the project's fixtures when the policy declares how (`init --regenerate`), pushes, runs the required checks and submits. It requests the independent review the gate needs through the review-request routes and waits for the verdict (up to 60 minutes, or ATELIER_LAND_REVIEW_TIMEOUT milliseconds), saying what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers, then accepts and merges. A named `--reviewer` is always asked, even where the gate needs no review, and a rejection stops the landing. Each step, its duration and the commits that came from main are recorded as land.* events, for the integration record. It refuses to start when the server's route level is lower than this CLI's, saying to deploy, and while another task's landing holds the lease, naming who holds it and since when, unless `--wait` queues behind it: it polls the lease, says whose landing it waits behind and starts as soon as the lease is free (three hours at most, or ATELIER_LAND_WAIT_TIMEOUT milliseconds), so several landings started at once run in turn. The lease is renewed while the landing runs, released on SIGINT or SIGTERM, and treated as free by the server once 15 minutes pass without a renewal, which the next landing reports when it takes the lease over. `--reviewer` names the reviewer; `--no-review` leaves the task submitted; `--wait` queues for the lease; `--dry-run` prints the steps and the refusals without changing anything; `--release-lease` frees the project's lease, saying which task held it since when." },
+    { form: "abandon ID [--note TEXT] [--delivered-by tN]", about: "Closes the task without merging it. The holder's write token is revoked; the history and evidence stay. `--note` says why. `--delivered-by` records that the merged task tN delivered it, for work another task already brought in." },
     { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the task was accepted at. Nothing about the task changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
     { form: "finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT]", about: "The project owner records a verdict on one finding of a review: confirmed, that the finding was right and a fix followed; fixed, that it was right and is fixed; refuted, that it was wrong. `--head` names the review's revision and `--index` the finding's position in that review's findings, one based. The event is the record, and the reliability record counts the reviewer's findings confirmed and refuted, which measures its precision." },
   ], [
@@ -95,13 +97,14 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Plans", lines: [[
     { form: 'plan "goal" [--scope GLOB]... [--planner H/M]', about: "The project owner states a goal. Atelier creates the plan task and queues it as a plan job for the planner named, or else for the first model in the pool for research work that is not refused, not paid per token and may plan. A project has one active plan at a time. A runner that offers plan jobs takes it: the planner claims the plan task, reads its brief from the job-brief route and posts the plan document the harness wrote; by hand, a planner claims with `--runner` and runs `plan post`." },
-    { form: "plan show ID [--json]", about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, the part dispatches used, why it is blocked, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now. It accepts a part's id too." },
+    { form: "plan show ID [--json]", about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, any live review request naming the reviewer asked and whether a runner claimed it, and saying, when no live runner offers that reviewer for the review job, that the request can never be claimed until one does, with the reroute that names another, then the part dispatches used, why it is blocked, the main head the branch last took against main's head now with any refresh in flight or failed, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now. It accepts a part's id too." },
   ], [
     { form: "plan approve ID --hash HASH [--allow-paid]", about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no model of another family can review, refuses the approval. `--allow-paid` lets models paid per token build and review." },
     { form: 'plan revise ID --note TEXT', about: "Before approval, sends the plan back to its planner with a note; its next proposal replaces the one before." },
   ], [
-    { form: "plan reroute ID --to H/M", about: "Names who builds an open part from now on, its attempts counted afresh; before approval, names another planner for the plan." },
+    { form: "plan reroute ID --to H/M", about: "Names who builds an open part from now on, its attempts counted afresh; for a submitted part, or one blocked for want of an eligible reviewer, names its reviewer, in the pool or not, which must be of another family than every contributor; before approval, names another planner for the plan." },
     { form: "plan retry ID", about: "Counts an open part's attempts afresh, so its builder is asked again; before approval, asks the planner again." },
+    { form: "plan refresh ID [--resolve [--to H/M]]", about: "Queues the plan's refresh job for the integrator, which merges main's head into the plan's branch, so later parts fork from it; parts wait for it before they are dispatched. The tick does this itself before it dispatches a part when main has moved, once per main head; this runs it again, as after a failed refresh. It is refused before approval, once the plan is submitted or closed, while the plan's integrate or refresh job is queued or held, and when the branch already holds main's head. A refresh that conflicts adds a merge-main part to the plan, which a model builds: the runner merges main into the part's workspace and leaves the conflicts for it to resolve, and its integration puts main on the branch; no other part is dispatched until it is integrated. `--resolve` adds that part for main's head now without trying a refresh first, built by `--to` when named; it is refused while a refresh is queued, when the part for that head exists, while another merge-main part is not integrated, and when the branch already holds main's head." },
     { form: "plan stop ID [--note TEXT]", about: "Closes the plan and every part not yet merged, revoking their write tokens. The history and evidence stay." },
   ], [
     { form: "plan post ID FILE", about: "The holder of the plan task's claim, its planner, posts the plan document in FILE. An invalid one is refused with every error, and the planner gets one more attempt before the plan blocks." },
@@ -111,7 +114,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT]", about: "Adds or replaces a pool entry. Atelier never stores a key: `--keychain` names the Keychain entry that holds it, and a request that carries a key is refused. `--note` keeps a note with the entry." },
     { form: "models remove ID", about: "Removes a model from the pool." },
   ], [
-    { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T]", about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it. Project owner only." },
+    { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]]", about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it; a held task is released and queued in the same step, keeping its workspace and commits. `--job merge-main` sends a task whose landing conflicted with main back to its builder: the runner merges main at the named head into its workspace (main's head as the baseline holds it, unless `--head` names one) and leaves the conflicts for the builder to resolve and commit; then `atelier land ID` again. Project owner only." },
     { form: "undispatch ID", about: "Takes the task out of the queue." },
     { form: "queue", about: "Lists everything waiting for a runner, across projects, oldest first." },
   ]] },
@@ -214,6 +217,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--reset": "rebuilds the policy from the defaults and the options given",
       "--history-since YYYY-MM-DD": "builds the baseline from the commits since that day only, for a project too large for Artifacts",
       "--regenerate CMD": "the command that regenerates the project's generated fixtures, run by atelier land in a task's workspace after it merges main; --regenerate \"\" clears it",
+      "--review-bar TEXT": "what may block a review, stated in every review brief (at most 1000 characters); --review-bar \"\" restores the default: correctness, security or data-loss defects only",
       "--name NAME": "the project's name; the checkout folder's name unless given",
       "--rename-local": "with --name, changes only this machine's name for the registered checkout",
     },
@@ -249,13 +253,19 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     },
     example: "atelier ls --all --project demo",
   },
-  show: { flags: { "--json": "prints the brief as JSON" }, example: "atelier show t3 --project demo" },
+  show: {
+    flags: {
+      "--reviews": "prints each review at each head, with its whole note and every finding",
+      "--json": "prints the brief as JSON, with every review and its findings",
+    },
+    example: "atelier show t3 --project demo",
+  },
   owners: { flags: { "--json": "prints the list as JSON" }, example: "atelier owners --project demo" },
   inbox: { flags: { "--json": "prints the entries as JSON" }, example: "atelier inbox" },
   status: {
     flags: {
       "--project P": "where one project stands, as text, instead of the owner's queue for every project; ends with an On this Mac section when any of its tasks has a workspace here",
-      "--json": "prints machine-readable records, each item with its created, updated and last-push times; with --project, also the local facts of this Mac's workspaces and any landing",
+      "--json": "prints machine-readable records, each item with its created, updated and last-push times and each project's overlapping task pairs under `overlaps`; with --project, also the local facts of this Mac's workspaces and any landing",
     },
     example: "atelier status --project demo",
   },
@@ -280,7 +290,10 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     example: 'atelier finish --summary "The parser takes the new form"',
   },
   push: {
-    flags: { "--force": "after atelier update: pushes the rebased head, with a lease on the head Atelier recorded" },
+    flags: {
+      "--force": "after atelier update: pushes the rebased head, with a lease on the head Atelier recorded",
+      "--rollback": "returns the fork to the workspace's HEAD, an earlier commit of the recorded history, dropping what was recorded after it, with a lease on the recorded head; the plan integrator's rollback",
+    },
     example: "atelier push",
   },
   update: { example: "atelier update" },
@@ -325,6 +338,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     flags: {
       "--head SHA": "the revision accepted; the task's current head unless given, and any other is refused",
       "--override-review REASON": "accepts without the independent review, when no reviewer qualifies; the reason is recorded",
+      "--note TEXT": "the owner's word on the acceptance, kept with it in the ledger",
     },
     example: "atelier accept t3 --project demo",
   },
@@ -342,9 +356,11 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   land: {
     flags: {
-      "--reviewer H/M": "names the reviewer the request goes to; otherwise the server picks a model of another family than every contributor",
+      "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise the server picks a model of another family than every contributor, when the gate needs a review",
       "--no-review": "skips waiting: the task is left submitted for the owner to settle the review by hand",
+      "--wait": "queues for the landing lease while another task's landing holds it, saying whose landing it waits behind, and starts as soon as the lease is free (three hours at most)",
       "--dry-run": "prints the steps and the refusals without changing anything",
+      "--release-lease": "frees the project's landing lease, held by a landing that was killed, and says which task held it since when; the project owner alone may",
     },
     example: "atelier land t3 --project demo",
   },
@@ -367,10 +383,26 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     },
     example: "atelier integrated t3 --part t4 --merge-commit 0123456789abcdef0123456789abcdef01234567 --project demo",
   },
+  refreshed: {
+    flags: {
+      "--main-head SHA": "the full hash of the main head the refresh merged; required",
+      "--merge-commit SHA": "the full hash of the merge commit on the plan's branch; left out when the branch already held main's head",
+    },
+    example: "atelier refreshed t3 --main-head 0123456789abcdef0123456789abcdef01234567 --merge-commit 89abcdef0123456789abcdef0123456789abcdef --project demo",
+  },
+  "refresh-failed": {
+    flags: {
+      "--main-head SHA": "the full hash of the main head the refresh tried to merge; required",
+      "--reason TEXT": "why the refresh failed; shown on plan show",
+      "--kind conflict|checks": "a merge conflict or failing checks",
+    },
+    example: 'atelier refresh-failed t3 --main-head 0123456789abcdef0123456789abcdef01234567 --reason "Conflict in docs/a.md" --kind conflict --project demo',
+  },
   "integration-failed": {
     flags: {
       "--part KEY": "the part whose merge failed; required",
       "--reason TEXT": "why the merge failed; sent to the part's builder with the rework",
+      "--kind conflict|checks": "the part's own failure, a merge conflict or failing checks, which charges its builder an attempt",
     },
     example: 'atelier integration-failed t3 --part t4 --reason "Conflict in src/api.ts" --project demo',
   },
@@ -442,11 +474,12 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--hash HASH": "with approve, the full hash of the newest proposal",
       "--allow-paid": "with approve, lets models paid per token build parts",
       "--note TEXT": "with revise or stop, why; kept with the event",
-      "--to H/M": "with reroute, the model that builds from now on, or plans before approval",
+      "--to H/M": "with reroute, the model that builds from now on, reviews a submitted part, or plans before approval; with refresh --resolve, the model that builds the merge-main part",
+      "--resolve": "with refresh, adds a part that merges main's head into the branch and resolves its conflicts, instead of queuing a refresh",
     },
     example: 'atelier plan "Move the parser to the new grammar" --scope "src/parser/**" --project demo',
   },
-  abandon: { flags: { "--note TEXT": "why; kept with the event" }, example: 'atelier abandon t3 --note "Superseded by t5" --project demo' },
+  abandon: { flags: { "--note TEXT": "why; kept with the event", "--delivered-by tN": "a merged task that delivered this one's work; kept with the event" }, example: 'atelier abandon t3 --note "Superseded by t5" --project demo' },
   models: {
     flags: {
       "--harness H": "the harness that runs the model: opencode, claude-code, codex, zcode, gemini-cli or antigravity",
@@ -465,8 +498,10 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--agent A": "the agent the runner must run",
       "--model M": "the model the runner must use",
       "--note TEXT": "a note the agent reads with the task",
+      "--job merge-main": "sends the task to its builder to merge main into its workspace and resolve the conflicts of a landing that stopped on them",
+      "--head H": "with --job merge-main, the full hash of main's head to merge; main's head as the baseline holds it unless given",
     },
-    example: 'atelier dispatch t3 --to home --agent codex --note "Keep it small" --project demo',
+    example: "atelier dispatch t3 --to home --agent codex --note \"Keep it small\" --project demo",
   },
   undispatch: { example: "atelier undispatch t3 --project demo" },
   queue: { example: "atelier queue" },

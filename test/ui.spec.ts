@@ -330,7 +330,7 @@ it('the showcase route is public only when the owner names projects, and caches 
  await index.registerProject({...record,name:'missing',repo:'missing'});
  const res=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown, missing'} as typeof env);
  expect(res.status).toBe(200);
- expect(res.headers.get('cache-control')).toBe('public, max-age=60');
+ expect(res.headers.get('cache-control')).toBe('public, max-age=60, s-maxage=60');
  expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
  const body=await res.text();
  expect(body).toContain('Atelier · public showcase');
@@ -356,7 +356,7 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  expect(html).toContain('&lt;b&gt;local&lt;/b&gt;');
  expect(html).toContain('Took 2 tasks, merged 2');
  expect(html).toContain('checked by home:studio');
- expect(html).toContain('most recent 1,000 events');
+ expect(html).toContain('all 1,000 events');
  expect(html).toContain('family not recognised');
  expect(html).toContain('action="/models/add"');
  const TOKEN='models-page-token';
@@ -1241,4 +1241,16 @@ it('a commit page marks the Log tab current and its crumb names the commit',()=>
  expect(commit).toContain('href="/p/example/log" aria-current="page">Log');
  expect(commit).toContain('/ Commit 11a7ee68</nav>');
  expect(commit).not.toContain('href="/projects"');
+});
+it('each review on the task page says who recorded it (t215)',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();d.reviews=[
+  {itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'own token',at:time,recordedBy:'claude-code/opus-5.5',proved:true,claimed:false},
+  {itemId:'t1',head,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the owner',at:time,recordedBy:'pavi',proved:false,claimed:false},
+  {itemId:'t1',head,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
+ ];
+ const html=renderItem(project,d,'PAVI',diff);
+ expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded with its own token');
+ expect(html).toContain('recorded by the project owner with the owner token</p>');
+ expect(html).toContain('recorded by the project owner with the owner token, answering a review request it claimed');
 });

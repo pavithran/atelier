@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  INTEGRABLE_FROM, integrationBlockers, integrationChecks, LANDED, landed, nextToIntegrate, planGate, rollbackFor, verifyIntegration,
+  INTEGRABLE_FROM, integrationBlockers, integrationChecks, LANDED, landed, mergeBaseFor, nextToIntegrate, planGate, rollbackFor, verifyIntegration, verifyRefresh,
   type LogCommit, type Part, type PartState, type PlanGateInput,
 } from "../src/plans/integrate.ts";
 import { PROTECTED_NEED, type AgentRole, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
@@ -276,4 +276,34 @@ test("planGate keeps gate()'s blockers for the plan item and refuses a branch th
   const reviewOverride = { head: MB, by: "owner", reason: "Each part had its own review from another family", at: T };
   const overridden = planGate(gateInput({ policy: guarded, plan: planItem({ reviewOverride }) }));
   assert.deepEqual([overridden.blockers, overridden.overridden], [[], reviewOverride]);
+});
+
+// A refresh merges main's head onto the integration head, and becomes the
+// integration head that later integrations sit on.
+test("verifyRefresh accepts main's head merged onto the integration head, and an integration then sits on the refresh", () => {
+  const M = h("c"), R = h("d");
+  const log = [commit(R, MA, M), commit(MA, BASE, A), commit(M, BASE), commit(BASE)];
+  assert.deepEqual(verifyRefresh({ log, integrationHead: MA, mainHead: M, mergeCommit: R }), []);
+  assert.deepEqual(verifyRefresh({ log, integrationHead: MA, mainHead: h("f"), mergeCommit: R }), [
+    "dddddddd's second parent is cccccccc, not main's head ffffffff, which the refresh was dispatched to merge",
+  ]);
+  assert.deepEqual(verifyRefresh({ log, integrationHead: BASE, mainHead: M, mergeCommit: R }), [
+    "dddddddd's first parent is 11111111, not the plan's integration head 00000000",
+  ]);
+  assert.deepEqual(verifyRefresh({ log, integrationHead: MA, mainHead: M, mergeCommit: X }), ["eeeeeeee is not in the plan branch's log"]);
+  // The next part's integration must sit on the refresh, not on the head before it.
+  const next = [commit(MB, R, B), ...log];
+  assert.deepEqual(verifyIntegration({ log: next, integrationHead: R, partHead: B, mergeCommit: MB }), []);
+  assert.ok(verifyIntegration({ log: next, integrationHead: MA, partHead: B, mergeCommit: MB }).length > 0);
+});
+
+test("mergeBaseFor measures from the part's merged plan head unless the part holds the plan's top", () => {
+  // The part holds the plan head it merged; the plan's top is not held, or
+  // the bounded search ran out before it could say.
+  assert.equal(mergeBaseFor(false, "p".repeat(40), "b".repeat(40), true), "p".repeat(40));
+  assert.equal(mergeBaseFor(null, "p".repeat(40), "b".repeat(40), true), "p".repeat(40));
+  // Without a merged plan head, or one the part does not hold, the fork point.
+  assert.equal(mergeBaseFor(null, null, "b".repeat(40), null), "b".repeat(40));
+  assert.equal(mergeBaseFor(false, "p".repeat(40), "b".repeat(40), null), "b".repeat(40));
+  assert.equal(mergeBaseFor(false, "b".repeat(40), "b".repeat(40), true), "b".repeat(40));
 });
