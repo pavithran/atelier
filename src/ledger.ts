@@ -15,7 +15,7 @@ import { cleanSummary } from "./brief";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchedClaim, makeDispatch, liveOffers, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -127,6 +127,7 @@ export interface ProjectInit {
   execution?: ProjectPolicy["execution"];
   eligible?: string[];
   refuseOverlap?: boolean;
+  coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
   approval?: string | null;
 }
@@ -247,6 +248,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
+  const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -266,6 +268,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
+      ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       ...(approval ? { approval } : {}),
     },
@@ -883,7 +886,7 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}) }, d.at);
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}) }, d.at);
     return this.item(id);
   }
 
@@ -930,12 +933,22 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  // Open tasks waiting for a runner, oldest dispatch first. Not named queue():
-  // that is a reserved handler name, which Durable Object RPC will not call.
-  waiting(): Item[] {
-    return this.items()
+  // Open tasks waiting for a runner, oldest dispatch first, each one the
+  // project's core files hold carrying `held`: the live item it waits on
+  // (coreHold in src/dispatch/rules.ts). The queue offers a runner none that
+  // is held; the owner's listing shows them with what each waits on. Not
+  // named queue(): that is a reserved handler name, which Durable Object RPC
+  // will not call.
+  waiting(): (Item & { held?: CoreHold })[] {
+    const items = this.items();
+    const coreFiles = this.project().policy.coreFiles;
+    return items
       .filter((i) => i.state === "open" && !i.owner && i.dispatch)
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
+      .map((i) => {
+        const held = coreHold(i, items, coreFiles);
+        return held ? { ...i, held } : i;
+      });
   }
 
   // A failed fork must not leave an owner holding nothing.
@@ -2175,6 +2188,7 @@ export class Ledger extends DurableObject<Env> {
     const approval = record.approval;
     const policy = this.project().policy;
     const parts = this.planParts(item.id).map((p) => this.item(p.id));
+    const everything = this.items();
     const all = approval ? this.partEvents(item.id) : [];
     const attempts = partAttempts(tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!]))));
     const ids = new Map(parts.map((p) => [p.partKey!, p.id]));
@@ -2207,6 +2221,8 @@ export class Ledger extends DurableObject<Env> {
           id: p.id, key: p.partKey!, title: p.title, state: p.state, owner: p.owner, head: p.head, acceptedHead: p.acceptedHead, scope: p.scope,
           dependsOn: (p.deps ?? []).map((key) => ({ key, id: ids.get(key) ?? null })),
           dispatch: p.dispatch ?? null,
+          // A queued part the project's core files hold names the live item it waits on.
+          held: p.state === "open" && !p.owner ? coreHold(p, everything, policy.coreFiles) : null,
           route: route ? rerouted(route, record) : null,
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
