@@ -769,8 +769,10 @@ export function gatewaySection(g: GatewayView): string {
     <td class="num">${e(tokens(m.tokensIn))} in · ${e(tokens(m.tokensOut))} out</td>
     <td class="num">${m.cost === null ? '<span class="meta">not priced</span>' : e(money(m.cost))}</td>
     <td class="num">${m.medianMs === null ? '<span class="meta">none</span>' : `${e(duration(m.medianMs))} <span class="meta">n=${m.sample}</span>`}</td></tr>`;
+  const gaps = g.gaps.map((x) => `<p role="status" class="error">Incomplete: the pull at ${e(stamp(x.pulledAt))} read its limit of logs before reaching the last one written, so at least ${plural(x.atLeast, "call")} logged between ${e(stamp(x.from))} and ${e(stamp(x.to))} ${x.atLeast === 1 ? "was" : "were"} not read. The figures below undercount that stretch.</p>`).join("");
   return `<section class="gateway" aria-label="AI Gateway costs">${head}
-  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from the gateway's own logs. ${pull}</p>
+  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from the gateway's own logs. Calls, tokens and cost count every call; ${g.sampled ? "the medians are taken over the newest durations only, n of them" : "each median is taken over n calls"}. ${pull}</p>
+  ${gaps}
   ${g.models.length ? `<table class="usage-table">
     <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median duration</th></tr></thead>
     <tbody>${g.models.map(row).join("")}</tbody>

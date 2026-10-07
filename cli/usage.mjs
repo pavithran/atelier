@@ -252,6 +252,7 @@ export function describeGateway(view, safe) {
     const ms = m.medianMs === null ? "no durations" : `median ${m.medianMs < 1000 ? `${m.medianMs} ms` : `${(m.medianMs / 1000).toFixed(1)} s`} (n=${m.sample})`;
     lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out${m.cost === null ? "" : `, $${m.cost.toFixed(2)}`}, ${ms}`);
   }
+  for (const g of view.gaps ?? []) lines.push(`  incomplete: at least ${g.atLeast} call${g.atLeast === 1 ? "" : "s"} between ${stamp(Date.parse(g.from))} and ${stamp(Date.parse(g.to))} not read; totals undercount`);
   if (view.pull?.error) lines.push(`  last pull ${stamp(Date.parse(view.pull.at))} failed: ${safe(view.pull.error, 200)}`);
   else if (view.pull) lines.push(`  logs last pulled ${stamp(Date.parse(view.pull.at))}`);
   return lines;

@@ -1338,12 +1338,19 @@ and writes one Workers Analytics Engine data point per log to the
 `atelier_metrics` dataset (binding `METRICS`): provider, model, tokens in
 and out, cost, duration, success, and the task, role and runner the call's
 `cf-aig-metadata` header named. The index Ledger keeps the newest log
-written, so a log is written once however many pulls see it. The Models
-page shows each model's calls, tokens, cost and median duration (with the
-number of calls the median is taken over) for the last 7 days, read back
-through the Analytics Engine SQL API; `GET /api/usage` returns the same
-under `gateway`, and `atelier runner --usage` prints it after the tools'
-own figures.
+written, so a log is written once however many pulls see it. Logs are
+written oldest first and the mark moves only past logs written, so a missing
+binding or a failed write leaves the rest for the next pull. One pull reads
+at most 1,000 logs; when more arrived since the last pull, the stretch
+between the last log written and the oldest one read is not read, and is
+recorded as a gap that the Models page and `atelier runner --usage` show
+while it is in the window, so the totals never look complete when they are
+not. The Models page shows each model's calls, failures, tokens and cost for
+the last 7 days, summed by Analytics Engine over every call (weighted by its
+sample interval), and its median duration over the newest 10,000 durations,
+with the number it is taken over. `GET /api/usage` returns the same under
+`gateway`, and `atelier runner --usage` prints it after the tools' own
+figures.
 
 Set it up once:
 
