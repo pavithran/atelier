@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { checkEnv } from "./check-env.mjs";
 import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
-import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone } from "../src/landing-lease.ts";
+import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -107,13 +107,16 @@ export async function runLand(io) {
   const since = (lease) => `${String(lease.at).slice(0, 16).replace("T", " ")} UTC`;
   // The landings queued ahead of this one, as the server's queue holds them
   // (t249): the rows before this landing's own — all of them when it has not
-  // queued yet — less any whose landing has stopped asking for the expiry's
-  // span, which the server no longer counts either. The server decides who
-  // takes the lease; this is what the waiting messages say.
+  // queued yet. The server prunes the queue before answering (a row whose
+  // landing stopped asking for the expiry's span, or whose task has closed,
+  // no longer counts), so they are read as the server judged them; no clock
+  // here re-judges them, for one running ahead of the server's would drop a
+  // live row. The server decides who takes the lease; this is what the
+  // waiting messages say.
   const aheadOf = (waiting) => {
     const rows = Array.isArray(waiting) ? waiting.filter((w) => w && typeof w.item === "string") : [];
     const mine = rows.findIndex((w) => w.item === id);
-    return rows.slice(0, mine === -1 ? rows.length : mine).filter((w) => !waitingLandingGone(w, Date.now()));
+    return rows.slice(0, mine === -1 ? rows.length : mine);
   };
 
   // --release-lease: the lease is freed before the version check, since a
