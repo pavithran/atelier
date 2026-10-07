@@ -131,6 +131,10 @@ export function mainTakenOf(record: PlanRecord, plan: Pick<Item, "base">): strin
 //   none: the branch holds main's head, main's head is not known, or a
 //     refresh for this head was already tried. A failed refresh is not tried
 //     again for the same head; the owner runs atelier plan refresh for that.
+// Any move of main is reason enough, with or without a predicted conflict: a
+// part may need a file main gained (t208 needed docs/using-atelier.md), and
+// a refresh on every move also takes in every move that would conflict, so
+// no separate conflict preview is needed to decide.
 export function refreshDecision(input: { main: string | null; taken: string | null; last: PlanRefresh | null; busy: boolean }): "none" | "wait" | "dispatch" {
   const { main, taken, last, busy } = input;
   if (last?.state === "dispatched") return "wait";
