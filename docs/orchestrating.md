@@ -116,8 +116,14 @@ So land one task at a time, in this order:
 5. Run the type check on main after every merge, and the full suite before
    pushing main to its own remotes.
 
-`atelier land` (task t187) does these steps under a lease, so two sessions
-never land at once, and records how long each took.
+`atelier land ID --reviewer H/M` is the default way to land a task. It does
+these steps under the project's landing lease on the server, so two sessions
+never land at once, and records how long each took. `bin/orchestrate/queue.sh`
+and `land.sh` are the fallback for a session without a runner to serve the
+review. When the review waits because the runners are busy (one runner works
+one job at a time), the session can start a second runner
+(`atelier runner --name home:NAME-2`, see "The home runner" in
+`bin/orchestrate/README.md`) or review by hand.
 
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls breaks every
