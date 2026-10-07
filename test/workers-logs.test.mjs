@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+// The compiler's own reader. The project's `typescript` is the native (Go)
+// build without a JavaScript parse API, so the classic compiler is pinned
+// under the typescript5 alias for this scan.
+import ts from "typescript5";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -45,51 +49,68 @@ test("the handbook says how a session queries the logs", () => {
   assert.match(md, /wrangler tail/, "it names wrangler tail for what is live");
 });
 
-// Every console.(log|error|warn|info|debug) call in a source file, with the
-// full text of its arguments and the line it starts on. The arguments are
-// taken with a paren depth and string scan, so a call holding strings with
-// parentheses, or further calls, is read whole.
-function consoleCalls(source) {
+// Every console.<method> call in a source file, as the TypeScript compiler
+// reads it: the AST is walked for calls on console, whatever the method
+// (log, error, warn, info, debug, trace, dir, ...), so quotes, template
+// literals, nested calls and comments are split the way the compiler
+// splits them, not by a hand-written scan.
+function consoleCalls(source, fileName = "scan.ts") {
+  const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const calls = [];
-  const head = /console\.(?:log|error|warn|info|debug)\s*\(/g;
-  let m;
-  while ((m = head.exec(source))) {
-    let i = m.index + m[0].length, depth = 1, quote = null, escape = false, args = "";
-    while (i < source.length && depth > 0) {
-      const c = source[i];
-      if (quote) {
-        if (escape) escape = false;
-        else if (c === "\\") escape = true;
-        else if (c === quote) quote = null;
-        args += c;
-      } else if (c === '"' || c === "'" || c === "`") { quote = c; args += c; }
-      else if (c === "(") { depth++; args += c; }
-      else if (c === ")") { depth--; if (depth > 0) args += c; }
-      else args += c;
-      i++;
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "console"
+    ) {
+      calls.push({
+        arguments: [...node.arguments],
+        text: node.getText(file),
+        line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
+      });
     }
-    calls.push({ args, line: source.slice(0, m.index).split("\n").length });
-    head.lastIndex = i;
-  }
+    node.forEachChild(visit);
+  };
+  visit(file);
   return calls;
 }
 
-// The expressions a call logs: its string literals dropped, and a template
-// literal reduced to what its ${...} interpolations print.
-function expressionsOnly(args) {
-  return args
-    .replace(/"(?:[^"\\]|\\.)*"/g, " ")
-    .replace(/'(?:[^'\\]|\\.)*'/g, " ")
-    .replace(/`(?:[^`\\]|\\.)*`/g, (t) => (t.match(/\$\{[^}]*\}/g) ?? []).join(" "));
+// The names a call prints: every identifier its arguments mention, as the
+// compiler sees them. A string literal prints only itself, and so does the
+// fixed text of a template literal, leaving only its ${...} interpolations;
+// a comment is not part of any expression at all.
+function printedNames(expression) {
+  const names = [];
+  const visit = (node) => {
+    if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) names.push(node.text);
+    node.forEachChild(visit);
+  };
+  visit(expression);
+  return names;
 }
 
 // What may never be named in a console call's expressions. A bearer token,
 // a cookie, a secret, or any object holding one (env, a request, its
 // headers) would land in the account's Workers Logs and stay there.
 const FORBIDDEN = /token|secret|bearer|authoriz|authoris|cookie|password|passphrase|credential|api_?key|plaintext|session/i;
-// Names the pattern trips that are not credentials: model usage counts and
-// the session TTL.
-const ALLOWED = new Set(["tokensIn", "tokensOut", "SESSION_SECONDS"]);
+// Names the pattern trips that are not credentials: model usage counts,
+// the session TTL, a session's id, a service's URL.
+const ALLOWED = new Set(["tokensIn", "tokensOut", "SESSION_SECONDS", "session_id", "api_url"]);
+
+// One line per console call in the source that names a forbidden term
+// among what it prints.
+function leaksIn(fileName, source) {
+  const leaks = [];
+  for (const call of consoleCalls(source, fileName)) {
+    for (const name of call.arguments.flatMap(printedNames)) {
+      if (!ALLOWED.has(name) && FORBIDDEN.test(name)) {
+        leaks.push(`${fileName}:${call.line} logs ${name} (${call.text})`);
+      }
+    }
+  }
+  return leaks;
+}
 
 function tsFiles(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -104,18 +125,40 @@ test("no console call in src logs a token or a key", () => {
   const leaks = [];
   for (const file of files) {
     const source = readFileSync(file, "utf8");
-    for (const call of consoleCalls(source)) {
-      found++;
-      const where = `${file.slice(root.length + 1)}:${call.line}`;
-      for (const name of expressionsOnly(call.args).matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
-        if (!ALLOWED.has(name[0]) && FORBIDDEN.test(name[0])) {
-          leaks.push(`${where} logs ${name[0]} (${call.args.trim()})`);
-        }
-      }
-    }
+    found += consoleCalls(source, file).length;
+    leaks.push(...leaksIn(file.slice(root.length + 1), source));
   }
   // The scan must see the Worker's calls; a silent match of nothing would
   // pass an empty check.
   assert.ok(found >= 10, `expected the Worker's console calls, found ${found}`);
   assert.deepEqual(leaks, [], `Workers Logs must stay free of tokens and keys:\n${leaks.join("\n")}`);
+});
+
+test("an argument sandwiched between unmatched quotes is still read", () => {
+  // gemini-3.1-pro's case: sequential quote replacement let the quotes of
+  // `'"'` and `'"'` swallow the token between them.
+  const source = "console.log('\"', token, '\"');";
+  assert.ok(leaksIn("case.ts", source).some((leak) => /logs token/.test(leak)));
+});
+
+test("a parenthesis inside a template interpolation does not end the call", () => {
+  // gemini-3.1-pro's case: the `)` of the inner template literal inverted
+  // the hand-written quote state and closed the console.log early.
+  const source = "console.log(` ${ `)` } `, token);";
+  assert.ok(leaksIn("case.ts", source).some((leak) => /logs token/.test(leak)));
+});
+
+test("strings, comments and allowed names do not trip", () => {
+  const source = [
+    `console.error("could not revoke a write token" /* a token, in a comment */, codeOf(err));`,
+    "console.log(`pull ${tokensIn} ${tokensOut} done`);",
+    'console.log("session", session_id, api_url);',
+  ].join("\n");
+  assert.deepEqual(leaksIn("case.ts", source), []);
+});
+
+test("every console method is scanned, trace and dir included", () => {
+  const source = "console.trace('x', token);\nconsole.dir(token);";
+  const leaks = leaksIn("case.ts", source);
+  assert.equal(leaks.length, 2, leaks.join("\n"));
 });
