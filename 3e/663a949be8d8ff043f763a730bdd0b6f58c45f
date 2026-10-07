@@ -1,0 +1,29 @@
+atelier atelier/t204 "Plan routing gives every part to one model when scores tie: t197's seven parts all went to claude-code/opus-5.5 (rank 1 of 7, score 9701, ties by model id), each reviewed by opencode/glm-5.3. Spread a plan's parts across the tied models (and across families) so one model is not the whole plan, with the reason shown in plan show (found on the first real plan, 2026-10-06)"
+accepted head f2b4097afd2f3c3838c43019c42d10ddc9d363dd
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-07T02:11:43.396Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-07T02:11:47.335Z
+REVIEW approve by antigravity/gemini-3.1-pro at f2b4097afd2f3c3838c43019c42d10ddc9d363dd, recorded by pavi with the owner token, answering a claimed review request
+2026-10-06T22:22:11.793Z pavi item.created
+2026-10-07T01:01:38.360Z pavi item.dispatched
+2026-10-07T01:02:02.614Z claude-code/fable-5.1 item.claimed
+2026-10-07T01:02:06.628Z claude-code/fable-5.1 fork.created
+2026-10-07T01:24:17.241Z claude-code/fable-5.1 push.observed
+2026-10-07T01:28:04.793Z claude-code/fable-5.1 evidence.observed
+2026-10-07T01:28:08.524Z claude-code/fable-5.1 evidence.observed
+2026-10-07T01:28:09.392Z claude-code/fable-5.1 item.submitted
+2026-10-07T02:09:05.945Z pavi land.lease
+2026-10-07T02:09:08.222Z pavi land.merge
+2026-10-07T02:09:16.336Z pavi land.regenerate
+2026-10-07T02:09:18.940Z claude-code/fable-5.1 push.observed
+2026-10-07T02:09:19.077Z pavi land.push
+2026-10-07T02:11:44.323Z claude-code/fable-5.1 evidence.observed
+2026-10-07T02:11:47.603Z claude-code/fable-5.1 evidence.observed
+2026-10-07T02:11:48.332Z pavi land.check
+2026-10-07T02:11:48.808Z claude-code/fable-5.1 item.submitted
+2026-10-07T02:11:49.096Z pavi land.submit
+2026-10-07T02:11:49.257Z pavi review.requested
+2026-10-07T02:20:28.039Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T02:22:23.412Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T02:22:27.528Z pavi land.review
+2026-10-07T02:22:28.171Z pavi item.accepted
+2026-10-07T02:22:28.313Z pavi land.accept
