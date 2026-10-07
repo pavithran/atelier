@@ -1,0 +1,24 @@
+atelier atelier/t199 "A harness that cannot start (Claude Code too old for the model, exit 1 before any work) is counted as the planner giving no valid plan, blocks the plan after two tries and is reported as refused; tell harness failures from invalid proposals in the plan's attempts, in the run report and in plan show, so the owner sees 'the harness failed: <its last error line>' and the model's record is not charged (found on t197, 2026-10-06)"
+accepted head b5a0072912dd2fb3c2477355c123604f1c90bfa0
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-07T01:34:56.028Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-07T01:34:59.004Z
+REVIEW approve by antigravity/gemini-3.1-pro at b5a0072912dd2fb3c2477355c123604f1c90bfa0, recorded by pavi with the owner token, answering a claimed review request
+2026-10-06T22:06:55.380Z pavi item.created
+2026-10-07T00:16:57.379Z opencode/deepseek-v4-pro item.claimed
+2026-10-07T00:17:01.736Z opencode/deepseek-v4-pro fork.created
+2026-10-07T01:32:03.233Z pavi land.lease
+2026-10-07T01:32:05.648Z pavi land.merge
+2026-10-07T01:32:15.662Z pavi land.regenerate
+2026-10-07T01:32:19.207Z opencode/deepseek-v4-pro push.observed
+2026-10-07T01:32:19.353Z pavi land.push
+2026-10-07T01:34:56.494Z opencode/deepseek-v4-pro evidence.observed
+2026-10-07T01:34:59.331Z opencode/deepseek-v4-pro evidence.observed
+2026-10-07T01:34:59.844Z pavi land.check
+2026-10-07T01:35:00.282Z opencode/deepseek-v4-pro item.submitted
+2026-10-07T01:35:00.545Z pavi land.submit
+2026-10-07T01:35:00.691Z pavi review.requested
+2026-10-07T01:35:02.950Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T01:38:43.403Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T01:38:45.710Z pavi land.review
+2026-10-07T01:38:47.270Z pavi item.accepted
+2026-10-07T01:38:47.429Z pavi land.accept
