@@ -6,7 +6,7 @@
 // line, so it cannot pose as a line of Atelier's own.
 
 import type { Brief, Verdict } from "../brief.ts";
-import { liveOffers, unoffered, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
+import { holdText, liveOffers, unoffered, type CoreHold, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 import type { Item, ItemState } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
@@ -37,6 +37,7 @@ export interface PlanPartView {
   scope: string[];
   dependsOn: { key: string; id: string | null }[];
   dispatch: Dispatch | null;
+  held?: CoreHold | null;         // while queued: the live item outside the plan it waits on (coreHold)
   route: PartRoute | null;        // the routing fixed at approval, with the owner's reroute
   attempts: Attempt[];            // counted from the owner's latest reroute or retry
   gate: { ready: boolean; blockers: string[] } | null;  // while submitted or accepted
@@ -102,6 +103,13 @@ function ownerStep(p: PlanPartView, flag: string): string | null {
   if (p.state !== "submitted" || !p.gate) return null;
   if (p.gate.ready) return `ready for you: atelier merge ${p.id} --head ${p.head} ${flag}`;
   return `not ready: ${p.gate.blockers.map(flat).join("; ")}`;
+}
+
+// A queued part the project's core files hold: the live item it waits on,
+// and that the queue offers it once that item merges or is abandoned.
+function heldLine(p: PlanPartView): string | null {
+  if (!p.held || !p.dispatch || p.state !== "open") return null;
+  return `held in the queue: ${holdText(p.held)}; offered once ${p.held.id} merges or is abandoned`;
 }
 
 function attemptsLine(attempts: Attempt[]): string | null {
@@ -219,7 +227,7 @@ export function planText(v: PlanView, project: string, now = new Date()): string
     for (const p of v.parts) {
       lines.push(`  ${p.id}  ${p.key}  ${partState(p, v.parts)}  ${flat(p.title)}`);
       const deps = p.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`);
-      const detail = [addedLine(p), `scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), ...reviewLines(p, v, flag, now), ...tierLines(p), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
+      const detail = [addedLine(p), `scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), heldLine(p), ...reviewLines(p, v, flag, now), ...tierLines(p), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
       for (const line of detail) if (line) lines.push(`      ${line}`);
     }
   } else if (v.plan) {
