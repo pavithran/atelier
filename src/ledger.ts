@@ -176,12 +176,15 @@ export type PlanPost =
   | { valid: false; errors: string[]; attempt: number; attempts: number };
 
 // The runner offers plan routing reads (t246): those still live, or
-// undefined when no runner has ever asked — until one has, nothing is known
-// to be offered and routing restricts nothing, so a project run entirely by
-// hand still routes. Once runners have asked, offers all gone stale route
-// nothing, and approval says to start a runner that offers the models.
+// undefined when none is — whether no runner has ever asked, until when
+// nothing is known to be offered and a project run entirely by hand still
+// routes, or every ask has gone stale and the runners have all stopped,
+// when routing falls back to the whole pool rather than strand the plan on
+// models nothing live could claim; plan show warns of that fallback from
+// the offers the view was read with (src/plans/show.ts).
 function routable(recorded: readonly SeenOffer[]): readonly SeenOffer[] | undefined {
-  return recorded.length ? liveOffers(recorded) : undefined;
+  const live = liveOffers(recorded);
+  return live.length ? live : undefined;
 }
 
 // A part's routing with the plan's later changes applied. The owner's
@@ -1699,8 +1702,8 @@ export class Ledger extends DurableObject<Env> {
   // each valid proposal is a row of the plans table.
 
   // The offers to route from, read from the index that records each runner's
-  // ask (putRunnerOffer): those still live (routable), or undefined when no
-  // runner has ever asked. A read that fails says the same as no ask.
+  // ask (putRunnerOffer): those still live (routable), or undefined when none
+  // is live, however many runners asked. A read that fails says the same.
   private async routingOffers(): Promise<readonly SeenOffer[] | undefined> {
     try {
       return routable(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
@@ -2045,13 +2048,14 @@ export class Ledger extends DurableObject<Env> {
   // part with its state, routing, attempts and, when submitted or accepted,
   // its gate. With the pool, a plan not yet approved also shows the routing
   // an approval would fix now, without paid models, from the models live
-  // runners offer. `mainNow` is main's head as the Worker read it for this
-  // view, else the head the Ledger last observed is shown. `offers` are the
-  // runner offers the Worker read from the index, so a part whose review is
-  // asked of a model no live runner offers says so rather than reading as
-  // merely unclaimed, and the preview routes from them; null when the caller
-  // read none, and the preview then reads them itself. Nothing here is
-  // written.
+  // runners offer — falling back to the whole pool when none is live
+  // (routable), which plan show says. `mainNow` is main's head as the
+  // Worker read it for this view, else the head the Ledger last observed is
+  // shown. `offers` are the runner offers the Worker read from the index, so
+  // a part whose review is asked of a model no live runner offers says so
+  // rather than reading as merely unclaimed, and the preview routes from
+  // them; null when the caller read none, and the preview then reads them
+  // itself. Nothing here is written.
   async planView(id: string, pool: ModelEntry[] | null = null, mainNow: string | null = null, offers: SeenOffer[] | null = null): Promise<PlanView> {
     const asked = this.item(id);
     const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
