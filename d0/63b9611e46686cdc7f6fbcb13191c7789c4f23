@@ -1,0 +1,24 @@
+atelier atelier/t225 "test/runner.test.mjs 'a child's background processes end with it' fails under load (900 ms bound against a 1000 ms grace period; took 1015 to 1849 ms on 2026-10-07 and failed four landings or builds): widen the margin so the test still tells a group that ends at SIGTERM from one that waits out the grace period, without timing out on a busy machine"
+accepted head b5a39809960aa6ab9f1b0db401d3c150b22edc81
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T01:04:00.342Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T01:04:03.248Z
+REVIEW approve by antigravity/gemini-3.1-pro at b5a39809960aa6ab9f1b0db401d3c150b22edc81, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T00:30:50.192Z pavi item.created
+2026-10-07T00:31:01.211Z claude-code/opus-5.5 item.claimed
+2026-10-07T00:31:06.325Z claude-code/opus-5.5 fork.created
+2026-10-07T01:01:49.680Z pavi land.lease
+2026-10-07T01:01:52.389Z pavi land.merge
+2026-10-07T01:02:00.448Z pavi land.regenerate
+2026-10-07T01:02:04.124Z claude-code/opus-5.5 push.observed
+2026-10-07T01:02:04.272Z pavi land.push
+2026-10-07T01:04:00.969Z claude-code/opus-5.5 evidence.observed
+2026-10-07T01:04:03.496Z claude-code/opus-5.5 evidence.observed
+2026-10-07T01:04:03.977Z pavi land.check
+2026-10-07T01:04:04.386Z claude-code/opus-5.5 item.submitted
+2026-10-07T01:04:04.633Z pavi land.submit
+2026-10-07T01:04:04.947Z pavi review.requested
+2026-10-07T01:04:08.536Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T01:06:56.768Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T01:07:00.096Z pavi land.review
+2026-10-07T01:07:00.898Z pavi item.accepted
+2026-10-07T01:07:01.048Z pavi land.accept
