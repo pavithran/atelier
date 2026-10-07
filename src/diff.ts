@@ -312,14 +312,17 @@ export function pairReader(fork: ArtifactsRepo, baseline: ArtifactsRepo): Reader
   };
 }
 
-// The fork point is the newest commit on the workspace's first-parent history
-// that the baseline also has, so a workspace rebased with `atelier update`
-// is previewed against what it was rebased onto, not against where it was
-// forked. The agent shapes this history (see againstMain), so it is read only
-// for the merge preview, never to measure what the item changes.
-export function mergeBase(workspaceLog: string[], baselineLog: string[]): string | null {
-  const shared = new Set(baselineLog);
-  return workspaceLog.find((h) => shared.has(h)) ?? null;
+// The merge base the preview works from: the newest commit on main's
+// first-parent line that the workspace holds, either on its own first-parent
+// line or as a parent of a commit there. A workspace rebased with `atelier
+// update` is previewed against what it was rebased onto, and one that merged
+// main is previewed against the main commit it merged, not against where it
+// forked, whose newer main commits it already holds (t230). The agent shapes
+// this history (see againstMain), so it is read only for the merge preview,
+// never to measure what the item changes.
+export function mergeBase(workspaceLog: { hash: string; parents?: string[] }[], baselineLog: string[]): string | null {
+  const held = new Set(workspaceLog.flatMap((c) => [c.hash, ...(c.parents ?? [])]));
+  return baselineLog.find((h) => held.has(h)) ?? null;
 }
 
 export function repoReader(repo: ArtifactsRepo): Reader {
