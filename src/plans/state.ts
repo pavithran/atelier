@@ -176,11 +176,15 @@ export const MERGE_MAIN = "merge-main-";
 export const mergeMainKey = (mainHead: string) => `${MERGE_MAIN}${mainHead.slice(0, 8)}`;
 
 // The paths a refresh's failure reason names as conflicting, from git's
-// CONFLICT lines, in order, each once; empty when it names none.
+// CONFLICT lines, in order, each once; empty when it names none. A path may
+// hold spaces, and the reason may carry git's lines joined by newlines or by
+// single spaces: "Merge conflict in PATH" runs to the end of its line or to
+// the next line git would print, and "PATH deleted in ..." (and added,
+// renamed or modified) runs to that phrase.
 export function conflictPaths(reason: string): string[] {
   const out: string[] = [];
-  for (const m of reason.matchAll(/CONFLICT \([^)]*\): (?:Merge conflict in )?(\S+)/g)) {
-    const path = m[1].replace(/[.,;:]+$/, "");
+  for (const m of reason.matchAll(/CONFLICT \([^)]*\): (?:Merge conflict in (.+?)(?=\n| Auto-merging | CONFLICT \(| Automatic merge failed|$)|(.+?) (?:deleted|added|renamed|modified) in )/g)) {
+    const path = (m[1] ?? m[2] ?? "").trim().replace(/[.,;:]+$/, "");
     if (path && !out.includes(path)) out.push(path);
   }
   return out;
