@@ -133,6 +133,18 @@ export interface Review {
   note: string;
   at: string;
   findings?: Finding[];
+  // Who recorded the review and how (src/ledger.ts addReview). `recordedBy`
+  // is the actor whose token made the request: the reviewer itself when its
+  // own agent token proved it (`proved` true), the project owner when the
+  // owner token named the reviewer (`proved` false). `claimed` is true when
+  // the review answered a review request the reviewer had claimed for that
+  // head, as a runner or session serves one through the request flow. A
+  // review recorded before these fields existed gains them from its event
+  // when the Ledger starts; one built without them, as in a test, is read
+  // as proved.
+  recordedBy?: string;
+  proved?: boolean;
+  claimed?: boolean;
 }
 
 export type ChangeClass = "direct" | "coordinated" | "protected";
@@ -240,9 +252,32 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     if (event.kind === "push.observed") {
       const by = event.actor === "atelier/events" ? holder : event.actor;
       if (by) actors.add(by);
+      // A pushed commit whose final Agent line names someone else than the
+      // holder, as the Worker read it from the fork (pushAuthors), is that
+      // actor's work: it joins the contributors the gate compares.
+      for (const a of pushAuthors(event.data)) actors.add(a.actor);
     }
   }
   return [...actors];
+}
+
+// The commits of one push the Worker found naming another actor than the
+// holder in their final "Agent: harness/model" line, as push.observed
+// records them under `authors`. Anything else in the field is ignored.
+export function pushAuthors(data: Record<string, unknown>): { commit: string; actor: string }[] {
+  const list = Array.isArray(data.authors) ? data.authors : [];
+  return list.flatMap((a) => {
+    const v = a as { commit?: unknown; actor?: unknown };
+    return typeof v.commit === "string" && typeof v.actor === "string" && validActor(v.actor) && v.actor.includes("/") ? [{ commit: v.commit, actor: v.actor }] : [];
+  });
+}
+
+// The actor a commit message names in its final "Agent: harness/model" line,
+// or null when it names none or the name is not harness/model.
+export function agentLine(message: string): string | null {
+  const lines = message.split("\n").map((l) => /^\s*Agent\s*:\s*(\S+)\s*$/i.exec(l)?.[1]).filter((x): x is string => !!x);
+  const last = lines.at(-1);
+  return last && validActor(last) && last.includes("/") ? last : null;
 }
 
 export function assertHandoffTarget(actor: string, owner: string): void {
@@ -511,11 +546,37 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // harness/model actor that is not any contributor under another spelling.
 // A protected change, in every project, needs a model of a recognised family
 // that no contributor shares (familyRefusal); a coordinated change in a
-// governed project needs any other agent.
+// governed project needs any other agent. In a protected change, a review
+// the owner token recorded in a model's name counts only when it answers a
+// review request that model claimed for that head (unprovedReview).
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
   if (!r.approve || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
+  if (kind === "protected" && unprovedReview(r)) return false;
   if (contributors.some((actor) => sameActor(r.by, actor))) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
+}
+
+// A review the owner token recorded in a model's name that answers no review
+// request the model claimed for that head. Nothing shows the model gave it,
+// so it is not the independent review a protected change needs (the owner's
+// decision of 2026-10-06); the gate says so in its blockers.
+export function unprovedReview(r: Review): boolean {
+  return r.proved === false && !r.claimed;
+}
+
+// Who recorded a review, in words, for the task page and the brief
+// `atelier show` prints; null for a review that does not say.
+export function recordedText(r: Review, owner = DEFAULT_OWNER): string | null {
+  if (r.recordedBy === undefined) return null;
+  if (r.proved) return "recorded with its own token";
+  const who = r.recordedBy === owner ? "the project owner" : r.recordedBy;
+  if (sameActor(r.by, owner)) return `recorded by ${who}`;
+  return `recorded by ${who} with the owner token${r.claimed ? ", answering a review request it claimed" : ""}`;
+}
+
+// The gate's words for an approval unprovedReview sets aside.
+export function unprovedBlocker(r: Review): string {
+  return `the approval by ${r.by} was recorded by ${r.recordedBy ?? "the project owner"} with the owner token and answers no review request ${r.by} claimed at this head, so it is not the independent review`;
 }
 
 // The owner's override that stands at the item's current head, if any. One
@@ -959,6 +1020,11 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       if (!overridden) {
         needsAssessor = true;
         blockers.push(governed ? requirement : PROTECTED_NEED);
+        // An approval that would count had the model's own token or a claimed
+        // request shown it is named, so the owner sees why it does not.
+        if (kind === "protected") {
+          for (const r of reviews) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, kind, contributors, owner)) blockers.push(unprovedBlocker(r));
+        }
       }
     }
   }
