@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  durationsSql, fetchNewLogs, gatewayConfig, gatewayView, logsUrl, MAX_PAGES, PAGE_SIZE, parseDurations, parseLog, parseMetadata, parsePage, parseTotals,
+  durationsSql, fetchNewLogs, gatewayConfig, gatewayView, logsUrl, MAX_PAGES, PAGE_SIZE, parseDurations, parseLog, parseMetadata, parsePage, parseTotals, pullReadText,
   ROW_LIMIT, summarize, totalsSql, writeLog, type GatewayLog,
 } from "../src/usage/gateway.ts";
 import { query, queryConfig, sqlString, writeMetric, neverWritten } from "../src/metrics.ts";
@@ -220,4 +220,20 @@ test("the runner's usage prints the gateway's figures the server read", () => {
     "  logs last pulled 2026-10-07T11:55Z",
   ]);
   assert.match(describeGateway(undefined, (s: string) => s)[0], /reports no gateway figures/);
+});
+
+test("a pull counts the logs the route answered and those it could not read, naming the first one's fields", async () => {
+  const good = minutes(2);
+  const fetcher = (async () => Response.json({ success: true, errors: [], result: [raw(good[0]), { request_id: "x", started_at: "y", model: "m" }, raw(good[1])] })) as typeof fetch;
+  const read = await fetchNewLogs(CFG, null, NOW, fetcher);
+  assert.equal(read.answered, 3);
+  assert.equal(read.unreadable, 1);
+  assert.deepEqual(read.unreadableFields, ["request_id", "started_at", "model"]);
+  assert.equal(read.logs.length, 2);
+  assert.equal(pullReadText({ at: "2026-10-07T23:00:00.000Z", added: 0, error: null, answered: 3, unreadable: 1, unreadableFields: ["request_id", "started_at"] }),
+    "the logs route answered 3 logs; 1 could not be read (fields: request_id, started_at)");
+  assert.equal(pullReadText({ at: "2026-10-07T23:00:00.000Z", added: 0, error: null, answered: 0, unreadable: 0 }), "the logs route answered 0 logs");
+  assert.equal(pullReadText({ at: "2026-10-07T23:00:00.000Z", added: 0, error: null }), "");
+  const view = gatewayView(null, [], [], { at: "2026-10-07T11:55:00.000Z", added: 0, error: null, answered: 0, unreadable: 0 }, [], NOW);
+  assert.deepEqual(describeGateway(view, (s: string) => s), ["AI Gateway, last 7 days:", "  no calls", "  logs last pulled 2026-10-07T11:55Z; the logs route answered 0 logs"]);
 });

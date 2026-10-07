@@ -1727,7 +1727,7 @@ export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fe
   // The gap lies below the oldest log read, the first written; it is lost
   // only once the mark has moved past it.
   const gap = read.gap && added ? { ...read.gap, pulledAt: at } : null;
-  await I.recordGatewayPull({ at, added, error }, mark, gap);
+  await I.recordGatewayPull({ at, added, error, answered: read.answered, unreadable: read.unreadable, ...(read.unreadableFields ? { unreadableFields: read.unreadableFields } : {}) }, mark, gap);
   if (error) console.error("AI Gateway pull failed", error);
   return { added, error };
 }
