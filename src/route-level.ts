@@ -5,4 +5,4 @@
 // Raise it by one, and only then, when a change makes the CLI start calling
 // a route the server did not have; a merge that adds no route changes
 // nothing here, whatever commit it moves to.
-export const ROUTE_LEVEL = 2;
+export const ROUTE_LEVEL = 3;
