@@ -6,6 +6,7 @@ import { checkEnv } from "./check-env.mjs";
 import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
+import { unoffered } from "../src/dispatch/rules.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -491,13 +492,26 @@ export async function runLand(io) {
         // While no runner has claimed the request, the landing says what the
         // runners are busy with and what waits ahead in the queue, once and
         // again when that changes, so a long wait is explained rather than
-        // silent (a review queues behind every older build on a runner).
+        // silent (a review queues behind every older build on a runner). A
+        // request no live runner offers — a reviewer whose model no runner's
+        // config lists, or a runner that offers no review job — can never be
+        // claimed, however long it waits, and is said as that instead, with
+        // what would change it; a review of t210 routed to fable-5.1 once sat
+        // queued for hours this way (plan t197, 2026-10-07).
         let busyLine = null;
         const explainWait = async (d) => {
           const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
           if (claimed) return;
+          let offers = null;
+          try { offers = await request("GET", "/runners"); } catch { /* without the offers the wait is explained as before */ }
+          const slash = (ask.reviewer ?? "").indexOf("/");
+          const dead = offers && slash > 0
+            ? unoffered({ to: "home", agent: ask.reviewer.slice(0, slash), model: ask.reviewer.slice(slash + 1), by: "atelier/orchestrator", at: since, note: "", job: "review" }, Array.isArray(offers) ? offers : [])
+            : null;
           let line;
-          try {
+          if (dead) {
+            line = `The review request is not claimed yet, and ${dead}. It will not be claimed until a runner that offers ${ask.reviewer} for the review job asks the server for work. Review it by hand (atelier review ${id} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again with --reviewer H/M to ask a model a live runner offers.`;
+          } else try {
             const [items, queued] = await Promise.all([request("GET", `/projects/${encodeURIComponent(name)}/items`), request("GET", "/queue")]);
             const busy = (Array.isArray(items) ? items : []).filter((i) => i.runner && i.state === "claimed" && i.id !== id)
               .map((i) => `${i.runner} is busy with ${i.id} (${i.dispatch?.job ?? "build"}, ${i.owner}) since ${String(i.updatedAt).slice(0, 16).replace("T", " ")} UTC`);
