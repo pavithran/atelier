@@ -1,0 +1,29 @@
+atelier atelier/t232 "A landing went on to merge after losing its lease (2026-10-07 ~04:33 UTC): atelier land t226 --wait stopped renewing the project's landing lease for 15 minutes (cause unknown; likely the Mac slept, which pauses timers), atelier land t198 --wait took it over, and t226 still merged, so two landings ran at once. Fix: before submit, accept and merge, a landing confirms it still holds the lease (renew and stop on refusal), and the server's merge for a landing refuses when the lease is another task's; land prints the time of each renewal gap over a minute, so a sleep is visible"
+accepted head eaecbcb61c465d76923609136472a745f423a723
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T05:35:20.360Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T05:35:23.408Z
+REVIEW approve by antigravity/gemini-3.1-pro at eaecbcb61c465d76923609136472a745f423a723, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T04:34:13.982Z pavi item.created
+2026-10-07T04:49:46.189Z pavi item.dispatched
+2026-10-07T04:50:06.057Z opencode/glm-5.3 item.claimed
+2026-10-07T04:50:18.379Z opencode/glm-5.3 fork.created
+2026-10-07T05:08:58.801Z opencode/glm-5.3 push.observed
+2026-10-07T05:11:19.353Z opencode/glm-5.3 evidence.observed
+2026-10-07T05:11:21.999Z opencode/glm-5.3 evidence.observed
+2026-10-07T05:11:22.474Z opencode/glm-5.3 item.submitted
+2026-10-07T05:32:39.301Z pavi land.lease
+2026-10-07T05:32:42.483Z pavi land.merge
+2026-10-07T05:32:50.784Z pavi land.regenerate
+2026-10-07T05:32:52.838Z opencode/glm-5.3 push.observed
+2026-10-07T05:32:52.930Z pavi land.push
+2026-10-07T05:35:21.080Z opencode/glm-5.3 evidence.observed
+2026-10-07T05:35:23.560Z opencode/glm-5.3 evidence.observed
+2026-10-07T05:35:23.980Z pavi land.check
+2026-10-07T05:35:24.337Z opencode/glm-5.3 item.submitted
+2026-10-07T05:35:24.509Z pavi land.submit
+2026-10-07T05:35:24.604Z pavi review.requested
+2026-10-07T05:40:30.660Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T05:42:38.539Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T05:42:40.831Z pavi land.review
+2026-10-07T05:42:41.319Z pavi item.accepted
+2026-10-07T05:42:41.413Z pavi land.accept
