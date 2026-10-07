@@ -90,6 +90,21 @@ test("the review code is called by the ledger and the runner, and the page says 
   assert.equal(HELP_FORMS.some((form) => form.split(" ")[0] === "land"), land.built, "the help and the page disagree on whether atelier land exists");
 });
 
+test("the plan flow the orchestrator section states is the code's", () => {
+  const prose = read("src/how.ts");
+  // The approval is refused while a part is unrouted: approvePlan in
+  // src/ledger.ts throws on the unrouted routes routeParts returns.
+  assert.match(read("src/ledger.ts"), /RuleError\("unrouted"/, "approvePlan no longer refuses an approval while a part is unrouted");
+  assert.ok(prose.includes("the approval is refused while any part has no builder or no such reviewer"), "the orchestrator section no longer says what an unrouted part does to an approval");
+  // The tick runs again after each change to a part (afterPlanChange).
+  assert.match(read("src/ledger.ts"), /private afterPlanChange\(/, "the ledger no longer runs a plan's tick again after a part changes");
+  assert.ok(prose.includes("after each push, check, review, submit, release, merge or abandon of a part"), "the orchestrator section no longer lists when the tick runs again");
+  // The integrator submits the plan item once nothing remains to integrate:
+  // runIntegrate in cli/runner.mjs, on the allIntegrated integratePart returns.
+  assert.match(read("cli/runner.mjs"), /if \(result\.allIntegrated\) \{\s*await io\.cli\(\["submit", item\.id/, "the integrator no longer submits the plan item when every part has settled");
+  assert.ok(prose.includes("the integrator submits the plan task"), "the orchestrator section no longer says who submits the plan task");
+});
+
 test("the page text uses no dash as punctuation, and says each step, term and rule once", () => {
   const text = [
     ...LOOP.flatMap((s) => [s.name, s.detail, s.moves, ...s.records]),
