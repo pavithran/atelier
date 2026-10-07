@@ -82,9 +82,12 @@ misread:
   run ends; watch its log file for progress.
 - **Antigravity** (Gemini, GPT-OSS): in plan mode it cannot run commands,
   and an attempt returns an empty answer. Reviews therefore run in a
-  throwaway clone with commands allowed and the terminal sandboxed
-  (`bin/orchestrate/review.sh`), so the reviewer can search the code and
-  run tests before it calls something a defect.
+  throwaway clone with commands allowed and the terminal sandboxed, so the
+  reviewer can search the code and run tests before it calls something a
+  defect: a session runs `bin/orchestrate/review.sh`, and a home runner
+  serving a review job runs `cli/agy-review.mjs`, the adapter its config
+  names as the review command, which hands `agy` the brief and the diff as
+  one prompt on standard input and writes its reply as the verdict.
 - **Agents that write a commit message to a file** (`COMMIT_MSG.txt`) also
   stage it; check that no such file, and no `.scratch/` file, is committed.
 - **A run can outlive the shell that started it.** If the session's shells
@@ -116,13 +119,25 @@ So land one task at a time, in this order:
 5. Run the type check on main after every merge, and the full suite before
    pushing main to its own remotes.
 
-`atelier land` (task t187) does these steps under a lease, so two sessions
-never land at once, and records how long each took.
+`atelier land` (task t187, `cli/land.mjs`) does these steps under the
+project's landing lease, taken on the server, so two sessions never land
+at once: while one landing runs, another in the same project is refused
+with who holds the lease and since when. It regenerates the project's
+fixtures when its policy declares how, asks the server for the
+independent review the gate needs and waits for the verdict (`--reviewer
+H/M` names the reviewer, `--no-review` leaves the task submitted), then
+accepts and merges. Each step and how long it took are recorded on the
+task as `land.*` events, and a landing stopped partway is resumed by
+running the same command again, which takes its lease back. The same
+lease guards every merge, a plan's included (`POST items/tP/landing` in
+`cli/atelier.mjs`).
 
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls breaks every
 check until the server has it too. Deploy after such merges, before landing
-the next task.
+the next task: `atelier land` refuses before it starts while the server's
+route level (`GET /api/version`, `ROUTE_LEVEL` in `src/route-level.ts`) is
+older than the CLI's, naming both levels and saying to deploy.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
