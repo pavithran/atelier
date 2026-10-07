@@ -109,6 +109,10 @@ it("the holder posts its plan through the route, and an invalid one is a 422 tha
   const view = await (await call("GET", `/projects/${name}/items/${id}/plan`, "owner")).json() as PlanView;
   expect(view).toMatchObject({ phase: "proposed", proposal: { hash, count: 1, answered: true }, plan: { parts: [{ key: "a" }, { key: "b" }] } });
   expect(view.preview?.map((r) => [r.key, r.unrouted])).toEqual([["a", null], ["b", null]]);
+  // The plan view is the owner's alone: a non-owner actor with the owner
+  // token is refused, not left to the agent-route allowlist.
+  const notOwner = await call("GET", `/projects/${name}/items/${id}/plan`, "codex/gpt-6-astra");
+  expect([notOwner.status, ((await notOwner.json()) as { error: string }).error]).toEqual([403, "not_project_owner"]);
   // The plan item's brief is the plan's, and an agent may read and relay it.
   const brief = await (await call("GET", `/projects/${name}/items/${id}/brief`, null, undefined, planner)).json() as { title: string; decided: string; recommendation: { verdict: string } };
   expect(brief).toMatchObject({ title: "Ship the feature", decided: `Approve plan ${id}'s split of: Ship the feature`, recommendation: { verdict: "decide" } });
@@ -131,6 +135,7 @@ it("the owner approves by hash, reroutes and retries a part, and a stop revokes 
   const L = ledger(name);
   const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a"), part("b")));
   const hash = post.valid ? post.hash : "";
+  await L.release(id, "claude-code/opus-5.5", "proposed");
   const approve = (body: unknown, actor = "owner") => call("POST", `/projects/${name}/items/${id}/plan/approve`, actor, body);
   expect((await approve({ hash }, "codex/gpt-6-astra")).status).toBe(403);
   expect((await approve({ hash, allowPaid: "yes" })).status).toBe(400);
@@ -214,6 +219,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   const L = ledger(name);
   const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a"), part("b", { dependsOn: ["a"], scope: ["src/b/**"] })));
   const hash = post.valid ? post.hash : "";
+  await L.release(id, "claude-code/opus-5.5", "proposed");
   const view = await (await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash })).json() as PlanView;
   const [a, b] = view.parts;
   expect(b.dispatch).toBeNull(); // b waits for a
