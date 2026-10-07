@@ -4,13 +4,19 @@
 // track record; the planner may only prefer. Every choice carries its
 // reasons, because the owner reads "why this model?" on the task page, and
 // a part no model can take is returned unrouted with the reason.
+//
+// Models the ranking cannot tell apart (the same score and tie-breaker, so
+// only the model id orders them) share the plan: each part goes to the tied
+// model with the fewest parts of the plan so far, then the fewest in its
+// family, so one model is never the whole plan when others are as good.
+// Reviewers spread the same way. A better score still wins outright.
 
 import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
-import { route, type Candidate, type Tiebreak } from "../models/routing.ts";
+import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
@@ -198,7 +204,39 @@ function choice(verdict: Verdict, lead: string[], role: string, ctx: Context): C
   return { actor: verdict.actor, reasons: [...reasons, ...verdict.passed, ...verdict.candidate.reasons] };
 }
 
-function routePart(part: PlanPart, ctx: Context): PartRoute {
+// How many parts of the plan each actor, and each family, has been given in
+// one role so far, as the parts are routed in plan order.
+class Load {
+  private readonly actors = new Map<string, number>();
+  private readonly families = new Map<PoolFamily, number>();
+  of(v: Verdict): { actor: number; family: number } {
+    return { actor: this.actors.get(v.actor) ?? 0, family: this.families.get(v.family) ?? 0 };
+  }
+  add(v: Verdict): void {
+    this.actors.set(v.actor, this.of(v).actor + 1);
+    this.families.set(v.family, this.of(v).family + 1);
+  }
+}
+
+// The pick from a list in rank order: the first, unless others are tied with
+// it, when the tied model with the fewest parts of the plan in this role so
+// far builds or reviews, then the fewest in its family, then the first in rank
+// order. The lead reason says what the tie was and why this model took it.
+function spread(ranked: readonly Verdict[], load: Load, role: "builds" | "reviews"): { pick: Verdict; lead: string | null } {
+  const first = ranked[0];
+  const group = ranked.filter((v) => tied(v.candidate, first.candidate));
+  if (group.length < 2) return { pick: first, lead: null };
+  const pick = group.reduce((best, v) => {
+    const a = load.of(best), b = load.of(v);
+    return b.actor < a.actor || (b.actor === a.actor && b.family < a.family) ? v : best;
+  });
+  const others = group.filter((v) => v !== pick).map((v) => `${v.actor} ${load.of(v).actor}`).join(", ");
+  const own = load.of(pick);
+  const lead = `Spread across the ${group.length} models tied at score ${first.candidate.score}: ${role} ${own.actor} ${own.actor === 1 ? "part" : "parts"} of this plan so far and its family ${pick.family} ${own.family} (${others})`;
+  return { pick, lead };
+}
+
+function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): PartRoute {
   const none = (unrouted: string, excluded: Choice[] = []): PartRoute => ({ key: part.key, builder: null, alternates: [], reviewer: null, excluded, unrouted });
   if (!ctx.profiles.length) return none("no models in the pool");
   // route() ranks by score, then the reliability tie-breaker, then model id,
@@ -209,7 +247,7 @@ function routePart(part: PlanPart, ctx: Context): PartRoute {
   const excluded = verdicts.filter((v) => v.build.length).map((v) => ({ actor: v.actor, reasons: v.build }));
   const able = verdicts.filter((v) => !v.build.length);
   const order = ctx.input.reliability ? "reliability across projects, then model id, then actor name" : "model id, then actor name";
-  const rank = (v: Verdict) => `Rank ${able.indexOf(v) + 1} of ${able.length} eligible for ${part.taskKind} work, score ${v.candidate.score}; equal scores go by ${order}`;
+  const rank = (v: Verdict) => `Rank ${able.indexOf(v) + 1} of ${able.length} eligible for ${part.taskKind} work, score ${v.candidate.score}; equal scores spread across the plan's parts, then go by ${order}`;
 
   // The plan's preference wins only when that actor passes every rule; the
   // builder's reasons say what became of it either way.
@@ -228,20 +266,28 @@ function routePart(part: PlanPart, ctx: Context): PartRoute {
       lead.push(`Preferred by the plan (${reason}); passes every rule`);
     }
   }
-  builder ??= able[0];
+  if (!builder && able.length) {
+    const picked = spread(able, builds, "builds");
+    builder = picked.pick;
+    if (picked.lead) lead.push(picked.lead);
+  }
   if (!builder) return none(`no eligible builder: ${excluded.map((e) => `${e.actor} (${e.reasons.join("; ")})`).join(", ")}`, excluded);
+  builds.add(builder);
   const alternates = able.filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
   const chosen = choice(builder, [...lead, rank(builder)], "executor", ctx);
 
   const others = verdicts.filter((v) => v !== builder);
-  const reviewer = others.find((v) => !v.review.length && crossFamily(v.family, builder.family));
+  const reviewers = others.filter((v) => !v.review.length && crossFamily(v.family, builder.family));
+  const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews") : null;
   if (!reviewer) {
     const why = builder.family === "other"
       ? `no reviewer can be of another family than ${builder.actor}, whose family is not recognised from its name`
       : `no reviewer of another family than ${builder.family} (${builder.actor}): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : v.family === "other" ? "family not recognised from its name" : `same family, ${v.family}`})`).join(", ") : "no other model in the pool"}`;
     return { key: part.key, builder: chosen, alternates, reviewer: null, excluded, unrouted: why };
   }
-  const reviewing = choice(reviewer, [`Another family (${reviewer.family}) than the builder's (${builder.family}); the first such model in rank order`], "assessor", ctx);
+  reviews.add(reviewer.pick);
+  const family = `Another family (${reviewer.pick.family}) than the builder's (${builder.family})`;
+  const reviewing = choice(reviewer.pick, reviewer.lead ? [`${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}`] : [`${family}; the first such model in rank order`], "assessor", ctx);
   return { key: part.key, builder: chosen, alternates, reviewer: reviewing, excluded, unrouted: null };
 }
 
@@ -256,5 +302,7 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
     governed: input.policy.agents !== undefined,
   };
-  return plan.parts.map((part) => routePart(part, ctx));
+  // Parts route in plan order; each sees how many parts the earlier ones gave each model.
+  const builds = new Load(), reviews = new Load();
+  return plan.parts.map((part) => routePart(part, ctx, builds, reviews));
 }
