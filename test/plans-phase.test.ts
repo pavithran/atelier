@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
 import {
-  partAttempts, planActions, planPhase, type Attempt, type ItemState, type PartView, type TickInput, type TickResult,
+  integrationFailures, partAttempts, partReviewers, planActions, planPhase, type Attempt, type ItemState, type PartView, type TickInput, type TickResult,
 } from "../src/plans/phase.ts";
 import type { PartRoute } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
@@ -172,4 +172,63 @@ test("partAttempts distinguishes a release with no commit from a failed finish",
     { actor: actor("a"), outcome: "failed" },
     { actor: actor("a"), outcome: "finished" },
   ] satisfies Attempt[]);
+});
+
+// A submitted part whose integration failed: claim, push, submit, then the
+// integration.failed event, with the kind the integrator reported.
+const integrationFailed = (seq: number, a: string, kind?: string): LedgerEvent[] => [
+  event(seq, a, "item.claimed"),
+  event(seq + 1, a, "push.observed", { head: "a".repeat(40) }),
+  event(seq + 2, a, "item.submitted"),
+  event(seq + 3, "atelier/orchestrator", "integration.failed", { reason: "why", builder: a, ...(kind ? { kind } : {}) }),
+];
+
+test("an integration failure charges the builder only for a merge conflict or failing checks", () => {
+  for (const kind of ["conflict", "checks"]) {
+    assert.deepEqual(partAttempts(integrationFailed(1, actor("a"), kind)).get("a"), [{ actor: actor("a"), outcome: "failed" }], kind);
+  }
+  for (const kind of [undefined, "integrator"]) {
+    assert.deepEqual(partAttempts(integrationFailed(1, actor("a"), kind)).get("a"), [], String(kind));
+  }
+  // Two uncharged failures leave the builder its turn; two charged ones move to the alternate.
+  const p = plan(part("a"));
+  const routes = [route("a", { alternates: alt("alt1") })];
+  const free = tick(p, [view("a")], routes, [...integrationFailed(1, actor("a")), ...integrationFailed(5, actor("a"))]);
+  assert.equal(free.dispatch[0].to, actor("a"));
+  const charged = tick(p, [view("a")], routes, [...integrationFailed(1, actor("a"), "checks"), ...integrationFailed(5, actor("a"), "conflict")]);
+  assert.equal(charged.dispatch[0].to, actor("alt1"));
+});
+
+test("rework never goes to a model that reviewed the part, approving or rejecting", () => {
+  const p = plan(part("a"));
+  const routes = [route("a", { alternates: [{ actor: "opencode/glm-5.3", reasons: [] }, { actor: actor("alt2"), reasons: [] }] })];
+  const events = [
+    ...failedFinish(1, actor("a")), ...failedFinish(4, actor("a")),
+    event(8, "opencode/glm-5.3", "review.approved", { head: "a".repeat(40) }),
+  ];
+  const reviewers = partReviewers(events);
+  assert.deepEqual(reviewers.get("a"), ["opencode/glm-5.3"]);
+  // Without the reviewers the walk would reach the first alternate, the reviewer.
+  assert.equal(tick(p, [view("a")], routes, events).dispatch[0].to, "opencode/glm-5.3");
+  const result = tick(p, [view("a")], routes, events, { reviewers });
+  assert.equal(result.blocked, null);
+  assert.equal(result.dispatch[0].to, actor("alt2"));
+  // The same model in another harness reviewed it: still left out.
+  const other = tick(p, [view("a")], routes, events, { reviewers: new Map([["a", ["zcode/GLM-5.3"]]]) });
+  assert.equal(other.dispatch[0].to, actor("alt2"));
+  // A rejecting reviewer is left out too; with no alternate left the plan blocks, naming it.
+  const rejected = [...failedFinish(1, actor("a")), ...failedFinish(4, actor("a")), event(8, actor("alt2"), "review.rejected", {}), event(9, "opencode/glm-5.3", "review.approved", {})];
+  const blocked = tick(p, [view("a")], routes, rejected, { reviewers: partReviewers(rejected) });
+  assert.match(blocked.blocked ?? "", /^part a has no alternates left \(opencode\/glm-5\.3, claude-code\/alt2 reviewed it\)$/);
+});
+
+test("integrationFailures keeps each part's latest failure with its kind", () => {
+  const events = [
+    event(1, "atelier/orchestrator", "integration.failed", { reason: "merge conflicted: src/a.ts", kind: "conflict" }),
+    event(2, "atelier/orchestrator", "integration.failed", { reason: "the plan's checks failed after the merge: FAIL npm test", kind: "checks" }),
+    event(3, "atelier/orchestrator", "integration.failed", { reason: "old" }, "b"),
+  ];
+  const failures = integrationFailures(events);
+  assert.deepEqual(failures.get("a"), { reason: "the plan's checks failed after the merge: FAIL npm test", kind: "checks", at: AT });
+  assert.deepEqual(failures.get("b"), { reason: "old", kind: null, at: AT });
 });

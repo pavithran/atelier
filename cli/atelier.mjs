@@ -230,7 +230,7 @@ export const FLAGS = {
   show: { reviews: true, json: true },
   start: { runner: false },
   claim: { runner: false },
-  push: { force: true },
+  push: { force: true, rollback: true },
   update: {},
   check: { sandbox: true, merged: true },
   gc: { "dry-run": true, apply: true },
@@ -243,7 +243,7 @@ export const FLAGS = {
   "read-token": {},
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
-  "integration-failed": { part: false, reason: false },
+  "integration-failed": { part: false, reason: false, kind: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
@@ -2083,9 +2083,22 @@ const commands = {
     // merge itself. The push then declares the head it rebased from, so the
     // Ledger can tell this rewrite from one it must refuse (recordPush in
     // src/ledger.ts).
+    // --rollback returns the fork to an earlier commit of the history Atelier
+    // recorded, dropping what was recorded after it, as the plan integrator
+    // does when a merged part fails the plan's checks: HEAD must be an
+    // ancestor of the recorded head, and the push declares the head it
+    // replaces, under the same lease as --force.
     let rebasedFrom = null, known = null;
     const lease = [];
-    if (args.force === true) {
+    if (args.rollback === true) {
+      known = (await call("GET", I(name, id), undefined, as)).item.head;
+      if (!known) die(`nothing is recorded for ${id} yet; there is nothing to roll back`);
+      if (!hasCommit(known)) die(`Atelier recorded ${id}'s head as ${short(known)}, which this workspace does not hold; nothing was pushed`);
+      if (head === known) die(`${id}'s workspace is at the recorded head ${short(known)}; reset it to the commit to roll back to first. Nothing was pushed.`);
+      if (!holds(head, known)) die(`push --rollback returns ${id} to a commit of its recorded history, and ${short(head)} is not an ancestor of the recorded head ${short(known)}. Nothing was pushed.`);
+      rebasedFrom = known;
+      lease.push(`--force-with-lease=${branch}:${known}`);
+    } else if (args.force === true) {
       known = (await call("GET", I(name, id), undefined, as)).item.head;
       if (!known) die(`nothing is recorded for ${id} yet; push without --force`);
       if (!hasCommit(known)) die(`Atelier recorded ${id}'s head as ${short(known)}, which this workspace does not hold; run atelier update to take what the fork holds, then push again`);
@@ -2322,8 +2335,9 @@ const commands = {
 
   async "integration-failed"() {
     const name = project(), id = itemArg(), as = await actor();
-    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT");
-    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "" }, as);
+    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT [--kind conflict|checks]");
+    if (args.kind !== undefined && args.kind !== "conflict" && args.kind !== "checks") die("--kind is conflict or checks");
+    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "", ...(args.kind ? { kind: args.kind } : {}) }, as);
     console.log(JSON.stringify(r));
   },
 
