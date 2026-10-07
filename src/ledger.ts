@@ -1346,7 +1346,8 @@ export class Ledger extends DurableObject<Env> {
       : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
     // A plan item is accepted through planGate (docs/orchestrator.md, section
     // 5), which adds its own blockers: every part integrated or landed, each
-    // integrated at its recorded head, and the branch at the integration head.
+    // integrated at its recorded head, and the branch at the integration head,
+    // where the parts' reviews stand as the plan's own review.
     const g = item.kind === "plan"
       ? planGate({
           plan: override ? { ...current, reviewOverride: override.override } : current,
