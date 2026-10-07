@@ -40,6 +40,7 @@ A plan is an item with `kind = "plan"`. That gives it everything an item already
 
 **Approval binds to a hash.** The owner calls `POST items/tP/plan/approve {hash}`.
 - The Ledger refuses unless `hash` is the newest valid proposal. This is the same idea as `assertRevision`.
+- It is refused while the planner still holds the plan item's claim, so a write token never outlives the plan: the planner releases before the owner approves.
 - It stores the approval in the plan's record (`hash`, `at`, `allowPaid`, the limits, the deadline, the part items and each part's routing) and logs `plan.approved`.
 - It is refused while a part has no builder, or no reviewer of another family, under `routeParts`: approving such a plan would only block it. The owner adds models to the pool, or approves with `allowPaid`, and approves the same hash again.
 - A new proposal before approval makes the older hash impossible to approve, just as a push withdraws acceptance.
@@ -132,7 +133,8 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 - **A runner gives up with no commit.** It already releases the part, so the part re-queues. After two releases by the same actor, the dispatch moves to the next alternate.
 - **Checks fail during `finish`.** For an ordinary task the runner keeps the claim. For a part it releases instead (step 7b); the fork keeps the commits. The part goes back to the same actor once, with the failing output in its next brief, then to an alternate.
   - `handoff` cannot be used here: it leaves the item `claimed`, and `waiting()` never lists a claimed item.
-- **A part reaches 3 attempts, or there are no alternates, or the deadline or budget is hit.** The plan becomes `blocked` with the reason. The owner chooses: reroute, retry, abandon the part, or stop.
+- **A part reaches 3 attempts, or there are no alternates.** The plan becomes `blocked` with the reason. The owner chooses: reroute, retry, abandon the part, or stop.
+- **The deadline or budget is hit.** The plan becomes `blocked` with the reason. These limits are fixed at approval, so reroute and retry cannot lift them: the owner stops the plan.
 
 ## 4. t39: automatic cross-family review
 
