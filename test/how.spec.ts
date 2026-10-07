@@ -90,7 +90,7 @@ it("the orchestrator section describes the flow as it runs: plans, routing, auto
     '<code>atelier plan "goal"</code>', "plan job", "by its hash, once", "<code>routeParts</code>", "another model family",
     "review request", "<code>runReview</code>", "<code>cli/agy-review.mjs</code>", "integration branch", "<code>atelier runner --integrate</code>",
     "owner's acceptance and merge", "<code>atelier land</code>", "landing lease",
-    "Every home runner offers build and plan jobs", "A rejection with blocking findings",
+    "Every home runner offers build and plan jobs", "A rejection with blocking findings", "the integrator submits the plan task",
   ]) expect(prose, said).toContain(said);
   for (const stale of ["nothing else calls it", "pure functions with tests", "by hand"]) expect(prose).not.toContain(stale);
   expect(section).toContain("<h3>Landing a single task");
