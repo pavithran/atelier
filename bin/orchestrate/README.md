@@ -315,7 +315,9 @@ nothing. A build job logs these lines in this order: `runner: nothing claimed`
 (the first line of every build job, written before the claim is made),
 `runner: claimed`, `runner: workspace reset to HEAD and untracked files
 removed`, `runner: working`, `runner: committed` and `runner: submitted`, or
-`runner: failed: REASON` where it stops. A plan job logs `runner: claimed` and
+`runner: failed: REASON` where it stops. A build the runner takes back after
+a restart (see the next paragraph) logs `runner: resumed: …` between the
+reset line and `working`. A plan job logs `runner: claimed` and
 the workspace reset line, then `runner: plan posted: HASH`. A failure line is
 followed by the line that settles the claim: `runner: released: REASON`, or
 `runner: claim preserved: REASON` (work was committed, or the state is
@@ -332,11 +334,23 @@ skipped for this process` (3 consecutive infrastructure failures for the
 other form) do. To see which task a runner holds now, run `atelier status
 --project PROJECT`. `launchctl print gui/$(id -u)/zone.atelier.runner`
 shows whether launchd considers the job loaded and its last exit status.
-Stopping with `bootout` sends the runner a termination signal, and it ends
-its harness's processes before exiting. Once task t213 is in, a review job
-that ends on any error, a stop included, also releases its claim so another
-reviewer can take it; before t213, a stopped review job keeps its claim until
-it lapses after two hours.
+Stops and restarts. `bootout` sends the runner a termination signal, and it
+ends its harness's processes before exiting; a second signal ends it at once.
+A stop that kills a build whose agent had committed leaves the claim held:
+the commits sit in the workspace, submitted by no one, and a build that had
+committed nothing is released back to the queue (task t213 made a stopped
+review release its claim the same way). The queue then offers a runner the
+claims its own dead runs left behind, before any new work, so the process a
+restart begins re-claims what the stopped one held: where the workspace holds
+commits the server never recorded — the dead run's agent committed, and
+nothing pushed or submitted them — the new run finishes them (`runner:
+resumed: …`, then the push, checks and submit of `atelier finish`) without
+running the model again, and where it holds none, the model builds as for any
+claim. A restart therefore loses no committed work and leaves no runner
+reported busy with a claim no live run holds; a resumed finish that keeps
+failing leaves the claim for the owner, as any failed finish does. This needs
+a server at route level 13 (the task's own raise to 6 plus the raises main
+had already merged), which the runner asks for at start.
 
 ## What the agents may and may not do
 
