@@ -1,0 +1,25 @@
+atelier atelier/t253 "Reviewers read a task's title as claims the change makes: gemini-3.1-pro blocked t240 and t246 (2026-10-07) on phrases from the task title ('for the job', 'name the runner config entry') as if a commit message claimed them, while the commits said otherwise. The review brief labels the task's text as the owner's request, puts the change's own commit messages under their own heading as its claims, and says a part of the request left unbuilt is a follow-up unless a commit or the docs claim it is done; it also points at the newest commit message where an earlier one is superseded"
+accepted head fc5351f8c301928d29689d113fa0ec0591063b1e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T15:17:29.130Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T15:17:31.789Z
+REVIEW approve by antigravity/gemini-3.1-pro at fc5351f8c301928d29689d113fa0ec0591063b1e, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T13:20:17.741Z pavi item.created
+2026-10-07T15:00:49.541Z pavi item.dispatched
+2026-10-07T15:01:02.318Z opencode/glm-5.3 item.claimed
+2026-10-07T15:01:16.297Z opencode/glm-5.3 fork.created
+2026-10-07T15:14:31.269Z pavi land.lease
+2026-10-07T15:14:34.671Z pavi land.merge
+2026-10-07T15:14:42.664Z pavi land.regenerate
+2026-10-07T15:14:46.232Z opencode/glm-5.3 push.observed
+2026-10-07T15:14:46.390Z pavi land.push
+2026-10-07T15:17:29.544Z opencode/glm-5.3 evidence.observed
+2026-10-07T15:17:32.149Z opencode/glm-5.3 evidence.observed
+2026-10-07T15:17:32.530Z pavi land.check
+2026-10-07T15:17:32.942Z opencode/glm-5.3 item.submitted
+2026-10-07T15:17:33.202Z pavi land.submit
+2026-10-07T15:17:33.380Z pavi review.requested
+2026-10-07T15:17:52.364Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T15:21:04.778Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T15:21:05.917Z pavi land.review
+2026-10-07T15:21:06.793Z pavi item.accepted
+2026-10-07T15:21:06.941Z pavi land.accept
