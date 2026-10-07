@@ -1,0 +1,24 @@
+atelier atelier/t212 "atelier check sometimes crashes with an uncaught exception after every check has passed (output ends in '}' and the Node.js version, exit nonzero): seen twice on 2026-10-06 (t196 at be6b4009, t203 at 15281a2a), each time with other work running, and each passed when run again alone. Find the call after the checks that throws (posting evidence or the changed-paths measure, most likely), report its failure as a clean error and retry once, and make bin/orchestrate/land.sh show the last 25 lines of a failed check rather than 3"
+accepted head e38bbb4ff6a60aa535ca38cec4c18d01c736b9e9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T00:32:38.149Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T00:32:40.930Z
+REVIEW approve by antigravity/gemini-3.1-pro at e38bbb4ff6a60aa535ca38cec4c18d01c736b9e9, recorded by an unrecorded actor
+2026-10-06T22:26:29.114Z pavi item.created
+2026-10-07T00:16:25.175Z claude-code/opus-5.5 item.claimed
+2026-10-07T00:16:29.216Z claude-code/opus-5.5 fork.created
+2026-10-07T00:29:59.042Z pavi land.lease
+2026-10-07T00:29:59.997Z pavi land.merge
+2026-10-07T00:30:12.428Z pavi land.regenerate
+2026-10-07T00:30:14.999Z claude-code/opus-5.5 push.observed
+2026-10-07T00:30:15.151Z pavi land.push
+2026-10-07T00:32:38.739Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:32:41.217Z claude-code/opus-5.5 evidence.observed
+2026-10-07T00:32:41.693Z pavi land.check
+2026-10-07T00:32:42.158Z claude-code/opus-5.5 item.submitted
+2026-10-07T00:32:42.421Z pavi land.submit
+2026-10-07T00:32:42.587Z pavi review.requested
+2026-10-07T00:32:48.690Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T00:38:30.715Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T00:38:32.894Z pavi land.review
+2026-10-07T00:38:33.572Z pavi item.accepted
+2026-10-07T00:38:33.729Z pavi land.accept
