@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
-import type { PlanView } from "../src/plans/show.ts";
+import { planText, type PlanView } from "../src/plans/show.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
@@ -11,7 +11,9 @@ import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
 // POST /queue is recorded on the index, and approval, the preview and the
 // planner pick route only from the offers still live, so a plan never waits
 // for a model no runner could claim. Until any runner has asked, nothing is
-// known to be offered and routing restricts nothing.
+// known to be offered and routing restricts nothing; when runners have
+// asked but none is live, routing falls back to the whole pool the same way
+// (routable in src/ledger.ts) and plan show warns of the fallback.
 // The offers a file's tests record persist across its tests, as they do
 // across a server's life; each test says what the runners offer by
 // overwriting their rows, and the never-asked case comes first.
@@ -151,13 +153,32 @@ it("approval and the preview route only from the models live runners offer", asy
   }
 });
 
-it("a stale offer offers nothing: recorded asks past the window leave nothing to route from", async () => {
+it("runners have asked but none is live: routing falls back to the whole pool, and plan show warns", async () => {
   const L = await setup("plan-offers-stale");
   const { id, hash } = await proposed(L, doc(part("a")));
   const ago = new Date(Date.now() - OFFER_LIVE_MS - 60_000).toISOString();
   await index().putRunnerOffer({ runner: "home:studio", kind: "home", agents: [{ agent: "zcode", models: ["glm-5.3"] }] }, ago);
   await index().putRunnerOffer({ runner: "home:desk", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }] }, ago);
-  // The asks are recorded, so routing knows what is offered: nothing live.
+  // The asks are recorded, so the offers are known — and all of them stale.
+  // Routing then falls back to the whole pool (routable): the preview routes
+  // parts the stale runners never offered, instead of leaving nothing to
+  // route from, and approval fixes those routes.
   expect(await index().runnerOffers()).toHaveLength(2);
-  await refusal(L.approvePlan(id, "owner", hash, false, POOL), "unrouted", /part a has no builder: no eligible builder: .*no live runner offers.*\. Add models to the pool, or approve with --allow-paid if a paid model would qualify, or start a runner that offers them, then approve again$/);
+  const preview = await L.planView(id, POOL);
+  expect(preview.preview?.every((r) => r.unrouted === null && r.builder !== null && r.reviewer !== null)).toBe(true);
+  // Plan show says the routing is a fallback while no runner is live, naming
+  // when one last asked, so the pool-wide routing is not read as what the
+  // runners offer now.
+  const shown = planText(await L.planView(id, null, null, await index().runnerOffers()) as PlanView, "plan-offers-stale");
+  expect(shown).toMatch(/No runner is live now; the last to ask for work did so at 20\d\d-\d\d-\d\d \d\d:\d\d UTC, so routing falls back to the whole pool, and a dispatch may wait until a runner asks again/);
+  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL);
+  expect(parts).toHaveLength(1);
+  const view = await L.planView(id) as PlanView;
+  expect(view.parts[0].route?.unrouted ?? null).toBeNull();
+  // Once approved the routing is fixed, so the fallback warning stands down
+  // even against the same stale offers; the review of a submitted part is
+  // what names them then (unoffered, in the review lines).
+  const approved = planText(await L.planView(id, null, null, await index().runnerOffers()) as PlanView, "plan-offers-stale");
+  expect(approved).not.toContain("falls back to the whole pool");
+  await L.stopPlan(id, "owner", "done");
 });

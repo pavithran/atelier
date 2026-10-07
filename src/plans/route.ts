@@ -42,9 +42,12 @@ export interface RouteInput {
   reliability?: Reliability;              // each model's record across every project; orders equal scores only
   // The offers live runners made, as the index recorded them. A model no
   // live runner offers cannot build or review, because no runner could claim
-  // its dispatch; a model some runner offers says which. Undefined when no
-  // runner has ever asked — nothing is then known to be offered, so routing
-  // restricts nothing and a project run entirely by hand still routes.
+  // its dispatch; a model some runner offers says which. Undefined when the
+  // caller read no live offers — nothing is then known to be offered, so
+  // routing restricts nothing and falls back to the whole pool (routable in
+  // src/ledger.ts), and a project run entirely by hand still routes. Read
+  // per model, not per job: whether a runner runs the job a dispatch names
+  // is not judged here.
   offers?: readonly SeenOffer[];
 }
 
@@ -153,7 +156,7 @@ interface Context {
   record: ModelRecord;
   tiebreaks: Map<string, Tiebreak>;
   availability: Map<string, { key: string; value: Availability }>;
-  offered: Map<string, string[]> | null;   // actors live runners offer; null when no runner has ever asked
+  offered: Map<string, string[]> | null;   // actors live runners offer; null when the offers were not read or none is live, and routing restricts nothing
   governed: boolean;
 }
 
@@ -196,8 +199,11 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // A model no live runner offers cannot take the part: its dispatch would
   // wait in the queue for a runner that never asks for it. The actor is the
   // name the dispatch would name, so an alias a runner offers does not reach
-  // the pool's id — the claim would be refused anyway.
-  if (ctx.offered) {
+  // the pool's id — the claim would be refused anyway. The map is read for
+  // whether it was computed at all, never for whether it is truthy: one that
+  // is empty says live runners offer nothing claimable, and every model
+  // fails; null says the offers were not read and nothing is restricted.
+  if (ctx.offered !== null) {
     const runners = ctx.offered.get(actor.toLowerCase());
     if (runners) passed.push(`Offered by ${runners.join(", ")}`);
     else both.push(`no live runner offers ${actor}, so no runner could claim its dispatch`);
@@ -319,8 +325,9 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     record: recordFor(pool, input.events),
     tiebreaks: input.reliability ? tiebreaksFor(pool, input.reliability) : new Map(),
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
-    // The live half of the recorded offers, or null when no runner has ever
-    // asked, when nothing is known to be offered and routing restricts nothing.
+    // The live half of the recorded offers, or null when the caller passed
+    // none — when nothing is live, which routable (src/ledger.ts) decides,
+    // so routing restricts nothing and falls back to the whole pool.
     offered: input.offers ? offering(liveOffers(input.offers)) : null,
     governed: input.policy.agents !== undefined,
   };
