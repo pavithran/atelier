@@ -594,8 +594,9 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 // The public page: the portfolio the owner chose to show, read only. Stories
 // arrive redacted (graph.ts), and for a project shown anonymously they arrive
 // anonymised as well: titled by a neutral label from the project's kind, each
-// task titled by its kind of work, so no project name, task title, path,
-// commit message, review note, person or address reaches the HTML.
+// task titled by its kind of work, and no commit hash anywhere, so no project
+// name, task title, path, commit message, commit hash, review note, person or
+// address reaches the HTML.
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
@@ -685,7 +686,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     ${layersFigure()}
     <p class="meta">How a task goes from claim to merge, and the rules each step enforces: <a href="/how#the-loop">How it works</a>.</p>
   </section>
-  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message or address in them. Review notes, reports and diffs stay private in every case.</p>
+  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
 `,
   });
 }
