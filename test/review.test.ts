@@ -152,6 +152,47 @@ test("reviewNeeded: a rejection at this head waits for rework, and an item's nee
   assert.ok(need({ item: item({ reviewOverride }) }).needed);
 });
 
+test("reviewNeeded: a rejection whose every blocking finding the owner refuted is reviewed again at that head, not reworked", () => {
+  const GPT = "codex/gpt-6-astra";
+  const findings: Finding[] = [
+    { file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." },
+    { file: "README.md", line: null, severity: "follow-up", text: "Mention it." },
+    { file: "src/rules.ts", line: 5, severity: "blocking", text: "Drops a row." },
+  ];
+  const rejected = review(GPT, false, H2, { at: "2026-10-05T12:00:00.000Z", findings });
+  const verdict = (seq: number, index: number, v: string) =>
+    event(seq, OWNER, "review.finding", { head: H2, index, verdict: v, by: GPT, finding: findings[index - 1] });
+  const lifted = [verdict(20, 1, "refuted"), verdict(21, 3, "refuted")];
+  // With no verdicts, only one blocking finding refuted, or only a follow-up,
+  // the rejection still blocks: the builder reworks it before another review.
+  for (const verdicts of [[], [verdict(20, 1, "refuted")], [verdict(20, 2, "refuted")]] as const) {
+    assert.equal(need({ reviews: [rejected], verdicts: [...verdicts] }).reason, "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review");
+  }
+  // Every blocking finding refuted lifts the block: the same head is reviewed
+  // again, a re-review of round 2 asked of the same reviewer first.
+  const again = required({ reviews: [rejected], verdicts: lifted });
+  assert.equal(again.kind, "re-review");
+  assert.equal(again.round, 2);
+  assert.equal(again.previousReviewer, GPT);
+  assert.equal(again.reason, "every part is reviewed by another model family, and this coordinated change has no such approval at bbbbbbbb; round 2, after codex/gpt-6-astra rejected bbbbbbbb");
+  // The newest verdict on a finding wins, so a later confirm blocks again.
+  assert.equal(need({ reviews: [rejected], verdicts: [...lifted, verdict(22, 1, "confirmed")] }).reason,
+    "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review");
+  // A rejection with no findings recorded has nothing to refute, and the
+  // owner's own rejection is the owner's decision: both still block.
+  assert.equal(need({ reviews: [review(GPT, false)] }).reason, "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review");
+  assert.equal(need({ reviews: [review(OWNER, false, H2, { note: "Rename it" })] }).reason, "the project owner rejected bbbbbbbb; the builder reworks it before another review");
+  // A second, unrefuted rejection at the head still blocks beside a refuted one.
+  assert.equal(need({ reviews: [rejected, review("claude-code/opus-5.5", false, H2, { at: "2026-10-05T12:30:00.000Z", findings: [findings[0]] })], verdicts: lifted }).reason,
+    "claude-code/opus-5.5 rejected bbbbbbbb; the builder reworks it before another review");
+  // The owner's approval does not stand in for the second opinion.
+  assert.ok(need({ reviews: [rejected, review(OWNER, true, H2, { at: "2026-10-05T13:00:00.000Z" })], verdicts: lifted }).needed);
+  // An earlier head the builder pushed past is a round too: this is round 3.
+  const round3 = required({ reviews: [rejected, review(GPT, false, H1, { at: "2026-10-05T09:00:00.000Z", findings: [findings[0]] })], verdicts: lifted });
+  assert.equal(round3.round, 3);
+  assert.equal(round3.reason.endsWith("round 3, after codex/gpt-6-astra rejected bbbbbbbb"), true);
+});
+
 test("reviewNeeded: a live request holds the item until its claim lapses", () => {
   const claimedAt = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
   assert.equal(need({ requests: [{ head: H2, state: "open" }] }).reason, "a review request for bbbbbbbb is open");
@@ -671,4 +712,34 @@ test("reviewBrief: round 1 lists no earlier findings, verdicts or the rule on re
   assert.ok(!text.includes("## Earlier reviews"));
   assert.ok(!text.includes("verdicts on these findings"));
   assert.ok(!text.includes("refuted"));
+});
+
+test("reviewBrief: a re-review at the same head says the owner refuted the rejection, not that the builder pushed", () => {
+  const GPT = "codex/gpt-6-astra";
+  const refuted = event(20, OWNER, "review.finding", { head: H2, index: 1, verdict: "refuted", note: "needed.ts:95 already retries it.", by: GPT, finding: blocker });
+  const need = required({
+    reviews: [review(GPT, false, H2, { at: "2026-10-05T11:00:00.000Z", note: "One blocker.", findings: [blocker] })],
+    verdicts: [refuted],
+  });
+  const text = brief({ need, events: [submitted(H2, "Adds reviewNeeded with tests."), refuted] });
+  assert.ok(text.includes("This is review round 2. A model rejected this head, and the project owner refuted every blocking finding of that rejection, so it is reviewed again rather than reworked. Start with the earlier blocking findings under \"Earlier reviews\": say in your summary which are resolved, and repeat as blocking any that still holds."), text);
+  assert.ok(text.includes([
+    "## Earlier reviews",
+    "",
+    "These are the reviews recorded before this one. One marked \"this head\" is of bbbbbbbb, the head under review; the builder has pushed since each of the others.",
+    "",
+    "Round 1, at bbbbbbbb (this head): codex/gpt-6-astra rejected.",
+  ].join("\n")), text);
+  assert.ok(text.includes("- finding 1: refuted, noting `needed.ts:95 already retries it.`"), text);
+  // An earlier head beside the refuted one at this head: both are said.
+  const round3 = required({
+    reviews: [
+      review(GPT, false, H1, { at: "2026-10-05T09:00:00.000Z", findings: [blocker] }),
+      review(GPT, false, H2, { at: "2026-10-05T11:00:00.000Z", findings: [blocker] }),
+    ],
+    verdicts: [refuted],
+  });
+  const both = brief({ need: round3, events: [submitted(H2, "Adds reviewNeeded with tests."), refuted] });
+  assert.ok(both.includes("This is review round 3. A model rejected an earlier head and the builder has pushed since, and the project owner refuted every blocking finding of a rejection at this head, so it is reviewed again rather than reworked."), both);
+  assert.ok(both.includes("Round 2, at bbbbbbbb (this head): codex/gpt-6-astra rejected."), both);
 });
