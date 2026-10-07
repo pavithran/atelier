@@ -2,9 +2,11 @@
 // recognised family than every contributor to the item, available, not
 // refused, paid only when the owner allows it, and one whose review the
 // ledger will record and the gate will count. Candidates are asked in this
-// order: on a re-review, the previous round's reviewer; then the plan's
-// routed reviewer for the part; then the part's alternates; then the rest of
-// the pool. Each choice carries its reasons in the words src/plans/route.ts
+// order: on a re-review, the previous round's reviewer; then, for a
+// protected change in a project with a review tier, the tier's models in the
+// tier's order, so one review serves the gate and the tier (src/review/tier.ts);
+// then the plan's routed reviewer for the part; then the part's alternates;
+// then the rest of the pool. Each choice carries its reasons in the words src/plans/route.ts
 // uses for the same rules, and when no model qualifies the result says why,
 // naming each model passed over.
 //
@@ -31,6 +33,7 @@ export interface PickInput {
   part?: Pick<PlanPart, "taskKind" | "size"> | null;
   route?: Pick<PartRoute, "reviewer" | "alternates"> | null;  // the part's routing, frozen at approval
   previous?: string | null;                     // the reviewer of the last rejected round
+  tier?: readonly string[];                     // the review tier, asked before the routing; a tier model outside the pool is skipped
   avoid?: readonly { actor: string; reason: string }[];       // reviewers to pass over, such as one whose claim lapsed
   profiles?: readonly ModelProfile[];           // context windows; MODEL_PROFILES by default
   owner?: string;
@@ -43,7 +46,7 @@ export interface ReviewerPick {
   unpicked: string | null;    // why no reviewer qualifies; null when one does
 }
 
-type Source = { kind: "previous" | "routed" | "pool" } | { kind: "alternate"; index: number };
+type Source = { kind: "previous" | "tier" | "routed" | "pool" } | { kind: "alternate"; index: number };
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 const namesOf = (entry: ModelEntry) => [entry.id, ...entry.aliases].map((id) => `${entry.harness}/${id}`.toLowerCase());
@@ -64,6 +67,7 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   // tie-break, so the result never depends on the order the pool arrives in.
   const wanted: { actor: string; source: Source }[] = [];
   if (input.previous) wanted.push({ actor: input.previous, source: { kind: "previous" } });
+  for (const actor of input.tier ?? []) wanted.push({ actor, source: { kind: "tier" } });
   if (input.route?.reviewer) wanted.push({ actor: input.route.reviewer.actor, source: { kind: "routed" } });
   input.route?.alternates.forEach((c, index) => wanted.push({ actor: c.actor, source: { kind: "alternate", index } }));
   const pool = [...input.pool].sort((a, b) => a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b)));
@@ -74,6 +78,9 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   const lead: string[] = [];
   for (const { actor, source } of wanted) {
     const entry = findEntry(input.pool, actor);
+    // The tier is a preference: a tier model the pool lacks is not a
+    // candidate passed over, and the routing is asked next.
+    if (source.kind === "tier" && !entry) continue;
     const key = entry ? actorOf(entry).toLowerCase() : actor.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -93,6 +100,7 @@ export function pickReviewer(input: PickInput): ReviewerPick {
 
 function position(source: Source, input: PickInput): string {
   if (source.kind === "previous") return "Reviewed the previous round; a re-review goes to the same reviewer first";
+  if (source.kind === "tier") return "A model of the project's review tier, asked first so its review serves as the tier review too";
   if (source.kind === "routed") return "The plan's routed reviewer for this part";
   if (source.kind === "alternate") return `Alternate ${source.index + 1} in the plan's routing for this part`;
   return input.route

@@ -661,3 +661,112 @@ it("plan show says a routed review no live runner offers can never be claimed, a
   expect(claimed).toMatch(new RegExp(`review of aaaaaaaa asked of ${reviewer.replace("/", "\\/")}, claimed at 20\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC`));
   expect(claimed).not.toContain("the request is open");
 });
+
+// The review tier (src/review/tier.ts): a protected part's gate review goes
+// to a tier model of another family than every contributor first, and that
+// one review serves both. When no tier model can give the gate's review, the
+// gate's cross-family request gets, beside it, one tier request from a tier
+// model that did not build it, whatever its family.
+async function tiered(project: string) {
+  const L = ledger(project);
+  await L.setProject({ name: project, repo: `${project}--baseline`, policy: { ...policy, protected: ["src/**"] }, createdAt: new Date().toISOString() }, "owner");
+  const plan = await approved(L);
+  // The builder's own model is listed first and skipped; a model of the
+  // builder's family that did not build it cannot give the gate's review, so
+  // the gate goes to the routed GPT, outside the tier, and the sibling is
+  // asked for the tier.
+  const sibling = familyOf(plan.builder.split("/")[1]) === "anthropic" ? "claude-code/sonnet-5.5" : "opencode/glm-5.2";
+  expect(familyOf(sibling.split("/")[1])).toBe(familyOf(plan.builder.split("/")[1]));
+  await L.setProject({ name: project, repo: `${project}--baseline`, policy: { ...policy, protected: ["src/**"], reviewTier: [plan.builder, sibling] }, createdAt: new Date().toISOString() }, "owner");
+  return { L, ...plan, sibling };
+}
+
+it("a protected part's review is routed to a tier model of another family before the plan's reviewer, and no separate tier request is made", async () => {
+  const L = ledger("review-tier-first");
+  await L.setProject({ name: "review-tier-first", repo: "review-tier-first--baseline", policy: { ...policy, protected: ["src/**"] }, createdAt: new Date().toISOString() }, "owner");
+  const { id, partId, builder } = await approved(L);
+  // The plan routed GPT; the tier names the builder and another model of
+  // another family, which is asked instead.
+  const top = [OPUS, GLM].find((a) => a !== builder)!;
+  expect(familyOf(top.split("/")[1])).not.toBe(familyOf(builder.split("/")[1]));
+  await L.setProject({ name: "review-tier-first", repo: "review-tier-first--baseline", policy: { ...policy, protected: ["src/**"], reviewTier: [builder, top] }, createdAt: new Date().toISOString() }, "owner");
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const [agent, model] = top.split("/");
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent, model }]);
+  expect((await L.reviewRequests(partId)).filter((r) => r.tier)).toEqual([]);
+  expect((await events(L, partId)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { reviewer: top, topTier: true } });
+  const view = await L.planView(id) as unknown as PlanView;
+  expect(view.parts[0].review).toMatchObject({ reviewer: top, topTier: true });
+  expect(view.parts[0].tierReview).toBeNull();
+  expect(planText(view, "review-tier-first")).toContain(`gate review, top tier, of ${head.slice(0, 8)} asked of ${top}; the request is open`);
+  // Its one approval satisfies the gate and is labelled as the tier's too.
+  await L.claimReview(partId, top, RUNNER);
+  await L.addReview({ itemId: partId, by: top, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
+  expect((await L.reviewsFor(partId))[0]).toMatchObject({ by: top, approve: true, topTier: true });
+  await L.accept(partId, "owner");
+  expect((await L.item(partId)).state).toBe("accepted");
+});
+
+it("a protected part in a project with a review tier gets the gate's request and a tier request that skips the builder's model", async () => {
+  const { L, id, partId, sibling } = await tiered("review-tier-requests");
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const [agent, model] = sibling.split("/");
+  expect(await reviewWaiting(L)).toEqual([
+    { id: partId, job: "review", agent: "codex", model: "gpt-6-astra" },
+    { id: partId, job: "review", agent, model },
+  ]);
+  expect(await L.reviewRequests(partId)).toEqual([
+    expect.not.objectContaining({ tier: true }),
+    expect.objectContaining({ head, state: "open", tier: true }),
+  ]);
+  const asked = (await events(L, partId)).filter((e) => e.kind === "review.requested");
+  expect(asked.map((e) => [e.data.reviewer, e.data.tier ?? false])).toEqual([[sibling, true], [GPT, false]]);  // newest first
+  // Plan show names the tier request apart from the gate's.
+  const view = await L.planView(id) as unknown as PlanView;
+  expect(view.parts[0].tierReview).toMatchObject({ reviewer: sibling, state: "open" });
+  expect(planText(view, "review-tier-requests")).toContain(`tier review of ${head.slice(0, 8)} asked of ${sibling}; the request is open, and integration does not wait for it`);
+  // Each reviewer claims its own request, whichever is older.
+  const tierClaim = await L.claimReview(partId, sibling, RUNNER) as unknown as ReviewClaim;
+  expect(tierClaim.tier).toBe(true);
+  expect(tierClaim.need).not.toBeNull();
+  const gateClaim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(gateClaim.tier).toBe(false);
+  expect(await reviewWaiting(L)).toEqual([]);
+});
+
+it("a tier approval never satisfies the gate, and the gate's approval leaves the tier review standing", async () => {
+  const { L, id, partId, sibling } = await tiered("review-tier-approve");
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  await L.claimReview(partId, sibling, RUNNER);
+  await L.addReview({ itemId: partId, by: sibling, head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
+  expect((await L.reviewsFor(partId))[0]).toMatchObject({ by: sibling, approve: true, tier: true, claimed: true });
+  // The gate still needs its cross-family review, still asked of GPT, and
+  // the part cannot be accepted on the tier approval.
+  expect((await L.planView(id)).parts[0].gate?.blockers.join("; ")).toMatch(/another family/);
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+  await refusal(L.accept(partId, "owner"), "not_ready", /another family/);
+  // The gate's approval answers only the gate's request.
+  await L.claimReview(partId, GPT, RUNNER);
+  await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  await L.accept(partId, "owner");
+  expect((await L.item(partId)).state).toBe("accepted");
+});
+
+it("a tier rejection with a blocking finding sends the part back like any rejection, and the gate's approval does not end an open tier request", async () => {
+  const { L, partId, builder, sibling } = await tiered("review-tier-reject");
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  // The gate approves first; the tier request is still asked.
+  await L.claimReview(partId, GPT, RUNNER);
+  await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  expect((await L.reviewRequests(partId)).find((r) => r.tier)).toMatchObject({ state: "open" });
+  const claim = await L.claimReview(partId, sibling, RUNNER) as unknown as ReviewClaim;
+  expect(claim.need).not.toBeNull();
+  await L.addReview({ itemId: partId, by: sibling, head, approve: false, note: "Tier: loses data.", findings: [blocker()], at: new Date().toISOString() });
+  expect((await L.item(partId)).state).toBe("open");
+  expect((await events(L, partId)).find((e) => e.kind === "review.rework")).toMatchObject({ data: { by: sibling, builder, findings: [blocker()] } });
+  expect((await events(L, partId)).find((e) => e.kind === "review.rejected")).toMatchObject({ actor: sibling, data: { tier: true } });
+});
