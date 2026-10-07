@@ -2648,7 +2648,9 @@ const commands = {
       } catch (error) { throw new Error(`server request failed: ${error.message}`); }
       let data;
       try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-      if (!res.ok) throw new Error(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`);
+      // The status rides on the error, so a landing can tell a refusal
+      // (the server answered, and said no) from a failure to reach it.
+      if (!res.ok) throw Object.assign(new Error(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`), { status: res.status });
       return data;
     };
     // A git runner that throws rather than dies, for the same reason. With
