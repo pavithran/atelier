@@ -2438,6 +2438,7 @@ export class Ledger extends DurableObject<Env> {
         evidence: this.evidenceFor(p.id),
         reviews: this.reviewsFor(p.id),
         requests: this.reviewRequests(p.id),
+        verdicts: this.findingVerdicts(p.id),
         now, owner: this.owner,
       });
       if (!need.needed) continue;
@@ -2592,7 +2593,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
-      requests: [], wanted: !!row.wanted, now: new Date(at), owner: this.owner,
+      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, now: new Date(at), owner: this.owner,
     });
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
@@ -2615,6 +2616,14 @@ export class Ledger extends DurableObject<Env> {
     return [...latest, ...older];
   }
 
+  // The owner's verdicts on findings of this item's reviews (review.finding
+  // events, `atelier finding`), oldest first. reviewNeeded reads them, so a
+  // rejection whose every blocking finding the owner refuted no longer blocks
+  // another review at its head (t240).
+  private findingVerdicts(id: string): LedgerEvent[] {
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' ORDER BY seq`, id).toArray().map(eventOf);
+  }
+
   // A review request for a submitted item the gate needs reviewed, asked for
   // by atelier land (t187) rather than a plan's tick: the reviewer is the one
   // the owner names with --reviewer or is picked from the pool as the plan
@@ -2623,7 +2632,8 @@ export class Ledger extends DurableObject<Env> {
   // started. `at` in the answer is where the caller counts new verdicts from.
   // With `wanted` the owner asks for the review of the named reviewer even
   // where the gate needs none; only a gate that cannot proceed (checks not
-  // passing, a rejection at this head, no push) refuses, with its reason.
+  // passing, a rejection at this head whose blocking findings the owner has
+  // not refuted, no push) refuses, with its reason.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
@@ -2641,7 +2651,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
-      requests: this.reviewRequests(id), wanted, now: new Date(at), owner: this.owner,
+      requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, now: new Date(at), owner: this.owner,
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
