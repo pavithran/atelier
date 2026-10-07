@@ -4,7 +4,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { LIMITS, LOOP, ORCHESTRATOR, RULES, TERMS } from "../src/how-data.ts";
 import { HELP_FORMS } from "../src/usage.ts";
-import { PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_LABEL, PLAN_FLOW_RETURNS } from "../src/diagrams.ts";
+import { LAYERS_CAPTION, LAYERS_LABEL, PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_LABEL, PLAN_FLOW_RETURNS, layersDiagram } from "../src/diagrams.ts";
 
 // The How it works page states what the code does. These tests tie its
 // statements to the code, so that a change which makes one untrue fails here
@@ -171,6 +171,28 @@ test("the plan flow's text fits its boxes and lanes at the drawn size", () => {
   for (const t of [PLAN_FLOW_LABEL, PLAN_FLOW_CAPTION, ...Object.values(PLAN_FLOW_RETURNS), ...PLAN_FLOW.flatMap((s) => [s.name, ...s.sub])]) {
     assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
   }
+});
+
+// The layers diagram shows a goal entering as a plan and names the jobs a
+// home runner takes, and those are the jobs cli/runner.mjs offers: build and
+// plan always, review when the config lists it, and integrate and refresh for
+// a runner started with --integrate.
+test("the layers diagram shows a goal entering as a plan and the runner's jobs", () => {
+  const runner = read("cli/runner.mjs");
+  assert.match(runner, /jobs: \[\.\.\.new Set\(\["build", "plan", \.\.\.\(config\.jobs \?\? \[\]\)\]\)\]/);
+  assert.match(runner, /dispatch carrying job: "plan"[\s\S]{0,80}carrying "review"/);
+  assert.match(runner, /jobs: \["integrate", "refresh"\]/);
+  for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) {
+    assert.match(t, /atelier plan "goal"/, t);
+    assert.match(t, /build, plan and review jobs|build and plan jobs, and review jobs/, t);
+  }
+  assert.match(LAYERS_LABEL, /Ledger[^.]*holds each plan and dispatches its parts/);
+  assert.match(LAYERS_CAPTION, /--integrate[^.]*integrate and refresh jobs/);
+  const svg = layersDiagram();
+  assert.ok(svg.includes(">owner: atelier plan &quot;goal&quot;</text>"), "the terminal node shows the goal entering as a plan");
+  assert.ok(svg.includes(">build, plan and review jobs</text>"), "the home runner node names its jobs");
+  assert.ok(svg.includes(">holds each plan and dispatches its parts and jobs</text>"), "the Ledger node holds the plan");
+  for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
 });
 
 test("each diagram label is short enough for its box at the drawn size", () => {
