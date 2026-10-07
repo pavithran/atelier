@@ -846,18 +846,29 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // One call per project reads both its waiting tasks and its open review requests.
     const lists = await Promise.all(projects.map(async (p) => {
       try {
-        const { waiting, reviews } = await ledgerOf(env, p).queued();
-        return [...waiting, ...reviews].map((item) => ({ project: p.name, item }));
+        // The runner's own held jobs come first (heldJobs, t235): a run that
+        // died mid-build leaves its claim behind, and the process that takes
+        // over settles it, finishing the commits the dead run made, before
+        // it starts new work.
+        const L = ledgerOf(env, p);
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
+        return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
     const read = Date.now();
-    const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
+    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // the claim a dead run left behind is settled before new work starts.
+    const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
-          return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
+          // A held job is offered only as the claim it already is: the
+          // assignment must name its holder, or the re-claim would be refused
+          // as another's claim (claim guards the runner name; assign the actor).
+          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1871,6 +1882,12 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
         : [];
     }),
   };
+}
+
+// Whether an item coming off the queue is a claim a runner already holds, as
+// heldJobs lists it: the queue offers it back to its holder alone.
+function isHeld(item: Item): boolean {
+  return item.state === "claimed" && !!item.owner;
 }
 
 async function inbox(env: Env, token?: AgentToken) {

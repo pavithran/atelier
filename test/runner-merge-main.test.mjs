@@ -229,6 +229,35 @@ test("a merge-main task's brief carries a rejecting review's findings beside the
   assert.ok(brief.includes("## Conflicts in this workspace"), brief);
 });
 
+// t235 beside t243: a merge-main task a dead run left held, its resolution
+// committed but never pushed or submitted, is offered back to its runner and
+// resumed — finished as the dead run's own completed work, so this run merges
+// nothing again (main is already in the committed merge) and runs no model.
+test("a merge-main task offered back held, its resolution committed, is finished without merging or the model again", async (t) => {
+  const { r, job, io, calls, logs } = fixture(t, {
+    kind: "task",
+    conflict: true,
+    harness: () => assert.fail("no harness runs for resumed work"),
+  });
+  // The dead run's work: it merged main, resolved the conflict and committed.
+  git(r.workspace, "fetch", "-q", r.baseline, r.main);
+  run(r.workspace, ["git", "merge", "--no-ff", "-m", "Merge main into t9", r.main]);
+  writeFileSync(join(r.workspace, "a.txt"), "ONE (task, main)\ntwo\nthree\n");
+  git(r.workspace, "add", "a.txt");
+  git(r.workspace, "commit", "-q", "--no-edit");
+  const committed = git(r.workspace, "rev-parse", "HEAD");
+  // The queue offers the claim back: the item is held by this actor, its head
+  // the last one Atelier recorded — the state before the dead run's commit.
+  const state = await runTask({ ...job, item: { ...job.item, state: "claimed", owner: ACTOR, head: job.item.head } }, config, "home:studio", io);
+  assert.equal(state.phase, "submitted", JSON.stringify(state));
+  assert.equal(state.head, committed, "the dead run's commit is finished, not rebuilt or reset away");
+  assert.ok(!calls.some((c) => c.fetch || c.mergeMain), "the resume merges nothing again");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "base-token"), "main is not fetched again either");
+  assert.ok(!calls.some((c) => c.harness || c.brief || c.jobBrief), "no harness, no brief for resumed work");
+  assert.ok(logs.some((l) => l.startsWith("resumed: an earlier run of this runner committed")), logs.join("\n"));
+  assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]), ["claim", "finish"]);
+});
+
 test("a merge-main task whose workspace already holds main runs the harness on what came back", async (t) => {
   const { r, job, io, calls } = fixture(t, {
     kind: "task", conflict: false,
