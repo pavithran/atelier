@@ -13,7 +13,7 @@
 // Reviewers spread the same way. A better score still wins outright.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { liveOffers, offering, type LiveOffer } from "../dispatch/rules.ts";
+import { liveOffers, offering, type SeenOffer } from "../dispatch/rules.ts";
 import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
@@ -45,7 +45,7 @@ export interface RouteInput {
   // its dispatch; a model some runner offers says which. Undefined when no
   // runner has ever asked — nothing is then known to be offered, so routing
   // restricts nothing and a project run entirely by hand still routes.
-  offers?: readonly LiveOffer[];
+  offers?: readonly SeenOffer[];
 }
 
 export interface Choice { actor: string; reasons: string[] }

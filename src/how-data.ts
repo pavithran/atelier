@@ -228,9 +228,9 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: true,
-    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor, and the queue offers them as `review` jobs. A reviewer's runner claims one, clones the part read-only, gives the model the review brief and posts the verdict with its findings. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request.",
+    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor, and the queue offers them as `review` jobs. A reviewer's runner claims one, clones the part read-only, gives the model the review brief and posts the verdict with its findings. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request. Each runner's offer is recorded as it asks the queue for work (`putRunnerOffer`), and a dispatch no live runner offers, which could never be claimed however long it waits, is said as that by `unoffered`: `atelier land` while it waits for a verdict, `atelier plan show` for a routed review and `atelier status` for the queue, each naming what the live runners offer instead.",
     files: ["src/ledger.ts", "cli/runner.mjs", "test/review-requests.spec.ts"],
-    code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "verdict_file" }],
+    code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "verdict_file" }, { file: "src/dispatch/rules.ts", symbol: "unoffered" }, { file: "src/ledger.ts", symbol: "putRunnerOffer" }],
   },
   {
     name: "Integration rules", stage: "t16, build step 11", built: true,

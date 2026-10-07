@@ -34,7 +34,7 @@ async function project(name: string) {
   // A live runner offers every pool model, as the home runner would: routing
   // picks only from the models live runners offer (t246), so a plan routes
   // here only while this offer stands.
-  await index().putOffer({
+  await index().putRunnerOffer({
     runner: "home:coverage", kind: "home", jobs: ["build", "plan", "review"],
     agents: pool.map(([id, harness]) => ({ agent: harness, models: [id] })),
   }, new Date().toISOString());

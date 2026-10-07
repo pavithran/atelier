@@ -15,7 +15,7 @@ import { cleanSummary } from "./brief";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchedClaim, makeDispatch, liveOffers, type Dispatch, type LiveOffer, type RunnerKind, type RunnerOffer } from "./dispatch/rules";
+import { assertDispatchable, assertDispatchedClaim, makeDispatch, liveOffers, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -31,7 +31,7 @@ import {
   type PlanRecord, type PlanRefresh,
 } from "./plans/state.ts";
 import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
-import type { PlanView } from "./plans/show.ts";
+import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
@@ -174,6 +174,15 @@ const RECORD_EVENTS = 1000;
 export type PlanPost =
   | { valid: true; hash: string; parts: number }
   | { valid: false; errors: string[]; attempt: number; attempts: number };
+
+// The runner offers plan routing reads (t246): those still live, or
+// undefined when no runner has ever asked — until one has, nothing is known
+// to be offered and routing restricts nothing, so a project run entirely by
+// hand still routes. Once runners have asked, offers all gone stale route
+// nothing, and approval says to start a runner that offers the models.
+function routable(recorded: readonly SeenOffer[]): readonly SeenOffer[] | undefined {
+  return recorded.length ? liveOffers(recorded) : undefined;
+}
 
 // A part's routing with the plan's later changes applied. The owner's
 // reroute names the actor that builds it from now on, and the routed
@@ -321,9 +330,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS offers (
-        runner TEXT PRIMARY KEY, json TEXT NOT NULL, at TEXT NOT NULL
-      );
+      CREATE TABLE IF NOT EXISTS runner_offers (runner TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -611,23 +618,6 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
-  // ── runner offers ─────────────────────────────────────────────────────────
-  // Each runner describes what it can run when it asks for work (POST /queue,
-  // src/index.ts); the index records the newest ask per runner, one row per
-  // runner, replaced on each ask. Plan routing reads the offers still live
-  // (Ledger.routingOffers on a project instance): a model no live runner
-  // offers gets no part, because no runner could claim its dispatch.
-
-  putOffer(offer: RunnerOffer, at: string): LiveOffer {
-    const record: LiveOffer = { ...offer, runner: offer.runner.toLowerCase(), at };
-    this.sql.exec(`INSERT OR REPLACE INTO offers (runner, json, at) VALUES (?, ?, ?)`, record.runner, JSON.stringify(record), at);
-    return record;
-  }
-
-  offers(): LiveOffer[] {
-    return this.sql.exec(`SELECT json FROM offers ORDER BY runner`).toArray().map((r) => JSON.parse(r.json as string));
-  }
-
   // ── usage ────────────────────────────────────────────────────────────────
   // Each tool's usage, limits and balances as a home runner last reported
   // them, on the index instance beside the model pool: one report per tool
@@ -684,6 +674,22 @@ export class Ledger extends DurableObject<Env> {
   // The most recent reports, newest first.
   runs(limit = RUN_REPORTS): RunReport[] {
     return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  // ── runner offers ─────────────────────────────────────────────────────────
+  // What each runner can run, as it last said when it asked the queue for
+  // work, on the index instance beside the model pool: one row per runner,
+  // replaced by each ask. Read back to say when a dispatch names a model or a
+  // job no live runner offers, so a request that can never be claimed is not
+  // mistaken for one merely waiting its turn (unoffered in
+  // src/dispatch/rules.ts).
+
+  putRunnerOffer(offer: RunnerOffer, at: string): void {
+    this.sql.exec(`INSERT OR REPLACE INTO runner_offers (runner, json) VALUES (?, ?)`, offer.runner, JSON.stringify({ ...offer, at }));
+  }
+
+  runnerOffers(): SeenOffer[] {
+    return this.sql.exec(`SELECT json FROM runner_offers ORDER BY runner`).toArray().map((r) => JSON.parse(r.json as string));
   }
 
   // ── project instance ─────────────────────────────────────────────────────
@@ -1471,11 +1477,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
-    // Main is at the merge now. A plan's merge ends it, and a part merged
-    // onto main on its own is the path where the plan dispatches its
-    // dependants as its parts merge, so only another task's merge is taken
-    // as main moving under a plan.
-    if (item.kind !== "part" && item.kind !== "plan") this.setMainHead(mergeCommit, at);
+    // Main is at the merge now, so the record is made for the plans in
+    // flight to compare at their next tick. A plan's own merge closes it
+    // first, and nothing refreshes a closed plan, so it never takes its own
+    // merge as main moving under it; a part merged onto main on its own is
+    // the plan's own work landing while it still builds, and is not
+    // recorded, or the plan would refresh against a head its part made.
+    if (item.kind !== "part") this.setMainHead(mergeCommit, at);
     // A plan's merge lands its parts too: each integrated part is marked
     // merged with the plan it landed through (docs/orchestrator.md, section 5).
     if (item.kind === "plan") {
@@ -1691,14 +1699,11 @@ export class Ledger extends DurableObject<Env> {
   // each valid proposal is a row of the plans table.
 
   // The offers to route from, read from the index that records each runner's
-  // ask (putOffer): those still live, or undefined when no runner has ever
-  // asked — until one has, nothing is known to be offered and routing
-  // restricts nothing, so a project run entirely by hand still routes. A read
-  // that fails says the same as no ask.
-  private async routingOffers(): Promise<readonly LiveOffer[] | undefined> {
+  // ask (putRunnerOffer): those still live (routable), or undefined when no
+  // runner has ever asked. A read that fails says the same as no ask.
+  private async routingOffers(): Promise<readonly SeenOffer[] | undefined> {
     try {
-      const recorded = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).offers();
-      return recorded.length ? liveOffers(recorded) : undefined;
+      return routable(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
     } catch {
       return undefined;
     }
@@ -2040,9 +2045,13 @@ export class Ledger extends DurableObject<Env> {
   // its gate. With the pool, a plan not yet approved also shows the routing
   // an approval would fix now, without paid models, from the models live
   // runners offer. `mainNow` is main's head as the Worker read it for this
-  // view, else the head the Ledger last observed is shown. Nothing here is
+  // view, else the head the Ledger last observed is shown. `offers` are the
+  // runner offers the Worker read from the index, so a part whose review is
+  // asked of a model no live runner offers says so rather than reading as
+  // merely unclaimed, and the preview routes from them; null when the caller
+  // read none, and the preview then reads them itself. Nothing here is
   // written.
-  async planView(id: string, pool: ModelEntry[] | null = null, mainNow: string | null = null): Promise<PlanView> {
+  async planView(id: string, pool: ModelEntry[] | null = null, mainNow: string | null = null, offers: SeenOffer[] | null = null): Promise<PlanView> {
     const asked = this.item(id);
     const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
     if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404);
@@ -2086,13 +2095,16 @@ export class Ledger extends DurableObject<Env> {
           route: route ? rerouted(route, record) : null,
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
+          review: this.partReviewRequest(p.id),
           integration: this.partIntegration(p.id),
           integrationFailure: failures.get(p.partKey!) ?? null,
           blocked: p.state === "blocked" && p.blocked ? { reason: p.blocked.reason, by: p.blocked.by } : null,
           added: added && { mainHead: added.mainHead, by: added.by, at: added.at },
         };
       }),
-      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: await this.routingOffers() }) : null,
+      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: offers !== null ? routable(offers) : await this.routingOffers() }) : null,
+      // The runner offers this view was read with, for the same judgement.
+      ...(offers !== null ? { offers } : {}),
       // The plan branch's integration head (docs/orchestrator.md, section 5).
       integration: { integrationHead: record.integrationHead ?? null },
       // How the branch stands against main, and its latest refresh.
@@ -2453,6 +2465,7 @@ export class Ledger extends DurableObject<Env> {
         evidence: this.evidenceFor(p.id),
         reviews: this.reviewsFor(p.id),
         requests: this.reviewRequests(p.id),
+        verdicts: this.findingVerdicts(p.id),
         now, owner: this.owner,
       });
       if (!need.needed) continue;
@@ -2532,6 +2545,23 @@ export class Ledger extends DurableObject<Env> {
       });
   }
 
+  // The live review request for a part, as planView shows it: the reviewer
+  // asked, the head asked about, and whether a runner claimed it. Null when
+  // the part has no open or claimed request.
+  private partReviewRequest(id: string): PlanPartReview | null {
+    const row = this.sql.exec(`SELECT head, dispatch, state, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, id).toArray()[0];
+    if (!row) return null;
+    const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
+    if (!dispatch.agent || !dispatch.model) return null;
+    return {
+      reviewer: `${dispatch.agent}/${dispatch.model}`,
+      head: row.head as string,
+      state: row.state === "claimed" ? "claimed" : "open",
+      claimedBy: (row.claimedBy as string | null) ?? null,
+      claimedAt: (row.claimedAt as string | null) ?? null,
+    };
+  }
+
   // Binds an open review request to one reviewer, atomically, as the claim
   // route binds an item. Refused for a stale head, a reviewer that wrote the
   // item, or a runner or actor the dispatch did not ask for. Returns what the
@@ -2590,7 +2620,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
-      requests: [], wanted: !!row.wanted, now: new Date(at), owner: this.owner,
+      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, now: new Date(at), owner: this.owner,
     });
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
@@ -2613,6 +2643,14 @@ export class Ledger extends DurableObject<Env> {
     return [...latest, ...older];
   }
 
+  // The owner's verdicts on findings of this item's reviews (review.finding
+  // events, `atelier finding`), oldest first. reviewNeeded reads them, so a
+  // rejection whose every blocking finding the owner refuted no longer blocks
+  // another review at its head (t240).
+  private findingVerdicts(id: string): LedgerEvent[] {
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' ORDER BY seq`, id).toArray().map(eventOf);
+  }
+
   // A review request for a submitted item the gate needs reviewed, asked for
   // by atelier land (t187) rather than a plan's tick: the reviewer is the one
   // the owner names with --reviewer or is picked from the pool as the plan
@@ -2621,7 +2659,8 @@ export class Ledger extends DurableObject<Env> {
   // started. `at` in the answer is where the caller counts new verdicts from.
   // With `wanted` the owner asks for the review of the named reviewer even
   // where the gate needs none; only a gate that cannot proceed (checks not
-  // passing, a rejection at this head, no push) refuses, with its reason.
+  // passing, a rejection at this head whose blocking findings the owner has
+  // not refuted, no push) refuses, with its reason.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
@@ -2639,7 +2678,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
-      requests: this.reviewRequests(id), wanted, now: new Date(at), owner: this.owner,
+      requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, now: new Date(at), owner: this.owner,
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.

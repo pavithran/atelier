@@ -5,7 +5,8 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { formatRunners, formatStatus, isLive, OFFER_FRESH_MS, runnerLine, statusJson } from "../cli/status.mjs";
+import { formatRunners, formatStatus, isLive, runnerLine, statusJson } from "../cli/status.mjs";
+import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
 const entry = (itemId, kind, over = {}) => ({ project: "demo", itemId, title: `Task ${itemId}`, kind, reason: `because ${kind}`, weight: 1, ...over });
@@ -140,6 +141,38 @@ test("--json carries the sorted pairs, each once, beside an unchanged inbox", ()
 test("a status with no overlaps prints no heading", () => {
   const out = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "accept")] }]);
   assert.ok(!out.includes("Overlapping scopes"));
+});
+
+// The queue and the runner offers (t240): each open review request waits with
+// the runner work, naming its reviewer, and a queued job no live runner
+// offers says it can never be claimed — a mismatch, not a wait.
+test("with the queue and the runners' offers, open reviews wait with the runner work and unoffered jobs say so", () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const offers = [
+    { runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: now.toISOString() },
+  ];
+  const review = (agent, model) => ({ to: "home", agent, model, by: "atelier/orchestrator", at: now.toISOString(), note: "", job: "review" });
+  const queue = [
+    { project: "demo", item: { id: "t7", title: "Task t7", dispatch: review("claude-code", "fable-5.1") } },
+    { project: "other", item: { id: "t9", title: "Elsewhere", dispatch: review("antigravity", "gemini-3.1-pro") } },
+  ];
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", by: "owner", at: now.toISOString(), note: "" } }), item("t4", "open", { dispatch: { to: "home", agent: "opencode", model: "glm-5.3", by: "owner", at: now.toISOString(), note: "" } })],
+    inbox: [],
+  }], { queue, offers, now }).split("\n");
+  assert.ok(out.includes("    t3  for home codex/gpt-6-astra  Task t3"));
+  assert.ok(out.includes("      No live runner can take it: home:studio offers build as opencode/glm-5.3."));
+  assert.ok(out.includes("    t4  for home opencode/glm-5.3  Task t4"), "a job a live runner offers says no more");
+  assert.ok(out.includes("    t7  review by claude-code/fable-5.1  Task t7"));
+  assert.ok(out.includes("      No live runner can take it: home:studio offers review as opencode/glm-5.3."));
+  assert.ok(!out.some((l) => l.includes("t9")), "another project's review waits in its own section");
+  // Without the offers, the reviews still wait and nothing is judged.
+  const unread = formatStatus([{ name: "demo", items: [], inbox: [] }], { queue, now }).split("\n");
+  assert.ok(unread.includes("    t7  review by claude-code/fable-5.1  Task t7"));
+  assert.ok(!unread.some((l) => l.includes("No live runner")));
+  // A project with nothing but a queued review no longer says nothing waits.
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { queue, offers, now }).includes("Nothing waiting."));
 });
 
 // `atelier status --project demo` against a stand-in server, with the CLI's
@@ -335,16 +368,18 @@ const ask = (runner, agents, secondsAgo, jobs) =>
   ({ runner, kind: runner.startsWith("cloud") ? "cloud" : "home", agents, jobs, at: new Date(NOW - secondsAgo * 1000).toISOString() });
 
 test("a runner is live while it asked within the offer window; a line says who offered what and when", () => {
-  assert.equal(OFFER_FRESH_MS, 5 * 60_000);
   const studio = ask("home:studio", [{ agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }], 30, ["build", "plan", "review"]);
   assert.ok(isLive(studio, NOW));
   assert.equal(runnerLine(studio, NOW), "home:studio  live, asked 30s ago  offers claude-code/opus-5.5, claude-code/sonnet-5.5  jobs: build, plan, review");
-  const gone = ask("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], 6 * 60);
+  const gone = ask("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 60 * 60);
   assert.equal(isLive(gone, NOW), false);
-  assert.equal(runnerLine(gone, NOW), "home:laptop  not live, last asked 6m ago  offers zcode/glm-5.3");
+  assert.equal(runnerLine(gone, NOW), "home:laptop  not live, last asked 3h ago  offers zcode/glm-5.3");
   // A runner that offers no model says so, and an unreadable time is not live.
   assert.equal(runnerLine({ ...studio, agents: [] }, NOW), "home:studio  live, asked 30s ago  offers no model  jobs: build, plan, review");
   assert.equal(isLive({ ...studio, at: "not a time" }, NOW), false);
+  // A runner busy on a task asks again only when it ends, so an hour and a half
+  // since its last ask is still live (OFFER_LIVE_MS).
+  assert.ok(isLive(ask("home:busy", [], 90 * 60), NOW));
 });
 
 test("the runners section lists live runners first, and formatStatus appends it once, after the projects", () => {
@@ -359,22 +394,22 @@ test("the runners section lists live runners first, and formatStatus appends it 
   ]);
   // Stale runners stand after the live ones, whatever their names.
   const ordered = formatRunners([
-    ask("home:zulu", [{ agent: "zcode", models: ["glm-5.3"] }], 9 * 60),
+    ask("home:zulu", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 9 * 60),
     ask("home:alpha", [{ agent: "opencode", models: ["qwen3-coder"] }], 60),
   ], NOW);
   assert.deepEqual(ordered, [
     "Runners:",
     "  home:alpha  live, asked 1m ago  offers opencode/qwen3-coder",
-    "  home:zulu  not live, last asked 9m ago  offers zcode/glm-5.3",
+    "  home:zulu  not live, last asked 2h ago  offers zcode/glm-5.3",
   ]);
   const out = formatStatus(
     [{ name: "demo", items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6" } })], inbox: [] }],
-    [{ runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date().toISOString() }],
+    { offers: [{ runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date().toISOString() }] },
   ).split("\n");
   assert.ok(out.includes("demo"));
   assert.equal(out.slice(-2)[0], "Runners:");
   assert.match(out.slice(-2)[1], /^  home:studio  live, asked \d+s ago  offers claude-code\/opus-5\.5$/);
   // Without offers there is no section, as a server too old to have them.
   assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }]).includes("Runners:"));
-  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], []).includes("Runners:"), "no runner recorded yet says nothing");
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { offers: [] }).includes("Runners:"), "no runner recorded yet says nothing");
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertDispatchable, assertDispatchedClaim, assign, describe, liveOffers, makeDispatch, OFFER_FRESH_MS, offering, parseRunner, type LiveOffer, type RunnerOffer } from "../src/dispatch/rules.ts";
+import { assertDispatchable, assertDispatchedClaim, assign, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offering, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
 
 const T = "2026-10-04T12:00:00.000Z";
 const item = (over: Record<string, unknown> = {}) => ({
@@ -90,16 +90,16 @@ test("runner names are exactly kind:name, normalized, with no further colon", ()
 });
 
 // An offer as the index records it: what a runner asked for, with when.
-const asked = (runner: string, agents: RunnerOffer["agents"], at: number): LiveOffer =>
+const asked = (runner: string, agents: RunnerOffer["agents"], at: number): SeenOffer =>
   ({ runner, kind: runner.startsWith("cloud") ? "cloud" : "home", agents, at: new Date(at).toISOString() });
 
-test("an offer is live for five minutes after its runner asked, and which runners offer an actor is said by claimable name", () => {
+test("an offer is live for OFFER_LIVE_MS after its runner asked, and which runners offer an actor is said by claimable name", () => {
   const now = Date.parse("2026-10-07T12:00:00.000Z");
   const studio = asked("home:studio", [{ agent: "claude-code", models: ["Opus-5.5"] }], now - 10_000);
-  const atelier = asked("cloud:atelier", [{ agent: "codex", models: ["gpt-6-astra"] }], now - OFFER_FRESH_MS);
-  const gone = asked("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], now - OFFER_FRESH_MS - 1);
+  const atelier = asked("cloud:atelier", [{ agent: "codex", models: ["gpt-6-astra"] }], now - OFFER_LIVE_MS);
+  const gone = asked("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], now - OFFER_LIVE_MS - 1);
   const untimed = { ...studio, at: "not a time" };
-  assert.deepEqual(liveOffers([studio, atelier, gone, untimed], now), [studio, atelier]);
+  assert.deepEqual(liveOffers([studio, atelier, gone, untimed], new Date(now)), [studio, atelier]);
   // The actors are keyed by the name a claim would use, lowercased; a model no
   // claim could carry is never offered, as assign never hands it out.
   const offered = offering([studio, atelier, asked("home:bad", [{ agent: "opencode", models: ["a b"] }], now)]);

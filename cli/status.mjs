@@ -1,9 +1,14 @@
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
-// and inbox holds the entries the Decisions page lists for it. `offers`, when
-// the caller passes them, are the runners' recorded offers (GET /offers): each
+// and inbox holds the entries the Decisions page lists for it. With `waiting` —
+// the runner queue and the runner offers as the server holds them — the
+// waiting section also names each open review request and its reviewer, and
+// says of any queued job no live runner offers that it can never be claimed,
+// which is not a wait but a mismatch between the dispatch and the runners
+// (unoffered in src/dispatch/rules.ts). The offers (GET /runners) are each
 // { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
-// the runner last asked.
+// the runner last asked, and a Runners section lists them after the projects.
+import { OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
@@ -108,14 +113,12 @@ function runnerOf(d) {
   return `${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}`;
 }
 
-// How long an offer stays live after its runner asked (OFFER_FRESH_MS in
-// src/dispatch/rules.ts): routing picks from the models live runners offer,
+// Whether a runner's offer is live: its runner asked within OFFER_LIVE_MS
+// (src/dispatch/rules.ts), the window plan routing and unoffered both read,
 // so a runner that asked longer ago than this offers nothing.
-export const OFFER_FRESH_MS = 5 * 60_000;
-
 export const isLive = (offer, now = Date.now()) => {
   const at = Date.parse(offer.at);
-  return Number.isFinite(at) && now - at <= OFFER_FRESH_MS;
+  return Number.isFinite(at) && now - at <= OFFER_LIVE_MS;
 };
 
 const ago = (ms) => {
@@ -146,8 +149,30 @@ export function formatRunners(offers, now = Date.now()) {
   return ["Runners:", ...lines.map((o) => `  ${runnerLine(o, now)}`)];
 }
 
-export function formatStatus(views, offers = null) {
+// The queue's review requests for one project, as lines: each is a submitted
+// part waiting for a runner to claim its review, so it stands with the tasks
+// waiting for a runner, naming the reviewer asked.
+function reviewQueue(waiting, name, offers) {
+  return (waiting.queue ?? [])
+    .filter((q) => q.project === name && q.item?.dispatch?.job === "review" && q.item.dispatch.agent && q.item.dispatch.model)
+    .map((q) => ({
+      id: q.item.id,
+      title: q.item.title ?? "",
+      reviewer: `${q.item.dispatch.agent}/${q.item.dispatch.model}`,
+      dispatch: q.item.dispatch,
+      dead: offers ? unoffered(q.item.dispatch, offers, waiting.now) : null,
+    }));
+}
+
+// One queued job no live runner offers: said as its own line, capitalised,
+// for the line above it names the job.
+function unofferedLine(dead) {
+  return `${dead[0].toUpperCase()}${dead.slice(1)}.`;
+}
+
+export function formatStatus(views, waiting = {}) {
   if (!views.length) return "No projects.";
+  const offers = Array.isArray(waiting.offers) ? waiting.offers : null;
   const lines = [];
   for (const v of views) {
     const mine = v.inbox.filter((x) => x.project === v.name);
@@ -159,9 +184,14 @@ export function formatStatus(views, offers = null) {
     const decisions = mine.filter((x) => x.kind !== "overlap" || !overlapOther(x));
     const overlaps = overlapPairs(mine);
     const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
-    const waiting = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
+    const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
+    const reviews = reviewQueue(waiting, v.name, offers);
+    const deadBuilds = new Map(queued
+      .filter((i) => offers && (i.dispatch.agent || i.dispatch.model))
+      .map((i) => [i.id, unoffered(i.dispatch, offers, waiting.now)])
+      .filter(([, dead]) => dead !== null));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
-    if (!decisions.length && !working.length && !waiting.length) {
+    if (!decisions.length && !working.length && !queued.length && !reviews.length) {
       // Only overlaps follow, so the idle line is worded for the owner: it
       // would otherwise read against the heading printed under it.
       lines.push(overlaps.length ? "  Nothing waiting on you." : "  Nothing waiting.");
@@ -183,11 +213,19 @@ export function formatStatus(views, offers = null) {
       lines.push("  In progress");
       for (const i of working) lines.push(`    ${i.id}  ${i.state}  held by ${i.owner ?? "nobody"}  ${i.title}`);
     }
-    if (waiting.length) {
+    if (queued.length || reviews.length) {
       lines.push("  Waiting for a runner");
-      for (const i of waiting) lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
+      for (const i of queued) {
+        lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
+        const dead = deadBuilds.get(i.id);
+        if (dead) lines.push(`      ${unofferedLine(dead)}`);
+      }
+      for (const r of reviews) {
+        lines.push(`    ${r.id}  review by ${r.reviewer}  ${r.title}`);
+        if (r.dead) lines.push(`      ${unofferedLine(r.dead)}`);
+      }
     }
   }
-  if (offers?.length) lines.push("", ...formatRunners(offers));
+  if (offers?.length) lines.push("", ...formatRunners(offers, waiting.now ? waiting.now.getTime() : Date.now()));
   return lines.join("\n");
 }
