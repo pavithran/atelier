@@ -54,13 +54,14 @@ ranks the things a person must decide above the things an agent must fix.
 
 | Product | What it does in Atelier | State |
 | --- | --- | --- |
-| Workers | One Worker (`src/index.ts`) serves the API the CLI calls, the signed-in pages and the public pages, on the custom domain atelier.zone. A Cron Trigger runs it every five minutes to pull AI Gateway logs. | Live |
+| Workers | One Worker (`src/index.ts`) serves the API the CLI calls, the signed-in pages and the public pages, on the custom domain atelier.zone. | Live |
 | Durable Objects | The `Ledger` class, with SQLite storage. One instance per project handles one request at a time, which is what makes one owner per task hold; it keeps the project's tasks, events, evidence and reviews. One index instance keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live |
 | Artifacts | Git repositories: each project's baseline, and a fork for every task and every plan. The Worker reads commits, trees and diffs through the binding to measure what a change touches and to preview its merge. Writes come only through a `git push` with a write token minted for one workspace. | Live (Artifacts is in open beta) |
 | Containers | `CheckRunner`, a Durable Object with a container from the Cloudflare-managed `cloudflare/debian-trixie` image, runs a task's required checks with `--sandbox`. The container holds no credential and its Internet is off, except GET and HEAD requests to the npm registry. | Built and configured in `wrangler.jsonc`; a successful run in production has not been established |
-| Workers Analytics Engine | The `atelier_metrics` dataset (binding `METRICS`, `src/metrics.ts`): one data point per AI Gateway call, read back through the SQL API for the Models page. | Live; on 2026-10-07 it held no data point yet (t288) |
-| AI Gateway | Runners send pay-per-use model calls through the gateway `atelier`. The cron reads its logs (`src/usage/gateway.ts`) and the Models page shows each model's calls, failures, tokens, cost and median latency. | Live once the secrets under [AI Gateway costs](#ai-gateway-costs) are set |
-| Workers Logs | `observability` is enabled in `wrangler.jsonc`, so the Worker's logs, failed gateway pulls among them, are kept. | Live |
+| Workers Analytics Engine | The `atelier_metrics` dataset (binding `METRICS`, `src/metrics.ts`), kept for Atelier's own metrics (model speed, reviewer precision). | Bound; nothing writes to it yet |
+| AI Gateway | Runners send pay-per-use model calls through the gateway `atelier`. | Live once a runner's opencode providers point at it ([AI Gateway costs](#ai-gateway-costs)) |
+| GraphQL Analytics API | The Models page and `atelier runner --usage` read the gateway's calls from it (`src/usage/gateway.ts`): each model's calls, failures, tokens, cost, and median and p90 duration over the last 7 days. | Live once the secrets under [AI Gateway costs](#ai-gateway-costs) are set |
+| Workers Logs | `observability` is enabled in `wrangler.jsonc`, so the Worker's logs are kept. | Live |
 | Queues | A consumer for Artifacts push notices (`cf.artifacts.repo.pushed`) is written in `src/index.ts`, but `wrangler.jsonc` declares no consumer, so no notice is delivered; the CLI reports each push to the Worker instead. | Written, not configured |
 | Cloudflare Access | In front of the owner's pages (t270). | Task filed; not in the code |
 | Browser Rendering | Checks of `/how` and the showcase as a browser renders them (t283). | Task filed; not in the code |
@@ -502,47 +503,39 @@ traced to its accepted work, its reviews' precision, and the runs that
 failed. Routing reads the record only to order candidates of equal score.
 
 [docs/models-and-usage.md](docs/models-and-usage.md) holds the pool, the
-record, the usage thresholds and the gateway pull in full.
+record, the usage thresholds and the AI Gateway figures in full.
 
 ### AI Gateway costs
 
-Calls that runners send through Cloudflare AI Gateway are counted from the
-gateway's own logs, not from a tool's record on a machine. Every five
-minutes the cron reads the logs newer than the last one written and writes
-one Analytics Engine data point per log: provider, model, tokens in and out,
-cost, duration, success, and the task, role and runner the call's
-`cf-aig-metadata` header named. Set it up once:
+Calls that runners send through Cloudflare AI Gateway are counted by
+Cloudflare, not by a tool's record on a machine. Each time the Models page or
+`atelier runner --usage` is asked for, the Worker sends one query to the
+GraphQL Analytics API for the last 7 days of the gateway: each model's calls,
+failed calls, tokens in and out, cost, and median and 90th percentile
+duration. Set it up once:
 
 1. Give the Worker the account id (the dashboard shows it on the account's
    overview) as the secret `CF_ACCOUNT_ID`, so the public source names no
-   account; unset, it keeps the gateway off. `AI_GATEWAY_ID` under `vars` in
+   account; unset, it keeps the figures off. `AI_GATEWAY_ID` under `vars` in
    `wrangler.jsonc` names the gateway and defaults to `atelier`.
 
    ```sh
    npx wrangler secret put CF_ACCOUNT_ID
    ```
 2. In the dashboard, under My Profile → API Tokens → Create Token → Custom
-   token, create a token with the permission Account · AI Gateway · Read,
-   scoped to this account only, and give it to the Worker:
-
-   ```sh
-   npx wrangler secret put AI_GATEWAY_TOKEN
-   ```
-
-   Without it the cron does nothing, and the Models page says
-   "AI Gateway costs are off: set AI_GATEWAY_TOKEN".
-3. Create a second token with Account · Account Analytics · Read, scoped to
-   the same account, for reading the dataset back:
+   token, create a token with the permission Account · Account Analytics ·
+   Read, scoped to this account only, and give it to the Worker:
 
    ```sh
    npx wrangler secret put ANALYTICS_TOKEN
    ```
 
-   Without it the logs are still written, and the Models page says they
-   cannot be read until it is set.
+   Without it the Models page says
+   "AI Gateway figures are off: set ANALYTICS_TOKEN".
 
-Runners point opencode's pay-per-use providers at the gateway; the
-configuration is in
+Runners point opencode's pay-per-use providers at the gateway, with a
+`cf-aig-authorization` header carrying a gateway token; the configuration is
+in
 [docs/models-and-usage.md](docs/models-and-usage.md#ai-gateway-costs).
 
 ## What is enforced and what is trusted
