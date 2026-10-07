@@ -77,5 +77,13 @@ export async function query(cfg: QueryConfig, sql: string, fetcher: typeof fetch
   return body.data.filter((r): r is MetricRow => !!r && typeof r === "object");
 }
 
+// Whether a refused query only means the dataset has no data point yet:
+// until the first write, Analytics Engine knows none of its columns and
+// answers 422 "unable to find type of column". A reader shows that as no
+// rows, not as a failure.
+export function neverWritten(err: unknown): boolean {
+  return err instanceof Error && /answered 422: .*unable to find type of column/i.test(err.message);
+}
+
 // A string as an SQL literal: single quotes doubled, control characters dropped.
 export const sqlString = (s: string) => `'${s.replace(/[\u0000-\u001f\\]/g, "").replace(/'/g, "''")}'`;

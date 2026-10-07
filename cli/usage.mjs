@@ -245,9 +245,8 @@ export function describeReport(tool, body, now) {
 // `safe` before it is printed.
 export function describeGateway(view, safe) {
   if (!view || typeof view !== "object") return ["AI Gateway: the server reports no gateway figures; it runs routes older than this CLI."];
-  if (view.off) return [`AI Gateway: ${safe(view.off, 200)}.`];
-  const lines = [`AI Gateway, last ${view.days} days:`];
-  if (!view.models?.length) lines.push("  no calls");
+  const lines = view.off ? [`AI Gateway: ${safe(view.off, 200)}.`] : [`AI Gateway, last ${view.days} days:`];
+  if (!view.off && !view.models?.length) lines.push("  no calls");
   for (const m of view.models ?? []) {
     const ms = m.medianMs === null ? "no durations" : `median ${m.medianMs < 1000 ? `${m.medianMs} ms` : `${(m.medianMs / 1000).toFixed(1)} s`} (n=${m.sample})`;
     lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out${m.cost === null ? "" : `, $${m.cost.toFixed(2)}`}, ${ms}`);
