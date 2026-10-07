@@ -5,7 +5,8 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { formatStatus, statusJson } from "../cli/status.mjs";
+import { formatRunners, formatStatus, isLive, runnerLine, statusJson } from "../cli/status.mjs";
+import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
 const entry = (itemId, kind, over = {}) => ({ project: "demo", itemId, title: `Task ${itemId}`, kind, reason: `because ${kind}`, weight: 1, ...over });
@@ -358,4 +359,57 @@ test("a workspace that is not a Git folder is reported as unreadable, and a leas
   assert.equal(r.code, 0, r.output);
   assert.ok(r.output.includes("  t7  its workspace cannot be read: not a Git repository\n"), r.output);
   assert.ok(r.output.includes("the server's landing lease could not be read"), r.output);
+});
+
+// The runners section (t246): what plan routing could pick from, as the
+// server recorded each runner's last ask.
+const NOW = Date.parse("2026-10-07T12:00:00.000Z");
+const ask = (runner, agents, secondsAgo, jobs) =>
+  ({ runner, kind: runner.startsWith("cloud") ? "cloud" : "home", agents, jobs, at: new Date(NOW - secondsAgo * 1000).toISOString() });
+
+test("a runner is live while it asked within the offer window; a line says who offered what and when", () => {
+  const studio = ask("home:studio", [{ agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }], 30, ["build", "plan", "review"]);
+  assert.ok(isLive(studio, NOW));
+  assert.equal(runnerLine(studio, NOW), "home:studio  live, asked 30s ago  offers claude-code/opus-5.5, claude-code/sonnet-5.5  jobs: build, plan, review");
+  const gone = ask("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 60 * 60);
+  assert.equal(isLive(gone, NOW), false);
+  assert.equal(runnerLine(gone, NOW), "home:laptop  not live, last asked 3h ago  offers zcode/glm-5.3");
+  // A runner that offers no model says so, and an unreadable time is not live.
+  assert.equal(runnerLine({ ...studio, agents: [] }, NOW), "home:studio  live, asked 30s ago  offers no model  jobs: build, plan, review");
+  assert.equal(isLive({ ...studio, at: "not a time" }, NOW), false);
+  // A runner busy on a task asks again only when it ends, so an hour and a half
+  // since its last ask is still live (OFFER_LIVE_MS).
+  assert.ok(isLive(ask("home:busy", [], 90 * 60), NOW));
+});
+
+test("the runners section lists live runners first, and formatStatus appends it once, after the projects", () => {
+  const lines = formatRunners([
+    ask("cloud:atelier", [{ agent: "codex", models: ["gpt-6-astra"] }], 2 * 60),
+    ask("home:studio", [{ agent: "claude-code", models: ["opus-5.5"] }], 30),
+  ], NOW);
+  assert.deepEqual(lines, [
+    "Runners:",
+    "  cloud:atelier  live, asked 2m ago  offers codex/gpt-6-astra",
+    "  home:studio  live, asked 30s ago  offers claude-code/opus-5.5",
+  ]);
+  // Stale runners stand after the live ones, whatever their names.
+  const ordered = formatRunners([
+    ask("home:zulu", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 9 * 60),
+    ask("home:alpha", [{ agent: "opencode", models: ["qwen3-coder"] }], 60),
+  ], NOW);
+  assert.deepEqual(ordered, [
+    "Runners:",
+    "  home:alpha  live, asked 1m ago  offers opencode/qwen3-coder",
+    "  home:zulu  not live, last asked 2h ago  offers zcode/glm-5.3",
+  ]);
+  const out = formatStatus(
+    [{ name: "demo", items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6" } })], inbox: [] }],
+    { offers: [{ runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date().toISOString() }] },
+  ).split("\n");
+  assert.ok(out.includes("demo"));
+  assert.equal(out.slice(-2)[0], "Runners:");
+  assert.match(out.slice(-2)[1], /^  home:studio  live, asked \d+s ago  offers claude-code\/opus-5\.5$/);
+  // Without offers there is no section, as a server too old to have them.
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }]).includes("Runners:"));
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { offers: [] }).includes("Runners:"), "no runner recorded yet says nothing");
 });

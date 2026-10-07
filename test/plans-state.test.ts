@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, makeDispatch, unoffered, type Dispatch } from "../src/dispatch/rules.ts";
+import { assign, makeDispatch, OFFER_LIVE_MS, unoffered, type Dispatch } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
@@ -72,6 +72,27 @@ test("the default planner is the first model for research work that is not refus
   const governed: ProjectPolicy = { ...policy, agents: { claude: { available: true, eligible_roles: ["planner"] } } };
   assert.equal(pickPlanner([opus, gpt], record, governed).actor, "claude-code/opus-5.5");
   assert.deepEqual(pickPlanner([], [], policy), { actor: null, reasons: ["the model pool is empty"], passedOver: [] });
+  // The default planner is one a live runner offers: the plan job would wait
+  // for a runner that never asks for a model it does not offer. gpt-6-astra
+  // ranks first on its observed pass but is not offered, so it is passed over
+  // with the reason and the next offered model plans.
+  const now = Date.now();
+  const offered = pickPlanner([opus, gpt, refused, paid], record, policy, undefined,
+    [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now).toISOString() }]);
+  assert.equal(offered.actor, "claude-code/opus-5.5");
+  assert.deepEqual(offered.passedOver.map((c) => [c.actor, c.reasons[c.reasons.length - 1]]), [
+    ["codex/gpt-6-astra", "no live runner offers codex/gpt-6-astra, so no runner could claim the plan job"],
+    // The refused model fails its status and the offer rule both; either alone keeps it from planning.
+    ["zcode/glm-5.3", "no live runner offers zcode/glm-5.3, so no runner could claim the plan job"],
+  ]);
+  const noneOffered = pickPlanner([opus, gpt], record, policy, undefined, []);
+  assert.equal(noneOffered.actor, null);
+  assert.match(noneOffered.reasons[0], /^no model in the pool may plan: /);
+  assert.match(noneOffered.reasons[0], /claude-code\/opus-5\.5 \(no live runner offers claude-code\/opus-5\.5, so no runner could claim the plan job\)/);
+  assert.match(noneOffered.reasons[0], /codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim the plan job\)/);
+  // A stale offer plans nothing.
+  const stale = [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now - OFFER_LIVE_MS - 60_000).toISOString() }];
+  assert.equal(pickPlanner([opus, gpt], record, policy, undefined, stale).actor, null);
 });
 
 test("the planner's attempts count only proposals posted and refused, from the plan's latest request", () => {

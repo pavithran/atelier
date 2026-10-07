@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertDispatchable, assertDispatchedClaim, assign, describe, makeDispatch, parseRunner, type RunnerOffer } from "../src/dispatch/rules.ts";
+import { assertDispatchable, assertDispatchedClaim, assign, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offering, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
 
 const T = "2026-10-04T12:00:00.000Z";
 const item = (over: Record<string, unknown> = {}) => ({
@@ -108,4 +108,27 @@ test("runner names are exactly kind:name, normalized, with no further colon", ()
   // The whole name, so one runner is never two by the case of its name.
   assert.deepEqual(parseRunner("HOME:Studio"), { runner: "home:studio", kind: "home" });
   assert.deepEqual(parseRunner("Cloud:Atelier-1"), { runner: "cloud:atelier-1", kind: "cloud" });
+});
+
+// An offer as the index records it: what a runner asked for, with when.
+const asked = (runner: string, agents: RunnerOffer["agents"], at: number): SeenOffer =>
+  ({ runner, kind: runner.startsWith("cloud") ? "cloud" : "home", agents, at: new Date(at).toISOString() });
+
+test("an offer is live for OFFER_LIVE_MS after its runner asked, and which runners offer an actor is said by claimable name", () => {
+  const now = Date.parse("2026-10-07T12:00:00.000Z");
+  const studio = asked("home:studio", [{ agent: "claude-code", models: ["Opus-5.5"] }], now - 10_000);
+  const atelier = asked("cloud:atelier", [{ agent: "codex", models: ["gpt-6-astra"] }], now - OFFER_LIVE_MS);
+  const gone = asked("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], now - OFFER_LIVE_MS - 1);
+  const untimed = { ...studio, at: "not a time" };
+  assert.deepEqual(liveOffers([studio, atelier, gone, untimed], new Date(now)), [studio, atelier]);
+  // The actors are keyed by the name a claim would use, lowercased; a model no
+  // claim could carry is never offered, as assign never hands it out.
+  const offered = offering([studio, atelier, asked("home:bad", [{ agent: "opencode", models: ["a b"] }], now)]);
+  assert.deepEqual(offered.get("claude-code/opus-5.5"), ["home:studio"]);
+  assert.deepEqual(offered.get("codex/gpt-6-astra"), ["cloud:atelier"]);
+  assert.equal(offered.has("opencode/a b"), false);
+  assert.equal(offered.has("zcode/glm-5.3"), false, "a stale offer offers nothing");
+  // Two runners may offer the same actor; both are named.
+  const also = asked("home:desk", [{ agent: "codex", models: ["GPT-6-Astra"] }], now);
+  assert.deepEqual(offering([atelier, also]).get("codex/gpt-6-astra"), ["cloud:atelier", "home:desk"]);
 });

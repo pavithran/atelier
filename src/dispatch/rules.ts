@@ -200,6 +200,25 @@ export function liveOffers(offers: readonly SeenOffer[], now = new Date()): Seen
   return offers.filter((o) => Number.isFinite(Date.parse(o.at)) && Date.parse(o.at) >= until);
 }
 
+// Which runners offer each actor, keyed by the name a claim would use
+// (agent/model, lowercased): only claimable pairs count, since those are the
+// names a dispatch may name and a claim accept. Plan routing reads it over
+// the live offers (src/plans/route.ts, pickPlanner in src/plans/state.ts):
+// a dispatch no live runner could claim never starts, so a model no live
+// runner offers gets no part (t246).
+export function offering(offers: readonly SeenOffer[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const offer of offers) {
+    for (const { agent, models } of offer.agents) {
+      for (const model of models.filter((m) => claimable(agent, m))) {
+        const actor = `${agent}/${model}`.toLowerCase();
+        out.set(actor, [...(out.get(actor) ?? []), offer.runner]);
+      }
+    }
+  }
+  return out;
+}
+
 // The names a runner offers for a dispatch's job, or null when the offer
 // cannot take the job at all: it is the wrong kind of runner, or it offers
 // no such job. The names are the claimable agent/model pairs assign() could
