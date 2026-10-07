@@ -1,0 +1,26 @@
+atelier atelier/t231 "The integrator fails every integration (plan t197, 2026-10-07): it pushes the merge with plain git, so the server's recorded head stays put; atelier check then tests the old head and its evidence post is refused as stale; any check error counts as failing checks, rolls back, posts integration-failed with no log line, and charges the part's builder an attempt, so rework went to the model that had approved the part. Fix: record the merge and rollback through atelier push (--force for the rollback); only exit 2 from check counts as failing checks, other errors release the plan item without integration-failed; log the reason before integration-failed; integration-failed output captured, not dumped; charge the builder only for a conflict or failing checks; rework skips alternates who reviewed the part; plan show prints the integration.failed reason"
+accepted head 8e9c8cee0cd423d19a02e9b6f714a71ed42afb67
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T04:54:45.862Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T04:54:48.740Z
+REVIEW approve by antigravity/gemini-3.1-pro at 8e9c8cee0cd423d19a02e9b6f714a71ed42afb67, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T04:24:59.438Z pavi item.created
+2026-10-07T04:26:20.212Z claude-code/opus-5.5 item.claimed
+2026-10-07T04:26:31.065Z claude-code/opus-5.5 fork.created
+2026-10-07T04:50:11.501Z pavi land.lease
+2026-10-07T04:50:22.564Z pavi land.merge
+2026-10-07T04:52:38.362Z pavi land.lease
+2026-10-07T04:52:39.676Z pavi land.merge
+2026-10-07T04:52:48.012Z pavi land.regenerate
+2026-10-07T04:52:51.571Z claude-code/opus-5.5 push.observed
+2026-10-07T04:52:51.670Z pavi land.push
+2026-10-07T04:54:46.513Z claude-code/opus-5.5 evidence.observed
+2026-10-07T04:54:49.069Z claude-code/opus-5.5 evidence.observed
+2026-10-07T04:54:49.522Z pavi land.check
+2026-10-07T04:54:49.864Z claude-code/opus-5.5 item.submitted
+2026-10-07T04:54:50.041Z pavi land.submit
+2026-10-07T04:54:50.142Z pavi review.requested
+2026-10-07T04:55:17.144Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T04:59:53.340Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T04:59:55.270Z pavi land.review
+2026-10-07T04:59:55.715Z pavi item.accepted
+2026-10-07T04:59:55.820Z pavi land.accept
