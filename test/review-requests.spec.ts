@@ -537,3 +537,46 @@ it("the review claim route names the plan's branch as a part's merge target", as
   expect(claim.target).toEqual({ remote: "https://git.test/plan-fork", token: "token-plan-fork", branch: "main" });
   expect(asked).toEqual([`fork-${partId}`, "plan-fork"]);
 });
+
+// A review claim carries the project's review bar and, from round 2, the
+// owner's verdicts on earlier findings, so the brief the runner builds from
+// it states the bar and shows each verdict.
+it("a review claim carries the project's review bar and the owner's verdicts on earlier findings", async () => {
+  const { reviewBrief } = await import("../src/review/brief.ts");
+  const { DEFAULT_REVIEW_BAR } = await import("../src/review/verdict.ts");
+  const project = "review-bar";
+  const L = ledger(project);
+  const bar = "Block only for a defect that loses stored data.";
+  await L.setProject({ name: project, repo: `${project}--baseline`, policy: { ...policy, reviewBar: bar }, createdAt: new Date().toISOString() }, "owner");
+  const { partId } = await approved(L);
+  const builder = await submitPart(L, partId, "a".repeat(40));
+  const reviewer1 = await routedReviewer(L, partId);
+  const round1 = await L.claimReview(partId, reviewer1, RUNNER) as unknown as ReviewClaim;
+  expect(round1.reviewBar).toBe(bar);
+  const brief1 = reviewBrief({ need: round1.need!, item: round1.item, events: round1.events, plan: round1.plan, owner: round1.owner, bar: round1.reviewBar });
+  expect(brief1).toContain(`which says what may block:\n${bar}\n`);
+  expect(brief1).not.toContain(DEFAULT_REVIEW_BAR);
+  expect(brief1).not.toContain("## Earlier reviews");
+
+  // The reviewer rejects; the owner refutes the finding with file and line.
+  await L.addReview({ itemId: partId, by: reviewer1, head: "a".repeat(40), approve: false, note: "One blocker.", findings: [blocker()], at: new Date().toISOString() });
+  await L.addFinding(partId, "owner", "a".repeat(40), 1, "refuted", "src/a/x.ts:9 writes the row before it deletes.");
+  await L.claim(partId, builder, RUNNER);
+  const head2 = "b".repeat(40);
+  await L.recordPush(partId, builder, head2, head2);
+  await L.addEvidence(observed(partId, head2));
+  await L.submit(partId, builder);
+  const round2 = await L.claimReview(partId, await routedReviewer(L, partId), RUNNER) as unknown as ReviewClaim;
+  expect(round2.need!.round).toBe(2);
+  const brief2 = reviewBrief({ need: round2.need!, item: round2.item, events: round2.events, plan: round2.plan, owner: round2.owner, bar: round2.reviewBar });
+  expect(brief2).toContain("finding 1: blocking src/a/x.ts:1 It loses data.\n```\nThe project owner's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`");
+  expect(brief2).toContain("A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code");
+
+  // With no bar set, the claim carries none and the brief states the default.
+  const plain = await setup("review-bar-default");
+  const { partId: other } = await approved(plain);
+  await submitPart(plain, other, "c".repeat(40));
+  const claim = await plain.claimReview(other, await routedReviewer(plain, other), RUNNER) as unknown as ReviewClaim;
+  expect(claim.reviewBar).toBeNull();
+  expect(reviewBrief({ need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, owner: claim.owner, bar: claim.reviewBar })).toContain(`which says what may block:\n${DEFAULT_REVIEW_BAR}\n`);
+});

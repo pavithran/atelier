@@ -44,7 +44,8 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
 3. Check that main type-checks and that the deployed server holds main's
    routes.
 4. Read the owner's standing decisions where the project keeps them, and
-   the review bar in force.
+   the review bar in force (`atelier init` prints it; every review brief
+   states it).
 
 Then pick up where the record says the work stands, not where a summary
 says it does.
@@ -153,7 +154,8 @@ owner it read as a defect. The other half were real, and some were serious.
   quietly, and never let a reviewer overrule the owner's decision.
 - Record the verdict on each finding (`atelier finding`, task t186). Which
   reviewers are right, and how often, is the most useful thing Atelier can
-  measure about them.
+  measure about them. The next review brief shows each verdict and its note,
+  so put the file and line that answer a refuted finding in the note.
 
 ## Keeping the record honest
 
