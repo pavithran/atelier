@@ -27,7 +27,15 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // refusals again once it is free, and gives up after its limit. A landing
 // that loses its lease stops (t232): one that slept while another landing
 // took the lease over ends without accepting or merging, however it learns
-// of the loss, and leaves the lease that took it over where it is.
+// of the loss, and leaves the lease that took it over where it is. Where
+// main and the task each raised the route level from one base (t248), the
+// landing raises the merged level past both, its own commit, saying to
+// deploy — after its own merge, on a rerun of a conflicted merge the
+// owner resolved by hand, which finds main already merged, and wherever a
+// merge brought main in through a side branch, which the walk down HEAD's
+// first-parent line finds by ancestry; a raise on one side alone, or a
+// repo with no route-level file, lands as it is, the comparison skipped
+// and the landing going on.
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -41,11 +49,18 @@ function root(t) { const p = mkdtempSync(join(tmpdir(), "atelier-landcmd-")); t.
 // with `wanted` is made even where the gate needs none, as the server does),
 // and every request made, so a test can say what a landing
 // changed.
-async function landFixture(t, { mainChange = null, taskChange = "task\n", conflict = false } = {}) {
+async function landFixture(t, { mainChange = null, taskChange = "task\n", conflict = false, seedRouteLevel = null } = {}) {
   const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), checkout = join(p, "checkout"), config = join(p, "config"), cache = join(p, "cache");
   mkdirSync(seed); mkdirSync(config);
   git(seed, "init", "-b", "main"); git(seed, "config", "user.name", "Fixture"); git(seed, "config", "user.email", "fixture@example.invalid");
-  writeFileSync(join(seed, "work.txt"), "base\n"); git(seed, "add", "."); git(seed, "commit", "-m", "Initial");
+  writeFileSync(join(seed, "work.txt"), "base\n");
+  // A seed route level, from which a test can raise it on the task's side,
+  // on main's, or both, and see what the landing's merge makes of that.
+  if (seedRouteLevel !== null) {
+    mkdirSync(join(seed, "src"), { recursive: true });
+    writeFileSync(join(seed, "src", "route-level.ts"), `export const ROUTE_LEVEL = ${seedRouteLevel};\n`);
+  }
+  git(seed, "add", "."); git(seed, "commit", "-m", "Initial");
   git(p, "clone", "--bare", seed, baseline); git(p, "clone", baseline, checkout);
   for (const dir of [checkout]) { git(dir, "config", "user.name", "Fixture"); git(dir, "config", "user.email", "fixture@example.invalid"); }
   const forkHead = (id) => { try { return git(p, "--git-dir", join(p, `fork-${id}.git`), "rev-parse", "main"); } catch { return null; } };
@@ -473,6 +488,176 @@ test("a regenerate command that fails while settling conflicts stops the landing
   assert.equal(merge.body.failed, true);
   assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
   assert.equal(merge.body.reason, "the regenerate command `echo boom >&2; exit 3` failed (exit 3)");
+});
+
+// Raises the route level in one of the fixture's checkouts — the task's
+// workspace or main's — and pushes it, so a test can raise it on either
+// side of a landing's merge.
+const raiseRouteLevel = (dir, level, message) => {
+  writeFileSync(join(dir, "src", "route-level.ts"), `export const ROUTE_LEVEL = ${level};\n`);
+  git(dir, "add", "."); git(dir, "commit", "-m", message); git(dir, "push", "-q", "origin", "main");
+};
+
+test("where main and the task each raised the route level from one base, the landing raises the merged level past both", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  // Both sides raise 6 to 7, so the merge is clean at the number they share.
+  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
+  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 7, t1 to 7\), and the merge left it at 7: the merged CLI calls both sides' routes, so the level is raised to 8\. Deploy the server from a checkout at route level 8 or newer/);
+  // The raise is its own commit in the workspace, and it is what lands.
+  assert.match(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging main into t1/);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
+  assert.match(readFileSync(join(f.checkout, "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
+  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 8;/);
+  assert.equal(f.box.states.t1, "merged");
+  // The merge step records the levels it compared and the one it set.
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
+});
+
+test("where only main raised the route level, the merge takes main's number and nothing is raised past it", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.doesNotMatch(r.output, /raised the route level/);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
+  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 7;/);
+  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level/);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("where only the task raised the route level, the merge keeps the task's number", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6, mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.doesNotMatch(r.output, /raised the route level/);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
+  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 7;/);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("a rerun of a conflicted merge resolved by hand still compares and raises the route level", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  // Both sides raise, to different numbers, so the merge stops on the
+  // conflict and is left for the owner to resolve.
+  raiseRouteLevel(f.workspace("t1"), 8, "Task raises the route level");
+  raiseRouteLevel(f.checkout, 9, "Main raises the route level");
+  const stopped = await f.run(f.checkout, "land", "t1");
+  assert.equal(stopped.status, 1, stopped.output);
+  assert.match(stopped.output, /stops on conflicts in:\nsrc\/route-level\.ts/);
+  assert.match(stopped.output, /The merge is left in the workspace for you to resolve/);
+  // The owner resolves it by hand, writing main's number — one side's
+  // alone, as a hand resolution does — and reruns the landing, which now
+  // finds main already merged and would else skip the comparison.
+  writeFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "export const ROUTE_LEVEL = 9;\n");
+  git(f.workspace("t1"), "add", ".");
+  git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
+  f.box.requests.length = 0;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
+  assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 9, t1 to 8\), and the merge left it at 9: the merged CLI calls both sides' routes, so the level is raised to 11\. Deploy the server from a checkout at route level 11 or newer/);
+  // The raise is its own commit above the hand-resolved merge, measured
+  // from the task's head before that merge, and it is what lands.
+  assert.match(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging main into t1/);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 11;/);
+  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 11;/);
+  assert.equal(f.box.states.t1, "merged");
+  // The merge step records the skipped merge beside the levels it compared and set.
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.skipped, true);
+  assert.deepEqual(merge.body.routeLevel, { base: 6, main: 9, task: 8, was: 9, set: 11 });
+});
+
+test("a rerun after the route level was raised compares the same levels and raises nothing further", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  raiseRouteLevel(f.workspace("t1"), 8, "Task raises the route level");
+  raiseRouteLevel(f.checkout, 9, "Main raises the route level");
+  const stopped = await f.run(f.checkout, "land", "t1");
+  assert.equal(stopped.status, 1, stopped.output);
+  writeFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "export const ROUTE_LEVEL = 9;\n");
+  git(f.workspace("t1"), "add", ".");
+  git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
+  const raised = await f.run(f.checkout, "land", "t1", "--no-review");
+  assert.equal(raised.status, 0, raised.output);
+  assert.match(raised.output, /so the level is raised to 11\./);
+  // The task is still submitted (--no-review), so the landing can run
+  // once more: the same fork point, task head and main head give the same
+  // right level, which the tree already reports, so nothing is raised.
+  f.box.requests.length = 0;
+  const again = await f.run(f.checkout, "land", "t1", "--no-review");
+  assert.equal(again.status, 0, again.output);
+  assert.match(again.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
+  assert.doesNotMatch(again.output, /each raised the route level/);
+  assert.equal(git(f.workspace("t1"), "log", "--format=%s").split("\n").filter((s) => /^Raise the route level/.test(s)).length, 1);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 11;/);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
+});
+
+test("a merge that brought main in through a side branch still compares and raises the route level", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  // Both sides raise 6 to 7, so every merge below is clean at 7.
+  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
+  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
+  // Main reaches the task's head through a side branch: main merged into
+  // the side branch, the side branch into the task's line. The merge that
+  // brought main in is no merge of HEAD's first-parent line at all, so a
+  // --first-parent rev-list finds nothing and the comparison would be
+  // skipped exactly where both sides raised the level.
+  const w = f.workspace("t1");
+  git(w, "checkout", "-q", "-b", "side");
+  git(w, "fetch", "-q", f.baseline, "main");
+  git(w, "merge", "-q", "--no-ff", "-m", "Merge main into the side branch", "FETCH_HEAD");
+  git(w, "checkout", "-q", "main");
+  git(w, "merge", "-q", "--no-ff", "-m", "Merge the side branch into the task", "side");
+  git(w, "push", "-q", "origin", "main");
+  // The premise of the regression: this topology leaves the --first-parent
+  // rev-list empty, so the merge that brought main in must be found another way.
+  const mainHead = git(f.checkout, "rev-parse", "HEAD");
+  assert.equal(git(w, "rev-list", "--first-parent", "--ancestry-path", `${mainHead}..HEAD`), "");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
+  assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 7, t1 to 7\), and the merge left it at 7: the merged CLI calls both sides' routes, so the level is raised to 8\. Deploy the server from a checkout at route level 8 or newer/);
+  // The raise is its own commit above the side branch's merge, measured
+  // from the task's head before that merge, and it is what lands.
+  const subjects = git(w, "log", "--format=%s").split("\n");
+  assert.ok(subjects.includes("Merge the side branch into the task"));
+  assert.equal(subjects.filter((s) => /^Raise the route level/.test(s)).length, 1);
+  assert.match(readFileSync(join(w, "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
+  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 8;/);
+  assert.equal(f.box.states.t1, "merged");
+  // The merge step records the skipped merge beside the levels it compared and set.
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.skipped, true);
+  assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
+});
+
+test("a repo with no route-level file skips the comparison and the landing goes on", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.doesNotMatch(r.output, /route level/);
+  assert.ok(!existsSync(join(f.workspace("t1"), "src", "route-level.ts")));
+  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("--dry-run says a merge that finds both sides raised the route level raises it past both", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
+  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
+  const before = git(f.workspace("t1"), "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--dry-run");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /2\. merge main into t1's workspace \(.*\); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch t1 --job merge-main; where main and the task each raised the route level \(src\/route-level\.ts\) from one base, raise the merged level past both/);
+  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
 });
 
 test("--dry-run prints the steps and the refusals without changing anything", async (t) => {
