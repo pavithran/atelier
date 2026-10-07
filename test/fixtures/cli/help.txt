@@ -14,7 +14,7 @@ Owner      accept ID [--head SHA] [--override-review REASON] [--note TEXT] · me
            ship [--dry-run] [--push]
 Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json]
            plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT
-           plan reroute ID --to H/M · plan retry ID · plan refresh ID · plan stop ID [--note TEXT]
+           plan reroute ID --to H/M · plan retry ID · plan refresh ID [--resolve [--to H/M]] · plan stop ID [--note TEXT]
            plan post ID FILE
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] · undispatch ID · queue

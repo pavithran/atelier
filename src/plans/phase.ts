@@ -67,6 +67,9 @@ export interface TickInput {
   deadline?: string | null;         // an ISO timestamp; the plan blocks once now is past it
   budget?: Budget | null;           // the spend budget; the plan blocks once used reaches cap
   reviewers?: ReadonlyMap<string, readonly string[]>;  // by part key, the actors that reviewed it (partReviewers)
+  // Part keys that go first: while one of them is not integrated, merged or
+  // abandoned, no other part is dispatched (parts already live go on).
+  holds?: readonly string[];
   now: string;                      // an ISO timestamp; the tick's moment
 }
 
@@ -305,9 +308,11 @@ export function planActions(input: TickInput): TickResult {
     return state === "open" && (history.get(p.key)?.waiting ?? false);
   }).length;
 
+  const holding = new Set((input.holds ?? []).filter((key) => states.has(key) && !settled(states.get(key))));
   const dispatch: DispatchAction[] = [];
   for (const part of input.plan.parts) {
     if (live >= maxParallel) break;
+    if (holding.size && !holding.has(part.key)) continue; // a part that goes first is not settled
     if (states.get(part.key) !== "open") continue;
     if (history.get(part.key)?.waiting) continue; // already dispatched and waiting
     if (!part.dependsOn.every((dep) => settled(states.get(dep)))) continue; // dependencies not landed
