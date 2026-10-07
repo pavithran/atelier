@@ -138,7 +138,14 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
     } else if (url.endsWith("/landing")) answer = {};
-    else if (url.endsWith("/merged")) { box.states[item] = "merged"; answer = { ...answer.item, state: "merged" }; }
+    else if (url.endsWith("/merged")) {
+      box.states[item] = "merged"; answer = { ...answer.item, state: "merged" };
+      // The moment the server records the merge it treats the merged task's
+      // lease as free (landingLive), so a landing queued with --wait takes
+      // it — before the landing that finished releases it. A test asks for
+      // that take by naming the queued task here.
+      if (box.takeOverOnMerged) box.lease = { item: box.takeOverOnMerged, holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
+    }
     else if (url.endsWith("/land")) answer = { item: { id: item, state: box.states[item] } };
     else if (req.method === "POST") answer = {};
     res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
@@ -763,10 +770,34 @@ test("a landing whose lease lapsed and was taken over releases nothing of the la
   await landing.done;
   assert.deepEqual(f.posts("/landing-lease").filter((x) => x.body.cancel === true).map((x) => x.body), [{ cancel: true, item: "t1" }]);
   assert.deepEqual(f.box.lease, { item: "t2", holder: "owner", at: taken, renewedAt: taken });
-  assert.match(landing.output(), /the landing lease could not be released/);
+  // The refusal names the landing that holds the lease now, as the handover
+  // it is, not a warning about a lease left stranded (t237).
+  assert.match(landing.output(), /The landing lease of proj is held for t2's landing now, so this release left it alone/);
+  assert.doesNotMatch(landing.output(), /could not be released/);
   // --release-lease aimed at t1 refuses too, naming t2's landing, and leaves the lease.
   const r = await f.run(f.checkout, "land", "t1", "--release-lease");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /held for t2, not t1: owner has been landing t2 since .*atelier land t2 --release-lease/);
   assert.deepEqual(f.box.lease, { item: "t2", holder: "owner", at: taken, renewedAt: taken });
+});
+
+test("a landing that merged says the handover, not a warning, when a queued landing takes the lease in the moment after the merge", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  // The server treats a merged task's lease as free (landingLive), so t2's
+  // landing, queued with --wait, takes it the moment t1's merge is recorded,
+  // before t1's landing releases it (t237): the release's cancel is refused
+  // naming t2, which is the handover working, not a failure.
+  f.box.takeOverOnMerged = "t2";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /t1 landed:/);
+  assert.match(r.output, /The landing lease of proj is held for t2's landing now, so this release left it alone: the server treats a merged task's lease \(a lapsed one the same way\) as free, so a landing queued with --wait takes it in the moment after the merge, and that landing holds and renews it\. Nothing of t1's landing is stranded\./);
+  // No warning of a lease that could not be released, and no claim that it
+  // was released: another landing holds it now.
+  assert.doesNotMatch(r.output, /could not be released/);
+  assert.doesNotMatch(r.output, /The landing lease for proj is released/);
+  // The cancel still named t1, and the lease is left with t2's landing.
+  assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true && x.body.item === "t1"));
+  assert.equal(f.box.lease?.item, "t2");
+  assert.equal(f.box.states.t1, "merged");
 });
