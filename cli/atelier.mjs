@@ -268,7 +268,7 @@ export const FLAGS = {
   undispatch: {},
   queue: {},
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
-  plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false },
+  plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false, resolve: true },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
   models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
   showcase: { named: true, anonymous: true },
@@ -282,7 +282,7 @@ export const FLAGS = {
 };
 const REST = new Set(["check"]);
 // The flags each plan subcommand takes; "" is a new plan's.
-const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: [], stop: ["note"], post: [] };
+const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: ["resolve", "to"], stop: ["note"], post: [] };
 const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
 
 export function parseArgs(argv, switches = SWITCHES) {
@@ -3035,7 +3035,18 @@ const commands = {
       console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
       return;
     }
+    if (sub === "refresh" && args.resolve === true) {
+      if (args.to !== undefined && (typeof args.to !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(args.to.trim()))) die(`--to needs harness/model: atelier plan refresh ${id} --resolve --to claude-code/opus-5.5`);
+      const view = await call("POST", `${I(name, id)}/plan/refresh`, { resolve: true, ...(args.to !== undefined ? { to: args.to.trim() } : {}) }, OWNER);
+      const main = view.refresh?.main ?? "";
+      const part = view.parts.find((p) => p.added?.mainHead === main);
+      const who = part?.dispatch && part.state === "open" ? `queued for ${part.dispatch.agent}/${part.dispatch.model}` : part ? `${part.state}, and the plan dispatches it before any other part` : "added";
+      console.log(`${view.item.id} has part ${part ? `${part.id} (${part.key})` : "merge-main"} to merge main at ${main.slice(0, 8)} into its branch: ${who}. Its builder resolves the conflicts; no other part is dispatched until it is integrated.`);
+      console.log(`Follow it with atelier plan show ${view.item.id} ${flag}`);
+      return;
+    }
     if (sub === "refresh") {
+      if (args.to !== undefined) die(`--to names the builder of the part --resolve adds: atelier plan refresh ${id} --resolve --to H/M`);
       const view = await call("POST", `${I(name, id)}/plan/refresh`, {}, OWNER);
       const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
       const taken = view.refresh?.taken;
