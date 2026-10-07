@@ -25,6 +25,8 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { durationsSql, fetchNewLogs, gatewayConfig, gatewayView, parseDurations, parseTotals, totalsSql, writeLog, type GatewayGap, type GatewayMark, type GatewayPull, type GatewayView } from "./usage/gateway.ts";
+import { query, queryConfig } from "./metrics.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
@@ -787,7 +789,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // thresholds in force and the alerts in force.
   if (parts[0] === "usage") {
     const I = index(env);
-    if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts() });
+    if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts(), gateway: await readGateway(env) });
     if (parts.length === 2 && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a usage report names its runner in X-Atelier-Runner", 400);
@@ -1667,7 +1669,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, track] = await Promise.all([I.models(), trackRecords(env)]);
+  const [entries, track, gateway] = await Promise.all([I.models(), trackRecords(env), readGateway(env)]);
   const record = new Map<string, ActorRecord>();
   for (const { events } of track.sources) {
     for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
@@ -1676,7 +1678,70 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway), error ? 400 : 200);
+}
+
+// ── AI Gateway ───────────────────────────────────────────────────────────────
+// The scheduled pull of the AI Gateway's logs into Analytics Engine
+// (src/usage/gateway.ts) and what the Models page and GET /api/usage show of
+// them, read back through the SQL API (src/metrics.ts). With no gateway
+// token the pull does nothing and the view says the gateway is off.
+
+// Writes the logs newer than the last one written, oldest first, and moves
+// the mark to the newest log written: a missing binding or a failed write
+// stops the writing there, so the mark never passes a log that was not
+// written and the next pull reads it again. A pull capped short of the
+// mark records the stretch it did not read. Null when the gateway is off or
+// the logs could not be read.
+export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
+  const cfg = gatewayConfig(env);
+  if (typeof cfg === "string") return null;
+  const I = index(env);
+  const at = new Date(now).toISOString();
+  let read;
+  try {
+    read = await fetchNewLogs(cfg, await I.gatewayMark(), now, fetcher);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    await I.recordGatewayPull({ at, added: 0, error }, null);
+    console.error("AI Gateway pull failed", error);
+    return null;
+  }
+  let added = 0, mark: GatewayMark | null = null, error: string | null = null;
+  if (read.logs.length && !env.METRICS) error = "the METRICS binding is missing, so no log was written";
+  else {
+    for (const log of [...read.logs].reverse()) {
+      try {
+        if (!writeLog(env.METRICS, log)) throw new Error("no dataset");
+      } catch (err) {
+        error = `writing log ${log.id} failed: ${err instanceof Error ? err.message : String(err)}`;
+        break;
+      }
+      added++;
+      mark = { id: log.id, at: log.at };
+    }
+  }
+  // The gap lies below the oldest log read, the first written; it is lost
+  // only once the mark has moved past it.
+  const gap = read.gap && added ? { ...read.gap, pulledAt: at } : null;
+  await I.recordGatewayPull({ at, added, error }, mark, gap);
+  if (error) console.error("AI Gateway pull failed", error);
+  return { added, error };
+}
+
+export async function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
+  const cfg = gatewayConfig(env);
+  if (typeof cfg === "string") return gatewayView(cfg, [], [], null, [], now);
+  const read = queryConfig(env);
+  if (typeof read === "string") return gatewayView(`AI Gateway costs cannot be read: ${read}`, [], [], null, [], now);
+  const I = index(env);
+  const [pull, gaps] = await Promise.all([I.gatewayPull() as Promise<GatewayPull | null>, I.gatewayGaps() as Promise<GatewayGap[]>]);
+  try {
+    const [totals, durations] = await Promise.all([query(read, totalsSql(), fetcher), query(read, durationsSql(), fetcher)]);
+    return gatewayView(null, parseTotals(totals), parseDurations(durations), pull, gaps, now);
+  } catch (err) {
+    return gatewayView(`AI Gateway costs could not be read just now: ${err instanceof Error ? err.message : String(err)}`, [], [], pull, gaps, now);
+  }
 }
 
 // Each model's record is read from every event of every project, and
@@ -2177,6 +2242,10 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
+  // The cron in wrangler.jsonc pulls the AI Gateway's new logs.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(pullGateway(env));
+  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
