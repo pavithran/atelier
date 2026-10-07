@@ -115,3 +115,14 @@ test("a plan's brief says what is decided and what it waits on, in the shape any
   assert.equal(planBrief({ ...building, blocked: "x" }).recommendation.verdict, "decide");
   assert.equal(planBrief({ ...building, item: { ...item, state: "merged" } }).recommendation.verdict, "none");
 });
+
+test("plan show prints a part's latest integration failure, its kind and whether the builder was charged", () => {
+  const failed = (kind: string | null, state: PlanPartView["state"] = "open") => planText({ ...building, parts: [part("t2", "a", {
+    state, integrationFailure: { reason: "the plan's checks failed after the merge: FAIL  npm test @ 11111111", kind, at: AT },
+  })] }, "demo").split("\n");
+  assert.ok(failed("checks").includes("      integration failed at 2026-10-06 12:00 UTC (failing checks; charged to the builder): the plan's checks failed after the merge: FAIL npm test @ 11111111"));
+  assert.ok(failed("conflict").some((line) => line.startsWith("      integration failed at 2026-10-06 12:00 UTC (a merge conflict; charged to the builder): ")));
+  assert.ok(failed(null).some((line) => line.startsWith("      integration failed at 2026-10-06 12:00 UTC (kind not recorded; not charged to the builder): ")));
+  // Once integrated, the old failure is no longer shown.
+  assert.ok(!failed("checks", "integrated").some((line) => line.includes("integration failed")));
+});

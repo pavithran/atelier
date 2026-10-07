@@ -242,10 +242,12 @@ export function removeDataHome({ dir, onExit }) {
   rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
 }
 
-// The CLI commands whose printed JSON the runner reads back: their standard
-// output is captured and returned; every other command's goes to the
-// runner's own output, as the owner watching it expects.
-const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "base-token"]);
+// The CLI commands whose printed output the runner reads back: their
+// standard output is captured and returned, or carried on the error when the
+// command fails; every other command's goes to the runner's own output, as
+// the owner watching it expects. The integrate job reads check's to say what
+// failed, and logs it either way.
+const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "base-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 export async function checked(argv, options, executeChild = execute) {
@@ -254,6 +256,8 @@ export async function checked(argv, options, executeChild = execute) {
   if (options.signal?.aborted) throw new Error("interrupted");
   if (result.code !== 0) {
     const error = new Error(result.stderr || `${argv[0]} exited ${result.signal ?? result.code}`);
+    error.code = result.code;
+    if (result.output) error.output = result.output;
     error.claimRefused = options?.claim && result.code === 3;
     error.infrastructure = result.code === 4;
     throw error;
@@ -490,23 +494,41 @@ export async function reviewBase(io, workspace, claimed) {
 
 // The integrate job (docs/orchestrator.md, section 5): the runner claims the
 // plan item as atelier/integrator, fetches the part's head, merges it onto the
-// plan's branch with --no-ff, pushes, runs the plan's checks, and posts
-// integrated or integration-failed. It uses no model. A merge that conflicts,
-// or checks that fail, rolls the branch back to its previous head first.
+// plan's branch with --no-ff, pushes it with atelier push, so the head Atelier
+// records is the merge, runs the plan's checks on it, and posts integrated or
+// integration-failed. It uses no model. A merge that conflicts, or checks that
+// fail (atelier check exits 2), is the part's own failure: the reason is
+// logged, the branch is rolled back to its previous head and
+// integration-failed is posted with its kind, which charges the part's
+// builder an attempt. Any other error is the integrator's: the merge is rolled
+// back if it was pushed and the plan item is released, with nothing posted
+// against the part.
+export const CHECKS_FAILED = 2;
+
 export async function runIntegrate(assignment, config, name, io) {
   const { project, item, actor } = assignment;
   const dispatch = item.dispatch ?? {};
   const partKey = dispatch.part, partHead = dispatch.head, partId = dispatch.partId;
   const workspace = io.workspacePath(project, item.id);
-  let claimed = false, released = false;
+  const at = ["--project", project, "--as", actor];
+  let claimed = false, released = false, before = null, pushed = false;
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    try { await io.cli(["release", item.id, ...at, "--note", releaseNote(reason)]); }
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
+  // The branch goes back to its head before the merge, in the workspace and,
+  // through atelier push --rollback, on the fork and in the ledger.
+  const rollback = async () => {
+    await io.rollback(workspace, before);
+    await io.cli(["push", item.id, ...at, "--rollback"], workspace);
+    pushed = false;
+  };
   // Awaited where it is returned, so an error in it reaches the catch below.
-  const fail = async (reason) => {
-    await io.cli(["integration-failed", item.id, "--project", project, "--as", actor, "--part", partKey, "--reason", reason]);
+  const fail = async (kind, reason) => {
+    io.log(`integration of part ${partKey} failed (${kind}): ${reason}`);
+    const posted = JSON.parse(await io.cli(["integration-failed", item.id, ...at, "--part", partKey, "--kind", kind, "--reason", reason]) || "{}");
+    io.log(`integration-failed recorded on ${posted.id ?? item.id}; part ${partKey} goes back to its builder`);
     await release(reason);
     return { phase: "failed", reason, taskFailure: true };
   };
@@ -516,33 +538,43 @@ export async function runIntegrate(assignment, config, name, io) {
         !partId || !/^t[0-9]+$/.test(partId) || !/^[a-f0-9]{40,64}$/.test(partHead ?? "")) {
       throw Object.assign(new Error("the queue returned an invalid integrate assignment"), { skipped: true });
     }
-    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    await io.cli(["claim", item.id, ...at, "--runner", name]);
     claimed = true;
     // The merge starts from the branch as the fork holds it, so a merge whose
     // push failed in an earlier run is not carried into this one.
     await io.resetToRemote(workspace);
-    const before = await io.head(workspace);
-    const part = JSON.parse(await io.cli(["read-token", partId, "--project", project, "--as", actor]));
+    before = await io.head(workspace);
+    const part = JSON.parse(await io.cli(["read-token", partId, ...at]));
     await io.fetch(workspace, part.remote, part.token, partHead);
     const merged = await io.merge(workspace, partHead);
     if (merged.code !== 0) {
       await io.abortMerge(workspace);
-      return await fail(`merge conflicted: ${merged.output || "the part conflicts with the plan's branch"}`);
+      return await fail("conflict", `merge conflicted: ${merged.output || "the part conflicts with the plan's branch"}`);
     }
     const mergeHead = await io.head(workspace);
-    await io.push(workspace);
+    // atelier push records the merge as the plan item's head, which is the
+    // head atelier check tests and posts its evidence against.
+    await io.cli(["push", item.id, ...at], workspace);
+    pushed = true;
     // The plan item's checks compare against the baseline, which is correct for
     // the whole branch. A failure rolls the branch back before it is reported.
-    let checkOutput = "";
-    try { await io.cli(["check", item.id, "--project", project, "--as", actor], workspace); }
-    catch (error) { checkOutput = error.message; }
-    if (checkOutput) {
-      await io.rollback(workspace, before);
-      return await fail(`the plan's checks failed after the merge: ${checkOutput}`);
+    let failing = null;
+    try {
+      const output = await io.cli(["check", item.id, ...at], workspace);
+      if (output) io.log(output);
+    } catch (error) {
+      if (error.code !== CHECKS_FAILED) throw error;
+      if (error.output) io.log(error.output);
+      failing = checkFailures(error.output) || error.message;
     }
-    const result = JSON.parse(await io.cli(["integrated", item.id, "--project", project, "--as", actor, "--part", partKey, "--merge-commit", mergeHead]));
+    if (failing !== null) {
+      await rollback();
+      return await fail("checks", `the plan's checks failed after the merge: ${failing}`);
+    }
+    const result = JSON.parse(await io.cli(["integrated", item.id, ...at, "--part", partKey, "--merge-commit", mergeHead]));
+    pushed = false;
     if (result.allIntegrated) {
-      await io.cli(["submit", item.id, "--project", project, "--as", actor, "--summary", `integrated ${result.parts.length} part${result.parts.length === 1 ? "" : "s"}: ${result.parts.join(", ")}`]);
+      await io.cli(["submit", item.id, ...at, "--summary", `integrated ${result.parts.length} part${result.parts.length === 1 ? "" : "s"}: ${result.parts.join(", ")}`]);
       io.log("every part is integrated; the plan item is submitted for the owner");
     } else {
       await release("part integrated");
@@ -550,10 +582,22 @@ export async function runIntegrate(assignment, config, name, io) {
     return { phase: "integrated", part: partKey };
   } catch (error) {
     io.log(`failed: ${error.message}`);
+    // A merge pushed but neither integrated nor reported goes back off the
+    // branch, so the next run starts from the plan's integrated head.
+    if (pushed && !released) {
+      try { await rollback(); }
+      catch (rollbackError) { io.log(`rollback failed: ${rollbackError.message}`); }
+    }
     // Any error after the claim gives the plan item back, so the job can run again.
     if (claimed && !released) await release(error.message);
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   }
+}
+
+// What failed, from atelier check's output: its FAIL lines, each naming a
+// check and the head it ran on, joined on one line.
+export function checkFailures(output) {
+  return String(output ?? "").split("\n").filter((line) => line.startsWith("FAIL")).map((line) => line.replace(/\s+/g, " ").trim()).join("; ");
 }
 
 // The refresh job (docs/orchestrator.md, section 5): when main has moved and a
@@ -585,7 +629,8 @@ export async function runRefresh(assignment, config, name, io) {
       await release("the baseline merge conflicted");
       return { phase: "failed", reason: "the baseline merge conflicted", taskFailure: true };
     }
-    await io.push(workspace);
+    // As in runIntegrate: atelier push records the merge as the plan item's head.
+    await io.cli(["push", item.id, "--project", project, "--as", actor], workspace);
     await release("baseline merged into the plan's branch");
     return { phase: "refreshed" };
   } catch (error) {
@@ -796,16 +841,14 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
-    // The integrate job's git operations: fetch a head, merge it onto the
-    // plan's branch, push, and roll the branch back on a failure.
+    // The integrate and refresh jobs' git operations: fetch a head, merge it
+    // onto the plan's branch, and reset the workspace for a rollback. Their
+    // pushes go through atelier push.
     fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: gitAuth(token), signal: controller.signal, step: "fetch" }, executeChild),
     merge: (cwd, head) => executeChild(["git", "merge", "--no-ff", "--quiet", "-m", `Merge part ${head.slice(0, 8)} onto the plan's branch`, head], { cwd, capture: true, captureError: true, signal: controller.signal, step: "merge" }),
     abortMerge: (cwd) => checked(["git", "merge", "--abort"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild),
-    push: (cwd) => checked(["git", "push", "--quiet", "origin", "HEAD"], { cwd, captureError: true, signal: controller.signal, step: "push" }, executeChild),
-    rollback: async (cwd, before) => {
-      await checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
-      await checked(["git", "push", "--quiet", "--force-with-lease", "origin", "HEAD"], { cwd, captureError: true, signal: controller.signal, step: "rollback" }, executeChild);
-    },
+    // The workspace half of a rollback; runIntegrate pushes it with atelier push --rollback.
+    rollback: (cwd, before) => checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal, step: "rollback" }, executeChild),
     writeDiff, removeDiff, verdictPath, readVerdict,
     ...taskIO,
   };
