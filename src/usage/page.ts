@@ -10,20 +10,15 @@
 import { escapeText, page, reliabilitySection } from "../ui.ts";
 import type { Reliability } from "../models/reliability.ts";
 import { stamp } from "../time.ts";
-import { crossings, daySpend, isStale, money, SPANS, SPAN_LABELS, STALE_MS, THRESHOLD_SETTINGS, type SpanUse, type Thresholds, type UsageReport } from "./report.ts";
+import { crossings, daySpend, isStale, money, tokens, SPANS, SPAN_LABELS, STALE_MS, THRESHOLD_SETTINGS, type SpanUse, type Thresholds, type UsageReport } from "./report.ts";
 
 const e = escapeText;
 const tag = (label: string, tone = "") => `<span class="tag ${tone}">${e(label)}</span>`;
 const plural = (n: number, one: string, many = one + "s") => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
 const pct = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)}%`;
 
-// "1.2M", "340k", "12": tokens at a glance.
-export function tokens(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e4) return `${Math.round(n / 1e3)}k`;
-  return n.toLocaleString("en");
-}
+// Tokens at a glance (src/usage/report.ts), shared with the Models page.
+export { tokens };
 
 function useCell(s: SpanUse, extra = ""): string {
   const text = !s.requests && !s.tokens && !s.cost

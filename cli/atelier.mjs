@@ -1432,6 +1432,7 @@ async function discoverModels() {
 
 // Each tool's usage goes to the usage route under the runner's name; one
 // that fails does not stop the others, and runUsage names every failure.
+// The AI Gateway's figures are read back from GET /api/usage.
 async function reportUsage() {
   const { runUsage } = await import("./usage.mjs");
   const controller = new AbortController();
@@ -1440,6 +1441,7 @@ async function reportUsage() {
     await runUsage(args, {
       signal: controller.signal,
       report: (tool, body, runner) => postAsRunner(`/usage/${encodeURIComponent(tool)}`, body, runner, controller.signal),
+      gateway: async () => (await request("GET", "/usage", undefined, OWNER)).gateway,
     });
   } catch (error) { die(error.message); }
 }
