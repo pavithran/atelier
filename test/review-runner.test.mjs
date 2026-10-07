@@ -333,6 +333,9 @@ async function serveReview(t, dir, claim) {
       if (argv[0] === "reviewer") {
         seen.brief = readFileSync(argv[1], "utf8");
         seen.diff = readFileSync(argv[2], "utf8");
+        seen.diffPath = argv[2];
+        seen.cwd = options.cwd;
+        seen.status = execFileSync("git", ["status", "--porcelain", "--ignored=no"], { cwd: options.cwd, encoding: "utf8" });
         writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.");
         return { code: 0 };
       }
@@ -404,4 +407,96 @@ test("a part's review diffs against its plan's branch, not main", async (t) => {
   assert.deepEqual(changed(seen.diff), ["part.txt"], "neither the plan's earlier work nor the other part is shown as this part's");
   // From the project's main, the diff would also hold both other parts' work.
   assert.deepEqual(git(work, "diff", "--name-only", git(work, "merge-base", main, head), head).split("\n"), ["earlier-part.txt", "other-part.txt", "part.txt"]);
+});
+
+// t244: a merge-main job's head is reviewed by its conflict resolution. The
+// part forks from `base` with a change to f.txt; main changes the same line
+// and adds main-only.txt; the builder resolves the conflict and commits the
+// merge. Returns the repositories, the merge and its parents.
+function mergeMainRepos(t) {
+  const repos = reviewRepos(t);
+  const { git, commit, work } = repos;
+  commit(work, "f.txt", "a\nb\nc\n");
+  const base = git(work, "rev-parse", "HEAD");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  git(work, "checkout", "--quiet", "-b", "part");
+  const previous = commit(work, "f.txt", "a\nPART\nc\n");
+  git(work, "checkout", "--quiet", "main");
+  writeFileSync(join(work, "main-only.txt"), "main's own work\n");
+  const main = commit(work, "f.txt", "a\nMAIN\nc\n");
+  git(work, "checkout", "--quiet", "part");
+  try { git(work, "merge", "--quiet", "--no-ff", "-m", "Merge main", main); } catch { /* The conflict the builder resolves. */ }
+  writeFileSync(join(work, "f.txt"), "a\nPART and MAIN\nc\n");
+  git(work, "add", "f.txt");
+  git(work, "commit", "--quiet", "--no-edit");
+  const head = git(work, "rev-parse", "HEAD");
+  git(work, "push", "--quiet", repos.fork, "HEAD:main");
+  return { ...repos, base, previous, main, head };
+}
+
+test("a merge-main part's review reads the merge's conflict resolution and the files main brought in, not main's work", async (t) => {
+  const { dir, git, target, fork, work, base, previous, main, head } = mergeMainRepos(t);
+  // The plan's branch is the part's fork point, so today's diff from it
+  // would carry all of main's work.
+  git(work, "push", "--quiet", "--force", target, `${base}:main`);
+  const key = `merge-main-${main.slice(0, 8)}`;
+  const claim = {
+    ...claimFor({ base, fork, kind: "part", partKey: key }, head, { remote: target, token: "base-token", branch: "main" }),
+    plan: { goal: "Take main", part: { ...claimed.plan.part, key, title: "Merge main" } },
+  };
+  const seen = await serveReview(t, dir, claim);
+  assert.deepEqual(changed(seen.diff), ["f.txt"], "only the resolved file is shown");
+  assert.match(seen.diff, /remerge CONFLICT \(content\): Merge conflict in f\.txt/);
+  assert.match(seen.diff, /^\+PART and MAIN$/m);
+  assert.ok(!seen.diff.includes("main's own work"), "main's work is not shown as the change");
+  assert.equal(seen.diff.trim(), git(work, "show", "--remerge-diff", "--format=", "--no-color", head));
+  assert.ok(seen.brief.includes(`Base: ${previous}, the head before this merge. This head merges main at ${main} into it`), seen.brief);
+  assert.ok(seen.brief.includes(`Files the merge brought in from main (2): git diff --name-only ${previous} ${head}.`), seen.brief);
+  assert.ok(seen.brief.includes("```\nf.txt\nmain-only.txt\n```"), seen.brief);
+  assert.ok(seen.brief.includes(`This is the merge's conflict resolution, the output of git show --remerge-diff ${head}`), seen.brief);
+  assert.ok(!seen.brief.includes("## The task's own change"), "a part has no change of its own beside the merge");
+});
+
+test("a merge-main task's review reads the resolution and the task's own change, without main's work", async (t) => {
+  const { dir, git, target, fork, work, base, main, head } = mergeMainRepos(t);
+  // `target` is main, which the task merges into.
+  git(work, "push", "--quiet", target, `${main}:main`);
+  const claim = claimFor({ base, fork, dispatch: { job: "merge-main", head: main, task: true } }, head, { remote: target, token: "base-token", branch: "main" });
+  const seen = await serveReview(t, dir, claim);
+  assert.ok(seen.diff.startsWith("diff --git a/f.txt b/f.txt\nremerge CONFLICT"), seen.diff);
+  // The task's own change from main follows the resolution: f.txt, from main's line to the resolved one.
+  assert.deepEqual(changed(seen.diff), ["f.txt", "f.txt"]);
+  assert.match(seen.diff, /^-MAIN\n\+PART and MAIN$/m);
+  assert.ok(!seen.diff.includes("main's own work"));
+  assert.ok(seen.brief.includes(`## The task's own change\n\nThis is the task's whole change, the output of git diff ${main} ${head}`), seen.brief);
+  assert.ok(seen.brief.includes("the resolution first and the task's own change after it"), seen.brief);
+});
+
+test("a merge-main job whose head is not the merge of the main head it named is reviewed by today's diff", async (t) => {
+  const { dir, git, commit, target, fork, work, base, main } = mergeMainRepos(t);
+  git(work, "push", "--quiet", target, `${main}:main`);
+  // The builder committed again on top of the merge.
+  const head = commit(work, "later.txt", "later\n");
+  git(work, "push", "--quiet", "--force", fork, "HEAD:main");
+  const seen = await serveReview(t, dir, claimFor({ base, fork, dispatch: { job: "merge-main", head: main, task: true } }, head, { remote: target, token: "base-token", branch: "main" }));
+  assert.deepEqual(changed(seen.diff), ["f.txt", "later.txt"]);
+  assert.ok(seen.brief.includes(`This is the change from the base to the head, the output of git diff ${main} ${head}.`), seen.brief);
+  // A merge whose second parent is not the job's main head is not read as one either.
+  const other = claimFor({ base, fork, dispatch: { job: "merge-main", head: "f".repeat(40), task: true } }, git(work, "rev-parse", "HEAD^"), { remote: target, token: "base-token", branch: "main" });
+  git(work, "push", "--quiet", "--force", fork, "HEAD^:main");
+  const plain = await serveReview(t, dir, other);
+  assert.ok(!plain.brief.includes("git show --remerge-diff"), plain.brief);
+});
+
+test("the runner writes the review diff into the clone's .scratch/, kept out of Git, and names that file to the harness", async (t) => {
+  const { dir, git, commit, target, fork, work } = reviewRepos(t);
+  const base = commit(work, "base.txt", "base\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  const head = commit(work, "task.txt", "the task's change\n");
+  git(work, "push", "--quiet", fork, "HEAD:main");
+  const seen = await serveReview(t, dir, claimFor({ base, fork }, head, { remote: target, token: "base-token", branch: "main" }));
+  assert.equal(seen.diffPath, join(seen.cwd, ".scratch", "atelier-review.diff"));
+  assert.ok(seen.cwd.startsWith(join(dir, "t21-review-")), seen.cwd);
+  assert.equal(seen.status, "", "the diff file is not seen by Git");
+  assert.ok(seen.brief.includes("The whole diff is also in the file `.scratch/atelier-review.diff` in your clone."), seen.brief);
 });
