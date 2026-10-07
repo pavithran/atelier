@@ -1,7 +1,7 @@
 atelier — one owner per task, observed evidence, the project owner decides.
 
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
-Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
+Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--reset] [--history-since YYYY-MM-DD] · sync · publish
            notes-remote [REMOTE | --off]
 Items      new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] · edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]
            ls [--all] [--json] · show ID [--reviews] [--json] · owners [--json] · inbox [--json] · status [--project P] [--json] (with a project: where it stands, as text) · open
@@ -17,7 +17,7 @@ Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json
            plan reroute ID --to H/M · plan retry ID · plan refresh ID [--resolve [--to H/M]] · plan stop ID [--note TEXT]
            plan post ID FILE
 Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models remove ID
-           dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] · undispatch ID · queue
+           dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] [--overlap-ok] · undispatch ID · queue
 Projects   projects rename OLD NEW · projects remove NAME [--force] · showcase set NAME [--named|--anonymous] · showcase remove NAME · init --name NAME --rename-local
            
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
