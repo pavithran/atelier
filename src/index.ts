@@ -1293,11 +1293,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "abandon": {
       requireOwner(env, actor);
       const note = String(body.note ?? "");
+      if (body.deliveredBy !== undefined && (typeof body.deliveredBy !== "string" || !/^t\d+$/.test(body.deliveredBy))) throw new RuleError("bad_delivered_by", "deliveredBy must be a task id such as t5", 400);
+      const deliveredBy = body.deliveredBy as string | undefined;
       const oldToken = await L.tokenId(id);
-      await L.checkAbandon(id, actor, note);
+      await L.checkAbandon(id, actor, note, deliveredBy);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.abandon(id, actor, note, oldToken);
+      const item = await L.abandon(id, actor, note, oldToken, deliveredBy);
       return json(item);
     }
     case "defect": {
@@ -1360,6 +1362,17 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
 const MODEL_EVENTS = 1000;
 
+// Every event of a project, read a page at a time, newest page first.
+async function allEvents(L: { events(id?: string, limit?: number, before?: number): Promise<unknown> }): Promise<LedgerEvent[]> {
+  const out: LedgerEvent[] = [];
+  for (let before: number | undefined; ;) {
+    const page = (await L.events(undefined, MODEL_EVENTS, before)) as unknown as LedgerEvent[];
+    out.push(...page);
+    if (page.length < MODEL_EVENTS) return out;
+    before = page[page.length - 1].seq;
+  }
+}
+
 // The Models page, and its two forms: add (or replace) an entry, and remove one.
 async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   const { env, req } = c;
@@ -1391,7 +1404,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
 }
 
-// Each model's record is read from every project's most recent events, and
+// Each model's record is read from every event of every project, and
 // its reliability from those and the runners' reports. The pages and the
 // API say how many events, and which projects could not be read.
 async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; events: number; unread: ProjectRecord[] }> {
@@ -1399,10 +1412,10 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
-    try { return { project: p.name, events: (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[] }; }
+    try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
-  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: MODEL_EVENTS, unread };
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and

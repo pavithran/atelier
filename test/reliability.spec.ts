@@ -121,7 +121,9 @@ it("each model's reliability across projects: the JSON route, the Models page an
   const answer = await call("GET", "/reliability", "owner");
   expect(answer.status).toBe(200);
   const { events, models } = (await answer.json()) as { events: number; models: ModelReliability[] };
-  expect(events).toBe(1000);
+  // Every event is read, so the count is what the projects hold, not a page's size.
+  expect(events).toBeGreaterThan(0);
+  expect(events).toBeLessThan(1000);
   const opus = models.find((m) => m.model === "opus-5.5")!;
   expect(opus).toMatchObject({
     actors: ["antigravity/claude-opus-5-5", OPUS], firstReviews: 2, approvedFirst: 1, merged: 1, mergedReviewed: 1, rounds: 2,
