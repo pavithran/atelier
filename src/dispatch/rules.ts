@@ -180,11 +180,17 @@ export function assertDispatchable(item: Item): void {
   }
 }
 
+// What unoffered's and offering's helpers ask of a dispatch: the kind of
+// runner asked for, and everything missingJob() reads in it, so the narrow
+// dispatch a plan routes by (Pick<Dispatch, "to" | "job">) asks as fully as
+// a whole one.
+type OfferAsk = Pick<Dispatch, "to" | "job" | "planHead" | "task">;
+
 // The jobs a runner must offer to take a dispatch besides building: its job,
 // "merge-plan" when it carries a plan head to merge, and "merge-main-task"
 // for a task's merge-main job (t243). Returns the first the offer lacks, or
 // null when it offers them all.
-function missingJob(d: Dispatch, offer: RunnerOffer): string | null {
+function missingJob(d: Pick<Dispatch, "job" | "planHead" | "task">, offer: RunnerOffer): string | null {
   const needs = [d.job, d.planHead ? "merge-plan" : null, d.job === "merge-main" && d.task ? "merge-main-task" : null];
   return needs.find((job): job is string => !!job && !(offer.jobs ?? []).includes(job)) ?? null;
 }
@@ -262,8 +268,10 @@ export function liveOffers(offers: readonly SeenOffer[], now = new Date()): Seen
 // names a dispatch may name and a claim accept. Plan routing reads it over
 // the live offers (src/plans/route.ts, pickPlanner in src/plans/state.ts):
 // a dispatch no live runner could claim never starts, so a model no live
-// runner offers gets no part (t246).
-export function offering(offers: readonly SeenOffer[]): Map<string, string[]> {
+// runner offers gets no part (t246). Read per model, whatever job the
+// runner would run: whether a runner runs the job a dispatch names is
+// offering's question, below.
+export function offeredActors(offers: readonly SeenOffer[]): Map<string, string[]> {
   const out = new Map<string, string[]>();
   for (const offer of offers) {
     for (const { agent, models } of offer.agents) {
@@ -281,7 +289,7 @@ export function offering(offers: readonly SeenOffer[]): Map<string, string[]> {
 // no such job. The names are the claimable agent/model pairs assign() could
 // hand the job to under this offer, whatever harness was asked — the useful
 // fact is what could take the job instead, not which harness is missing.
-function offeredNames(d: Dispatch, offer: RunnerOffer): string[] | null {
+function offeredNames(d: OfferAsk, offer: RunnerOffer): string[] | null {
   if (d.to !== "any" && d.to !== offer.kind) return null;
   if (missingJob(d, offer)) return null;
   const names: string[] = [];
@@ -289,6 +297,19 @@ function offeredNames(d: Dispatch, offer: RunnerOffer): string[] | null {
     for (const model of models) if (claimable(agent, model)) names.push(`${agent}/${model}`);
   }
   return names;
+}
+
+// One line per live runner naming what it offers for a dispatch's job
+// instead of taking it, in the order the server lists the runners.
+function insteadLines(d: OfferAsk, live: readonly SeenOffer[]): string[] {
+  return live.map((offer) => {
+    const names = offeredNames(d, offer);
+    if (names === null) {
+      if (d.to !== "any" && d.to !== offer.kind) return `${offer.runner} is a ${offer.kind} runner, not a ${d.to} one`;
+      return `${offer.runner} offers no ${missingJob(d, offer)} job`;
+    }
+    return `${offer.runner} offers ${d.job ?? "build"} as ${names.length ? names.join(", ") : "nothing it could claim as"}`;
+  });
 }
 
 // Why a dispatch no live runner offers will never be claimed, or null when a
@@ -306,13 +327,34 @@ export function unoffered(d: Dispatch, offers: readonly SeenOffer[], now = new D
       ? `no runner is live; the last to ask for work did so at ${last.slice(0, 16).replace("T", " ")} UTC`
       : "no runner has asked the server for work";
   }
-  const said = live.map((offer) => {
-    const names = offeredNames(d, offer);
-    if (names === null) {
-      if (d.to !== "any" && d.to !== offer.kind) return `${offer.runner} is a ${offer.kind} runner, not a ${d.to} one`;
-      return `${offer.runner} offers no ${missingJob(d, offer)} job`;
+  return `no live runner can take it: ${insteadLines(d, live).join("; ")}`;
+}
+
+// What the live runners offer for a dispatch's job: every claimable actor a
+// live runner of the dispatched kind that offers the job lists, with the
+// runners offering it, and one line per live runner naming what it offers
+// for the job instead. Null when no runner is live, so the caller falls
+// back to what it knows apart from the runners; plan routing falls back to
+// the pool and says so (src/plans/route.ts). The job is part of the
+// question: a model counts only when a live runner that offers the job
+// lists it, never because some other runner names the model for other
+// work, so a review is not routed to a model only a build runner offers
+// (the t210 case, 2026-10-07). The per-model half of the question, which
+// runners offer an actor at all, is offeredActors above.
+export interface Offering {
+  actors: Map<string, string[]>;   // claimable "agent/model", lower case, -> the runners offering it for the job
+  instead: string[];               // what each live runner offers for the job instead, as unoffered says it
+}
+
+export function offering(d: OfferAsk, offers: readonly SeenOffer[], now = new Date()): Offering | null {
+  const live = liveOffers(offers, now);
+  if (!live.length) return null;
+  const out: Offering = { actors: new Map(), instead: insteadLines(d, live) };
+  for (const offer of live) {
+    for (const name of offeredNames(d, offer) ?? []) {
+      const key = name.toLowerCase();
+      out.actors.set(key, [...(out.actors.get(key) ?? []), offer.runner]);
     }
-    return `${offer.runner} offers ${d.job ?? "build"} as ${names.length ? names.join(", ") : "nothing it could claim as"}`;
-  });
-  return `no live runner can take it: ${said.join("; ")}`;
+  }
+  return out;
 }
