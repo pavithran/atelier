@@ -75,6 +75,8 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "base-token ID", about: "Reads a token for the repository the task is measured against: the plan's fork for a part, the baseline otherwise." },
     { form: "integrated ID --part KEY --merge-commit SHA", about: "The integrator reports a verified merge of one part onto the plan's branch; the server checks the commit against the branch before recording it." },
     { form: "integration-failed ID --part KEY --reason TEXT [--kind conflict|checks]", about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason. `--kind` says the failure was the part's own, a merge conflict or failing checks, which charges its builder an attempt; without it the builder is charged nothing." },
+    { form: "refreshed ID --main-head SHA [--merge-commit SHA]", about: "The integrator reports a refresh: main's head, the one the refresh job names, merged into the plan's branch. The server checks the merge commit against the branch before recording it, and it becomes the commit later parts fork from and later integrations build on. Without `--merge-commit` the branch already held main's head, which the server checks." },
+    { form: "refresh-failed ID --main-head SHA --reason TEXT [--kind conflict|checks]", about: "The integrator reports a refresh that conflicted or failed the plan's checks, after rolling the branch back. It is recorded on the plan with the reason and charges no part's builder; the tick does not try it again for that main head." },
   ]] },
   { name: "Owner", lines: [[
     { form: "accept ID [--head SHA] [--override-review REASON] [--note TEXT]", about: "The project owner accepts the task at its current head; `--head` names that head, and any other is refused. `--note` keeps the owner's word on the acceptance with it in the ledger. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
@@ -95,13 +97,14 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Plans", lines: [[
     { form: 'plan "goal" [--scope GLOB]... [--planner H/M]', about: "The project owner states a goal. Atelier creates the plan task and queues it as a plan job for the planner named, or else for the first model in the pool for research work that is not refused, not paid per token and may plan. A project has one active plan at a time. A runner that offers plan jobs takes it: the planner claims the plan task, reads its brief from the job-brief route and posts the plan document the harness wrote; by hand, a planner claims with `--runner` and runs `plan post`." },
-    { form: "plan show ID [--json]", about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, the part dispatches used, why it is blocked, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now. It accepts a part's id too." },
+    { form: "plan show ID [--json]", about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, the part dispatches used, why it is blocked, the main head the branch last took against main's head now with any refresh in flight or failed, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now. It accepts a part's id too." },
   ], [
     { form: "plan approve ID --hash HASH [--allow-paid]", about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no model of another family can review, refuses the approval. `--allow-paid` lets models paid per token build and review." },
     { form: 'plan revise ID --note TEXT', about: "Before approval, sends the plan back to its planner with a note; its next proposal replaces the one before." },
   ], [
     { form: "plan reroute ID --to H/M", about: "Names who builds an open part from now on, its attempts counted afresh; for a submitted part, or one blocked for want of an eligible reviewer, names its reviewer, in the pool or not, which must be of another family than every contributor; before approval, names another planner for the plan." },
     { form: "plan retry ID", about: "Counts an open part's attempts afresh, so its builder is asked again; before approval, asks the planner again." },
+    { form: "plan refresh ID", about: "Queues the plan's refresh job for the integrator, which merges main's head into the plan's branch, so later parts fork from it; parts wait for it before they are dispatched. The tick does this itself before it dispatches a part when main has moved, once per main head; this runs it again, as after a failed refresh. It is refused before approval, once the plan is submitted or closed, while the plan's integrate or refresh job is queued or held, and when the branch already holds main's head." },
     { form: "plan stop ID [--note TEXT]", about: "Closes the plan and every part not yet merged, revoking their write tokens. The history and evidence stay." },
   ], [
     { form: "plan post ID FILE", about: "The holder of the plan task's claim, its planner, posts the plan document in FILE. An invalid one is refused with every error, and the planner gets one more attempt before the plan blocks." },
@@ -378,6 +381,21 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--merge-commit SHA": "the full hash of the merge commit on the plan's branch; required",
     },
     example: "atelier integrated t3 --part t4 --merge-commit 0123456789abcdef0123456789abcdef01234567 --project demo",
+  },
+  refreshed: {
+    flags: {
+      "--main-head SHA": "the full hash of the main head the refresh merged; required",
+      "--merge-commit SHA": "the full hash of the merge commit on the plan's branch; left out when the branch already held main's head",
+    },
+    example: "atelier refreshed t3 --main-head 0123456789abcdef0123456789abcdef01234567 --merge-commit 89abcdef0123456789abcdef0123456789abcdef --project demo",
+  },
+  "refresh-failed": {
+    flags: {
+      "--main-head SHA": "the full hash of the main head the refresh tried to merge; required",
+      "--reason TEXT": "why the refresh failed; shown on plan show",
+      "--kind conflict|checks": "a merge conflict or failing checks",
+    },
+    example: 'atelier refresh-failed t3 --main-head 0123456789abcdef0123456789abcdef01234567 --reason "Conflict in docs/a.md" --kind conflict --project demo',
   },
   "integration-failed": {
     flags: {

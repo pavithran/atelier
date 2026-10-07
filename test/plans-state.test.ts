@@ -5,7 +5,7 @@ import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
   cleanGoal, completion, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries, plannerAttempts,
-  plannerBlock, planTitle, tickEvents, waitingParts, type PlanRecord,
+  plannerBlock, planTitle, refreshDecision, tickEvents, waitingParts, type PlanRecord, type PlanRefresh,
 } from "../src/plans/state.ts";
 import { assertEligible, inboxFor, overlappingLive, parseRuleError, samePlan, type Item, type ProjectPolicy } from "../src/rules.ts";
 
@@ -169,4 +169,20 @@ test("a plan job is offered only to a runner that says it runs plan jobs", () =>
   assert.deepEqual(assign(d, { ...offer, jobs: ["plan"] }), { agent: "claude-code", model: "opus-5.5", actor: "claude-code/opus-5.5" });
   const { job: _, ...build } = d;
   assert.deepEqual(assign(build, offer), { agent: "claude-code", model: "opus-5.5", actor: "claude-code/opus-5.5" });
+});
+
+// Whether the tick refreshes a plan's branch before it dispatches a part:
+// once per main head, never while a refresh is in flight, and never again
+// for a head whose refresh failed.
+test("refreshDecision dispatches a refresh once per main head, waits on one in flight, and does not retry a failed one", () => {
+  const M0 = "0".repeat(40), M1 = "1".repeat(40), M2 = "2".repeat(40);
+  const last = (mainHead: string, state: PlanRefresh["state"]): PlanRefresh => ({ mainHead, state, by: ORCHESTRATOR, at: AT });
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: null, busy: false }), "dispatch");
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: null, busy: true }), "wait", "an integration holds the plan item; parts wait for it to free");
+  assert.equal(refreshDecision({ main: M1, taken: M1, last: null, busy: false }), "none");
+  assert.equal(refreshDecision({ main: null, taken: M0, last: null, busy: false }), "none", "main's head is not known");
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: last(M1, "dispatched"), busy: true }), "wait");
+  assert.equal(refreshDecision({ main: M0, taken: M0, last: last(M1, "dispatched"), busy: false }), "wait", "a refresh in flight is waited on whatever main is");
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: last(M1, "failed"), busy: false }), "none", "a failed refresh is not tried again for the same head");
+  assert.equal(refreshDecision({ main: M2, taken: M0, last: last(M1, "failed"), busy: false }), "dispatch", "a new main head is tried");
 });

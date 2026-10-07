@@ -126,3 +126,26 @@ test("plan show prints a part's latest integration failure, its kind and whether
   // Once integrated, the old failure is no longer shown.
   assert.ok(!failed("checks", "integrated").some((line) => line.includes("integration failed")));
 });
+
+// How far behind main the plan's branch is, and its latest refresh: one in
+// flight that parts wait for, or one that failed, charged to no part.
+test("plan show says what main head the branch last took, main's head now, and a refresh in flight or failed", () => {
+  const M0 = "0".repeat(40), M1 = "1".repeat(40), R = "2".repeat(40);
+  const lines = (refresh: PlanView["refresh"], change: Partial<PlanView> = {}) => planText({ ...building, refresh, ...change }, "demo").split("\n");
+  const behind = lines({ taken: M0, main: M1, last: null, running: false });
+  assert.ok(behind.includes("The branch last took main at 00000000; main is now at 11111111. Take it now: atelier plan refresh t1 --project demo"), behind.join("\n"));
+  assert.ok(lines({ taken: M1, main: M1, last: null, running: false }).includes("The branch holds main's head 11111111."));
+  const queued = lines({ taken: M0, main: M1, last: { mainHead: M1, state: "dispatched", by: "atelier/orchestrator", at: AT }, running: false });
+  assert.ok(queued.includes("The branch last took main at 00000000; main is now at 11111111."));
+  assert.ok(queued.includes("A refresh from main at 11111111 is queued for atelier/integrator, asked by atelier/orchestrator at 2026-10-06 12:00 UTC; parts wait for it before they are dispatched."), queued.join("\n"));
+  const running = lines({ taken: M0, main: M1, last: { mainHead: M1, state: "dispatched", by: "owner", at: AT }, running: true });
+  assert.ok(running.some((l) => l.startsWith("A refresh from main at 11111111 is being merged by atelier/integrator")));
+  const failed = lines({ taken: M0, main: M1, last: { mainHead: M1, state: "failed", by: "atelier/orchestrator", at: AT, endedAt: AT, reason: "merging main conflicted:\nCONFLICT in docs/using-atelier.md", kind: "conflict" }, running: false });
+  assert.ok(failed.includes("The branch last took main at 00000000; main is now at 11111111."), "a failed head is not offered again on the behind line");
+  assert.ok(failed.includes("The refresh from main at 11111111 failed at 2026-10-06 12:00 UTC (a merge conflict; charged to no part): merging main conflicted: CONFLICT in docs/using-atelier.md. It is not tried again for that head; parts are dispatched without it. Run it again: atelier plan refresh t1 --project demo"), failed.join("\n"));
+  const done = lines({ taken: M1, main: M1, last: { mainHead: M1, state: "refreshed", by: "atelier/orchestrator", at: AT, endedAt: AT, mergeCommit: R }, running: false });
+  assert.ok(done.includes("Refreshed from main at 11111111 at 2026-10-06 12:00 UTC, as 22222222."));
+  // A plan not approved, or closed, says nothing of main.
+  assert.ok(!planText({ ...proposed, refresh: { taken: M0, main: M1, last: null, running: false } }, "demo").includes("main is now at"));
+  assert.ok(!lines({ taken: M0, main: M1, last: null, running: false }, { item: { ...item, state: "merged" } }).some((l) => l.includes("main is now at")));
+});
