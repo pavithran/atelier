@@ -51,13 +51,14 @@ async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promi
 const events = async (L: L, id?: string) => (await L.events(id)) as unknown as LedgerEvent[];
 
 // A claimed, pushed, checked and submitted task whose change touches a
-// protected path, so the gate needs an independent review of it.
-async function submittedTask(L: L, id: string, head: string) {
+// protected path (or the paths given), so the gate needs an independent
+// review of it unless they are not protected.
+async function submittedTask(L: L, id: string, head: string, changedPaths = ["src/land.ts"]) {
   await L.claim(id, OPUS, RUNNER);
   await L.setFork(id, `fork-${id}`, H0, OPUS);
   await L.recordPush(id, OPUS, head, head);
   await L.addEvidence({
-    itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"],
+    itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths,
   } satisfies Evidence);
   await L.submit(id, OPUS);
 }
@@ -177,6 +178,32 @@ it("a submitted task with a protected change gets a review request, named or pic
   const after = await L.requestReview(id, "owner", null, POOL);
   expect(after).toMatchObject({ needed: false });
   expect(after.reason).toMatch(/the gate already counts an independent approval/);
+});
+
+it("a wanted review is requested for the named reviewer though the gate needs none, and the gate's own refusals stand", async () => {
+  const L = await setup("land-wanted");
+  const id = (await L.newItem("Docs", [], "owner")).id;
+  const head = "d".repeat(40);
+  await submittedTask(L, id, head, ["docs/note.md"]);
+  // The gate needs no review of a change outside the protected paths.
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ needed: false, reason: expect.stringMatching(/needs no review/) });
+  // A contributor, an invalid actor, an unnamed reviewer and a stranger are still refused.
+  await refusal(L.requestReview(id, "owner", OPUS, POOL, true), "self_review", /contributed to/);
+  await refusal(L.requestReview(id, "owner", "gpt model", POOL, true), "bad_actor", /is not harness\/model/);
+  await refusal(L.requestReview(id, "owner", null, POOL, true), "bad_request", /names its reviewer/);
+  await refusal(L.requestReview(id, OPUS, GPT, POOL, true), "not_project_owner", /only the project owner asks/);
+  expect(await L.reviewWaiting()).toEqual([]);
+  // Asked for, the review is requested for the named reviewer, once.
+  const asked = await L.requestReview(id, "owner", GPT, POOL, true);
+  expect(asked).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
+  expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { head, reviewer: GPT, via: "land", wanted: true } });
+  expect(await L.requestReview(id, "owner", GPT, POOL, true)).toMatchObject({ needed: true, requested: false, reviewer: GPT, head });
+  // The reviewer's claim carries a need, so its runner reviews rather than releases the request.
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { need: { basis: string } | null };
+  expect(claim.need).toMatchObject({ basis: "requested" });
+  // A rejection at this head stops the gate, and a wanted review is refused with that reason.
+  await L.addReview({ itemId: id, by: GPT, head, approve: false, note: "Wrong.", findings: [{ file: "docs/note.md", line: 1, severity: "blocking" as const, text: "It is wrong." }], at: new Date().toISOString() });
+  await refusal(L.requestReview(id, "owner", GPT, POOL, true), "review_blocked", /rejected dddddddd/);
 });
 
 it("after a review claim lapses and a new reviewer is asked, a retry naming that reviewer finds the new request", async () => {
