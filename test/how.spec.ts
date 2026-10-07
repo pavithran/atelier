@@ -81,6 +81,21 @@ it("marks each orchestrator part built or not built yet, as the data says", asyn
   for (const part of ORCHESTRATOR) expect(body).toContain(escapeText(part.name));
 });
 
+it("the orchestrator section describes the flow as it runs: plans, routing, automatic reviews by home runners, the integration branch and atelier land", async () => {
+  const { body } = await page();
+  const section = /<section id="the-orchestrator"[\s\S]*?<\/section>/.exec(body)?.[0] ?? "";
+  expect(section).not.toBe("");
+  const prose = /<p>[\s\S]*?<\/p>/.exec(section)?.[0] ?? "";
+  for (const said of [
+    '<code>atelier plan "goal"</code>', "plan job", "by its hash, once", "<code>routeParts</code>", "another model family",
+    "review request", "<code>runReview</code>", "<code>cli/agy-review.mjs</code>", "integration branch", "<code>atelier runner --integrate</code>",
+    "owner's acceptance and merge", "<code>atelier land</code>", "landing lease",
+    "Every home runner offers build and plan jobs", "A rejection with blocking findings", "the integrator submits the plan task",
+  ]) expect(prose, said).toContain(said);
+  for (const stale of ["nothing else calls it", "pure functions with tests", "by hand"]) expect(prose).not.toContain(stale);
+  expect(section).toContain("<h3>Landing a single task");
+});
+
 it("lists every rule, and every contents link has its section", async () => {
   const { body } = await page();
   for (const rule of RULES) expect(body).toContain(`<h3>${escapeText(rule.title)}</h3>`);
