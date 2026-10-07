@@ -330,7 +330,7 @@ it('the showcase route is public only when the owner names projects, and caches 
  await index.registerProject({...record,name:'missing',repo:'missing'});
  const res=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown, missing'} as typeof env);
  expect(res.status).toBe(200);
- expect(res.headers.get('cache-control')).toBe('public, max-age=60');
+ expect(res.headers.get('cache-control')).toBe('public, max-age=60, s-maxage=60');
  expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
  const body=await res.text();
  expect(body).toContain('Atelier · public showcase');

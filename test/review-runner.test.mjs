@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runReview, commandFor } from "../cli/runner.mjs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runReview, runRunner, commandFor } from "../cli/runner.mjs";
 
 // The review job (docs/orchestrator.md, section 4, build step 10) driven
 // through the same stand-in io the other runner tests use: the server answers
@@ -52,6 +55,8 @@ function fixture(options = {}) {
     async harness(argv, cwd, env) { calls.push({ harness: argv, cwd, env }); return { code: options.code ?? 0, timedOut: options.timedOut ?? false }; },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
     removeDiff: (diff) => { calls.push({ removedDiff: diff.file }); },
+    async dataHome(workspace) { calls.push({ dataHome: workspace }); return { dir: `${workspace}-opencode-data` }; },
+    async removeDataHome(home) { calls.push({ removedDataHome: home.dir }); },
   };
   return { io, calls, logs };
 }
@@ -160,4 +165,96 @@ test("every CLI call the runner parses as JSON has its output captured by the re
   assert.equal(readsOutput(["push"]), false, "other commands print to the runner's own output");
   const printed = await checked([process.execPath, "-e", "console.log(JSON.stringify({ head: 'abc' }))"], { captureError: true, capture: readsOutput(["review-claim"]), step: "review-claim" }, execute);
   assert.deepEqual(JSON.parse(printed), { head: "abc" });
+});
+
+// t213: any error after the claim releases the request; before, only a
+// harness failure or an unusable verdict did, and a failed clone held the task
+// for the claim's two hours.
+test("runReview releases the request when a step after the claim fails", async () => {
+  for (const step of ["clone", "diff", "brief", "post"]) {
+    const { io, calls } = fixture();
+    if (step === "clone") io.clone = async () => { throw new Error("clone failed"); };
+    if (step === "diff") io.diff = async () => { throw new Error("diff failed"); };
+    if (step === "brief") io.brief = async () => { throw new Error("disk full"); };
+    if (step === "post") {
+      const cli = io.cli;
+      io.cli = async (argv, cwd) => { if (argv[0] === "review") throw new Error("server refused"); return cli(argv, cwd); };
+    }
+    const state = await runReview(assignment, config, "home:studio", io);
+    assert.equal(state.phase, "failed", step);
+    assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 1, step);
+  }
+  // A claim that fails holds nothing, so nothing is released.
+  const { io, calls } = fixture();
+  io.cli = async (argv) => { calls.push({ argv }); throw new Error("refused"); };
+  await runReview(assignment, config, "home:studio", io);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "review-release"));
+});
+
+// t213: an opencode reviewer gets a data folder of its own, as a builder does,
+// removed when the harness ends however it ends.
+test("runReview gives an opencode reviewer its own data folder for the length of the harness", async () => {
+  for (const options of [{}, { code: 1 }]) {
+    const { io, calls } = fixture(options);
+    await runReview(assignment, config, "home:studio", io);
+    const harness = calls.find((c) => c.harness);
+    const home = calls.find((c) => c.dataHome);
+    assert.ok(home, "a data folder is made");
+    assert.equal(harness.env.XDG_DATA_HOME, `${home.dataHome}-opencode-data`);
+    assert.ok(calls.indexOf(home) < calls.indexOf(harness));
+    assert.ok(calls.findIndex((c) => c.removedDataHome === harness.env.XDG_DATA_HOME) > calls.indexOf(harness), "the folder is removed after the harness");
+  }
+});
+
+function runnerConfig(t) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-runner-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, jobs: ["review"] }));
+  return { _: ["runner"], multi: {}, name: "home:studio", config: path, once: true };
+}
+
+// t213: the runner takes a review before the builds the queue lists ahead of
+// it, so a review atelier land waits on is not held behind a long build.
+test("the runner serves a review job before the builds the queue lists first", async (t) => {
+  const args = runnerConfig(t);
+  const { io, calls } = fixture();
+  const build = { ...assignment, item: { id: "t20", title: "Build" } };
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [build, assignment] });
+  assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]).slice(0, 1), ["review-claim"]);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "the build waits for the next poll");
+});
+
+// t213: a review run that ends without a verdict is reported as a review run.
+test("a review run that timed out is reported with the review role", async (t) => {
+  const args = runnerConfig(t);
+  const { io } = fixture({ timedOut: true });
+  const reports = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+    async reportRun(body) { reports.push(body); },
+  });
+  assert.deepEqual(reports.map((r) => [r.role, r.outcome]), [["review", "timed-out"]]);
+});
+
+// t213: an interrupt during a review still gives the request back, with the
+// cleanup deadline a build's release gets, since the runner's own signal is
+// already aborted by then.
+test("an interrupted review releases the request through the real CLI helper", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io } = fixture();
+  const { cli, stopped, ...taskIO } = io;
+  const releases = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, wait: async () => {}, queue: async () => [assignment],
+    taskIO: { ...taskIO, async harness() { process.emit("SIGINT"); return { code: 0 }; } },
+    async executeChild(argv, options) {
+      if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
+      if (argv[2] === "review-release") releases.push({ signal: options.signal, step: options.step });
+      return { code: 0, output: "" };
+    },
+  });
+  assert.deepEqual(releases, [{ signal: undefined, step: "cleanup" }]);
 });
