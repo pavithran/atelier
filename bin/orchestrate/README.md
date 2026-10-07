@@ -261,9 +261,24 @@ pgrep -f "atelier.mjs runner"
 
 It prints one process id per runner and integrator, and nothing when none
 runs; `pgrep -fl` adds each command line, which shows the `--name`. Both write
-`runner:` lines to the log named in the plist (`tail -f` follows it): what it
-claimed, `failed:` and `released:` lines with the reason, and `reviewed:` or
-`plan posted:` on success. `launchctl print gui/$(id -u)/zone.atelier.runner`
+to the log named in the plist (`tail -f` follows it), one line each, every
+line starting `runner: `. A build job shows its phases by name (`runner:
+claimed`, `runner: working`, then `runner: committed` and `runner: submitted`,
+or `runner: failed: REASON`), after `runner: workspace reset to HEAD and
+untracked files removed`. A runner with nothing to do logs `runner: nothing
+claimed`. How a job ended is one of `runner: released: REASON`, `runner: claim
+preserved: REASON` (work was committed, or the state is unknown, so the claim
+stays), `runner: reviewed: approve` or `reject`, `runner: plan posted: HASH`,
+`runner: skipped: REASON`, `runner: claim refused: REASON` and `runner: failed:
+REASON`. The integrator logs `runner: every part is integrated; the plan item
+is submitted for the owner` when a plan's last part merges.
+
+The log does not name the task a job is on: the lines above carry no task id.
+Only the line after a job ends, `runner: reported PROJECT/ID as OUTCOME`, and
+the notice `runner: PROJECT/ID needs the owner's attention after 2 failures;
+skipped for this process` (3 consecutive infrastructure failures for the
+other form) do. To see which task a runner holds now, run `atelier status
+--project PROJECT`. `launchctl print gui/$(id -u)/zone.atelier.runner`
 shows whether launchd considers the job loaded and its last exit status.
 Stopping with `bootout` sends the runner a termination signal, and it ends
 its harness's processes before exiting. Once task t213 is in, a review job
