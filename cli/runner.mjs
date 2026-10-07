@@ -524,10 +524,14 @@ export async function runIntegrate(assignment, config, name, io) {
     }
     return { phase: "integrated", part: partKey };
   } catch (error) {
-    io.log(`failed: ${error.message}`);
+    // A claim the server refuses (the owner's token where the integrator's
+    // own is required, say) holds nothing to release and is not the job's
+    // failure; the loop's refused set keeps this head, as for a build.
+    if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else io.log(`failed: ${error.message}`);
     // Any error after the claim gives the plan item back, so the job can run again.
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -564,9 +568,11 @@ export async function runRefresh(assignment, config, name, io) {
     await release("baseline merged into the plan's branch");
     return { phase: "refreshed" };
   } catch (error) {
-    io.log(`failed: ${error.message}`);
+    // As in runIntegrate: a refused claim is the caller's, not the job's.
+    if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else io.log(`failed: ${error.message}`);
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
