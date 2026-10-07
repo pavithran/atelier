@@ -1,0 +1,37 @@
+atelier atelier/t198 "atelier plan caps a goal at 500 characters, because the goal travels as the plan job's dispatch note; a real goal needs more. Carry the goal as the plan item's own text (or its framing) with a limit fit for a goal, and keep the dispatch note short (found running the first real plan, 2026-10-06)"
+accepted head 4727002a70ae60ddff6d8424439e27727e6ea376
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6.1-sol 2026-10-07T04:36:21.405Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6.1-sol 2026-10-07T04:36:25.026Z
+REVIEW approve by antigravity/gemini-3.1-pro at 4727002a70ae60ddff6d8424439e27727e6ea376, recorded by pavi with the owner token, answering a claimed review request
+2026-10-06T22:04:03.905Z pavi item.created
+2026-10-07T01:01:37.975Z pavi item.dispatched
+2026-10-07T01:01:45.748Z codex/gpt-6.1-sol item.claimed
+2026-10-07T01:01:56.585Z codex/gpt-6.1-sol fork.created
+2026-10-07T01:04:32.403Z codex/gpt-6.1-sol item.released
+2026-10-07T01:05:03.518Z codex/gpt-6.1-sol item.claimed
+2026-10-07T01:09:12.819Z codex/gpt-6.1-sol item.released
+2026-10-07T01:28:40.440Z codex/gpt-6.1-sol item.claimed
+2026-10-07T01:31:01.235Z codex/gpt-6.1-sol item.released
+2026-10-07T01:31:32.285Z codex/gpt-6.1-sol item.claimed
+2026-10-07T01:33:47.924Z codex/gpt-6.1-sol item.released
+2026-10-07T04:21:44.934Z codex/gpt-6.1-sol item.claimed
+2026-10-07T04:24:06.130Z codex/gpt-6.1-sol push.observed
+2026-10-07T04:25:59.465Z codex/gpt-6.1-sol evidence.observed
+2026-10-07T04:26:02.514Z codex/gpt-6.1-sol evidence.observed
+2026-10-07T04:26:02.980Z codex/gpt-6.1-sol item.submitted
+2026-10-07T04:33:31.956Z pavi land.lease
+2026-10-07T04:33:34.837Z pavi land.merge
+2026-10-07T04:33:43.261Z pavi land.regenerate
+2026-10-07T04:33:46.572Z codex/gpt-6.1-sol push.observed
+2026-10-07T04:33:46.667Z pavi land.push
+2026-10-07T04:36:22.156Z codex/gpt-6.1-sol evidence.observed
+2026-10-07T04:36:25.166Z codex/gpt-6.1-sol evidence.observed
+2026-10-07T04:36:25.812Z pavi land.check
+2026-10-07T04:36:26.236Z codex/gpt-6.1-sol item.submitted
+2026-10-07T04:36:26.419Z pavi land.submit
+2026-10-07T04:36:26.521Z pavi review.requested
+2026-10-07T04:36:56.518Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T04:40:02.524Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T04:40:04.074Z pavi land.review
+2026-10-07T04:40:04.534Z pavi item.accepted
+2026-10-07T04:40:04.630Z pavi land.accept
