@@ -57,7 +57,8 @@ with Gemini access; its models include `gemini-3.1-pro-high` and
 work. It polls the server every 30 seconds, claims one job it is offered, runs
 a harness (a command you configure) for it, and reports the result. The jobs
 are a build (a task's part, committed in its workspace), a plan (a planner
-writes a plan document) and, when the config lists it, a review. The runner
+writes a plan document) and a review (a reviewer reads a diff and writes a
+verdict); the config's `jobs` says which of them this runner takes. The runner
 uses your Atelier login, so run `atelier login` on the machine first.
 
 ### The config file
@@ -68,7 +69,6 @@ parsed by `cli/runner-config.mjs`, which refuses the whole file on any error.
 
 ```json
 {
-  "jobs": ["review"],
   "agents": [
     {
       "agent": "opencode",
@@ -87,7 +87,7 @@ parsed by `cli/runner-config.mjs`, which refuses the whole file on any error.
 | `agents[].models` | The distinct model ids this harness may serve, such as `glm-5.3`. The runner offers exactly these to the server. |
 | `agents[].command` | The command as a list: an executable, then its arguments. No shell is involved. It must contain `{model}` and `{brief_file}`; the executable may not contain a placeholder. |
 | `agents[].env` | Optional. Names of environment variables of the runner's own environment that this harness also receives. A name starting with `ATELIER_` is refused; a harness never gets Atelier's credentials. |
-| `jobs` | Optional. Jobs offered besides building and planning, which every runner offers. List `"review"` to take reviews. |
+| `jobs` | Optional. The jobs this runner takes, exactly as listed: `build`, `plan`, `merge-main`, `merge-main-task`, `merge-plan` and `review`. Without `jobs` it takes all of them but `review`, as every runner did before. `["review"]` alone keeps a runner for reviews, so no build can hold the reviews behind it. |
 | `keychain`, `balances` | Optional. Maps from a model id, or a provider, to the name of a Keychain entry. They name entries, never hold keys, and a key in either is refused. |
 | `taskTimeoutMs`, `finishTimeoutMs` | Optional. Limits for a harness run (default 45 minutes) and for the final `finish` step (default 60 minutes). |
 
@@ -185,15 +185,38 @@ and reviews on the other:
 
 ```sh
 atelier runner --name home:mac
-atelier runner --name home:mac-2
+atelier runner --name home:mbp-rev --config ~/.config/atelier/runner-rev.json
 ```
 
 The name must be `home:` followed by letters, digits, dots, underscores or
 hyphens. Both read the same config unless you give one a `--config PATH` of
-its own. A runner always offers builds and plans; `jobs` only adds to them (it
-is how a runner takes reviews). To keep a runner for reviews in practice, give
-its agents only the reviewer models in a config file of its own, and start it
-with that `--config PATH`.
+its own. A runner takes exactly the jobs its config's `jobs` lists; without
+`jobs` it takes every build form and the plan job, as before. To keep a
+runner for reviews alone — so one long build cannot hold every review behind
+it, which `atelier land` gives up waiting on after 60 minutes — give it a
+config of its own with `"jobs": ["review"]`, like:
+
+```json
+{
+  "jobs": ["review"],
+  "agents": [
+    {
+      "agent": "antigravity",
+      "models": ["gemini-3.1-pro"],
+      "command": ["node", "/ABSOLUTE/PATH/TO/atelier/cli/agy-review.mjs", "--model", "{model}",
+                  "--brief", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}",
+                  "--workspace", "{workspace}"]
+    }
+  ]
+}
+```
+
+It then takes no build, plan or merge job, and the queue's builds wait for a
+runner that takes them. Its models are still offered to the server, because a
+review is handed to a model, so keep them on a build runner too if plans may
+route builds to them. A runner that takes reviews and builds both lists them
+all: `["build", "plan", "merge-main", "merge-main-task", "merge-plan",
+"review"]`.
 
 A plan's approved parts merge onto the plan's branch only through a separate
 process, the integrator, which no other runner does:

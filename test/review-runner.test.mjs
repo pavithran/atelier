@@ -207,23 +207,62 @@ test("runReview gives an opencode reviewer its own data folder for the length of
   }
 });
 
-function runnerConfig(t) {
+function runnerConfig(t, jobs = ["review"]) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-review-runner-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, jobs: ["review"] }));
+  writeFileSync(path, JSON.stringify({ ...config, jobs }));
   return { _: ["runner"], multi: {}, name: "home:studio", config: path, once: true };
 }
 
 // t213: the runner takes a review before the builds the queue lists ahead of
-// it, so a review atelier land waits on is not held behind a long build.
+// it, so a review atelier land waits on is not held behind a long build. The
+// config takes builds and reviews both; t252's below takes reviews alone.
 test("the runner serves a review job before the builds the queue lists first", async (t) => {
-  const args = runnerConfig(t);
+  const args = runnerConfig(t, ["build", "review"]);
   const { io, calls } = fixture();
   const build = { ...assignment, item: { id: "t20", title: "Build" } };
   await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [build, assignment] });
   assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]).slice(0, 1), ["review-claim"]);
   assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "the build waits for the next poll");
+});
+
+// t252: a runner whose jobs are reviews alone never claims the builds the
+// queue offers beside them — not a plain build, a merge-main job nor a part
+// returned after an integration conflict — so no long build on the only
+// review runner holds every review behind it.
+test("a reviews-only runner passes builds by and serves the review", async (t) => {
+  const args = runnerConfig(t);
+  const { io, calls } = fixture();
+  const builds = [
+    { ...assignment, item: { id: "t20", title: "Build" } },
+    { ...assignment, item: { id: "t22", title: "Merge main", dispatch: { job: "merge-main" } } },
+    { ...assignment, item: { id: "t23", title: "Merge the plan's branch", dispatch: { planHead: H0 } } },
+  ];
+  const offers = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    queue: async (offer) => { offers.push(offer.jobs); return [...builds, assignment]; },
+  });
+  assert.deepEqual(offers, [["review"]], "the offer names reviews alone");
+  assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]), ["review-claim", "review"], "the review runs and no build is claimed");
+});
+
+// t252: with only builds offered, a reviews-only runner claims nothing and
+// keeps polling, and the builds stay in the queue for a runner that takes them.
+test("a reviews-only runner claims nothing when the queue offers only builds", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls } = fixture();
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    queue: async () => {
+      if (++polls === 2) process.emit("SIGINT");
+      return [{ ...assignment, item: { id: "t20", title: "Build" } }];
+    },
+  });
+  assert.equal(polls, 2, "the runner goes on polling");
+  assert.deepEqual(calls, [], "no claim and no harness: the build stays in the queue");
 });
 
 // t213: a review run that ends without a verdict is reported as a review run.
