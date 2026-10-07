@@ -1,0 +1,24 @@
+atelier atelier/t287 "Analytics Engine refuses totalsSql (2026-10-07, after t286's deploy): 'the 2nd and 3rd arguments to IF() function must have the same type but instead had Double and' an integer. Make both branches of every IF() in src/usage/gateway.ts's SQL the same type (Double), so the Models page's AI Gateway totals read"
+accepted head 76ac816a49034b8d725633c985ae7889a498d27d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T21:50:58.542Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T21:51:01.226Z
+REVIEW approve by antigravity/gemini-3.1-pro at 76ac816a49034b8d725633c985ae7889a498d27d, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T21:44:41.352Z pavi item.created
+2026-10-07T21:44:41.765Z claude-code/opus-5.5 item.claimed
+2026-10-07T21:44:55.440Z claude-code/opus-5.5 fork.created
+2026-10-07T21:48:02.477Z pavi land.lease
+2026-10-07T21:48:03.948Z pavi land.merge
+2026-10-07T21:48:12.123Z pavi land.regenerate
+2026-10-07T21:48:14.624Z claude-code/opus-5.5 push.observed
+2026-10-07T21:48:14.763Z pavi land.push
+2026-10-07T21:50:59.079Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:51:01.496Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:51:01.967Z pavi land.check
+2026-10-07T21:51:02.397Z claude-code/opus-5.5 item.submitted
+2026-10-07T21:51:02.694Z pavi land.submit
+2026-10-07T21:51:02.847Z pavi review.requested
+2026-10-07T21:51:19.308Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T21:53:13.813Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T21:53:14.415Z pavi land.review
+2026-10-07T21:53:15.138Z pavi item.accepted
+2026-10-07T21:53:15.270Z pavi land.accept
