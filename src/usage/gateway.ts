@@ -69,8 +69,28 @@ export interface GatewayLog {
 export interface GatewayMark { id: string; at: string }
 
 // The last pull, as the index Ledger records it: when, how many logs it
-// wrote, and what went wrong if it failed.
-export interface GatewayPull { at: string; added: number; error: string | null }
+// wrote, and what went wrong if it failed; and, from pulls since t294, how
+// many logs the route answered, how many of those could not be read, and the
+// field names (never the values) of the first that could not, so a pull that
+// writes nothing says why.
+export interface GatewayPull { at: string; added: number; error: string | null; answered?: number; unreadable?: number; unreadableFields?: string[] }
+
+// What the last pull read, in words, for the page and the CLI: how many logs
+// the route answered and how many could not be read, with the first such
+// log's field names. Empty for a pull recorded before t294.
+export function pullReadText(pull: GatewayPull | null): string {
+  if (!pull || pull.answered === undefined) return "";
+  const logs = (n: number) => `${n} log${n === 1 ? "" : "s"}`;
+  const bad = pull.unreadable ? `; ${pull.unreadable} could not be read${pull.unreadableFields?.length ? ` (fields: ${pull.unreadableFields.join(", ")})` : ""}` : "";
+  return `the logs route answered ${logs(pull.answered)}${bad}`;
+}
+
+// The field names of a log that could not be read, as plain names: at most
+// 20, each cut to 40 characters, in the order the route gave them.
+export function fieldNames(raw: unknown): string[] {
+  if (!raw || typeof raw !== "object") return [typeof raw];
+  return Object.keys(raw).slice(0, 20).map((k) => plain(k, 40));
+}
 
 // Logs a pull did not read: it read MAX_PAGES pages, newest first, without
 // reaching the mark, so of the logs between `from` (the mark's time, or the
@@ -175,24 +195,35 @@ export function parsePage(status: number, body: unknown): GatewayLog[] {
 // FIRST_PULL_MS (a first pull), or a short page. After MAX_PAGES full pages
 // the pull stops short of all of those, and `gap` names the stretch it did
 // not read, from the mark (or the floor) to the oldest log it read.
-export async function fetchNewLogs(cfg: GatewayConfig, last: GatewayMark | null, now: number, fetcher: typeof fetch = fetch): Promise<{ logs: GatewayLog[]; pages: number; gap: Omit<GatewayGap, "pulledAt"> | null }> {
+export interface FetchedLogs {
+  logs: GatewayLog[]; pages: number; gap: Omit<GatewayGap, "pulledAt"> | null;
+  answered: number; unreadable: number; unreadableFields: string[] | null;
+}
+
+export async function fetchNewLogs(cfg: GatewayConfig, last: GatewayMark | null, now: number, fetcher: typeof fetch = fetch): Promise<FetchedLogs> {
   const floor = new Date(now - FIRST_PULL_MS).toISOString();
   const logs: GatewayLog[] = [];
+  let answeredAll = 0, unreadable = 0, unreadableFields: string[] | null = null;
+  const done = (pages: number, gap: FetchedLogs["gap"]): FetchedLogs => ({ logs, pages, gap, answered: answeredAll, unreadable, unreadableFields });
   for (let page = 1; page <= MAX_PAGES; page++) {
     const res = await fetcher(logsUrl(cfg, page), { headers: { authorization: `Bearer ${cfg.token}`, accept: "application/json" } });
     const body = await res.json().catch(() => null);
     const found = parsePage(res.status, body);
     // A short page is judged by what the list answered, not by the logs that
     // parsed: a full page holding one log without an id is not the last.
-    const answered = (body as { result: unknown[] }).result.length;
+    const raw = (body as { result: unknown[] }).result;
+    const answered = raw.length;
+    answeredAll += answered;
+    unreadable += answered - found.length;
+    if (!unreadableFields && answered > found.length) unreadableFields = fieldNames(raw.find((r) => parseLog(r) === null));
     for (const log of found) {
-      if (last && (log.id === last.id || log.at < last.at)) return { logs, pages: page, gap: null };
-      if (log.at < floor) return { logs, pages: page, gap: null };
+      if (last && (log.id === last.id || log.at < last.at)) return done(page, null);
+      if (log.at < floor) return done(page, null);
       logs.push(log);
     }
-    if (answered < PAGE_SIZE) return { logs, pages: page, gap: null };
+    if (answered < PAGE_SIZE) return done(page, null);
   }
-  return { logs, pages: MAX_PAGES, gap: { from: last?.at ?? floor, to: logs[logs.length - 1]?.at ?? new Date(now).toISOString(), atLeast: 1 } };
+  return done(MAX_PAGES, { from: last?.at ?? floor, to: logs[logs.length - 1]?.at ?? new Date(now).toISOString(), atLeast: 1 });
 }
 
 // One log as an Analytics Engine data point of kind "gateway": blobs
