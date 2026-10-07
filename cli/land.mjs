@@ -181,7 +181,7 @@ export async function runLand(io) {
   if (dryRun) {
     print(`Dry run: atelier land ${id} in ${name} would:`);
     print(`  1. ${waitingOn ? `wait behind ${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)}), then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name})`);
-    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files; where main and the task each raised the route level (src/route-level.ts) from one base, raise the merged level past both, on this landing's own merge or a rerun of one you resolved by hand`);
+    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files; where main and the task each raised the route level (src/route-level.ts) from one base, raise the merged level past both, wherever the workspace's HEAD holds main — this landing's own merge, a rerun of one you resolved by hand, or a merge that brought main in through a side branch`);
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
     print(`  4. push the merged head to ${id}'s fork`);
     print(`  5. run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of the pushed head`);
@@ -452,25 +452,35 @@ export async function runLand(io) {
     // level is compared at the fork point, at the task's head before the
     // merge and at main's head, and raised to main's plus the task's own
     // raise, its own commit, so the number the merged CLI reports keeps
-    // meaning the routes it calls. The comparison runs wherever HEAD
-    // holds main — the landing's own merge above, and a rerun whose
-    // conflicted merge the owner resolved by hand, which finds main
-    // already merged and would else skip it: the first commit on HEAD's
-    // first-parent line that brought main in names the task's head
-    // before that merge (its first parent), and that head's merge base
-    // with main the fork point. Where that point is main itself, the
-    // task's line already held everything main had to add, and the
-    // levels merge as they always did — as they also do for a repo with
-    // no src/route-level.ts, or a level one side alone raised.
+    // meaning the routes it calls. The comparison runs wherever the
+    // workspace's HEAD holds main — the landing's own merge above, and a
+    // rerun whose conflicted merge the owner resolved by hand, which
+    // finds main already merged and would else skip it — and however main
+    // reached HEAD: a merge that brought it through a side branch (main
+    // merged into the side branch, the side branch into the task's line)
+    // lies off HEAD's first-parent line, so a --first-parent rev-list
+    // misses it and the comparison would be skipped exactly where both
+    // sides raised the level. The merge that brought main in is therefore
+    // found by ancestry: HEAD's first-parent line is walked from HEAD
+    // down, each commit tested for holding main
+    // (git merge-base --is-ancestor), and the first commit whose history
+    // does not hold it is the task's head before the merge — the merge
+    // above it on the line, however main reached that merge, is the one
+    // that brought main in. Where that head's merge base with main is
+    // main itself, the task's line already held everything main had to
+    // add, and the levels merge as they always did — as they also do for
+    // a repo with no src/route-level.ts, where the comparison is skipped
+    // and the landing goes on, or a level one side alone raised.
     const levelAt = (rev) => {
       const shown = git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
       const found = /export const ROUTE_LEVEL = (\d+);/.exec(shown.stdout ?? "");
       return found ? Number(found[1]) : null;
     };
-    const bringing = git(["rev-list", "--first-parent", "--ancestry-path", `${mainHead}..HEAD`], { cwd: dir, allowFail: true });
-    const brought = String(bringing.stdout ?? "").split("\n").map((sha) => sha.trim()).filter(Boolean).at(-1) ?? null;
-    const parented = brought ? git(["rev-parse", `${brought}^`], { cwd: dir, allowFail: true }) : null;
-    const taskHead = parented && parented.status === 0 ? String(parented.stdout ?? "").trim() : null;
+    const holdsMain = (rev) => git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true }).status === 0;
+    const line = git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir }).split("\n").map((sha) => sha.trim()).filter(Boolean);
+    let stepped = 0;
+    while (stepped < line.length && holdsMain(line[stepped])) stepped++;
+    const taskHead = stepped > 0 && stepped < line.length ? line[stepped] : null;
     const based = taskHead ? git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
     const forkPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
     if (taskHead && forkPoint && forkPoint !== mainHead) {
