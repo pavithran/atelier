@@ -18,11 +18,12 @@ export function offerFrom(config, name) {
   // jobs says the dispatches besides building this runner takes (assign in
   // src/dispatch/rules.ts): building, the plan job (docs/orchestrator.md,
   // section 2), and whatever else the config lists, such as "review". A
-  // dispatch for any other job is never offered to it. A merge-main part
-  // (startMergeMain) is a build this runner knows how to set up.
-  // A part sent back after its integration conflicted (startMergePlan) is
-  // too, under "merge-plan".
-  return { runner: name.toLowerCase(), kind: "home", jobs: [...new Set(["build", "plan", "merge-main", "merge-plan", ...(config.jobs ?? [])])], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  // dispatch for any other job is never offered to it. A merge-main job
+  // (startMergeMain), a part's or a task's, is a build this runner knows how
+  // to set up, the task's under "merge-main-task" (t243). A part sent back
+  // after its integration conflicted (startMergePlan) is too, under
+  // "merge-plan".
+  return { runner: name.toLowerCase(), kind: "home", jobs: [...new Set(["build", "plan", "merge-main", "merge-main-task", "merge-plan", ...(config.jobs ?? [])])], agents: agents.map(({ agent, models }) => ({ agent, models })) };
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
@@ -289,26 +290,31 @@ export async function rescueWork(cwd, git, log, now = new Date()) {
   return ref;
 }
 
-// A merge-main part's build (docs/orchestrator.md, section 5): its workspace
-// forks from the plan's branch, and before the harness runs the runner
-// fetches main at the dispatch's head through a read token for the plan
-// item's base, the baseline (the token the refresh job reads main with), and
-// merges it, leaving any conflict in place, markers and all, with the merge
-// in progress for the builder to resolve and commit. The merge message ends
-// with the builder's Agent line, so committing it unedited records who
-// resolved it. Returns what the workspace holds now: "conflicts" with the
-// conflicting files; "merged" when the merge was clean and is committed, the
-// job then finishing with that commit and no harness; or "held" when the
-// workspace already held main's head, as after an earlier attempt committed
-// the merge, the harness then working on what came back.
+// A merge-main job's build (docs/orchestrator.md, section 5): a part's
+// workspace forks from the plan's branch, a task's is its own fork of main,
+// and before the harness runs the runner fetches main at the dispatch's head
+// through a read token — the plan item's base for a part (the baseline: the
+// token the refresh job reads main with), the task's own for a task, whose
+// base is the baseline the same way — and merges it, leaving any conflict in
+// place, markers and all, with the merge in progress for the builder to
+// resolve and commit. The merge message ends with the builder's Agent line,
+// so committing it unedited records who resolved it. Returns what the
+// workspace holds now: "conflicts" with the conflicting files; "merged" when
+// the merge was clean and is committed, the job then finishing with that
+// commit and no harness; or "held" when the workspace already held main's
+// head, as after an earlier attempt committed the merge, the harness then
+// working on what came back.
 export const mergeMainArgs = (head, message) => ["git", "merge", "--no-ff", "-m", message, head];
 export const CONFLICTS_ARGS = ["git", "diff", "--name-only", "--diff-filter=U"];
 
 export async function startMergeMain(assignment, workspace, io) {
   const { project, item, actor } = assignment;
   const mainHead = item.dispatch.head;
-  const base = JSON.parse(await io.cli(["base-token", item.plan, "--project", project, "--as", actor]));
-  return { mainHead, ...await mergeHead(workspace, io, base, mainHead, `Merge main at ${mainHead.slice(0, 8)} into the plan's branch\n\nAgent: ${actor}`, `main at ${mainHead.slice(0, 8)}`) };
+  // A part reads main through the plan item's base token, a task (t243)
+  // through its own, whose base is the baseline the same way.
+  const base = JSON.parse(await io.cli(["base-token", item.plan ?? item.id, "--project", project, "--as", actor]));
+  const into = item.kind === "part" ? "the plan's branch" : item.id;
+  return { mainHead, ...await mergeHead(workspace, io, base, mainHead, `Merge main at ${mainHead.slice(0, 8)} into ${into}\n\nAgent: ${actor}`, `main at ${mainHead.slice(0, 8)}`) };
 }
 
 // A part sent back because its integration conflicted with the plan's
@@ -359,6 +365,24 @@ export function conflictsSection(...merges) {
   return `## Conflicts in this workspace\n\n${lines.join("\n\n")}`;
 }
 
+// The section the runner adds to a merge-main task's brief, where a part's
+// comes from the server: what the job asks beside the rules the local brief
+// already states — resolve the merge of main the runner left in the
+// workspace, keeping both sides' behaviour and claims, and commit it as it
+// stands (t243).
+export function mergeMainSection(merge) {
+  const short = merge.mainHead.slice(0, 8);
+  return [
+    "## Resolve the merge of main",
+    "",
+    `Main at ${short} conflicts with this task's work. The runner has merged main at ${short} into this workspace before you start. The conflicts remain in the files listed under "Conflicts in this workspace" at the end of this brief, with git's conflict markers in place and the merge in progress; \`git diff --name-only --diff-filter=U\` lists them too. When that section says the workspace already holds main, an earlier attempt committed the merge and nothing of it is left to resolve.`,
+    "",
+    "- Resolve each conflict keeping both sides' behaviour: what the task does and what main does must both still hold. Where the conflict is prose, keep both sides' claims and merge their meaning; do not pick one side.",
+    "- Remove every conflict marker, stage each resolved file with git add, and fix what the merge broke so the checks pass.",
+    "- Commit the merge with git commit, keeping the merge message as it stands; it already ends with your Agent line. Do not start the merge again, abort it, rebase or reset it.",
+  ].join("\n");
+}
+
 // Dependencies keep the task lifecycle testable without a server or a harness.
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
@@ -373,7 +397,7 @@ export async function runTask(assignment, config, name, io) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
     if (item.kind === "part" && !io.jobBrief) throw Object.assign(new Error("this runner was started with no way to fetch a job brief, so it cannot build parts"), { skipped: true });
     const merging = item.dispatch?.job === "merge-main";
-    if (merging && (!/^[a-f0-9]{40,64}$/.test(item.dispatch.head ?? "") || !/^t[0-9]+$/.test(item.plan ?? ""))) {
+    if (merging && (!/^[a-f0-9]{40,64}$/.test(item.dispatch.head ?? "") || (item.kind === "part" && !/^t[0-9]+$/.test(item.plan ?? "")))) {
       throw Object.assign(new Error("the queue returned an invalid merge-main assignment"), { skipped: true });
     }
     const mergingPlan = item.dispatch?.planHead != null;
@@ -391,9 +415,12 @@ export async function runTask(assignment, config, name, io) {
     await io.reset(workspace);
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
-    // The merges, of main for a merge-main part and of the plan's branch for
+    // The merges, of main for a merge-main job and of the plan's branch for
     // a part whose integration conflicted, come after the reset, and nothing
     // after them resets the workspace, so the conflicts stay for the harness.
+    // The reset is what makes the merge-main job a task needs (t243): it
+    // clears the conflicted merge a landing left in the workspace, and the
+    // merge that follows puts main back in it for the builder to resolve.
     const merges = [];
     const logMerge = (m) => io.log(m.state === "conflicts" ? `${mergedWhat(m)} merged with conflicts in ${m.files.join(", ")}` : m.state === "merged" ? `${mergedWhat(m)} merged cleanly as ${m.head.slice(0, 8)}` : m.state === "skipped" ? `${mergedWhat(m)} fetched, not merged, while the merge of main is in progress` : `the workspace already holds ${mergedWhat(m)}`);
     if (merging) merges.push(await startMergeMain(assignment, workspace, io));
@@ -417,7 +444,8 @@ export async function runTask(assignment, config, name, io) {
     }
     // A part's brief comes from the server (GET items/tN/job-brief): the
     // plan's spec, its checks and any rework to carry. Any other task keeps
-    // the local briefFor below.
+    // the local briefFor below, and a merge-main task's adds the job's own
+    // instructions (mergeMainSection) beside it.
     const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
     if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
     // A task sent back with an earlier attempt committed keeps briefFor, and
@@ -425,7 +453,13 @@ export async function runTask(assignment, config, name, io) {
     const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
     if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
     const local = briefFor({ ...item, owner: actor }, project);
-    brief = await io.brief(workspace, serverBrief ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text) : reworked?.text ? `${local}\n${reworked.text}\n` : local);
+    // A merge-main task's brief (t243) is the local one with the job's own
+    // instructions (mergeMainSection) and the conflicts after it.
+    brief = await io.brief(workspace, serverBrief
+      ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text)
+      : merging
+        ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
+        : reworked?.text ? `${local}\n${reworked.text}\n` : local);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
     // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it

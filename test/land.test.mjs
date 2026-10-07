@@ -390,6 +390,10 @@ test("a conflict stops the landing with the files named and the merge left for t
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
   assert.match(r.output, /The merge is left in the workspace for you to resolve/);
+  // The conflict can also go back to the task's builder (t243): the message
+  // names the holder and the dispatch that sends the work there.
+  assert.match(r.output, new RegExp(`Or send them back to the task's builder, codex/test, to resolve in this workspace: atelier dispatch t1 --job merge-main --agent codex --model test; its runner merges main at ${f.mainCommit.slice(0, 8)} into the workspace again`));
+  assert.match(r.output, /and then atelier land t1 again\.$/m);
   // The regeneration was tried and could not settle the conflict, and says so.
   assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it/);
   // The merge is in progress in the workspace, nothing was pushed or merged.
@@ -652,7 +656,7 @@ test("--dry-run says a merge that finds both sides raised the route level raises
   const before = git(f.workspace("t1"), "rev-parse", "HEAD");
   const r = await f.run(f.checkout, "land", "t1", "--dry-run");
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /2\. merge main into t1's workspace \(.*\); on conflicts, stop and leave them for you to resolve, naming the files; where main and the task each raised the route level \(src\/route-level\.ts\) from one base, raise the merged level past both/);
+  assert.match(r.output, /2\. merge main into t1's workspace \(.*\); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch t1 --job merge-main; where main and the task each raised the route level \(src\/route-level\.ts\) from one base, raise the merged level past both/);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
 });
 

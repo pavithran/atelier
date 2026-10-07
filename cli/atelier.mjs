@@ -264,7 +264,7 @@ export const FLAGS = {
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
   ship: { "dry-run": true, push: true },
-  dispatch:{ to: false, agent: false, model: false, note: false },
+  dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false },
   undispatch: {},
   queue: {},
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
@@ -2931,11 +2931,25 @@ const commands = {
     console.log(`${name}: each merge now pushes refs/notes/atelier to ${remote}. The merged branch is never pushed.`);
   },
 
-  // The project owner queues an open task for a kind of runner.
+  // The project owner queues an open task for a kind of runner. A held task
+  // (claimed, or submitted and perhaps rejected) is released and queued in
+  // the same step, keeping its workspace and commits for the next builder.
+  // --job merge-main sends a task whose landing conflicted with main back to
+  // its builder (t243): the runner claims it, merges main at the named head
+  // into its workspace and leaves the conflicts for the builder to resolve
+  // and commit, where a plain rework would reset the workspace to a head
+  // that cannot reach main.
   async dispatch() {
     const name = project(), id = itemArg();
-    const item = await call("POST", `${I(name, id)}/dispatch`, { to: args.to, agent: args.agent, model: args.model, note: args.note }, OWNER);
+    if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
+    if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
+    const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}) };
+    const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
     const d = item.dispatch;
+    if (d.job === "merge-main") {
+      console.log(`${id} goes back to its builder to merge main at ${d.head.slice(0, 8)} into its workspace and resolve the conflicts: a runner that offers the merge-main job claims it, merges main there and leaves the conflicts for the harness to resolve and commit${d.agent ? ` (built by ${d.agent}${d.model ? ` with ${d.model}` : ""})` : ""}. Then run atelier land ${id} again.`);
+      return;
+    }
     console.log(`${id} is waiting for ${d.to === "any" ? "any runner" : `a ${d.to} runner`}${d.agent ? `, ${d.agent}` : ""}${d.model ? ` with ${d.model}` : ""}.`);
   },
 
@@ -2956,7 +2970,7 @@ const commands = {
     if (!queued.length) return console.log("Nothing is waiting for a runner.");
     for (const { project, item } of queued) {
       const d = item.dispatch;
-      console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}  ${item.title}`);
+      console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
     }
   },
 
@@ -3196,7 +3210,8 @@ const commands = {
     // The runner queue and the offers each runner last asked with, so the
     // waiting section can say when a queued job — a review routed to a model
     // no live runner offers, say — can never be claimed, not merely waits
-    // (t240). Either read failing leaves the listing as it was.
+    // (t240), and the Runners section can list what each offers (t246).
+    // Either read failing leaves the listing as it was.
     const [queue, offers] = await Promise.all([
       request("GET", "/queue", undefined, OWNER).catch(() => null),
       request("GET", "/runners", undefined, OWNER).catch(() => null),

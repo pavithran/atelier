@@ -6,7 +6,7 @@
 // line, so it cannot pose as a line of Atelier's own.
 
 import type { Brief, Verdict } from "../brief.ts";
-import { unoffered, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
+import { liveOffers, unoffered, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 import type { Item, ItemState } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
@@ -143,6 +143,18 @@ function reviewLines(p: PlanPartView, v: PlanView, flag: string, now = new Date(
     : [`review of ${head} asked of ${r.reviewer}; the request is open`];
 }
 
+// Routing fell back to the whole pool because no runner is live, though
+// runners have asked before (routable in src/ledger.ts): the offers the view
+// was read with say when one last asked, and the owner reading a pool-wide
+// routing is warned it is a fallback rather than taking it for what the
+// runners offer now. Null when offers were not read, a runner is live, or
+// the plan is approved and its routing is already fixed.
+function fallbackLine(v: PlanView, now: Date): string | null {
+  if (v.approval || !v.offers?.length || liveOffers(v.offers, now).length) return null;
+  const last = v.offers.map((o) => o.at).sort().at(-1) ?? "";
+  return `No runner is live now; the last to ask for work did so at ${when(last)}, so routing falls back to the whole pool, and a dispatch may wait until a runner asks again.`;
+}
+
 // A part the Ledger added: for which main head, by whom, and that it goes
 // before every other part.
 function addedLine(p: PlanPartView): string | null {
@@ -209,6 +221,10 @@ export function planText(v: PlanView, project: string, now = new Date()): string
     }
     if (v.preview) lines.push("", "The routing shown is what an approval would fix now, without paid models; it is computed again when you approve.");
   }
+  // While the plan is not approved, routing still decides from the offers,
+  // so a fallback to the pool is the owner's to know before approving.
+  const fallen = fallbackLine(v, now);
+  if (fallen) lines.push("", fallen);
   if (v.approval) {
     const head = v.integration.integrationHead;
     lines.push("", head ? `Integration branch at ${head.slice(0, 8)}.` : "No part is integrated yet; the integration branch still sits at the commit the plan forked from.");
