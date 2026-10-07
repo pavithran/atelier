@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
+import type { SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
@@ -579,4 +580,39 @@ it("a review claim carries the project's review bar and the owner's verdicts on 
   const claim = await plain.claimReview(other, await routedReviewer(plain, other), RUNNER) as unknown as ReviewClaim;
   expect(claim.reviewBar).toBeNull();
   expect(reviewBrief({ need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, owner: claim.owner, bar: claim.reviewBar })).toContain(`which says what may block:\n${DEFAULT_REVIEW_BAR}\n`);
+});
+
+// A review routed to a model no live runner offers can never be claimed,
+// however long it waits (t197's part t210 reviewed 2026-10-07): plan show
+// says so, judged against the runner offers the Worker reads for the view,
+// rather than reading as merely not claimed yet.
+it("plan show says a routed review no live runner offers can never be claimed, and names when it is", async () => {
+  const L = await setup("review-unoffered");
+  const { id, partId } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const reviewer = await routedReviewer(L, partId);   // codex/gpt-6-astra
+  const at = new Date().toISOString();
+  const shown = async (offers: SeenOffer[] | null) => planText(await L.planView(id, null, null, offers) as unknown as PlanView, "review-unoffered");
+  // Offers read with the view: none offering the routed reviewer for review.
+  const dead = await shown([
+    { runner: "home:mbp", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at },
+  ]);
+  expect(dead).toContain(`review of aaaaaaaa asked of ${reviewer}; the request is open, and no live runner can take it: home:mbp offers review as opencode/glm-5.3`);
+  expect(dead).toContain(`it will not be claimed until a runner that offers ${reviewer} for the review job asks for work; name another reviewer: atelier plan reroute ${partId} --to H/M --project review-unoffered`);
+  // A live runner offering the reviewer reads as merely open.
+  const open = await shown([
+    { runner: "home:mbp", kind: "home", jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at },
+  ]);
+  expect(open).toContain(`review of aaaaaaaa asked of ${reviewer}; the request is open`);
+  expect(open).not.toContain("no live runner");
+  // No offers read with the view: the request is said, not judged.
+  const unread = await shown(null);
+  expect(unread).toContain(`review of aaaaaaaa asked of ${reviewer}; the request is open`);
+  expect(unread).not.toContain("no live runner");
+  // Once claimed, the request names when.
+  await L.claimReview(partId, reviewer, RUNNER);
+  const claimed = await shown(null);
+  expect(claimed).toMatch(new RegExp(`review of aaaaaaaa asked of ${reviewer.replace("/", "\\/")}, claimed at 20\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC`));
+  expect(claimed).not.toContain("the request is open");
 });

@@ -56,7 +56,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, version: null, routeLevel: ROUTE_LEVEL,
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
-    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], renewFails: false,
+    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], runners: null, renewFails: false,
   };
   // The tasks fork from the baseline before main moves, so a landing has
   // main's commits to merge; each has a workspace in the cache's layout.
@@ -126,7 +126,9 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
         answer = { item: { id: body.item, state: box.states[body.item] }, expired };
       }
     } else if (url === "/api/projects/proj/items") answer = box.items;
-    else if (url === "/api/queue") answer = box.queue; else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") answer = { remote: baseline, token: "fixture", defaultBranch: "main" };
+    else if (url === "/api/queue") answer = box.queue;
+    else if (url === "/api/runners") answer = box.runners;
+    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") answer = { remote: baseline, token: "fixture", defaultBranch: "main" };
     else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
     else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
     else if (url.endsWith("/evidence")) answer = item ? { ...detail(item), evidence: [] } : {};
@@ -674,6 +676,40 @@ test("while the review request is unclaimed, the landing names the runner's job 
   assert.equal(claimed.status, 0, claimed.output);
   assert.doesNotMatch(claimed.output, /not claimed yet/);
   assert.equal(g.box.states.t1, "merged");
+});
+
+test("while the review request is unclaimed and no live runner offers the reviewer, the landing says it can never be claimed", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.approveAfter = 4;
+  // No runner offers the review job for the routed reviewer: one offers the
+  // job under another model, one offers no review job, one is the wrong kind.
+  f.box.runners = [
+    { runner: "cloud:far", kind: "cloud", jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:mbp", kind: "home", jobs: ["build", "plan"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: new Date().toISOString() },
+  ];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /The review request is not claimed yet, and no live runner can take it: cloud:far is a cloud runner, not a home one; home:mbp offers no review job; home:studio offers review as opencode\/glm-5\.3\. It will not be claimed until a runner that offers codex\/gpt-6-astra for the review job asks the server for work\. Review it by hand \(atelier review t1 --approve --as codex\/gpt-6-astra --note "…"\), then atelier accept t1 and atelier merge t1, or run atelier land t1 again with --reviewer H\/M to ask a model a live runner offers\./);
+  // Said once, not on every poll, and the landing still lands on approval.
+  assert.equal(r.output.split("The review request is not claimed yet").length - 1, 1);
+  assert.equal(f.box.states.t1, "merged");
+  // A runner that offers the reviewer reads as an ordinary wait again.
+  const g = await landFixture(t);
+  g.box.review.approveAfter = 3;
+  g.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  const offered = await g.run(g.checkout, "land", "t1");
+  assert.equal(offered.status, 0, offered.output);
+  assert.doesNotMatch(offered.output, /no live runner/);
+  assert.equal(g.box.states.t1, "merged");
+  // No runner has ever asked: said as that, not as a mismatch.
+  const h = await landFixture(t);
+  h.box.review.approveAfter = 3;
+  h.box.runners = [];
+  const none = await h.run(h.checkout, "land", "t1");
+  assert.equal(none.status, 0, none.output);
+  assert.match(none.output, /The review request is not claimed yet, and no runner has asked the server for work\. It will not be claimed until a runner that offers codex\/gpt-6-astra for the review job asks the server for work\./);
+  assert.equal(h.box.states.t1, "merged");
 });
 
 test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
