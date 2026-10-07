@@ -25,9 +25,9 @@ const mid = (x: number, w = CW) => x + w / 2;
 
 const NODES: Node[] = [
   { x: COL[0], y: 32, w: CW, name: "Browser", sub: "atelier.zone pages" },
-  { x: COL[1], y: 32, w: CW, name: "Terminal", sub: "the owner runs atelier" },
+  { x: COL[1], y: 32, w: CW, name: "Terminal", sub: 'owner: atelier plan "goal"' },
   { x: COL[2], y: 32, w: CW, name: "Orchestrator", sub: "a session; starts agents" },
-  { x: COL[3], y: 32, w: CW, name: "Home runner", sub: "takes jobs; starts agents" },
+  { x: COL[3], y: 32, w: CW, name: "Home runner", sub: "build, plan and review jobs" },
   { x: COL[1], y: 118, w: COL[3] + CW - COL[1], name: "atelier CLI, in the checkout and in each workspace", sub: "the usual path to Cloudflare; runs checks in a fresh clone of the pushed head" },
   { x: 512, y: 196, w: 300, name: "Workspaces", sub: "one per task: a clone of its fork" },
   { x: COL[0], y: 284, w: CW, name: "opencode", sub: "GLM, DeepSeek, OpenRouter" },
@@ -39,7 +39,9 @@ const NODES: Node[] = [
   { x: COL[2], y: 372, w: CW, name: "OpenAI", sub: "Codex plan" },
   { x: COL[3], y: 372, w: CW, name: "Anthropic", sub: "Claude plan" },
   { x: 512, y: 460, w: 300, name: "Worker at atelier.zone", sub: "the pages, the API and the gate", cloud: true },
-  { x: COL[1], y: 540, w: CW, name: "Durable Objects", sub: "a Ledger per project", cloud: true },
+  // The Ledger spans two columns: a goal enters it as a plan, and it
+  // dispatches the plan's parts and the jobs runners take.
+  { x: COL[0], y: 540, w: COL[1] + CW - COL[0], name: "Durable Objects: a Ledger per project", sub: "holds each plan and dispatches its parts and jobs", cloud: true },
   { x: COL[2], y: 540, w: CW, name: "Check container", sub: "npm registry only, read-only", cloud: true },
   { x: COL[3], y: 540, w: CW, name: "Artifacts", sub: "the baseline and task forks", cloud: true },
 ];
@@ -71,9 +73,9 @@ const RAILS: string[] = [
   `M${COL[3] + CW} 130H988V562H${COL[3] + CW + 2}`,
 ];
 
-export const LAYERS_LABEL = "Where Atelier runs, in five layers. The owner works through a browser and the terminal, and an orchestrating session or a home runner can act for them; all three act through the atelier CLI, which makes one workspace per task, a clone of the task's fork. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach Artifacts, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, makes each task's fork in Artifacts, and with --sandbox runs checks in a container that starts with the internet off and reaches only the npm registry, read-only, through a gateway.";
+export const LAYERS_LABEL = "Where Atelier runs, in five layers. The owner works through a browser and the terminal, where atelier plan \"goal\" enters a goal as a plan. An orchestrating session or a home runner can act for them, and a home runner takes build, plan and review jobs. All three act through the atelier CLI, which makes one workspace per task, a clone of the task's fork. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach Artifacts, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, which holds each plan and dispatches its parts and jobs; the Worker makes each task's fork in Artifacts, and with --sandbox runs checks in a container that starts with the internet off and reaches only the npm registry, read-only, through a gateway.";
 
-export const LAYERS_CAPTION = "Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach Artifacts. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's fork alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them, or with --sandbox in a Cloudflare container, which starts with the internet off and reaches only the npm registry, read-only. Either way the result is recorded against that head, and the Worker's gate reads it.";
+export const LAYERS_CAPTION = "A goal enters as a plan: atelier plan \"goal\" reaches the Worker through the CLI, and the project's Ledger holds the plan and dispatches its parts. A home runner takes the build and plan jobs, and review jobs when its config offers them; a runner started with --integrate runs no model and takes the integrate and refresh jobs instead. Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach Artifacts. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's fork alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them, or with --sandbox in a Cloudflare container, which starts with the internet off and reaches only the npm registry, read-only. Either way the result is recorded against that head, and the Worker's gate reads it.";
 
 export function layersDiagram(): string {
   const p: string[] = [];
@@ -102,4 +104,102 @@ ${p.join("\n")}
 // sideways on a narrow screen rather than shrinking its text.
 export function layersFigure(): string {
   return `<figure class="lay-fig"><div class="scroll">${layersDiagram()}</div><figcaption>${e(LAYERS_CAPTION)}</figcaption></figure>`;
+}
+
+// ── the plan flow ──────────────────────────────────────────────────────────
+// One plan's path from the owner's goal to its merge into main, drawn the same
+// way: every colour is a site token through the pf-* classes in layout.css.
+// The lanes run down the page and time runs top to bottom, so the eleven steps
+// keep their text at full size inside a frame that scrolls on a narrow screen.
+// Each step is something the code does: the plan job and planner (runPlanTask
+// in cli/runner.mjs), approval and routing (routeParts in src/plans/route.ts),
+// dispatch once dependencies land (planActions in src/plans/phase.ts), the
+// review request (src/review/needed.ts) and runReview, and the integrator
+// (runIntegrate in cli/runner.mjs, by the rules in src/plans/integrate.ts).
+
+type FlowLane = "owner" | "runner" | "atelier";
+
+const PF_W = 1000, PF_H = 816, PF_NW = 272, PF_NH = 52, PF_ROW = 68, PF_TOP = 56, PF_LW = 320;
+
+// Three lanes side by side, each with its label at the top.
+const PF_LANES: { key: FlowLane; label: string; x: number }[] = [
+  { key: "owner", label: "Owner", x: 16 },
+  { key: "runner", label: "Home runners and their agents", x: 340 },
+  { key: "atelier", label: "Atelier", x: 664 },
+];
+
+// The steps, top to bottom. Each has a name and two lines of detail.
+export const PLAN_FLOW: { lane: FlowLane; name: string; sub: [string, string] }[] = [
+  { lane: "owner", name: "State a goal", sub: ['atelier plan "goal" makes a plan task', "and queues a plan job"] },
+  { lane: "runner", name: "Plan", sub: ["a home runner takes the plan job; its", "planner posts a plan document"] },
+  { lane: "owner", name: "Approve the plan", sub: ["atelier plan approve, once, by the", "hash of the newest proposal"] },
+  { lane: "atelier", name: "Route the parts", sub: ["routeParts names a builder, two alternates", "and a reviewer of another family"] },
+  { lane: "atelier", name: "Dispatch build jobs", sub: ["a part goes out once its dependencies", "have landed, two parts live at a time"] },
+  { lane: "runner", name: "Build and check", sub: ["the builder works in the part's fork;", "atelier finish pushes, checks, submits"] },
+  { lane: "atelier", name: "Request a review", sub: ["checks pass at the head, paths measured;", "routed to another family"] },
+  { lane: "runner", name: "Review", sub: ["a review job: runReview gives the brief", "and diff, and posts the verdict"] },
+  { lane: "runner", name: "Integrate", sub: ["atelier runner --integrate merges the", "part, runs the plan's checks"] },
+  { lane: "runner", name: "Submit the plan", sub: ["the integrator submits the plan task", "once every part is integrated"] },
+  { lane: "owner", name: "Accept and merge", sub: ["the owner accepts the plan task and", "merges it into main"] },
+];
+
+const laneX = (lane: FlowLane) => PF_LANES.find((l) => l.key === lane)!.x;
+const nodeX = (lane: FlowLane) => laneX(lane) + (PF_LW - PF_NW) / 2;
+const nodeMid = (lane: FlowLane) => laneX(lane) + PF_LW / 2;
+const rowTop = (i: number) => PF_TOP + i * PF_ROW;
+const rowMid = (i: number) => rowTop(i) + PF_NH / 2;
+const stepAt = (name: string) => PLAN_FLOW.findIndex((s) => s.name === name);
+
+// The returns: a part sent back to its builder, and the tick dispatching the
+// parts that depend on one just integrated.
+export const PLAN_FLOW_RETURNS = {
+  rework: "rejected with blocking findings: rework",
+  failed: "conflict or failing checks: rolled back, rework",
+  next: "integrated: the parts that depend on it go out",
+};
+
+export const PLAN_FLOW_LABEL = "One plan's path from goal to merge, in three lanes: the owner, the home runners and their agents, and Atelier. The owner states a goal with atelier plan, which makes a plan task and queues a plan job. A home runner takes the job and its planner posts a plan document. The owner approves it once by its hash, and Atelier routes each part to a builder, two alternates and a reviewer of another model family. Atelier dispatches each part as a build job once its dependencies have landed. The builder pushes, checks and submits; Atelier requests a review from another family, and a review job on a home runner posts the verdict. A rejection with blocking findings returns the part to its builder. The integrator merges an approved part into the plan's integration branch and runs the plan's checks; a conflict or a failure rolls the branch back and returns the part to its builder, and an integrated part lets the parts that depend on it go out. Once every part is integrated the integrator submits the plan task, and the owner accepts it and merges it into main.";
+
+export const PLAN_FLOW_CAPTION = "The plan flow from goal to merge. The owner acts three times: to state the goal, to approve the plan, and to accept and merge it. Between those, Atelier's tick dispatches build, review and integrate jobs and home runners take them. Dashed lines are returns: a rejection with blocking findings, or a merge that conflicts or whose checks fail, sends the part back to its builder; an integrated part lets the parts that depend on it be dispatched.";
+
+export function planFlowDiagram(): string {
+  const p: string[] = [];
+  for (const l of PF_LANES) {
+    p.push(`<rect class="pf-lane${l.key === "atelier" ? " pf-lane-atelier" : ""}" x="${l.x}" y="8" width="${PF_LW}" height="${PF_H - 16}" rx="6"/>`);
+    p.push(`<text class="pf-label" x="${l.x + 12}" y="32">${e(l.label)}</text>`);
+  }
+  // The order of the steps: straight down within a lane, with an elbow
+  // halfway between rows where the next step is in another lane.
+  PLAN_FLOW.slice(0, -1).forEach((s, i) => {
+    const next = PLAN_FLOW[i + 1], x1 = nodeMid(s.lane), x2 = nodeMid(next.lane), y1 = rowTop(i) + PF_NH, y2 = rowTop(i + 1), ym = (y1 + y2) / 2;
+    p.push(`<path class="pf-flow" d="M${x1} ${y1}${x1 === x2 ? "" : `V${ym}H${x2}`}V${y2 - 2}" marker-end="url(#pf-arrow)"/>`);
+  });
+  // Returns to the builder run down the runner lane's left margin; their
+  // labels sit beside them in the owner lane, which is empty at those rows.
+  const build = stepAt("Build and check"), review = stepAt("Review"), integrate = stepAt("Integrate"), dispatch = stepAt("Dispatch build jobs");
+  const left = nodeX("runner"), right = left + PF_NW;
+  p.push(`<path class="pf-return" d="M${left} ${rowMid(review)}H${left - 8}V${rowMid(build) + 8}H${left - 2}" marker-end="url(#pf-arrow-return)"/>`);
+  p.push(`<text class="pf-note" x="${laneX("runner") - 6}" y="${rowMid(build + 1) + 4}" text-anchor="end">${e(PLAN_FLOW_RETURNS.rework)}</text>`);
+  p.push(`<path class="pf-return" d="M${left} ${rowMid(integrate)}H${left - 18}V${rowMid(build) - 8}H${left - 2}" marker-end="url(#pf-arrow-return)"/>`);
+  p.push(`<text class="pf-note" x="${laneX("runner") - 6}" y="${rowMid(integrate) + 4}" text-anchor="end">${e(PLAN_FLOW_RETURNS.failed)}</text>`);
+  // The tick runs again on an integration and dispatches the dependants.
+  p.push(`<path class="pf-return" d="M${right} ${rowMid(integrate)}H${right + 16}V${rowMid(dispatch)}H${nodeX("atelier") - 2}" marker-end="url(#pf-arrow-return)"/>`);
+  p.push(`<text class="pf-note" x="${nodeX("atelier") - 12}" y="${rowMid(integrate) + 4}">${e(PLAN_FLOW_RETURNS.next)}</text>`);
+  PLAN_FLOW.forEach((s, i) => {
+    const x = nodeX(s.lane), y = rowTop(i), cx = x + PF_NW / 2;
+    p.push(`<rect class="pf-node${s.lane === "runner" ? "" : ` pf-${s.lane}`}" x="${x}" y="${y}" width="${PF_NW}" height="${PF_NH}" rx="6"/>`);
+    p.push(`<text class="pf-name" x="${cx}" y="${y + 17}" text-anchor="middle">${i + 1} ${e(s.name)}</text>`);
+    p.push(`<text class="pf-sub" text-anchor="middle">${s.sub.map((t, j) => `<tspan x="${cx}" y="${y + 32 + j * 13}">${e(t)}</tspan>`).join("")}</text>`);
+  });
+  const arrow = (id: string, cls: string) => `<marker id="${id}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="${cls}" d="M0 0L8 4L0 8z"/></marker>`;
+  return `<svg viewBox="0 0 ${PF_W} ${PF_H}" role="img" aria-label="${e(PLAN_FLOW_LABEL)}" xmlns="http://www.w3.org/2000/svg">
+<defs>${arrow("pf-arrow", "pf-head")}${arrow("pf-arrow-return", "pf-head pf-head-return")}</defs>
+${p.join("\n")}
+</svg>`;
+}
+
+// The figure as /how shows it, in a frame that scrolls sideways on a narrow
+// screen rather than shrinking its text.
+export function planFlowFigure(): string {
+  return `<figure class="pf-fig"><div class="scroll">${planFlowDiagram()}</div><figcaption>${e(PLAN_FLOW_CAPTION)}</figcaption></figure>`;
 }
