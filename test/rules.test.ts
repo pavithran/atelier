@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, validActor,
+  assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
@@ -864,4 +864,12 @@ test("a new head clears a failing merged check", () => {
 test("a make -C into an absolute directory guards no repository file under that name", () => {
   const files = checkFiles(["make -C /opt/x check"]);
   assert.equal(files.some((f) => f.startsWith("opt/")), false);
+});
+
+test("two scopes overlap within a set of globs when some path all three could name", () => {
+  assert.equal(scopesOverlapWithin(["src/**"], ["src/ledger.ts"], ["src/ledger.ts", "cli/runner.mjs"]), "src/ledger.ts");
+  assert.equal(scopesOverlapWithin(["src/ledger.ts"], ["src/index.ts"], ["src/**"]), null);
+  assert.equal(scopesOverlapWithin(["src/**"], ["src/ui/**"], ["cli/runner.mjs"]), null);
+  assert.equal(scopesOverlapWithin(["cli/**"], [], ["src/ledger.ts", "cli/runner.mjs"]), "cli/runner.mjs");
+  assert.equal(scopesOverlapWithin(["src/**"], ["src/**"], []), null);
 });

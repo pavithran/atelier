@@ -29,7 +29,7 @@ export const LOOP: Step[] = [
   {
     name: "Task", lane: "owner", command: "new", moves: "a new task",
     records: ["Task and scope", "recorded; the", "task is open"],
-    detail: "The project owner creates the task with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the task intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another.",
+    detail: "The project owner creates the task with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the task intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another. A project that names core files holds a dispatch in the queue while its scope overlaps a live item's within one.",
   },
   {
     name: "Claim", lane: "agent", command: "start", moves: "a claim",
@@ -147,6 +147,12 @@ export const RULES: Rule[] = [
     enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading, with these routes by name: `block`, `unblock`, `queue`, `sandbox`, `plan`, `integrated`, `integration-failed`, `refreshed` and `refresh-failed`. The Ledger still takes several of them only from the task's holder. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the owner token, and agent tokens cannot sign in to the browser.",
     why: "A leaked or misused agent token can act only as its own actor, in its own projects, and cannot decide for the owner.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }, { file: "src/tokens.ts", symbol: "tokenActive" }, { file: "src/tokens.ts", symbol: "inScope" }],
+  },
+  {
+    title: "Core files are built one change at a time",
+    enforced: "A project's policy may name core files (`atelier init --core GLOB`). While a queued dispatch's scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted), the queue offers it to no runner and the owner's listing names the item it waits on; it is offered once that item merges or is abandoned. Items of one plan never hold each other, since the plan orders overlapping parts by their dependencies. The owner lets one task's dispatch through with `atelier dispatch ID --overlap-ok`. With no core files, nothing is held.",
+    why: "Tasks built at once on the same hot files stop each other's landings on merge conflicts.",
+    where: [{ file: "src/dispatch/rules.ts", symbol: "coreHold" }, { file: "src/ledger.ts", symbol: "waiting" }],
   },
 ];
 
