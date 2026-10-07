@@ -36,6 +36,7 @@ import { collectCache, markerPath } from "./gc.mjs";
 import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
+import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
 import { planText } from "../src/plans/show.ts";
@@ -245,7 +246,7 @@ export const FLAGS = {
   "integration-failed": { part: false, reason: false },
   handoff: { to: false, note: false },
   release: { note: false },
-  accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
+  accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false },
   defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
   finding: { head: false, index: false, verdict: '--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed', note: false },
@@ -2216,7 +2217,7 @@ const commands = {
   async accept() {
     const name = project(), id = itemArg(), reason = overrideArg("accept ID");
     const d = await call("GET", I(name,id), undefined, OWNER);
-    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {})}, OWNER);
+    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {}), ...(typeof args.note === "string" ? { note: args.note } : {})}, OWNER);
     console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
   },
 
@@ -2589,7 +2590,8 @@ const commands = {
       // A refusal ends the command here with the server's reason; the local
       // merge commit is kept for reconciliation.
       await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
-      const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...(item.reviewOverride?.head===item.acceptedHead?[`REVIEW OVERRIDDEN — ${item.reviewOverride.by}: ${item.reviewOverride.reason}`]:[]),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
+      // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
+      const note=provenanceNote({name,id,item,view,reviews,events:d.events});
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
       if(remoteNotes){

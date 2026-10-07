@@ -17,7 +17,7 @@
 // what was recorded.
 
 import {
-  contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval,
+  contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval, unprovedBlocker, unprovedReview,
   type Evidence, type Gate, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "../rules.ts";
 
@@ -96,6 +96,8 @@ function reviewBlockers(part: Part, head: string, reviews: Review[], policy: Pro
   const contributors = contributorsOf(part);
   const approved = counting.some((r) => independentApproval(r, "protected", contributors, owner));
   const blockers = approved ? [] : [`${named(part)} has no approval from another model family at ${short(head)}`];
+  // An owner-recorded approval no claimed request backs is named, as gate() names it.
+  if (!approved) for (const r of counting) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, "protected", contributors, owner)) blockers.push(`${named(part)}: ${unprovedBlocker(r)}`);
   for (const r of counting) if (!r.approve) blockers.push(`${named(part)} was rejected at ${short(head)} by ${r.by}: ${r.note || "no note"}`);
   return blockers;
 }

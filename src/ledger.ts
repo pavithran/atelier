@@ -4,7 +4,7 @@ import { type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertHandoffTarget, assertReviewAllowed, pushActors, ACTOR_MAX,
+  assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -182,6 +182,9 @@ function rerouted(route: PartRoute, actor: string | undefined): PartRoute {
 // examined by then.
 export interface PushLineage { holdsRecorded: boolean | null; searched?: number; rebasedFrom: string | null }
 
+// A pushed commit and the actor its final Agent line names (see recordPush).
+export interface PushAuthor { commit: string; actor: string }
+
 // `reset` starts the policy over; the project's identity (its title, when the
 // init does not name one, its branch, and when it was created) is kept either way.
 export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: string): ProjectRecord {
@@ -341,6 +344,35 @@ export class Ledger extends DurableObject<Env> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, head TEXT NOT NULL, dispatch TEXT NOT NULL,
       claimedBy TEXT, runner TEXT, briefHash TEXT, state TEXT NOT NULL, claimedAt TEXT
     )`);
+    this.backfillReviewProvenance();
+  }
+
+  // Reviews recorded before each said who recorded it gain the fields
+  // addReview now writes, once, from their events: the review event kept
+  // whether a token proved the actor, and a review.claimed event by the
+  // same reviewer at the same head before it shows a claimed request. Each
+  // review is matched to the first unused event of its reviewer, verdict and
+  // head, in recording order; a claim the reviewer released before the
+  // review does not count. One with no such event is left as it was.
+  private backfillReviewProvenance(): void {
+    if (this.sql.exec(`SELECT 1 FROM meta WHERE key = 'review-provenance'`).toArray().length) return;
+    const events = this.sql.exec(`SELECT seq, item_id, actor, kind, data, proved FROM events WHERE kind IN ('review.approved', 'review.rejected', 'review.claimed', 'review.released') ORDER BY seq`).toArray()
+      .map((e) => ({ seq: e.seq as number, item: e.item_id as string, actor: e.actor as string, kind: e.kind as string, head: String((JSON.parse(e.data as string) as { head?: unknown }).head ?? ""), proved: e.proved === 1 }));
+    const used = new Set<number>();
+    for (const row of this.sql.exec(`SELECT id, json FROM reviews ORDER BY id`).toArray()) {
+      const r = JSON.parse(row.json as string) as Review;
+      if (r.proved !== undefined) continue;
+      const kind = r.approve ? "review.approved" : "review.rejected";
+      const ev = events.find((e) => !used.has(e.seq) && e.item === r.itemId && e.kind === kind && e.actor === r.by && e.head === r.head);
+      if (!ev) continue;
+      used.add(ev.seq);
+      const claim = events.filter((e) => e.kind === "review.claimed" && e.seq < ev.seq && e.item === r.itemId && e.head === r.head && sameActor(e.actor, r.by)).at(-1);
+      const released = !!claim && events.some((e) => e.kind === "review.released" && e.seq > claim.seq && e.seq < ev.seq && e.item === r.itemId && sameActor(e.actor, r.by));
+      const claimed = !!claim && !released;
+      const filled: Review = { ...r, recordedBy: ev.proved ? r.by : this.owner, proved: ev.proved, claimed };
+      this.sql.exec(`UPDATE reviews SET json = ? WHERE id = ?`, JSON.stringify(filled), row.id);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('review-provenance', ?)`, new Date().toISOString());
   }
 
   // ── index instance ───────────────────────────────────────────────────────
@@ -838,7 +870,13 @@ export class Ledger extends DurableObject<Env> {
   // commits in a history too deep to read through is never recorded
   // undeclared, while a head that holds the recorded one has it a few
   // commits back on a chain the search reads first, well within the budget.
-  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }): Item {
+  //
+  // `authors` are the pushed commits the Worker read from the fork, each
+  // with the actor its final "Agent: harness/model" line names. Those that
+  // name another actor than the holder are recorded with the push, which
+  // makes each a contributor (pushActors) and credits its commit to it in
+  // the reliability record.
+  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = []): Item {
     const item = this.item(id);
     if (item.state !== "accepted") assertLive(item);
     assertOwner(item, actor);
@@ -868,6 +906,7 @@ export class Ledger extends DurableObject<Env> {
       ...(rewritten ? { rebasedFrom: item.head } : {}),
       ...(unverified ? { unverified: true } : {}),
       ...(reopened ? { approvalInvalidated: true } : {}),
+      ...this.otherAuthors(item, authors),
     }, now, proved);
     this.afterPlanChange(id);
     return this.item(id);
@@ -883,7 +922,7 @@ export class Ledger extends DurableObject<Env> {
   // search having stopped at its budget) is left the same way, with the
   // reason saying so. The queue delivers an event at least once, so the
   // same sighting is noted once.
-  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true): Item {
+  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = []): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
     // While the accepted revision is landing, a push to the fork does not
@@ -900,8 +939,16 @@ export class Ledger extends DurableObject<Env> {
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
       state: item.state === "accepted" ? "submitted" : item.state }, now);
-    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted" }, now);
+    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted", ...this.otherAuthors(item, authors) }, now);
     return this.item(id);
+  }
+
+  // The pushed commits whose Agent line names an actor other than the item's
+  // holder, the project owner or Atelier's own recorders, as push.observed
+  // keeps them; nothing when every commit is the holder's.
+  private otherAuthors(item: Item, authors: PushAuthor[]): { authors?: PushAuthor[] } {
+    const others = pushAuthors({ authors }).filter((a) => !(item.owner && sameActor(a.actor, item.owner)) && !sameActor(a.actor, this.owner) && !a.actor.startsWith("atelier/"));
+    return others.length ? { authors: others } : {};
   }
 
   // Cloud checks arrive without an HTTP request, so retain the initiating origin.
@@ -982,10 +1029,17 @@ export class Ledger extends DurableObject<Env> {
     if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
     const at = new Date().toISOString();
+    // Who recorded it: the reviewer when its own token proved it, the project
+    // owner when the owner token named it. A review answering a request the
+    // reviewer claimed at this head was served through the request flow,
+    // which the gate counts even when the owner token recorded it.
+    const claims = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed'`, r.itemId, r.head).toArray();
+    const claimed = claims.some((c) => typeof c.claimedBy === "string" && sameActor(c.claimedBy, r.by));
+    r = { ...r, recordedBy: proved ? r.by : this.owner, proved, claimed };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     this.answerReviewRequest(r.itemId, r.head, at);
     // A rejection with blocking findings sends a part back to its builder for
     // rework (docs/orchestrator.md, section 4). The re-review goes to the same
@@ -1130,8 +1184,10 @@ export class Ledger extends DurableObject<Env> {
   // event of its own, ahead of item.accepted. It waives that review and
   // nothing else: a failing or pending check, a rejection or a disallowed
   // class still refuses the acceptance, and so nothing is recorded.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string): Item {
+  // `note` is the owner's word on the acceptance, recorded with its event.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
+    if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
     const policy = this.project().policy;
@@ -1165,6 +1221,7 @@ export class Ledger extends DurableObject<Env> {
       head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
       ...(policy.shipRuns ? { shipRuns: [...policy.shipRuns] } : {}),
       ...(override ? { reviewOverridden: true } : {}),
+      ...(note?.trim() ? { note: note.trim() } : {}),
     }, at);
     return this.item(id);
   }

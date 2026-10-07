@@ -6,12 +6,25 @@
 # into the task first and keeps landings one at a time. Exits 2 on a failed
 # check, 3 when the reviewer does not approve, its rejection and findings
 # recorded on the task (its answer is in .scratch/review-TASK.md), 7 when an
-# atelier step fails. REVIEW_MODEL picks the reviewer (review.sh).
+# atelier step fails. REVIEW_MODEL picks the reviewer (review.sh):
+# gemini-3.1-pro-high, recorded as antigravity/gemini-3.1-pro, or
+# gpt-oss-120b-medium, recorded as antigravity/gpt-oss-120b; any other is
+# refused before anything runs, so a review is never recorded under a model
+# that did not give it. The review is recorded with the reviewer's own
+# summary as its note and NOTE goes on the acceptance; both name the head
+# that was reviewed, read before review.sh runs, so a later push is never
+# taken as reviewed.
 # `atelier land` (task t187) does this inside Atelier; prefer it once the
 # server's version check allows (t190).
 set -u
 source "${0:A:h}/lib.sh"
 t=$1 ctx=${2:A} note=$3
+model=${REVIEW_MODEL:-gemini-3.1-pro-high}
+case $model in
+  gemini-3.1-pro-high) reviewer=antigravity/gemini-3.1-pro ;;
+  gpt-oss-120b-medium) reviewer=antigravity/gpt-oss-120b ;;
+  *) echo "$t: REVIEW_MODEL $model is not one land.sh can name; use gemini-3.1-pro-high or gpt-oss-120b-medium"; exit 7 ;;
+esac
 W=$(workspace_of "$ATELIER_PROJECT" "$t")
 M=$(checkout_of "$ATELIER_PROJECT") || exit 1
 cd "$W" || exit 1
@@ -23,8 +36,8 @@ checked=$(atelier check 2>&1); code=$?
 out=$(echo "$checked" | grep -E "PASS|FAIL"); echo "$out"
 { [ $code -eq 0 ] && echo "$out" | grep -q PASS && ! echo "$out" | grep -q FAIL; } || { echo "$t: CHECK FAILED"; echo "$checked" | tail -3; exit 2; }
 step atelier submit --summary "Merged with main; checks pass."
-model=${REVIEW_MODEL:-gemini-3.1-pro-high}
-case $model in gpt-oss*) reviewer=antigravity/gpt-oss-120b ;; *) reviewer=antigravity/gemini-3.1-pro ;; esac
+# The head the reviewer reads, which the review and the acceptance name.
+head=$(git rev-parse HEAD) || exit 7
 # A previous run's answer must never stand in for this one.
 answer="$W/.scratch/review-$t.md"
 rm -f "$answer"
@@ -37,11 +50,11 @@ field() { node -e 'const p = JSON.parse(process.argv[1]); const v = p[process.ar
 if [ "$(field ok)" != "true" ]; then echo "$t: $reviewer's answer could not be read: $(field error)"; grep -v '^$' "$answer" | head -14; exit 3; fi
 cd "$M"
 if [ "$(field verdict)" != "approve" ]; then
-  step atelier review "$t" --as "$reviewer" --reject --note "$(field summary)" --findings "$(field findings)"
+  step atelier review "$t" --as "$reviewer" --head "$head" --reject --note "$(field summary)" --findings "$(field findings)"
   echo "$t: $reviewer DID NOT APPROVE"; grep -v '^$' "$answer" | head -14; exit 3
 fi
-step atelier review "$t" --as "$reviewer" --approve --note "$note" --findings "$(field findings)"
-step atelier accept "$t"
+step atelier review "$t" --as "$reviewer" --head "$head" --approve --note "$(field summary)" --findings "$(field findings)"
+step atelier accept "$t" --head "$head" --note "$note"
 step atelier merge "$t"
 git log --oneline -1 | cut -c1-70
 if [ -f tsconfig.json ]; then npx tsc -p . && { [ ! -f test/tsconfig.json ] || npx tsc -p test; } && echo "$t: main typecheck OK"; fi

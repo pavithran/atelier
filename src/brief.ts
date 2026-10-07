@@ -3,7 +3,7 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, mergedBlockers, modelOf, stateLabel } from "./rules.ts";
+import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, mergedBlockers, modelOf, recordedText, stateLabel, type Review } from "./rules.ts";
 import { assertLength } from "./text.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
@@ -88,7 +88,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
   }
   if (onMerge.length) lines.push({ rank: 0, text: `On the merge with main: ${onMerge.join("; ")}.` });
   if (reviews.length) {
-    lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${reviewer(detail, r.by)} ${r.approve ? "approved" : "asked for changes"}`).join(", ")}.` });
+    // Each review says who recorded it, where it says (recordedText).
+    const recorded = (r: Review) => { const t = recordedText(r, detail.ownerActor ?? DEFAULT_OWNER); return t ? ` (${t})` : ""; };
+    lines.push({ rank: 2, text: `Reviews at this revision: ${reviews.map((r) => `${reviewer(detail, r.by)} ${r.approve ? "approved" : "asked for changes"}${recorded(r)}`).join(", ")}.` });
   }
   // A rejection is answered when a push was observed after it, as the stuck
   // rules read it; the head alone cannot say, since a head can return.
