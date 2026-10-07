@@ -9,9 +9,20 @@
 // two can never ask different things; this module adds the wording the
 // reviewer picker shows.
 
-import { actorFamily, contributorsOf, familyRefusal } from "../rules.ts";
+import { actorFamily, contributorsOf, familyRefusal, sameActor } from "../rules.ts";
 
 export { actorFamily, contributorsOf, familyRefusal };
 
 export const describeContributors = (contributors: readonly string[]): string =>
   contributors.map((c) => `${c} (${actorFamily(c)})`).join(", ");
+
+// Why `reviewer` cannot give an item the independent review its contributors
+// need: it is one of them, or its family is not recognised as another than
+// every contributor's. Null when it can. The plan tick asks this of a part's
+// routed reviewer and of each live request, since a reviewer routed at
+// approval or asked earlier may have claimed or pushed to the part since.
+export function independenceRefusal(reviewer: string, contributors: readonly string[]): string | null {
+  if (contributors.some((c) => sameActor(c, reviewer))) return `${reviewer} contributed to it, and nobody reviews their own work`;
+  const family = familyRefusal(reviewer, contributors);
+  return family ? `${reviewer} is not of another family than every contributor: ${family}` : null;
+}
