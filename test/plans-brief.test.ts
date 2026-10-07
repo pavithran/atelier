@@ -248,3 +248,30 @@ test("a merge-main brief says main is merged with conflicts left, to keep both s
   assert.notEqual(await hash({ mergeMain: { head: M } }), await hash());
   lacks(await text(), "## Merging main");
 });
+
+// A part sent back after its integration conflicted with the plan's branch:
+// the runner has merged the branch's head into the workspace and left the
+// conflicts; the builder keeps both sides, removes the markers, runs the
+// checks and commits the merge with its message as it stands.
+test("a brief after an integration conflict says the plan's branch is merged with conflicts left, and other briefs are unchanged", async () => {
+  const P = "d".repeat(40);
+  const brief = await text({ job: "rework", mergePlan: { head: P } });
+  has(brief,
+    "## Merging the plan's branch",
+    `The runner has merged the plan's branch at dddddddd (${P}) into this workspace before you start. The conflicts remain in the files listed under "Conflicts in this workspace"`,
+    "keeping both sides' behaviour: what this part does and what the plan's branch does must both still hold.",
+    "keep both sides' claims and merge their meaning; do not pick one side.",
+    "- Remove every conflict marker",
+    "- Run the checks and fix what the merge broke.",
+    `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${GLM}.`,
+    "Do not start the merge again, abort it, rebase or reset it.",
+    "- Write tests for new behaviour.",
+  );
+  assert.ok(brief.indexOf("## Rules") < brief.indexOf("## Merging the plan's branch") && brief.indexOf("## Merging the plan's branch") < brief.indexOf("## The plan"));
+  // A merge-main part sent back the same way has both sections.
+  const both = await text({ job: "rework", mergeMain: { head: "c".repeat(40) }, mergePlan: { head: P } });
+  assert.ok(both.indexOf("## Merging main") < both.indexOf("## Merging the plan's branch"));
+  assert.equal(await hash({ mergePlan: null }), await hash());
+  assert.notEqual(await hash({ mergePlan: { head: P } }), await hash());
+  lacks(await text({ job: "rework" }), "## Merging the plan's branch");
+});
