@@ -355,7 +355,7 @@ test("routing orders equal scores by reliability across projects, and never lets
   const ranked = routeParts(plan, input({ pool: [opus, sonnet, gpt], reliability }))[0];
   assert.equal(ranked.builder!.actor, "claude-code/sonnet-5.5");
   assert.deepEqual(ranked.alternates.map((c) => c.actor), ["codex/gpt-6-astra", "claude-code/opus-5.5"]);
-  assert.match(ranked.builder!.reasons.join("\n"), /equal scores go by reliability across projects, then model id, then actor name/);
+  assert.match(ranked.builder!.reasons.join("\n"), /equal scores spread across the plan's parts, then go by reliability across projects, then model id, then actor name/);
   assert.match(ranked.builder!.reasons.join("\n"), /Reliability across projects: sonnet-5\.5, 1 of 1 approved at first review.*Outcomes in its favour 2, against 0; tie-breaker 0\.75, which orders only equal scores\./);
   // gpt only reviewed: its verdicts are no outcome of its own work.
   assert.match(ranked.alternates[0].reasons.join("\n"), /Reliability across projects: gpt-6-astra, no work reviewed yet, .*as a reviewer 0 of 1 approval contradicted.*Outcomes in its favour 0, against 0; tie-breaker 0\.50/);
