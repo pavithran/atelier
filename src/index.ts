@@ -801,8 +801,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
-  // The queue across every project. GET lists it for the owner; a runner POSTs
-  // what it can run and gets back the tasks it may claim, with the name to claim under.
+  // The queue across every project. GET lists it for the owner, each dispatch
+  // the project's core files hold carrying `held`, the live item it waits on;
+  // a runner POSTs what it can run and gets back the tasks it may claim, with
+  // the name to claim under, leaving out every held one (coreHold in
+  // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
     // Each ask records what the runner can run (putRunnerOffer), so the
@@ -823,6 +826,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
+          if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
           return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
         })
@@ -895,6 +899,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      // The core-file globs the queue holds overlapping dispatches on; [] clears them.
+      ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };
@@ -970,16 +976,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
   // One landing at a time per project (atelier land, t187): GET reads who
-  // holds the lease; POST takes it for one task, refusing while another live
-  // task's landing holds it and naming a lapsed lease it took over,
-  // { item, renew: true } is the holder's heartbeat, and { cancel: true, item }
-  // releases that task's lease, answering which task held it since when, and
-  // leaves another task's lease alone.
+  // holds the lease and the landings queued for it (t249); POST takes it for
+  // one task, refusing while another live task's landing holds it or a
+  // landing that queued earlier still waits for it, and naming a lapsed
+  // lease it took over, { item, renew: true } is the holder's heartbeat, {
+  // item, queued: true } is a waiting landing's ask, which refreshes its
+  // place in the queue and answers the lease and the queue as the server
+  // sees them (with leave: true it gives up its place instead), and {
+  // cancel: true, item } releases that task's lease, answering which task
+  // held it since when, and leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
-    if (m === "GET") return json({ lease: await L.readProjectLanding() });
+    if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
     requireOwner(env, actor);
     if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
+    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
@@ -1453,6 +1464,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "accept":
       requireOwner(env, actor);
       await verifyRevision(env, ref.key, id, String(body.head ?? ""));
+      await assertPlanMergeable(env, L, id);
       // overrideReview, when sent, is the reason for the owner's override of
       // a missing independent review. Anything but text arrives as a blank
       // reason, which the Ledger refuses.
@@ -1568,9 +1580,17 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       const plan = await L.item(id);
       const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
       const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
-      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to);
-      else await L.planRefresh(id, actor, main, holds);
-      return json(await L.planView(id, null, main));
+      // A plan submitted or accepted goes back to building first, which ends
+      // the integrator's hold: as for a release, the refresh is checked, the
+      // integrator's write token revoked, and only then the change made.
+      const reopening = await L.checkPlanRefresh(id, actor, main, holds, body.resolve === true, body.to);
+      const oldToken = reopening ? await L.tokenId(id) : undefined;
+      if (reopening) await revoke(env, plan.fork, oldToken ?? null);
+      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, oldToken);
+      else await L.planRefresh(id, actor, main, holds, oldToken);
+      // `reopened` says what was withdrawn, for the command to say so.
+      const reopened = reopening ? { from: plan.state, acceptedHead: plan.state === "accepted" ? plan.acceptedHead : null } : null;
+      return json({ ...(await L.planView(id, null, main)), ...(reopened ? { reopened } : {}) });
     }
     case "stop": {
       const targets = await L.stopTargets(id, actor);
@@ -1751,6 +1771,28 @@ async function onMainLine(env: Env, repo: string, commit: string): Promise<boole
   return head ? (await holdsCommit(env, repo, head, commit)).holds : false;
 }
 
+// A plan is accepted only where its branch would merge with main as main is
+// now, previewed from the plan's fork as the merge preview reads a task's
+// workspace (previewAgainstMain). A conflict would stop atelier merge after
+// the acceptance, so the owner is told to take main into the branch first,
+// with plan refresh. A preview that cannot be read holds nothing back:
+// atelier merge still stops on a conflict, and withdraws the acceptance then.
+async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<void> {
+  const item = await L.item(id);
+  if (item.kind !== "plan" || !item.fork) return;
+  const { repo } = await L.project();
+  let preview: Awaited<ReturnType<typeof previewAgainstMain>>;
+  try {
+    preview = await previewAgainstMain(env.ARTIFACTS, repo, item.fork);
+  } catch (err) {
+    console.error("plan merge preview unavailable", err);
+    return;
+  }
+  if (!preview || preview.merge.clean) return;
+  const paths = preview.merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ");
+  throw new RuleError("conflicts_with_main", `${id}'s branch would conflict with main at ${preview.head.slice(0, 8)}: ${paths}. Take main into the branch first with atelier plan refresh ${id}, which puts the plan back to building and merges main's head, adding a merge-main part whose builder resolves the conflict when it does not merge cleanly (--resolve adds that part at once); the integrator submits the plan again once every part is integrated, and it is accepted then`, 409);
+}
+
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
@@ -1817,6 +1859,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
     if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
     // A change of owner takes the write token with it, as on the API routes:
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);

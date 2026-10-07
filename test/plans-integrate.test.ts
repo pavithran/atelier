@@ -4,7 +4,7 @@ import {
   INTEGRABLE_FROM, integrationBlockers, integrationChecks, LANDED, landed, mergeBaseFor, nextToIntegrate, planGate, rollbackFor, verifyIntegration, verifyRefresh,
   type LogCommit, type Part, type PartState, type PlanGateInput,
 } from "../src/plans/integrate.ts";
-import { PROTECTED_NEED, type AgentRole, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
+import { gate, PROTECTED_NEED, type AgentRole, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
 
 const T = "2026-10-05T12:00:00.000Z";
 const h = (c: string) => c.repeat(40);
@@ -261,21 +261,66 @@ test("planGate keeps gate()'s blockers for the plan item and refuses a branch th
   assert.deepEqual(planGate(gateInput({ integrationHead: null })).blockers, [
     "the plan's head 22222222 is not its integration head (none recorded); the branch has commits no integration recorded",
   ]);
-  // A protected path on the plan needs an independent review of the plan
-  // itself: a part's approval does not stand in for it, and the owner's
-  // approval is not one. The plan item's contributor, atelier/integrator, has
-  // no recognised family, so no model can qualify either, and the owner's
-  // override recorded on the plan item at its head is what lets it through.
+});
+
+// A protected path on a plan whose head is its integration head is reviewed
+// by its parts: the integrator's merges are not contributions, so the plan
+// item asks no independent review of its own and no assessor, and an
+// override is neither asked nor read. A rejection recorded on the plan item
+// still blocks.
+test("planGate: a plan at its integration head needs no review of its own, though the integrator is its contributor", () => {
   const guarded = { ...policy, protected: ["src/a/**"] };
-  const blocked = planGate(gateInput({ policy: guarded }));
+  const plan = planItem({ owner: "owner", pushActors: ["atelier/integrator"] });
+  const g = planGate(gateInput({ policy: guarded, plan }));
+  assert.deepEqual([g.ready, g.blockers, g.needsAssessor, g.overridden], [true, [], false, undefined]);
+  // Under an execution policy a coordinated change is held to the same rule.
+  const governed: ProjectPolicy = { ...policy, execution: { allowed_classes: ["direct", "coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [] } };
+  const coordinated = planGate(gateInput({ policy: governed, plan }));
+  assert.deepEqual([coordinated.changeClass, coordinated.blockers], ["coordinated", []]);
+  // A refresh merged main's head onto the integration head, and the Ledger
+  // recorded the refresh as the integration head: it counts as an integration.
+  const R = h("d");
+  assert.deepEqual(planGate(gateInput({ policy: guarded, plan: planItem({ head: R }), integrationHead: R, evidence: [pass(R)] })).blockers, []);
+  const rejected: Review = { itemId: "t1", by: REVIEWER, head: MB, approve: false, note: "breaks the API", at: T };
+  assert.deepEqual(planGate(gateInput({ policy: guarded, reviews: [...gateInput().reviews, rejected] })).blockers, [`rejected by ${REVIEWER}: breaks the API`]);
+});
+
+// Only a plan at its integration head holds its review in its parts. A task
+// outside a plan, at the same head with the same contributors and changes,
+// still needs its own independent review, which an unrecognised contributor
+// leaves no reviewer able to give; and a part is still let in only by
+// another family's approval of its own builders' work.
+test("an ordinary task's gate and a part's integration still compare every contributor's family", () => {
+  const guarded = { ...policy, protected: ["src/a/**"] };
+  const task = planItem({ pushActors: ["atelier/integrator", BUILDER] });
+  const reviewed: Review = { itemId: "t1", by: REVIEWER, head: MB, approve: true, note: "", at: T };
+  const g = gate(task, guarded, [pass(MB)], [reviewed]);
+  assert.deepEqual([g.ready, g.blockers, g.needsAssessor], [false, [PROTECTED_NEED], true]);
+  assert.deepEqual(gate({ ...task, owner: BUILDER, pushActors: [BUILDER] }, guarded, [pass(MB)], [reviewed]).blockers, []);
+  const a = part("a", { pushActors: [BUILDER, "atelier/integrator"] });
+  assert.deepEqual(integrationBlockers(a, [a], [review(a)], guarded), ["part a (t2) has no approval from another model family at aaaaaaaa"]);
+});
+
+// A plan whose head is not its integration head carries a commit no
+// integration or refresh recorded, so it is gated as any item: a protected
+// path needs an independent review of the plan itself, a part's approval
+// does not stand in for it, and the owner's approval is not one. The plan
+// item's contributor, atelier/integrator, has no recognised family, so no
+// model qualifies, and the owner's override recorded on the plan item at its
+// head is what lifts that blocker.
+test("planGate: a plan with an unrecorded commit still needs its own review where its change does", () => {
+  const guarded = { ...policy, protected: ["src/a/**"] };
+  const moved = gateInput({ policy: guarded, plan: planItem({ head: X }), evidence: [pass(X)] });
+  const unrecorded = "the plan's head eeeeeeee is not its integration head 22222222; the branch has commits no integration recorded";
+  const blocked = planGate(moved);
   assert.equal(blocked.needsAssessor, true);
-  assert.deepEqual(blocked.blockers, [PROTECTED_NEED]);
-  const approved: Review = { itemId: "t1", by: "owner", head: MB, approve: true, note: "", at: T };
-  assert.deepEqual(planGate(gateInput({ policy: guarded, reviews: [...gateInput().reviews, approved] })).blockers, [PROTECTED_NEED]);
-  assert.deepEqual(planGate(gateInput({ policy: guarded, reviews: [...gateInput().reviews, { ...approved, by: REVIEWER }] })).blockers, [PROTECTED_NEED]);
-  const reviewOverride = { head: MB, by: "owner", reason: "Each part had its own review from another family", at: T };
-  const overridden = planGate(gateInput({ policy: guarded, plan: planItem({ reviewOverride }) }));
-  assert.deepEqual([overridden.blockers, overridden.overridden], [[], reviewOverride]);
+  assert.deepEqual(blocked.blockers, [PROTECTED_NEED, unrecorded]);
+  const approved: Review = { itemId: "t1", by: "owner", head: X, approve: true, note: "", at: T };
+  assert.deepEqual(planGate({ ...moved, reviews: [...moved.reviews, approved] }).blockers, [PROTECTED_NEED, unrecorded]);
+  assert.deepEqual(planGate({ ...moved, reviews: [...moved.reviews, { ...approved, by: REVIEWER }] }).blockers, [PROTECTED_NEED, unrecorded]);
+  const reviewOverride = { head: X, by: "owner", reason: "Each part had its own review from another family", at: T };
+  const overridden = planGate({ ...moved, plan: planItem({ head: X, reviewOverride }) });
+  assert.deepEqual([overridden.blockers, overridden.overridden], [[unrecorded], reviewOverride]);
 });
 
 // A refresh merges main's head onto the integration head, and becomes the
