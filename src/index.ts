@@ -27,7 +27,7 @@ import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "
 import { renderUsage } from "./usage/page.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
-import { baseRepoOf, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
+import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
@@ -587,7 +587,7 @@ async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { i
     const holds = (target: string) => holdsCommit(env, partFork, partHead, target, PREDICT_BUDGET);
     const top = await holds(planTop.hash);
     if (top.holds === true) return null;
-    const base = top.holds === false && planHead && planHead !== part.base && (await holds(planHead)).holds === true ? planHead : part.base;
+    const base = mergeBaseFor(top.holds, planHead, part.base, planHead && planHead !== part.base ? (await holds(planHead)).holds : null);
     const [baseCommit, partCommit] = await Promise.all([planRepo.readCommit(base), partRepo.readCommit(partHead)]);
     if (!baseCommit || !partCommit) return null;
     const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop.treeHash, partCommit.treeHash);
