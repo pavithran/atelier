@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, type Dispatch } from "../src/dispatch/rules.ts";
+import { assign, makeDispatch, unoffered, type Dispatch } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
@@ -235,4 +235,25 @@ test("a merge-main dispatch goes only to a runner that offers the merge-main job
   const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
   assert.equal(assign(d, { runner: "home:old", kind: "home", agents, jobs: ["build", "plan"] }), null);
   assert.deepEqual(assign(d, { runner: "home:new", kind: "home", agents, jobs: ["build", "plan", "merge-main"] }), { agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" });
+});
+
+test("a dispatch naming a plan head to merge goes only to a runner that offers the merge-plan job", () => {
+  const d: Dispatch = { to: "home", agent: "codex", model: "gpt-6-astra", by: ORCHESTRATOR, at: AT, note: "", planHead: "2".repeat(40) };
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  assert.equal(assign(d, { runner: "home:old", kind: "home", agents, jobs: ["build", "plan", "merge-main"] }), null);
+  assert.deepEqual(assign(d, { runner: "home:new", kind: "home", agents, jobs: ["build", "plan", "merge-main", "merge-plan"] }), { agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" });
+  const both: Dispatch = { ...d, job: "merge-main", head: "1".repeat(40) };
+  assert.equal(assign(both, { runner: "home:mid", kind: "home", agents, jobs: ["build", "merge-main"] }), null);
+  assert.ok(assign(both, { runner: "home:new", kind: "home", agents, jobs: ["build", "merge-main", "merge-plan"] }));
+});
+
+test("a task's merge-main dispatch goes only to a runner that offers merge-main-task, and unoffered names that job", () => {
+  const d = makeDispatch({ to: "home", agent: "codex", model: "gpt-6-astra", job: "merge-main", head: "1".repeat(40) }, ORCHESTRATOR, AT);
+  assert.equal(d.task, true);
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  // A runner from before t243 offers merge-main but refuses a task's job.
+  const old = { runner: "home:old", kind: "home" as const, agents, jobs: ["build", "plan", "merge-main", "merge-plan"] };
+  assert.equal(assign(d, old), null);
+  assert.ok(assign(d, { ...old, runner: "home:new", jobs: [...old.jobs, "merge-main-task"] }));
+  assert.match(unoffered(d, [{ ...old, at: new Date().toISOString() }]) ?? "", /home:old offers no merge-main-task job/);
 });

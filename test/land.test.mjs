@@ -520,6 +520,10 @@ test("a conflict stops the landing with the files named and the merge left for t
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
   assert.match(r.output, /The merge is left in the workspace for you to resolve/);
+  // The conflict can also go back to the task's builder (t243): the message
+  // names the holder and the dispatch that sends the work there.
+  assert.match(r.output, new RegExp(`Or send them back to the task's builder, codex/test, to resolve in this workspace: atelier dispatch t1 --job merge-main --agent codex --model test; its runner merges main at ${f.mainCommit.slice(0, 8)} into the workspace again`));
+  assert.match(r.output, /and then atelier land t1 again\.$/m);
   // The regeneration was tried and could not settle the conflict, and says so.
   assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it/);
   // The merge is in progress in the workspace, nothing was pushed or merged.

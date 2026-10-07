@@ -21,7 +21,7 @@ import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelecti
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
-import { integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
+import { conflictedParts, integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
@@ -854,10 +854,15 @@ export class Ledger extends DurableObject<Env> {
   // be sent back to a runner too: the holder is released and the task queued
   // in one step, keeping its workspace and commits for the next builder. The
   // caller revokes the holder's write token first (see checkDispatch), and
-  // passes its id as `token`.
+  // passes its id as `token`. A dispatch naming the merge-main job sends a
+  // task whose landing conflicted with main back to its builder (t243): the
+  // runner merges main at the dispatch's head into the workspace and leaves
+  // the conflicts for it to resolve, where a plain rework would reset the
+  // workspace to a head that cannot reach main.
   dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
     const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
+    this.assertMergeMainWorkspace(item, d);
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -865,8 +870,18 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note }, d.at);
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}) }, d.at);
     return this.item(id);
+  }
+
+  // A merge-main job merges main into the task's workspace, so a task with
+  // none — never claimed, or claimed without a fork — has nothing for its
+  // builder to resolve (t243). Checked wherever the dispatch is validated,
+  // before a holder's token is revoked for it.
+  private assertMergeMainWorkspace(item: Item, d: Dispatch): void {
+    if (d.job === "merge-main" && !item.fork) {
+      throw new RuleError("no_fork", `${item.id} has no workspace yet, so there is nothing for its builder to merge main into`, 409);
+    }
   }
 
   // What a dispatch checks alone, so the caller can revoke a holder's token
@@ -876,7 +891,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     this.assertNotPlanned(item);
     if (!this.holds(item)) assertDispatchable(item);
-    if (input) makeDispatch(input, actor, new Date().toISOString());
+    if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
     return item;
   }
 
@@ -1897,6 +1912,7 @@ export class Ledger extends DurableObject<Env> {
         findings: rejection ? reviewFindings(rejection) : null,
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "" } : null,
         mergeMain: added ? { head: added.mainHead } : null,
+        mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
       }),
     };
   }
@@ -2337,11 +2353,14 @@ export class Ledger extends DurableObject<Env> {
   // by atelier/orchestrator, with the approval's hash and the tick's reason.
   // It is never a route.
   // A merge-main part's dispatch is its merge-main job, naming the main head
-  // the runner merges into the workspace before the builder starts.
-  private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null): void {
+  // the runner merges into the workspace before the builder starts. A part
+  // sent back after a conflict with the plan's branch names that branch's
+  // head as `planHead`, which the runner merges the same way.
+  private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null, planHead: string | null = null): void {
     const slash = to.indexOf("/");
     const d = makeDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, ORCHESTRATOR, at);
-    this.writeDispatch(id, mainHead ? { ...d, job: "merge-main", head: mainHead } : d, { approval: hash, reason });
+    const merging = mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d;
+    this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
 
   private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[] }, data: Record<string, unknown>): string {
@@ -2450,10 +2469,15 @@ export class Ledger extends DurableObject<Env> {
     }
     const waiting = waitingParts(events);
     const wanted = new Map(blocked ? [] : chosen.map((d) => [d.part, d]));
+    // A part whose integration conflicted with the plan's branch is
+    // dispatched with the branch's head as the Ledger records it, its latest
+    // integration or refresh merge, for the runner to merge before rework.
+    const conflicted = conflictedParts(byPartKey(all, parts));
+    const planHead = record.integrationHead ?? plan.base ?? null;
     for (const p of parts) {
       if (p.state !== "open" || p.owner) continue;
       const want = wanted.get(p.partKey!);
-      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at, addedPart(record, p.partKey)?.mainHead ?? null);
+      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at, addedPart(record, p.partKey)?.mainHead ?? null, conflicted.has(p.partKey!) ? planHead : null);
       else if (p.dispatch && !waiting.has(p.partKey!)) this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
       else if (p.dispatch && blocked) {
         this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
@@ -2517,6 +2541,7 @@ export class Ledger extends DurableObject<Env> {
         evidence: this.evidenceFor(p.id),
         reviews: this.reviewsFor(p.id),
         requests: this.reviewRequests(p.id),
+        verdicts: this.findingVerdicts(p.id),
         now, owner: this.owner,
       });
       if (!need.needed) continue;
@@ -2671,7 +2696,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
-      requests: [], wanted: !!row.wanted, now: new Date(at), owner: this.owner,
+      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, now: new Date(at), owner: this.owner,
     });
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
@@ -2694,6 +2719,14 @@ export class Ledger extends DurableObject<Env> {
     return [...latest, ...older];
   }
 
+  // The owner's verdicts on findings of this item's reviews (review.finding
+  // events, `atelier finding`), oldest first. reviewNeeded reads them, so a
+  // rejection whose every blocking finding the owner refuted no longer blocks
+  // another review at its head (t240).
+  private findingVerdicts(id: string): LedgerEvent[] {
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' ORDER BY seq`, id).toArray().map(eventOf);
+  }
+
   // A review request for a submitted item the gate needs reviewed, asked for
   // by atelier land (t187) rather than a plan's tick: the reviewer is the one
   // the owner names with --reviewer or is picked from the pool as the plan
@@ -2702,7 +2735,8 @@ export class Ledger extends DurableObject<Env> {
   // started. `at` in the answer is where the caller counts new verdicts from.
   // With `wanted` the owner asks for the review of the named reviewer even
   // where the gate needs none; only a gate that cannot proceed (checks not
-  // passing, a rejection at this head, no push) refuses, with its reason.
+  // passing, a rejection at this head whose blocking findings the owner has
+  // not refuted, no push) refuses, with its reason.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
@@ -2720,7 +2754,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
-      requests: this.reviewRequests(id), wanted, now: new Date(at), owner: this.owner,
+      requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, now: new Date(at), owner: this.owner,
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
