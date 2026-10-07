@@ -5,10 +5,12 @@
 // waiting section also names each open review request and its reviewer, and
 // says of any queued job no live runner offers that it can never be claimed,
 // which is not a wait but a mismatch between the dispatch and the runners
-// (unoffered in src/dispatch/rules.ts). The offers (GET /runners) are each
+// (unoffered in src/dispatch/rules.ts). A queued job the project's core
+// files hold (coreHold there) says which live item it waits on, as the
+// queue's entry for it carries that. The offers (GET /runners) are each
 // { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
 // the runner last asked, and a Runners section lists them after the projects.
-import { OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
+import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
@@ -164,6 +166,22 @@ function reviewQueue(waiting, name, offers) {
     }));
 }
 
+// What each queued job of one project that the core files hold waits on, by
+// item id, from the queue's entries (GET /queue).
+function heldIn(waiting, name) {
+  return new Map((waiting.queue ?? [])
+    .filter((q) => q.project === name && q.item?.held && q.item.dispatch?.job !== "review")
+    .map((q) => [q.item.id, q.item.held]));
+}
+
+// A held job's line: what it waits on, and how it goes ahead — once that
+// item merges or is abandoned, or at once, for a task, by the owner's
+// override. A plan's part takes no override: the plan dispatches it.
+function heldLine(item, held) {
+  const next = item.kind === "part" ? "" : `, or at once with atelier dispatch ${item.id} --overlap-ok`;
+  return `Held: ${holdText(held)}; offered once ${held.id} merges or is abandoned${next}.`;
+}
+
 // One queued job no live runner offers: said as its own line, capitalised,
 // for the line above it names the job.
 function unofferedLine(dead) {
@@ -186,6 +204,7 @@ export function formatStatus(views, waiting = {}) {
     const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
     const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
     const reviews = reviewQueue(waiting, v.name, offers);
+    const held = heldIn(waiting, v.name);
     const deadBuilds = new Map(queued
       .filter((i) => offers && (i.dispatch.agent || i.dispatch.model))
       .map((i) => [i.id, unoffered(i.dispatch, offers, waiting.now)])
@@ -217,6 +236,7 @@ export function formatStatus(views, waiting = {}) {
       lines.push("  Waiting for a runner");
       for (const i of queued) {
         lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
+        if (held.has(i.id)) lines.push(`      ${heldLine(i, held.get(i.id))}`);
         const dead = deadBuilds.get(i.id);
         if (dead) lines.push(`      ${unofferedLine(dead)}`);
       }
