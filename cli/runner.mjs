@@ -9,6 +9,7 @@ import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
+import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -22,6 +23,20 @@ export function offerFrom(config, name) {
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
+
+// Why the runner refuses to start, or null when the server's routes are new
+// enough. The same check atelier land makes (cli/land.mjs): a server behind
+// this CLI's route level would fail the runner's calls one by one, so it
+// refuses here, before the first poll, saying to deploy.
+export function versionRefusal(version) {
+  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
+  const commit = typeof version?.commit === "string" && version.commit ? version.commit.slice(0, 8) : null;
+  const deploy = (why) => `the server ${commit ? `runs main at ${commit}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${ROUTE_LEVEL}: ${why}. Deploy the server from a checkout at route level ${ROUTE_LEVEL} or newer (npm run deploy, which records the commit it deploys), then start the runner again`;
+  if (!version) return deploy("the server does not answer GET /api/version");
+  if (level === null) return deploy("the server is older than route levels");
+  if (level < ROUTE_LEVEL) return deploy("the server's routes are older than the ones this CLI calls");
+  return null;
+}
 
 export function briefFor(item, project) {
   return [
@@ -672,7 +687,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun }) {
+export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -742,6 +757,15 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     ...taskIO,
   };
   try {
+    // The home runner refuses at start when the server's routes are older
+    // than the ones it will call, as atelier land does: the server's route
+    // level is checked against the CLI's (src/route-level.ts) before the
+    // first poll, so a runner that would fail its calls one by one stops
+    // here instead, saying to deploy.
+    if (version) {
+      const refusal = versionRefusal(await version(controller.signal));
+      if (refusal) throw new Error(refusal);
+    }
     while (!controller.signal.aborted) {
       let state;
       try {
