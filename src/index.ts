@@ -1167,11 +1167,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or
-    // letting the pool pick one, and the landing waits for the verdict.
+    // letting the pool pick one, and the landing waits for the verdict. With
+    // `wanted` and a reviewer the request is made even where the gate needs
+    // none, since a reviewer the owner names is a review the owner asks for.
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models()));
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).
