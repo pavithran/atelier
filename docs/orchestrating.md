@@ -24,6 +24,13 @@ A task moves through five hands:
    tests is shown and never counted.
 4. **A reviewer from another model family** than everyone who worked on the
    task reads the diff and approves or rejects with findings.
+   A project with a review tier (`atelier init --review-tier H/M,H/M`)
+   has a protected change's review asked of a tier model of another family
+   first, and that one review serves both. Only when the gate's reviewer is
+   outside the tier does one tier model that did not build the change
+   review it as well, at the same time, whatever its family: its rejection
+   sends the change back like any rejection, its approval never stands in
+   for the cross-family review, and a landing never waits for it.
 5. **The owner** accepts that exact revision and merges it into the
    registered checkout with `atelier merge`.
 
@@ -126,6 +133,11 @@ So land one task at a time, in this order:
 3. Get the independent review at that head. An approval is bound to the
    revision it read; any later push, a merge of main included, needs a new
    one.
+   Where the project has a tier, the server asks a qualifying tier model
+   for this review first, and it serves as the tier review too. A
+   `--reviewer` outside the tier gets a separate tier review alongside;
+   `atelier land` waits only for the independent review, stops on a tier
+   rejection, and the acceptance withdraws a tier request still open.
 4. Accept and merge at once, before anything else lands.
 5. Run the type check on main after every merge, and the full suite before
    pushing main to its own remotes.

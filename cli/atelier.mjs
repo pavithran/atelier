@@ -218,7 +218,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
@@ -1153,14 +1153,16 @@ const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompar
 // The brief above sums the reviews at the current head into one line and cuts
 // the newest rejection's note to it; this is the record a session reads to
 // learn why a review rejected the task (t173). One flattened line per field,
-// so no note or finding can pose as a line of Atelier's own.
+// so no note or finding can pose as a line of Atelier's own. A separate tier
+// review (src/review/tier.ts), beside the gate's, is labelled, and so is a
+// gate review by a tier model, which gives the tier review too.
 export function formatReviews(reviews, owner = OWNER) {
   const ordered = newestReviews(reviews);
   if (!ordered.length) return "No reviews are recorded.";
   const lines = ["Reviews:"];
   for (const r of ordered) {
     const recorded = recordedText(r, owner);
-    lines.push(`  ${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
+    lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
     for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
   }
@@ -1880,6 +1882,10 @@ const commands = {
       // What may block a review, stated in every review brief; omitted keeps
       // it, "" restores the default bar.
       ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
+      // The top review tier, harness/model actors separated by commas, each
+      // reviewing every protected change beside the gate's review; omitted
+      // keeps it, "" clears it.
+      ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
       approval: args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title }),
@@ -1938,6 +1944,8 @@ const commands = {
     console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks only for a correctness, security or data-loss defect"}`);
     // A server older than the review bar ignores it and answers without one.
     if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
+    console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
+    if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
