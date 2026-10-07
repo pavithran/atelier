@@ -215,9 +215,9 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Part routing", stage: "t15, build step 3", built: true,
-    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them.",
+    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them. A model no live runner offers cannot build or review at all, since no runner could claim its dispatch (`offeredActors` in `src/dispatch/rules.ts`), and a reviewer is routed besides only to a model a live runner offers for the review job (`offering` in `src/dispatch/rules.ts`, which counts a model only when a runner that offers the job lists it, so a model only a build runner offers never reviews, the t210 case of 2026-10-07); when no runner is live the pool stands and the routing says so with a warning.",
     files: ["src/plans/route.ts"],
-    code: [{ file: "src/plans/route.ts", symbol: "routeParts" }],
+    code: [{ file: "src/plans/route.ts", symbol: "routeParts" }, { file: "src/dispatch/rules.ts", symbol: "offering" }],
   },
   {
     name: "Dispatch decisions", stage: "t15, build step 4", built: true,
