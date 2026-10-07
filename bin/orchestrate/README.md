@@ -262,15 +262,19 @@ pgrep -f "atelier.mjs runner"
 It prints one process id per runner and integrator, and nothing when none
 runs; `pgrep -fl` adds each command line, which shows the `--name`. Both write
 to the log named in the plist (`tail -f` follows it), one line each, every
-line starting `runner: `. A build job shows its phases by name (`runner:
-claimed`, `runner: working`, then `runner: committed` and `runner: submitted`,
-or `runner: failed: REASON`), after `runner: workspace reset to HEAD and
-untracked files removed`. A runner with nothing to do logs `runner: nothing
-claimed`. How a job ended is one of `runner: released: REASON`, `runner: claim
-preserved: REASON` (work was committed, or the state is unknown, so the claim
-stays), `runner: reviewed: approve` or `reject`, `runner: plan posted: HASH`,
-`runner: skipped: REASON`, `runner: claim refused: REASON` and `runner: failed:
-REASON`. The integrator logs `runner: every part is integrated; the plan item
+line starting `runner: `. An idle runner, with nothing offered, prints
+nothing. A build job logs these lines in this order: `runner: nothing claimed`
+(the first line of every build job, written before the claim is made),
+`runner: claimed`, `runner: workspace reset to HEAD and untracked files
+removed`, `runner: working`, `runner: committed` and `runner: submitted`, or
+`runner: failed: REASON` where it stops. A plan job logs `runner: claimed` and
+the workspace reset line, then `runner: plan posted: HASH`. A failure line is
+followed by the line that settles the claim: `runner: released: REASON`, or
+`runner: claim preserved: REASON` (work was committed, or the state is
+unknown, so the claim stays), or `runner: claim not released: REASON`. A review
+job ends with `runner: reviewed: approve` or `reject`. A job that never got
+its claim logs `runner: skipped: REASON` or `runner: claim refused: REASON`.
+The integrator logs `runner: every part is integrated; the plan item
 is submitted for the owner` when a plan's last part merges.
 
 The log does not name the task a job is on: the lines above carry no task id.
