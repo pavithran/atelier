@@ -67,8 +67,10 @@ export interface PlanApproval {
 }
 
 // A reviewer the plan tick picked for a part in place of `from`, the reviewer
-// routed before, with the reason the routed one could not review and when.
-export interface ReviewerChange { actor: string; from: string | null; reason: string; at: string }
+// routed before, with the reason the routed one could not review and when;
+// or, with `by`, the reviewer the owner named with plan reroute. A named
+// reviewer need not be in the pool fixed at approval.
+export interface ReviewerChange { actor: string; from: string | null; reason: string; at: string; by?: string }
 
 // A plan's record, kept under the meta key plan:tP. Proposals are kept apart,
 // in the plans table, one row each, never changed.
@@ -83,7 +85,8 @@ export interface PlanRecord {
   reroutes: Record<string, string>;    // part key to the actor the owner rerouted it to
   // Part key to the reviewer the plan tick picked in place of the routed one,
   // because the routed reviewer had become a contributor or was not of
-  // another family than every contributor. Absent in records made before.
+  // another family than every contributor, or the reviewer the owner named;
+  // the later of the two holds. Absent in records made before.
   reviewers?: Record<string, ReviewerChange>;
   completedAt?: string;                // when every part had merged
   // The plan branch's integration head (docs/orchestrator.md, section 5): the
@@ -118,11 +121,13 @@ export function cleanNote(value: unknown): string {
 
 // An actor the owner names for a plan's work, harness/model, which may claim
 // it under the project's policy: the planner role for the plan job, the
-// executor role for a part. The project owner is never one.
-export function namedActor(value: unknown, policy: ProjectPolicy, role: "planner" | "executor", owner = DEFAULT_OWNER): string {
+// executor role for a part's builder, the assessor role for its reviewer.
+// The project owner is never one.
+export function namedActor(value: unknown, policy: ProjectPolicy, role: "planner" | "executor" | "assessor", owner = DEFAULT_OWNER): string {
   const actor = typeof value === "string" ? value.trim() : "";
   if (!validActor(actor) || !/^[^/]+\/[^/]+$/.test(actor) || actor === owner) {
-    throw new RuleError("bad_actor", `name the ${role === "planner" ? "planner" : "builder"} as harness/model, such as claude-code/opus-5.5`, 400);
+    const what = role === "planner" ? "planner" : role === "executor" ? "builder" : "reviewer";
+    throw new RuleError("bad_actor", `name the ${what} as harness/model, such as claude-code/opus-5.5`, 400);
   }
   assertEligible(actor, policy, owner, role);
   return actor;
@@ -249,6 +254,14 @@ export function completion(states: readonly ItemState[]): "complete" | "empty" |
 }
 export const EMPTY_PLAN = "every part is abandoned, so the plan brings nothing; stop it";
 
+// Whether an approved plan is past its deadline. The tick blocks an unfinished
+// plan once now is past the approval's deadline (planActions in phase.ts), and
+// no owner decision lifts that block: the deadline is fixed at approval, so
+// retry and reroute cannot move it, and the owner stops the plan instead.
+export function pastDeadline(record: PlanRecord, now: string): boolean {
+  return !!record.approval && Date.parse(now) > Date.parse(record.approval.deadline);
+}
+
 // What the inbox needs to know of one plan.
 export interface PlanInboxView {
   project: string;
@@ -260,9 +273,10 @@ export interface PlanInboxView {
 
 // The plan's own entries: approve-plan when the planner has answered with a
 // valid proposal and the plan is not approved, and plan-blocked when the
-// plan is blocked, with the decisions open to the owner. A closed plan has
-// none.
-export function planInboxEntries(views: readonly PlanInboxView[]): InboxEntry[] {
+// plan is blocked, with the decisions open to the owner. A deadline block
+// can only be stopped, since the deadline is fixed at approval. A closed
+// plan has none.
+export function planInboxEntries(views: readonly PlanInboxView[], now: string): InboxEntry[] {
   const out: InboxEntry[] = [];
   for (const { project, plan, record, proposal, answered } of views) {
     if (plan.state === "merged" || plan.state === "abandoned") continue;
@@ -270,7 +284,9 @@ export function planInboxEntries(views: readonly PlanInboxView[]): InboxEntry[] 
     const show = `atelier plan show ${plan.id} --project ${project}`;
     if (record.blocked) {
       const options = record.approval
-        ? "retry or reroute a part, abandon a part, or stop the plan"
+        ? pastDeadline(record, now)
+          ? "stop the plan"
+          : "retry or reroute a part, abandon a part, or stop the plan"
         : `${proposal ? `approve the last valid proposal (${proposal.hash.slice(0, 12)}), ` : ""}revise it, retry or reroute the planner, or stop the plan`;
       out.push({ ...base, kind: "plan-blocked", reason: `blocked: ${record.blocked}. Read ${show}, then ${options}`, weight: PLAN_INBOX_WEIGHTS["plan-blocked"] });
     } else if (!record.approval && proposal && answered) {
