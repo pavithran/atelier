@@ -145,6 +145,16 @@ export interface Review {
   recordedBy?: string;
   proved?: boolean;
   claimed?: boolean;
+  // Set when the review answered a tier review request (ProjectPolicy.reviewTier):
+  // a second opinion from the project's top review tier beside the gate's
+  // review. Its rejection blocks as any rejection does; its approval is never
+  // the independent review the gate counts (independentApproval).
+  tier?: boolean;
+  // Set when the review answered the gate's request asked of a tier model of
+  // another family than every contributor: the gate's review, which gives
+  // the tier review too (gateServesTier in src/review/tier.ts). It counts for
+  // the gate as any review does.
+  topTier?: boolean;
 }
 
 export type ChangeClass = "direct" | "coordinated" | "protected";
@@ -185,9 +195,21 @@ export interface ProjectPolicy {
   // What may block a review, as every review brief states it; absent, the
   // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
   reviewBar?: string;
+  // The project's top review tier, as harness/model actors (`atelier init
+  // --review-tier`): every protected change that gets its gate review is
+  // also reviewed by one of these. The gate's review goes to a tier model of
+  // another family than every contributor first, and then serves both; a
+  // gate reviewer outside the tier gets a separate tier request beside it,
+  // for a tier model that did not build the change, whatever its family.
+  // Absent or empty, no tier review is asked for.
+  reviewTier?: string[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
+  // Globs of the files only one live item at a time may change: the queue
+  // holds a dispatch whose scope overlaps a live item's within one of them
+  // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
+  coreFiles?: string[];
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
 }
@@ -421,18 +443,40 @@ export function pathCollisions(paths: string[]): string[][] {
   return [...groups.values()].filter((group) => group.length > 1 && new Set(group.map(parent)).size < group.length);
 }
 
+// A glob's literal prefix, up to its first wildcard, and whether two such
+// prefixes could name one path: one is a prefix of the other.
+const stem = (g: string) => g.split(/[*?]/)[0];
+const related = (x: string, y: string) => x.startsWith(y) || y.startsWith(x);
+
 // Two scopes overlap when a literal prefix of one could fall inside the other.
 // Conservative on purpose: a false overlap costs a glance, a missed one a conflict.
 export function scopesOverlap(a: string[], b: string[]): boolean {
   if (a.length === 0 || b.length === 0) return true; // unscoped means "anything"
-  const stem = (g: string) => g.split(/[*?]/)[0];
   for (const x of a) {
     for (const y of b) {
-      const sx = stem(x), sy = stem(y);
-      if (sx.startsWith(sy) || sy.startsWith(sx)) return true;
+      if (related(stem(x), stem(y))) return true;
     }
   }
   return false;
+}
+
+// The first glob of `within` that some path matched by both scopes could
+// also match, or null when none could: the overlap of scopesOverlap, narrowed
+// to the paths `within` names. Three literal prefixes can name one path when
+// each pair of them can, since each is then a prefix of the longest. An
+// unscoped side matches anything, as in scopesOverlap; an empty `within`
+// names no path, so nothing overlaps within it.
+export function scopesOverlapWithin(a: string[], b: string[], within: string[]): string | null {
+  const stems = (scope: string[]) => (scope.length ? scope.map(stem) : [""]);
+  const sa = stems(a), sb = stems(b);
+  for (const glob of within) {
+    const c = stem(glob);
+    for (const x of sa) {
+      if (!related(x, c)) continue;
+      for (const y of sb) if (related(y, c) && related(x, y)) return glob;
+    }
+  }
+  return null;
 }
 
 // Durable Object RPC keeps an error's message and drops its other fields, so
@@ -551,9 +595,10 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // that no contributor shares (familyRefusal); a coordinated change in a
 // governed project needs any other agent. In a protected change, a review
 // the owner token recorded in a model's name counts only when it answers a
-// review request that model claimed for that head (unprovedReview).
+// review request that model claimed for that head (unprovedReview). A tier
+// review's approval never is: the tier reviews beside the gate, not for it.
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
-  if (!r.approve || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
+  if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
   if (contributors.some((actor) => sameActor(r.by, actor))) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
@@ -990,7 +1035,14 @@ export interface Gate {
   overridden?: ReviewOverride;  // set when the owner's override stands in for a missing independent review
 }
 
-export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Gate {
+// `reviewHeld` says the change's independent review is held outside the
+// item, as a plan's is by its integrated parts' reviews (planGate): the
+// item's own contributors are then not compared with any reviewer, and no
+// independent review, assessor or override is asked of it. Every other
+// blocker stands, a rejection at the head among them.
+export interface GateOptions { reviewHeld?: boolean }
+
+export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {
   reviews = countingReviews(reviews, item.head, policy, owner);
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
@@ -1011,12 +1063,13 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   let overridden: ReviewOverride | null = null;
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
   // A protected change needs an independent review in every project, and a
-  // coordinated one does under an execution policy. Families and agents are
+  // coordinated one does under an execution policy, unless the review is
+  // held outside the item (reviewHeld). Families and agents are
   // compared by modelKey and sameActor, so a contributor's model under
   // another letter case, profile or registered name is never independent of
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
-  if (kind === "protected" || (governed && kind === "coordinated")) {
+  if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
     if (!reviews.some((r) => independentApproval(r, kind, contributors, owner))) {
       overridden = overrideAt(item, owner);
@@ -1032,7 +1085,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
     }
   }
   const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
-  for (const r of rejected) blockers.push(`rejected by ${r.by}: ${r.note || "no note"}`);
+  for (const r of rejected) blockers.push(`rejected by ${r.by}${r.tier ? " (tier review)" : r.topTier ? " (gate review, top tier)" : ""}: ${r.note || "no note"}`);
   // Scope is matched as written: a path in another letter case is reported
   // outside it, which shows the variant rather than hiding it.
   const outOfScope = item.scope.length ? changed.filter((p) => !matchesAny(p, item.scope)) : [];

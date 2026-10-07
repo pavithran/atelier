@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planBrief, planText, type PlanPartReview, type PlanPartView, type PlanView } from "../src/plans/show.ts";
-import type { SeenOffer } from "../src/dispatch/rules.ts";
+import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
 import { limitsFor } from "../src/plans/state.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 
@@ -128,6 +128,35 @@ test("plan show prints a part's latest integration failure, its kind and whether
   assert.ok(!failed("checks", "integrated").some((line) => line.includes("integration failed")));
 });
 
+// Routing falls back to the whole pool when runners have asked but none is
+// live (routable in src/ledger.ts): plan show warns of the fallback while
+// the plan is not approved, naming when a runner last asked, and says
+// nothing of it when no runner has ever asked, one is live, or the routing
+// is already fixed by an approval.
+test("plan show warns when runners have asked but none is live, the case routing falls back to the pool", () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const asked = (ms: number) => new Date(now.getTime() - ms).toISOString();
+  const stale: SeenOffer[] = [
+    { runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: asked(OFFER_LIVE_MS + 120_000) },
+    { runner: "home:desk", kind: "home", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: asked(OFFER_LIVE_MS + 60_000) },
+  ];
+  const warned = planText({ ...proposed, offers: stale }, "demo", now).split("\n");
+  assert.ok(warned.includes("No runner is live now; the last to ask for work did so at 2026-10-07 09:59 UTC, so routing falls back to the whole pool, and a dispatch may wait until a runner asks again."), warned.join("\n"));
+  // No runner has ever asked: nothing is known to be offered, and there is
+  // no fallback to warn of.
+  const never = planText({ ...proposed, offers: [] }, "demo", now).split("\n");
+  assert.ok(!never.some((l) => l.includes("falls back to the whole pool")));
+  // A live runner leaves the routing offered, not fallen back.
+  const live = planText({ ...proposed, offers: [{ runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: asked(30_000) }] }, "demo", now).split("\n");
+  assert.ok(!live.some((l) => l.includes("falls back to the whole pool")));
+  // Offers not read with the view are not judged.
+  const unread = planText({ ...proposed, offers: null }, "demo", now).split("\n");
+  assert.ok(!unread.some((l) => l.includes("falls back to the whole pool")));
+  // Once approved, the routing is fixed and the warning stands down.
+  const approved = planText({ ...building, offers: stale }, "demo", now).split("\n");
+  assert.ok(!approved.some((l) => l.includes("falls back to the whole pool")));
+});
+
 // A part's live review request (t240): who was asked, whether it is claimed,
 // and — judged against the runner offers the view was read with — that a
 // request no live runner offers can never be claimed, with the reroute that
@@ -205,4 +234,12 @@ test("plan show lists a merge-main part as added by Atelier for main at its head
   const asked = planText({ ...building, parts: [{ ...merging, added: { mainHead: M1, by: "owner", at: AT } }] }, "demo").split("\n");
   assert.ok(asked.some((l) => l.startsWith("      added by Atelier for main at 11111111, at owner's request")));
   assert.ok(!planText(building, "demo").includes("added by Atelier"));
+});
+
+test("a queued part the project's core files hold says which live item outside the plan it waits on", () => {
+  const held = { id: "t9", owner: "codex/gpt-6-astra", state: "claimed" as const, title: "Other work", core: "src/ledger.ts" };
+  const queued = part("t4", "c", { dispatch: { to: "home", agent: "zcode", model: "glm-5.3", by: "atelier/orchestrator", at: AT, note: "" }, held });
+  const lines = planText({ ...building, parts: [queued] }, "demo").split("\n");
+  assert.ok(lines.includes("      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned"), lines.join("\n"));
+  assert.ok(!planText(building, "demo").includes("held in the queue"));
 });

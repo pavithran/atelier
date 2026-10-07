@@ -1,9 +1,10 @@
 // Routing a plan's parts: which model builds each part, which two stand in
 // if it fails, and which model of another family reviews it. Atelier
-// computes this from the pool, the registry's evidence and the ledger's
-// track record; the planner may only prefer. Every choice carries its
-// reasons, because the owner reads "why this model?" on the task page, and
-// a part no model can take is returned unrouted with the reason.
+// computes this from the pool, the registry's evidence, the ledger's track
+// record and the offers live runners made; the planner may only prefer.
+// Every choice carries its reasons, because the owner reads "why this
+// model?" on the task page, and a part no model can take is returned
+// unrouted with the reason.
 //
 // Models the ranking cannot tell apart (the same score and tie-breaker, so
 // only the model id orders them) share the plan: each part goes to the tied
@@ -11,21 +12,24 @@
 // family, so one model is never the whole plan when others are as good.
 // Reviewers spread the same way. A better score still wins outright.
 //
-// A reviewer is routed only to a model a live runner offers for the review
-// job (offering in src/dispatch/rules.ts), because the queue offers a
-// review to such a runner alone; a model only a build runner offers would
+// The offers live runners made bind the routing twice over. A model no live
+// runner offers cannot build or review at all, because no runner could
+// claim its dispatch (offeredActors in src/dispatch/rules.ts, t246); a
+// reviewer is besides routed only to a model a live runner offers for the
+// review job (offering in src/dispatch/rules.ts), because the queue offers
+// a review to such a runner alone; a model only a build runner offers would
 // sit unclaimed however long the review waited (the t210 case, 2026-10-07).
 // When no runner is live the pool stands and the choice says so with a
 // warning.
 
 import type { LedgerEvent } from "../ledger.ts";
+import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
 import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
 import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
-import { offering, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
 // What the owner knows about a tool's usage limits, keyed by actor
@@ -46,7 +50,19 @@ export interface RouteInput {
   availability?: Readonly<Record<string, Availability>>;
   profiles?: readonly ModelProfile[];     // the registry's evidence and context windows; MODEL_PROFILES by default
   reliability?: Reliability;              // each model's record across every project; orders equal scores only
-  offers?: readonly SeenOffer[] | null;   // the runner offers the Worker read, so a reviewer is routed only to a model a live runner offers for the review job; null when none were read
+  // The offers the runners made as the index recorded them, raw with when
+  // each asked, or null when the caller read none. A model no live runner
+  // offers cannot build or review, because no runner could claim its
+  // dispatch; a model some runner offers says which. When the caller read
+  // no offers nothing is known to be offered, so routing restricts nothing
+  // and falls back to the whole pool, and a project run entirely by hand
+  // still routes; when the offers were read but every ask has gone stale,
+  // routing falls back the same way rather than strand the plan on models
+  // nothing live could claim, and the reviewer's reasons carry the warning.
+  // The reviewer's own question is per job, not per model (offering in
+  // src/dispatch/rules.ts): whether a runner runs the review job a review
+  // dispatch names is judged there, not here.
+  offers?: readonly SeenOffer[] | null;
 }
 
 export interface Choice { actor: string; reasons: string[] }
@@ -154,9 +170,10 @@ interface Context {
   record: ModelRecord;
   tiebreaks: Map<string, Tiebreak>;
   availability: Map<string, { key: string; value: Availability }>;
+  offered: Map<string, string[]> | null;   // actors live runners offer, whatever job; null when the offers were not read or none is live, and routing restricts nothing
   governed: boolean;
-  offered: Offering | null;   // what the live runners offer for the review job; null when none were read or no runner is live
-  offersRead: boolean;        // whether the caller read runner offers at all
+  reviewOffered: Offering | null;          // what the live runners offer for the review job; null when none were read or no runner is live
+  offersRead: boolean;                     // whether the caller read runner offers at all
 }
 
 // One pool actor judged for one part: the rules it passed, for the reasons
@@ -196,6 +213,20 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
     else both.push(held);
   } else passed.push(`Available (availability of ${availability.key})`);
 
+  // A model no live runner offers cannot take the part: its dispatch would
+  // wait in the queue for a runner that never asks for it. The actor is the
+  // name the dispatch would name, so an alias a runner offers does not reach
+  // the pool's id — the claim would be refused anyway. The map is read for
+  // whether it was computed at all, never for whether it is truthy: one that
+  // is empty says live runners offer nothing claimable, and every model
+  // fails; null says the offers were not read or no runner is live, and
+  // nothing is restricted.
+  if (ctx.offered !== null) {
+    const runners = ctx.offered.get(actor.toLowerCase());
+    if (runners) passed.push(`Offered by ${runners.join(", ")}`);
+    else both.push(`no live runner offers ${actor}, so no runner could claim its dispatch`);
+  }
+
   const window = candidate.profile.contextWindow;
   if (part.size === "M") {
     if (window !== null && window < SIZE_M_CONTEXT) both.push(`context window ${window} tokens; a size M part needs ${SIZE_M_CONTEXT} or an unknown window`);
@@ -210,12 +241,16 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // no live runner so offers would wait forever, whatever runner names the
   // model for other work (the t210 case, 2026-10-07). The rule binds only
   // where offers were read and a runner is live; otherwise the pool stands
-  // and the reviewer's reasons say so in routePart.
+  // and the reviewer's reasons say so in routePart. A model no live runner
+  // offers at all is already excluded above, by the claim's own rule; what
+  // this adds is the model a runner does offer, for other work, naming
+  // what that runner lacks for the review job.
   let reviewOffer: string | null = null;
-  if (ctx.offered) {
-    const runners = ctx.offered.actors.get(actor.toLowerCase());
+  if (ctx.reviewOffered) {
+    const runners = ctx.reviewOffered.actors.get(actor.toLowerCase());
     if (runners) reviewOffer = `Offered for the review job by ${[...new Set(runners)].join(", ")}`;
-    else review.push(`no live runner offers ${actor} for the review job: ${ctx.offered.instead.join("; ")}`);
+    else if (ctx.offered?.has(actor.toLowerCase()))
+      review.push(`no live runner offers ${actor} for the review job: ${ctx.reviewOffered.instead.join("; ")}`);
   }
   // The family as the gate reads it, by modelKey, so a profile suffix never
   // makes a reviewer look like another family than the builder.
@@ -330,6 +365,12 @@ const REVIEW_JOB: Pick<Dispatch, "to" | "job"> = { to: "home", job: "review" };
 
 export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
   const pool = [...input.pool];
+  // The live half of the recorded offers, read once for both questions: an
+  // empty one, whether from offers never made or every ask gone stale, is
+  // no runner being live, and routing then restricts nothing and falls back
+  // to the whole pool (routable in src/ledger.ts decides the same for the
+  // ledger's own reads).
+  const live = input.offers != null ? liveOffers(input.offers) : [];
   const ctx: Context = {
     input,
     entries: new Map(pool.map((entry) => [actorOf(entry), entry])),
@@ -337,8 +378,9 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     record: recordFor(pool, input.events),
     tiebreaks: input.reliability ? tiebreaksFor(pool, input.reliability) : new Map(),
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
+    offered: live.length ? offeredActors(live) : null,
     governed: input.policy.agents !== undefined,
-    offered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
+    reviewOffered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
     offersRead: input.offers != null,
   };
   // Parts route in plan order; each sees how many parts the earlier ones gave each model.

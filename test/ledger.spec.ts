@@ -642,6 +642,14 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(barred, { ...base, reviewBar: null }, "later").policy).not.toHaveProperty("reviewBar");
   expect(full.policy).not.toHaveProperty("reviewBar");
   expect(mergeProject(barred, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewBar");
+  // The review tier is unset by default, set, kept by an init that does not
+  // name it, cleared by an empty list, and dropped by reset.
+  expect(full.policy).not.toHaveProperty("reviewTier");
+  const tiered = mergeProject(full, { ...base, reviewTier: ["claude-code/opus-5.5", "codex/gpt-6.1-sol"] }, "later");
+  expect(tiered.policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
+  expect(mergeProject(tiered, { ...base, title: "V" }, "later").policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
+  expect(mergeProject(tiered, { ...base, reviewTier: [] }, "later").policy).not.toHaveProperty("reviewTier");
+  expect(mergeProject(tiered, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewTier");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
   expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], eligible: [], refuseOverlap: false, sandboxOnly: false });

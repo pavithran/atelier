@@ -27,12 +27,14 @@ import { contributorsOf } from "./independence.ts";
 export type ReviewRecord = Review;
 
 // What the ledger knows of a review request for this item. Open and claimed
-// requests are live; answered and withdrawn ones are not.
+// requests are live; answered and withdrawn ones are not. A tier request
+// (src/review/tier.ts) runs beside the gate's and never holds the gate's back.
 export interface ReviewRequestView {
   head: string;
   state: "open" | "claimed" | "answered" | "withdrawn";
   claimedBy?: string | null;
   claimedAt?: string | null;   // ISO time the request was claimed
+  tier?: boolean;
 }
 
 // A claimed request with no verdict after this long no longer holds the item
@@ -123,6 +125,10 @@ export interface NeedInput {
   // blocking finding the owner refuted no longer blocks another review at its
   // head (t240).
   verdicts?: readonly LedgerEvent[];
+  // The need of a tier review (src/review/tier.ts), which an approval the
+  // gate counts, or the owner's override, does not end: the tier reviews
+  // beside the gate, so only what stops a review at all ends it.
+  tier?: boolean;
   now: Date;
   owner?: string;
 }
@@ -173,7 +179,9 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts));
   if (rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);
-  if (basis === "part") {
+  if (input.tier) {
+    // A tier review is asked beside the gate's; the gate's approval leaves it standing.
+  } else if (basis === "part") {
     const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner));
     if (independent) return no(`${independent.by}, of another family than every contributor, approved ${short(head)}`);
   } else if (!input.wanted) {
@@ -185,10 +193,11 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     }
   }
 
-  // A live request for this head holds the item unless its claim has lapsed.
+  // A live request for this head holds the item unless its claim has lapsed;
+  // a tier request beside it holds nothing.
   // A claim time that cannot be read is taken as recent, so a request is
   // never duplicated on a guess.
-  const live = (input.requests ?? []).filter((r) => r.head === head && (r.state === "open" || r.state === "claimed"));
+  const live = (input.requests ?? []).filter((r) => r.head === head && !r.tier && (r.state === "open" || r.state === "claimed"));
   const lapsedAt = (r: ReviewRequestView) => {
     const at = r.state === "claimed" && r.claimedAt ? Date.parse(r.claimedAt) : NaN;
     return Number.isFinite(at) && input.now.getTime() - at >= REVIEW_CLAIM_TIMEOUT_MS;

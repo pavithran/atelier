@@ -249,7 +249,7 @@ it("a failed refresh does not stop a later main head from being refreshed", asyn
   expect((await L.item(b.id)).dispatch).toBeNull();
 });
 
-it("atelier plan refresh dispatches the refresh, and refuses before approval, while a job is in flight, once submitted and when main is held", async () => {
+it("atelier plan refresh dispatches the refresh, and refuses before approval, while a job is in flight and when main is held", async () => {
   const L = await setup("refresh-owner");
   const { item: draft } = await L.newPlan("Not approved", ["src/**"], "owner", PLANNER, []);
   await refusal(L.planRefresh(draft.id, "owner", M1, false), "not_approved", /is not approved/);
@@ -284,7 +284,7 @@ it("atelier plan refresh dispatches the refresh, and refuses before approval, wh
   await refusal(L.refreshFailed(id, INTEGRATOR, M1, "late", null), "no_refresh", /no refresh in flight/);
 });
 
-it("a submitted plan is not refreshed by its owner", async () => {
+it("a submitted plan refreshed by its owner goes back to building first", async () => {
   const L = await setup("refresh-submitted");
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
@@ -298,7 +298,9 @@ it("a submitted plan is not refreshed by its owner", async () => {
   await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
   await L.recordPush(item.id, INTEGRATOR, MA, MA);
   await L.submit(item.id, INTEGRATOR);
-  await refusal(L.planRefresh(item.id, "owner", M1, false), "not_building", /is submitted/);
+  await L.planRefresh(item.id, "owner", M1, false);
+  expect(await L.item(item.id)).toMatchObject({ state: "open", owner: null, dispatch: { job: "refresh", head: M1, by: "owner" } });
+  expect((await events(L, item.id)).find((e) => e.kind === "plan.reopened")?.data).toMatchObject({ from: "submitted", holder: INTEGRATOR, head: MA });
 });
 
 // ── the routes, through the Worker ───────────────────────────────────────

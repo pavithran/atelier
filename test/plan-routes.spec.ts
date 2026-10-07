@@ -27,13 +27,17 @@ async function project(name: string) {
   const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await ledger(name).setProject(record, "owner");
   await index().registerProject(record);
-  for (const [id, harness] of [["opus-5.5", "claude-code"], ["gpt-6-astra", "codex"], ["glm-5.3", "zcode"]]) {
+  const pool = [["opus-5.5", "claude-code"], ["gpt-6-astra", "codex"], ["glm-5.3", "zcode"]] as const;
+  for (const [id, harness] of pool) {
     await index().putModel({ id, harness, where: "cloud", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
   }
-  // A standing runner offers every pool model for build, plan and review, so
-  // the plans this file approves through the Worker route reviewers the
-  // offers count (t250); a test that stages an unoffered reviewer replaces
-  // this offer under the same runner name.
+  // A standing runner offers every pool model for build, plan and review, as
+  // the home runner of a real project would: routing picks builders and
+  // reviewers only from the models live runners offer, and a reviewer counts
+  // only when one of them offers the review job, so the plans this file
+  // approves through the Worker route only while this offer stands; a test
+  // that stages an unoffered model replaces this offer under the same runner
+  // name.
   await call("POST", "/queue", "owner", {
     runner: "home:pool", kind: "home", jobs: ["build", "plan", "review"],
     agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }, { agent: "zcode", models: ["glm-5.3"] }],
@@ -149,10 +153,14 @@ it("approve routes a reviewer only to a model a live runner offers for the revie
   const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a")));
   const hash = post.valid ? post.hash : "";
   await L.release(id, "claude-code/opus-5.5", "proposed");
-  // The standing pool runner is replaced by one that names the cross-family
-  // model but offers no review job: a review routed to it could never be
-  // claimed, however long it waited.
-  await call("POST", "/queue", "owner", { runner: "home:pool", kind: "home", jobs: ["build", "plan"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] });
+  // The standing pool runner is replaced by one that names the builder and
+  // the cross-family reviewer but offers no review job, and home:studio,
+  // whose row an earlier test's ask left, is replaced the same way: a review
+  // routed to the model only they name could never be claimed, however long
+  // it waited, and under the models-live-runners-offer rule they name the
+  // builder too.
+  await call("POST", "/queue", "owner", { runner: "home:pool", kind: "home", jobs: ["build", "plan"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "zcode", models: ["glm-5.3"] }] });
+  await call("POST", "/queue", "owner", { runner: "home:studio", kind: "home", jobs: ["build", "plan"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }] });
   const view = await (await call("GET", `/projects/${name}/items/${id}/plan`, "owner")).json() as PlanView;
   expect(view.preview?.[0]).toMatchObject({ builder: { actor: "zcode/glm-5.3" }, reviewer: null });
   const unoffered = (actor: string) => `no live runner offers ${actor} for the review job: home:pool offers no review job; home:studio offers no review job`;

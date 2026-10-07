@@ -311,6 +311,29 @@ it("the review bar route cleans the bar, keeps it on re-init, clears it on an em
   }
 });
 
+it("the review tier route takes models separated by commas or a list, keeps the tier on re-init, clears it on an empty one, and refuses one not harness/model", async () => {
+  await project("routes-review-tier");
+  const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-tier", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
+  }), artifactsEnv);
+  const tierOf = async (fields: Record<string, unknown>) =>
+    (((await (await put(fields)).json()) as { project: { policy: { reviewTier?: string[] } } }).project.policy.reviewTier);
+  expect(await tierOf({})).toBeUndefined();
+  const tier = ["claude-code/opus-5.5", "codex/gpt-6.1-sol", "antigravity/gemini-3.1-pro"];
+  expect(await tierOf({ reviewTier: " claude-code/opus-5.5, codex/gpt-6.1-sol,,antigravity/gemini-3.1-pro,codex/gpt-6.1-sol" })).toEqual(tier);
+  expect(await tierOf({ title: "Kept" })).toEqual(tier);
+  expect(await tierOf({ reviewTier: "" })).toBeUndefined();
+  expect(await tierOf({ reviewTier: ["codex/gpt-6.1-sol"] })).toEqual(["codex/gpt-6.1-sol"]);
+  expect(await tierOf({ reviewTier: [] })).toBeUndefined();
+  for (const bad of ["opus-5.5", 7, [3], "a/b c"]) {
+    const res = await put({ reviewTier: bad });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_review_tier");
+  }
+});
+
 it("a first init with no title creates the project without one", async () => {
   const res = await putTitle("routes-fresh", undefined);
   expect(res.status).toBe(200);
