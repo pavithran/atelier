@@ -41,6 +41,10 @@ it("dispatch through the API, then the queue answers the owner and a matching ru
   expect(mine.find((q) => q.project === "routes-a")?.actor).toBe(`opencode/${model}`);
   const cloud = await (await call("POST", "/queue", "owner", { ...offer, runner: "cloud:atelier" })).json() as unknown[];
   expect(cloud.some((q) => (q as { project: string }).project === "routes-a")).toBe(false);
+  // A runner kept for reviews alone (t252) is never handed the build, while
+  // the ask above, which names no job at all, is an older runner's and is.
+  const reviews = await (await call("POST", "/queue", "owner", { ...offer, jobs: ["review"] })).json() as { project: string }[];
+  expect(reviews.some((q) => q.project === "routes-a")).toBe(false);
   expect((await call("POST", "/queue", "owner", { agents: [] })).status).toBe(400);
 });
 

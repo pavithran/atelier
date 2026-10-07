@@ -983,52 +983,23 @@ workspace to the task's head, where the builder cannot reach main.
 
 ## Plans
 
-A plan turns one goal into several items. The project owner states the goal
-with `atelier plan "goal" [--scope GLOB]... [--planner harness/model]`.
-Atelier creates the plan item and queues it as a plan job for the planner
-named, or else for the first model in the pool for research work that is not
-refused, not paid per token and may plan. A project has one active plan at a
-time. The planner, holding the plan item's claim, posts a plan document
-(`atelier.plan.v1`: the goal and its parts, each with a scope, dependencies,
-a brief and acceptance criteria) with `atelier plan post tP FILE`. An
-invalid one is refused with every error, and the planner gets one more
-attempt before the plan blocks.
+A plan turns one goal into several items that merge together. The project owner states the goal with `atelier plan "goal" [--scope GLOB]... [--planner H/M]`. Atelier creates the plan item and queues it as a plan job for the planner named, or else for the first model in the pool for research work that is not refused, not paid per token and may plan. A project has one active plan at a time.
 
-`atelier plan show tP` prints the newest proposal with its hash. `atelier
-plan approve tP --hash HASH [--allow-paid]` approves that exact split, once;
-an older hash is refused, and `atelier plan revise tP --note TEXT` sends a
-proposal back instead. Approval fixes the limits (two parts live at once,
-three attempts a part, four dispatches a part, 24 hours) and each part's
-routing: a builder, two alternates and a reviewer of another family, chosen
-from the model pool and the ledger's record. The parts become items, and
-Atelier dispatches each one, as `atelier/orchestrator`, once the parts it
-depends on have merged. A part its builder releases twice goes to an
-alternate. A plan that reaches a limit blocks and appears in the inbox; the
-owner decides with `atelier plan retry tN`, `atelier plan reroute tN --to
-harness/model`, `atelier abandon tN` or `atelier plan stop tP`, which closes
-the plan and its open parts and revokes their write tokens. `atelier show
-tP` prints the plan's brief.
+A runner that offers plan jobs claims the plan item, which forks the baseline into the plan's integration branch. It fetches the planner's brief from the server (the goal, the scope, and the schema to write), runs the harness, posts the plan document (`atelier.plan.v1`: the goal and its parts, each with a scope, dependencies, a brief and acceptance criteria) with `atelier plan post ID FILE`, and releases the claim. An invalid one is refused with every error, and the planner gets one more attempt before the plan blocks.
 
-Not built yet: no runner takes a plan job, so a planner claims the plan item
-with `atelier claim tP --as harness/model --runner home:NAME` and posts its
-plan by hand; a part's runner gets the brief any task gets; nothing reviews
-a part automatically; and parts do not merge into a branch of the plan's
-own. Until then each part reaches main as any item does, through the owner's
-acceptance and merge. The inbox lists a part only once it is accepted, so
-`atelier plan show tP` gives the command for each part waiting on the owner,
-and the plan is complete once every part has merged.
-[docs/orchestrator.md](docs/orchestrator.md) holds the design and says which
-of its steps are built.
+`atelier plan show ID [--json]` prints the newest proposal with its hash. `atelier plan approve ID --hash HASH [--allow-paid]` approves that exact split, once; an older hash is refused, and `atelier plan revise ID --note TEXT` sends a proposal back instead. Approval fixes the limits (two parts live at once, three attempts a part, four dispatches a part, 24 hours) and each part's routing: a builder, two alternates and a reviewer of another family, chosen from the model pool and the ledger's record. The parts become items, and Atelier dispatches each one once the parts it depends on have integrated, merged or been abandoned.
 
-A session that runs Atelier for a project, filing tasks, briefing agents,
-landing their work and judging reviews, should read
-[docs/orchestrating.md](docs/orchestrating.md) first.
+A builder's runner claims the part, fetches its brief (the plan's goal, the part's spec, acceptance criteria and interfaces, the heads its dependencies landed at, its scope, and the required checks), runs its harness, and finishes the work with `atelier finish`, which pushes, runs the required checks and submits. Once submitted with passing checks, the part goes to its routed reviewer through a review request served as a review job. A reviewer's runner claims it with `atelier review-claim ID [--runner home:NAME]`, writes a verdict and findings, and posts them. A rejection sends the part back to its builder for rework with the findings in its brief.
+
+An approval from another family moves the part to integration. The integrator runner, running with `--integrate`, claims the `integrate` job, fetches the part's head, merges it onto the plan's branch with `--no-ff`, runs the plan's checks, and reports `atelier integrated ID --part KEY --merge-commit SHA`. Once every part integrates, the integrator submits the plan item. The owner reviews the completed plan and lands it whole: `atelier merge ID [--head SHA]`.
+
+A plan that reaches a limit blocks and appears in the inbox; the owner decides with `atelier plan retry ID`, `atelier plan reroute ID --to H/M`, `atelier abandon ID` or `atelier plan stop ID [--note TEXT]`, which closes the plan and its open parts and revokes their write tokens. History and evidence stay.
+
+[docs/demo.md](docs/demo.md) walks a goal end to end through every command. A session that runs Atelier for a project, filing tasks, briefing agents, landing their work and judging reviews, should read [docs/orchestrating.md](docs/orchestrating.md) first.
 
 ## Home runner
 
-`atelier runner` polls the queue every 30 seconds, claims one eligible task,
-and runs its configured harness in the claimed workspace. The brief is kept
-outside that workspace. Each opencode run also gets a data folder of its own
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Each opencode run also gets a data folder of its own
 (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
 it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
 deadlock on it. Such a run finds its provider keys in the variables its
@@ -1095,8 +1066,7 @@ runner starts the command inside the review clone, which need not hold it.
 
 Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
-arrays with `{model}`, `{brief_file}`, and optional `{workspace}` placeholders;
-the runner invokes them directly without a shell. The example requires that
+arrays with `{model}` and `{brief_file}` placeholders. For a build job, `{workspace}` is the claimed workspace. For a plan job, `{plan_file}` is where the harness writes the plan document. For a review job, `{diff_file}` is the diff to review and `{verdict_file}` is where the harness writes its verdict. The runner invokes them directly without a shell. The example requires that
 model to be configured in opencode. `env` is optional: the names of the
 runner's variables this harness also gets, such as a provider key it reads or
 `XDG_CONFIG_HOME`; a name starting with `ATELIER_` is refused. A runner started
@@ -1361,6 +1331,87 @@ was. Spend is summed over a tool's models from the cost its record carries,
 so zcode, which records none, has no spend alert. Each alert and each
 clearing is recorded as an event on the index Ledger.
 
+## AI Gateway costs
+
+Calls that runners send through Cloudflare AI Gateway are counted from the
+gateway's own logs, not from a tool's record on a machine. Every five
+minutes a cron trigger reads the logs newer than the last one it wrote,
+newest first, from `GET /accounts/{CF_ACCOUNT_ID}/ai-gateway/gateways/{AI_GATEWAY_ID}/logs`,
+and writes one Workers Analytics Engine data point per log to the
+`atelier_metrics` dataset (binding `METRICS`): provider, model, tokens in
+and out, cost, duration, success, and the task, role and runner the call's
+`cf-aig-metadata` header named. The index Ledger keeps the newest log
+written, so a log is written once however many pulls see it. Logs are
+written oldest first and the mark moves only past logs written, so a missing
+binding or a failed write leaves the rest for the next pull. One pull reads
+at most 1,000 logs; when more arrived since the last pull, the stretch
+between the last log written and the oldest one read is not read, and is
+recorded as a gap that the Models page and `atelier runner --usage` show
+while it is in the window, so the totals never look complete when they are
+not. The Models page shows each model's calls, failures, tokens and cost for
+the last 7 days, summed by Analytics Engine over every call (weighted by its
+sample interval), and its median duration over the newest 10,000 durations,
+with the number it is taken over. `GET /api/usage` returns the same under
+`gateway`, and `atelier runner --usage` prints it after the tools' own
+figures.
+
+Set it up once:
+
+1. Give the Worker the account id (the dashboard shows it on the account's
+   overview) as the secret `CF_ACCOUNT_ID`, so the public source names no
+   account; unset, it keeps the gateway off. `AI_GATEWAY_ID` under `vars` in
+   `wrangler.jsonc` names the gateway and defaults to `atelier`.
+
+   ```sh
+   npx wrangler secret put CF_ACCOUNT_ID
+   ```
+2. In the dashboard, under My Profile → API Tokens → Create Token → Custom
+   token, create a token with the permission Account · AI Gateway · Read,
+   scoped to this account only, and give it to the Worker:
+
+   ```sh
+   npx wrangler secret put AI_GATEWAY_TOKEN
+   ```
+
+   Without it the cron does nothing, and the Models page says
+   "AI Gateway costs are off: set AI_GATEWAY_TOKEN".
+3. Create a second token with Account · Account Analytics · Read, scoped to
+   the same account, for reading the dataset back:
+
+   ```sh
+   npx wrangler secret put ANALYTICS_TOKEN
+   ```
+
+   Without it the logs are still written, and the Models page says they
+   cannot be read until it is set.
+
+Runners point opencode's pay-per-use providers at the gateway, each keeping
+its own key: the provider's base URL becomes
+`https://gateway.ai.cloudflare.com/v1/{ACCOUNT}/atelier/{provider}`, with
+`deepseek` or `openrouter` (or another provider the gateway knows) as the
+last segment, and a `cf-aig-metadata` header, a JSON object of at most five
+entries, says whose call it is:
+
+```json
+{
+  "provider": {
+    "deepseek": {
+      "options": {
+        "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
+        "headers": { "cf-aig-metadata": "{\"task\":\"t278\",\"role\":\"build\",\"runner\":\"home:studio\"}" }
+      }
+    }
+  }
+}
+```
+
+The provider's key still goes in the provider's own header as before; the
+gateway passes it through and logs the call. Atelier keeps only `task`,
+`role` and `runner` of the metadata. Subscription harnesses (Claude Code,
+Codex, the Gemini CLI, ZCode on its plan) stay direct: they bill by plan,
+not by call, and their limits are the windows `atelier runner --usage`
+already reports.
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
@@ -1379,7 +1430,7 @@ It pushes, runs required checks, and submits only if those checks pass and
 the workspace remains unchanged. A project with `sandboxOnly` enabled uses
 the cloud runner automatically. `--sandbox` selects it explicitly.
 
-The project owner can complete an exact revision with:
+Once a part of a plan is submitted, if the gate needs an independent review, the server queues a review request automatically as a `review` job, and a runner that offers review jobs claims it. Approval moves the part to integration. For a single task outside a plan, nothing is queued automatically; its review is requested when the owner lands it whole (see Landing a task whole), or the owner can complete an exact revision by hand with:
 
 ```sh
 atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
@@ -1522,13 +1573,10 @@ The steps in between:
    landing adds no typecheck of its own: the project's required checks are
    the whole gate, and they run through `atelier check` in a clean clone of
    the pushed head.
-4. If the gate needs an independent review, the landing asks the server for
-   one through the review-request routes: the reviewer is the one named with
+4. If the gate needs an independent review, the landing requests one through the
+   review-request routes and waits for the verdict: the reviewer is the one named with
    `--reviewer H/M`, or a model of another family than every contributor
-   picked from the pool, and the landing polls for the verdict, refusing to
-   go on after a rejection or a timeout (the request stays open and the task
-   stays submitted). `--no-review` skips the waiting and leaves the task
-   submitted for the owner to settle by hand.
+   picked from the pool. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection or a timeout stops the landing (the request stays open and the task stays submitted). `--no-review` skips the waiting and leaves the task submitted for the owner to settle by hand.
 5. The landing accepts and merges through the CLI's own `accept` and `merge`
    commands, each run as this CLI's child, so their checks and their
    journals behave exactly as when the owner runs them.
@@ -1637,10 +1685,4 @@ is recorded in `DESIGN.md`.
 
 ## Integration basis
 
-The decision workspace integrates t1 at `5ebb64e9` (cloud checks), t4 at
-`8c44da71` (real Ledger runtime tests), and the merged t5 cleanup work.
-Their commits remain in the integration history. Combined test discovery
-runs TypeScript and JavaScript unit tests and the Workers runtime suite.
-Cloud checks now bound retained output and mark interrupted runs failed
-instead of leaving them indefinitely running. Local verification does not
-establish a successful production container run.
+The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts fork from an updated basis. For a single task, `atelier land` merges main into the task's workspace before checks run. Local verification does not establish a successful production container run.

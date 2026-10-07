@@ -6,24 +6,28 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { readSecret } from "./credentials.mjs";
-import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
+import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
-  const { agents, errors } = parseConfig(config);
+  const { agents, errors, jobs } = parseConfig(config);
   if (errors.length) throw new Error(errors.join("; "));
-  // jobs says the dispatches besides building this runner takes (assign in
-  // src/dispatch/rules.ts): building, the plan job (docs/orchestrator.md,
-  // section 2), and whatever else the config lists, such as "review". A
-  // dispatch for any other job is never offered to it. A merge-main job
-  // (startMergeMain), a part's or a task's, is a build this runner knows how
-  // to set up, the task's under "merge-main-task" (t243). A part sent back
-  // after its integration conflicted (startMergePlan) is too, under
-  // "merge-plan".
-  return { runner: name.toLowerCase(), kind: "home", jobs: [...new Set(["build", "plan", "merge-main", "merge-main-task", "merge-plan", ...(config.jobs ?? [])])], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  // jobs says the dispatches this runner takes (assign in
+  // src/dispatch/rules.ts). Without it the runner takes every form of
+  // building: a plain build, the plan job (docs/orchestrator.md, section 2),
+  // a merge-main job (startMergeMain), a part's or a task's — the task's
+  // under "merge-main-task" (t243) — and a part sent back after its
+  // integration conflicted (startMergePlan), under "merge-plan". With it the
+  // runner takes exactly the jobs the config lists, so ["review"] keeps a
+  // runner for reviews alone (t252). The server never offers a dispatch for
+  // a job the offer lacks, a plain build included, but a server from before
+  // t252's fix hands a plain build to any runner with the agents for it, so
+  // the loop below passes such builds by when the offer does not name
+  // "build" (jobOf).
+  return { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
@@ -546,6 +550,23 @@ export async function runTask(assignment, config, name, io) {
 
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 
+// The job an assignment is, as the offer names jobs: the dispatch's own, the
+// merge jobs a build carries (a task's merge-main under "merge-main-task",
+// a part returned after an integration conflict under "merge-plan"), or a
+// plain build. The loop takes an assignment only when its offer lists the
+// job: the server never offers a job the offer lacks, a plain build included
+// (assign in src/dispatch/rules.ts), but one from before t252's fix offers a
+// plain build to any runner with the agents for it, so the runner itself
+// passes builds by when its config keeps it off them, leaving them in the
+// queue for a runner that takes them.
+export function jobOf(task) {
+  const d = task?.item?.dispatch ?? {};
+  if (d.job === "merge-main" && d.task) return "merge-main-task";
+  if (d.job) return d.job;
+  if (d.planHead != null) return "merge-plan";
+  return "build";
+}
+
 // A review job (docs/orchestrator.md, section 4): the runner claims a review
 // request, clones the part's head read-only, writes the diff, gives the
 // reviewer the brief and the diff, reads the verdict and posts it. A harness
@@ -877,6 +898,21 @@ export async function runRefresh(assignment, config, name, io) {
   }
 }
 
+// Whether a failed queue poll is the server being slow or briefly away: a
+// poll marked transient by its caller (atelier.mjs marks a timeout, a
+// network error, a 5xx and a 429), or one that timed out. The runner logs
+// the first of a run of them, backs off and polls again; it is no task's
+// failure and counts toward nothing.
+export function transientQueueError(error) {
+  return error?.transient === true || error?.name === "TimeoutError" || /^queue: (5\d\d|429)$/.test(String(error?.message ?? ""));
+}
+
+// The wait before the next poll after `misses` transient queue failures in
+// a row: the usual 30 seconds, doubled for each further miss, at most five minutes.
+export function queueBackoffMs(misses) {
+  return misses <= 1 ? 30_000 : Math.min(30_000 * 2 ** (misses - 1), 5 * 60_000);
+}
+
 export function failureCount(count, state) {
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
@@ -1103,16 +1139,35 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       const refusal = versionRefusal(await version(controller.signal));
       if (refusal) throw new Error(refusal);
     }
+    // Transient queue failures in a row (transientQueueError): the first is
+    // logged, the rest are quiet until the queue answers again, and each
+    // lengthens the wait before the next poll (queueBackoffMs).
+    let misses = 0;
     while (!controller.signal.aborted) {
       let state;
       try {
-        const tasks = await queue(offer, controller.signal);
+        let tasks;
+        try { tasks = await queue(offer, controller.signal); }
+        catch (error) {
+          if (controller.signal.aborted || !transientQueueError(error)) throw error;
+          misses++;
+          if (misses === 1) line(`queue unavailable (${error.message}); polling again with backoff`);
+          if (args.once) break;
+          await wait(queueBackoffMs(misses), undefined, { signal: controller.signal }).catch((error) => { if (error.name !== "AbortError") throw error; });
+          continue;
+        }
+        if (misses) line(`queue answering again after ${misses} failed poll${misses === 1 ? "" : "s"}`);
+        misses = 0;
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
         // Review jobs come first, in the queue's order, then the rest in
-        // theirs, so a review atelier land waits on is not held behind builds.
+        // theirs, so a review atelier land waits on is not held behind builds
+        // (t213). A job the offer does not name the runner never takes
+        // (jobOf), so one kept for reviews passes by the builds a server from
+        // before t252's fix still lists, and they stay in the queue for a
+        // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
-        for (const task of ordered.filter((task) => !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
+        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
