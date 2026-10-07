@@ -1,0 +1,31 @@
+atelier atelier/t221 "atelier land stops on a merge conflict even when every conflicted file is one the project's regenerate command rewrites (t214's merge of main conflicted only in test/fixtures/cli/help.txt): when the conflicts lie only in generated files, take either side, run the regenerate command, and continue, saying so; any other conflict still stops (found landing t214, 2026-10-06)"
+accepted head a1f80fff8e43484c21e6ed76101b3a1b376a762e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T03:30:24.589Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T03:30:29.030Z
+REVIEW approve by antigravity/gemini-3.1-pro at a1f80fff8e43484c21e6ed76101b3a1b376a762e, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T00:15:13.036Z pavi item.created
+2026-10-07T01:01:39.984Z pavi item.dispatched
+2026-10-07T01:45:57.898Z opencode/glm-5.3 item.claimed
+2026-10-07T01:46:08.724Z opencode/glm-5.3 fork.created
+2026-10-07T02:05:57.864Z opencode/glm-5.3 push.observed
+2026-10-07T02:07:58.340Z opencode/glm-5.3 evidence.observed
+2026-10-07T02:08:01.306Z opencode/glm-5.3 evidence.observed
+2026-10-07T02:08:01.975Z opencode/glm-5.3 item.submitted
+2026-10-07T02:56:11.181Z pavi land.lease
+2026-10-07T02:56:14.897Z pavi land.merge
+2026-10-07T03:27:19.867Z pavi land.lease
+2026-10-07T03:27:22.935Z pavi land.merge
+2026-10-07T03:27:32.919Z pavi land.regenerate
+2026-10-07T03:27:37.091Z opencode/glm-5.3 push.observed
+2026-10-07T03:27:37.263Z pavi land.push
+2026-10-07T03:30:26.174Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:30:29.428Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:30:29.973Z pavi land.check
+2026-10-07T03:30:30.364Z opencode/glm-5.3 item.submitted
+2026-10-07T03:30:30.563Z pavi land.submit
+2026-10-07T03:30:30.675Z pavi review.requested
+2026-10-07T03:30:52.297Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T03:34:36.044Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T03:34:40.712Z pavi land.review
+2026-10-07T03:34:41.270Z pavi item.accepted
+2026-10-07T03:34:41.371Z pavi land.accept
