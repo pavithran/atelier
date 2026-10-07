@@ -48,6 +48,7 @@ export interface PlanView {
   preview: PartRoute[] | null;    // before approval: the routing an approval would fix now
   integration: { integrationHead: string | null };  // the plan branch's integration head; null when none is recorded
   harnessFailure: string | null;  // the release note when the harness failed, shown while the plan waits for the planner
+  pastDeadline: boolean;          // an approved plan past its deadline, whose block only stop can lift
 }
 
 const flat = (text: string) => text.replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim();
@@ -156,6 +157,12 @@ function nextSteps(v: PlanView, flag: string): string[] {
   if (v.item.state === "merged") return ["The plan is complete: each part has merged or was abandoned. Nothing waits."];
   if (v.item.state === "abandoned") return ["The plan is stopped. Nothing waits."];
   if (v.blocked && v.approval) {
+    if (v.pastDeadline) {
+      return [
+        "The plan is blocked until you decide:",
+        `  close the plan and its open parts: atelier plan stop ${id} ${flag}`,
+      ];
+    }
     return [
       "The plan is blocked until you decide:",
       `  count a part's attempts afresh: atelier plan retry tN ${flag}`,
