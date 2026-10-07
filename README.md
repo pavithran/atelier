@@ -1328,6 +1328,75 @@ was. Spend is summed over a tool's models from the cost its record carries,
 so zcode, which records none, has no spend alert. Each alert and each
 clearing is recorded as an event on the index Ledger.
 
+## AI Gateway costs
+
+Calls that runners send through Cloudflare AI Gateway are counted from the
+gateway's own logs, not from a tool's record on a machine. Every five
+minutes a cron trigger reads the logs newer than the last one it wrote,
+newest first, from `GET /accounts/{CF_ACCOUNT_ID}/ai-gateway/gateways/{AI_GATEWAY_ID}/logs`,
+and writes one Workers Analytics Engine data point per log to the
+`atelier_metrics` dataset (binding `METRICS`): provider, model, tokens in
+and out, cost, duration, success, and the task, role and runner the call's
+`cf-aig-metadata` header named. The index Ledger keeps the newest log
+written, so a log is written once however many pulls see it. The Models
+page shows each model's calls, tokens, cost and median duration (with the
+number of calls the median is taken over) for the last 7 days, read back
+through the Analytics Engine SQL API; `GET /api/usage` returns the same
+under `gateway`, and `atelier runner --usage` prints it after the tools'
+own figures.
+
+Set it up once:
+
+1. Put the account id in `CF_ACCOUNT_ID` under `vars` in `wrangler.jsonc`
+   (it ships empty, which keeps the gateway off). `AI_GATEWAY_ID` names the
+   gateway and defaults to `atelier`.
+2. In the dashboard, under My Profile → API Tokens → Create Token → Custom
+   token, create a token with the permission Account · AI Gateway · Read,
+   scoped to this account only, and give it to the Worker:
+
+   ```sh
+   npx wrangler secret put AI_GATEWAY_TOKEN
+   ```
+
+   Without it the cron does nothing, and the Models page says
+   "AI Gateway costs are off: set AI_GATEWAY_TOKEN".
+3. Create a second token with Account · Account Analytics · Read, scoped to
+   the same account, for reading the dataset back:
+
+   ```sh
+   npx wrangler secret put ANALYTICS_TOKEN
+   ```
+
+   Without it the logs are still written, and the Models page says they
+   cannot be read until it is set.
+
+Runners point opencode's pay-per-use providers at the gateway, each keeping
+its own key: the provider's base URL becomes
+`https://gateway.ai.cloudflare.com/v1/{ACCOUNT}/atelier/{provider}`, with
+`deepseek` or `openrouter` (or another provider the gateway knows) as the
+last segment, and a `cf-aig-metadata` header, a JSON object of at most five
+entries, says whose call it is:
+
+```json
+{
+  "provider": {
+    "deepseek": {
+      "options": {
+        "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
+        "headers": { "cf-aig-metadata": "{\"task\":\"t278\",\"role\":\"build\",\"runner\":\"home:studio\"}" }
+      }
+    }
+  }
+}
+```
+
+The provider's key still goes in the provider's own header as before; the
+gateway passes it through and logs the call. Atelier keeps only `task`,
+`role` and `runner` of the metadata. Subscription harnesses (Claude Code,
+Codex, the Gemini CLI, ZCode on its plan) stay direct: they bill by plan,
+not by call, and their limits are the windows `atelier runner --usage`
+already reports.
+
 ## The Studio
 
 `/studio` shows the floor: one lane per live task on a shared time axis,
