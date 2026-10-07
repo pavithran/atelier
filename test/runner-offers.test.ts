@@ -52,6 +52,22 @@ test("a build dispatch naming a model no live runner offers is said the same way
   assert.equal(unoffered({ ...build, agent: null, model: null }, [seen("home:studio", { agents: [{ agent: "opencode", models: ["glm-5.3"] }] })], NOW), null);
 });
 
+// t252's incident: the only live runner was kept for reviews, and the build
+// the server kept handing it held every review behind it while unoffered
+// said nothing, because assign() treated build as always offered. A plain
+// build now needs "build" in offer.jobs like any other job.
+test("the only live runner being reviews-only, a plain build is said to be one no live runner can take", () => {
+  const build: Dispatch = { to: "home", agent: null, model: null, by: "owner", at: NOW.toISOString(), note: "" };
+  const rev = seen("home:mbp-rev", { jobs: ["review"], agents: [{ agent: "antigravity", models: ["gemini-3.1-pro"] }] });
+  assert.equal(unoffered(build, [rev], NOW), "no live runner can take it: home:mbp-rev offers no build job");
+  // The same holds when the build names the very model the runner serves:
+  // the jobs it lacks, not the names it offers, are what stops it.
+  assert.equal(unoffered({ ...build, agent: "antigravity", model: "gemini-3.1-pro" }, [rev], NOW),
+    "no live runner can take it: home:mbp-rev offers no build job");
+  // An older runner's ask, which named no job, still takes the build.
+  assert.equal(unoffered(build, [rev, seen("home:mbp", { agents: [{ agent: "antigravity", models: ["gemini-3.1-pro"] }] })], NOW), null);
+});
+
 test("offers older than the live window count for nothing, and none at all is said as that", () => {
   const stale = new Date(NOW.getTime() - OFFER_LIVE_MS - 1000).toISOString();
   assert.equal(
