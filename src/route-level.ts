@@ -7,8 +7,9 @@
 // route the server did not have, or changes the meaning of an existing route
 // the CLI relies on; a merge that changes neither changes nothing here,
 // whatever commit it moves to. Two tasks that each raise it from one base
-// merge cleanly to the number they share; atelier land, after merging
-// main, compares this file at the task's fork point, its head and main's
-// head, and raises the merged level to main's plus the task's own raise,
-// so each number keeps meaning one set of routes.
+// merge cleanly to the number they share; atelier land, wherever the
+// workspace's HEAD holds main — its own merge or a rerun of one resolved
+// by hand — compares this file at the task's fork point, its head and
+// main's head, and raises the merged level to main's plus the task's own
+// raise, so each number keeps meaning one set of routes.
 export const ROUTE_LEVEL = 8;
