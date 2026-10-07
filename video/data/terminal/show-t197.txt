@@ -1,0 +1,7 @@
+atelier/t197  Update the docs to the orchestrator as it runs now: /how's orchestrator section…
+Plan t197, approved at 695de1221a7d: Update the docs to the orchestrator as it runs now: /how's orchestrator section says what is built (plans, routing, automatic cross-family reviews served by home runners, the integration branch, atelier land) and draws the plan flow from goal to accepted merge as inline SVG like src/diagrams.ts; th…
+Phase: merged.
+Parts: 10 merged, 1 abandoned.
+Part dispatches: 37 of 44; deadline 2026-10-07 22:22 UTC.
+Recommendation: none. The plan is complete: each part has merged or was abandoned; nothing waits.
+https://atelier.zone/p/atelier/t197
