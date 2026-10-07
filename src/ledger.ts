@@ -1875,6 +1875,12 @@ export class Ledger extends DurableObject<Env> {
     const all = approval ? this.partEvents(item.id) : [];
     const attempts = partAttempts(tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!]))));
     const ids = new Map(parts.map((p) => [p.partKey!, p.id]));
+    // The planner's last release note, when the harness failed before posting
+    // a proposal: plan show tells the owner the harness failed, distinct from
+    // an invalid proposal, which blocks the plan instead.
+    const released = this.events(item.id).find((e) => e.kind === "item.released");
+    const releasedNote = released && typeof released.data.note === "string" ? released.data.note : "";
+    const harnessFailure = releasedNote.startsWith("the harness failed: ") ? releasedNote : null;
     return {
       item,
       phase: planPhase({ proposed: newest !== null, approved: approval !== null, blocked: record.blocked, state: item.state }),
@@ -1903,6 +1909,7 @@ export class Ledger extends DurableObject<Env> {
       preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
       // The plan branch's integration head (docs/orchestrator.md, section 5).
       integration: { integrationHead: record.integrationHead ?? null },
+      harnessFailure,
     };
   }
 

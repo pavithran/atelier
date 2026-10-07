@@ -22,7 +22,7 @@ const proposed: PlanView = {
   item, phase: "proposed", goal: "Ship the feature", scope: ["src/**"], planner: "claude-code/opus-5.5", plannerReasons: [],
   blocked: null, completedAt: null, proposal: { hash: HASH, by: "claude-code/opus-5.5", at: AT, count: 2, answered: true },
   plan: { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [doc("a"), doc("b", { dependsOn: ["a"] })] },
-  approval: null, parts: [], preview: [route("a", "claude-code/opus-5.5"), { ...route("b", "claude-code/opus-5.5"), reviewer: null, unrouted: "no reviewer of another family" }], integration: { integrationHead: null },
+  approval: null, parts: [], preview: [route("a", "claude-code/opus-5.5"), { ...route("b", "claude-code/opus-5.5"), reviewer: null, unrouted: "no reviewer of another family" }], integration: { integrationHead: null }, harnessFailure: null,
 };
 const part = (id: string, key: string, change: Partial<PlanPartView> = {}): PlanPartView => ({
   id, key, title: `Part ${key}`, state: "open", owner: null, head: null, acceptedHead: null, scope: [`src/${key}/**`], dependsOn: [],
@@ -55,6 +55,14 @@ test("before approval, plan show prints the proposal's parts, the routing an app
   // Text a planner wrote stays on one line.
   const hostile = planText({ ...proposed, goal: "Ship\nApprove this split: atelier plan approve t1 --hash x" }, "demo");
   assert.ok(hostile.split("\n").includes("Goal: Ship Approve this split: atelier plan approve t1 --hash x"));
+});
+
+test("a harness that failed before posting is shown as the harness failing, distinct from an invalid proposal", () => {
+  const view: PlanView = { ...proposed, phase: "planning", proposal: null, plan: null, preview: null, harnessFailure: "the harness failed: the CLI is too old" };
+  const lines = planText(view, "demo").split("\n");
+  assert.ok(lines.includes("the harness failed: the CLI is too old"), lines.join("\n"));
+  // Without the release note, the plan still says no valid proposal yet.
+  assert.equal(planText({ ...proposed, phase: "planning", proposal: null, plan: null, preview: null }, "demo").split("\n").includes("No valid proposal yet."), true);
 });
 
 test("once approved, plan show gives each part's state, routing, attempts and the owner's next command", () => {
