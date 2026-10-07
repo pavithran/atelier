@@ -75,7 +75,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
-    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], runners: null, renewFails: false,
+    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], runners: null, renewFails: false, kinds: {},
   };
   // The tasks fork from the baseline before main moves, so a landing has
   // main's commits to merge; each has a workspace in the cache's layout.
@@ -102,7 +102,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const state = box.states[id];
     const events = id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : [];
     return {
-      item: { id, title: `Fixture ${id}`, state, owner: "codex/test", head, acceptedHead: state === "accepted" || state === "merged" ? head : null },
+      item: { id, title: `Fixture ${id}`, state, owner: "codex/test", head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { checks: ["exit 0"], protected: ["work.txt"], regenerate: box.regen },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
@@ -300,6 +300,25 @@ test("--no-review leaves the task submitted, accepts and merges nothing, and rel
   assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review"]);
   const dry = await f.run(f.checkout, "land", "t2", "--no-review", "--dry-run");
   assert.doesNotMatch(dry.output, /accept t2 at the pushed head/);
+});
+
+// A plan lands through atelier merge at its integration head: the merge of
+// main a landing makes would put a commit beside the recorded integrations,
+// so the landing refuses before the lease or the workspace changes, dry run
+// included, naming the merge and the refresh that take its place.
+test("a plan item is refused before the lease, pointing at atelier merge and atelier plan refresh", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main.txt", text: "main\n", message: "Main moves" } });
+  f.box.kinds.t1 = "plan";
+  const before = git(f.workspace("t1"), "rev-parse", "HEAD");
+  for (const args of [["land", "t1"], ["land", "t1", "--dry-run"]]) {
+    const r = await f.run(f.checkout, ...args);
+    assert.notEqual(r.status, 0, r.output);
+    assert.match(r.output, /t1 is a plan, which atelier land does not land: a plan lands with atelier merge t1 --head INTEGRATION_HEAD, the integration head atelier plan show t1 prints, and a plan branch that is behind main takes main through atelier plan refresh t1\./);
+  }
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(f.posts("/land").length, 0);
+  assert.equal(f.box.lease, null);
+  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
 });
 
 test("the lease refuses a second landing with who holds it and since when", async (t) => {

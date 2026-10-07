@@ -990,7 +990,14 @@ export interface Gate {
   overridden?: ReviewOverride;  // set when the owner's override stands in for a missing independent review
 }
 
-export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Gate {
+// `reviewHeld` says the change's independent review is held outside the
+// item, as a plan's is by its integrated parts' reviews (planGate): the
+// item's own contributors are then not compared with any reviewer, and no
+// independent review, assessor or override is asked of it. Every other
+// blocker stands, a rejection at the head among them.
+export interface GateOptions { reviewHeld?: boolean }
+
+export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {
   reviews = countingReviews(reviews, item.head, policy, owner);
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
@@ -1011,12 +1018,13 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   let overridden: ReviewOverride | null = null;
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
   // A protected change needs an independent review in every project, and a
-  // coordinated one does under an execution policy. Families and agents are
+  // coordinated one does under an execution policy, unless the review is
+  // held outside the item (reviewHeld). Families and agents are
   // compared by modelKey and sameActor, so a contributor's model under
   // another letter case, profile or registered name is never independent of
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
-  if (kind === "protected" || (governed && kind === "coordinated")) {
+  if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
     if (!reviews.some((r) => independentApproval(r, kind, contributors, owner))) {
       overridden = overrideAt(item, owner);
