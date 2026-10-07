@@ -6,7 +6,9 @@ import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
   cleanGoal, completion, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries, plannerAttempts,
   plannerBlock, planTitle, refreshDecision, tickEvents, waitingParts, type PlanRecord, type PlanRefresh,
+  addedPart, conflictPaths, maxJobsOf, mergeMainKey, mergeMainPart, mergeMainScope, planWithAdded, routesOf,
 } from "../src/plans/state.ts";
+import { parsePlan } from "../src/plans/schema.ts";
 import { assertEligible, inboxFor, overlappingLive, parseRuleError, samePlan, type Item, type ProjectPolicy } from "../src/rules.ts";
 
 // The pure half of the plan ledger (src/plans/state.ts) and the rules the
@@ -185,4 +187,52 @@ test("refreshDecision dispatches a refresh once per main head, waits on one in f
   assert.equal(refreshDecision({ main: M0, taken: M0, last: last(M1, "dispatched"), busy: false }), "wait", "a refresh in flight is waited on whatever main is");
   assert.equal(refreshDecision({ main: M1, taken: M0, last: last(M1, "failed"), busy: false }), "none", "a failed refresh is not tried again for the same head");
   assert.equal(refreshDecision({ main: M2, taken: M0, last: last(M1, "failed"), busy: false }), "dispatch", "a new main head is tried");
+});
+
+// A merge-main part: its key and spec from the main head, its scope from the
+// conflicting paths a refresh's failure names, and how the plan's document,
+// routing and dispatch limit take in the parts the Ledger added, leaving the
+// approved document as it was.
+test("a merge-main part is keyed and scoped from the main head and the conflict, and joins the plan beside its approved document", () => {
+  const M = "abcdef0123456789".repeat(2) + "abcdef01";
+  assert.equal(mergeMainKey(M), "merge-main-abcdef01");
+  const reason = "merging main conflicted: Auto-merging src/a.ts\nCONFLICT (content): Merge conflict in src/diagrams.ts\nCONFLICT (modify/delete): docs/x.md deleted in HEAD and modified in 1234.\nCONFLICT (content): Merge conflict in src/diagrams.ts";
+  assert.deepEqual(conflictPaths(reason), ["src/diagrams.ts", "docs/x.md"]);
+  assert.deepEqual(conflictPaths("merging main conflicted"), []);
+  // Paths with spaces, from lines joined by newlines and by single spaces.
+  const spaced = "merging main conflicted: Auto-merging docs/a b.md\nCONFLICT (content): Merge conflict in docs/a b.md\nCONFLICT (modify/delete): my dir/x y.ts deleted in HEAD and modified in 1234.\nAutomatic merge failed; fix conflicts and then commit the result.";
+  assert.deepEqual(conflictPaths(spaced), ["docs/a b.md", "my dir/x y.ts"]);
+  assert.deepEqual(conflictPaths(spaced.replace(/\n/g, " ")), ["docs/a b.md", "my dir/x y.ts"]);
+  assert.deepEqual(conflictPaths("merging main conflicted: Auto-merging src/diagrams.ts CONFLICT (content): Merge conflict in src/diagrams.ts Auto-merging src/how-data.ts Automatic merge failed; fix conflicts and then commit the result."), ["src/diagrams.ts"]);
+  assert.deepEqual(mergeMainScope(reason, ["src/**"]), ["src/diagrams.ts", "docs/x.md"]);
+  assert.deepEqual(mergeMainScope("no paths", ["src/**"]), ["src/**"]);
+  assert.deepEqual(mergeMainScope("no paths", []), ["**"]);
+  const seven = Array.from({ length: 7 }, (_, i) => `CONFLICT (content): Merge conflict in f${i}`).join("\n");
+  assert.deepEqual(mergeMainScope(seven, ["src/**"]), ["src/**"], "more paths than a part's scope holds fall back to the plan's");
+  const spec = mergeMainPart(M, ["src/diagrams.ts"]);
+  assert.equal(spec.title, "Merge main at abcdef01 into the plan's branch");
+  assert.deepEqual([spec.key, spec.dependsOn, spec.scope, spec.taskKind], ["merge-main-abcdef01", [], ["src/diagrams.ts"], "refactor"]);
+  // The spec is a valid part, as the plan schema reads one.
+  const parsed = parsePlan({ schema: "atelier.plan.v1", goal: "g", parts: [spec] });
+  assert.ok(parsed.ok, JSON.stringify(parsed));
+  const approved = { schema: "atelier.plan.v1" as const, goal: "g", parts: [{ ...spec, key: "a", title: "a" }] };
+  const route = { key: spec.key, builder: null, alternates: [], reviewer: null, excluded: [], unrouted: "none" };
+  const record = {
+    approval: { limits: limitsFor(1, false), routes: [{ ...route, key: "a" }] }, reroutes: {},
+    added: [{ id: "t9", part: spec, route, mainHead: M, by: ORCHESTRATOR, at: AT, reason: "conflicted" }],
+  } as unknown as PlanRecord;
+  assert.deepEqual(planWithAdded(approved, record).parts.map((p) => p.key), ["a", "merge-main-abcdef01"]);
+  assert.deepEqual(approved.parts.map((p) => p.key), ["a"], "the approved document is not changed");
+  assert.equal(planWithAdded(approved, { added: [] }), approved);
+  assert.deepEqual(routesOf(record).map((r) => r.key), ["a", "merge-main-abcdef01"]);
+  assert.equal(maxJobsOf(record), 8, "an added part brings as many part dispatches as an approved one");
+  assert.equal(addedPart(record, "merge-main-abcdef01")?.id, "t9");
+  assert.equal(addedPart(record, "a"), null);
+});
+
+test("a merge-main dispatch goes only to a runner that offers the merge-main job, under the routed builder", () => {
+  const d: Dispatch = { to: "home", agent: "codex", model: "gpt-6-astra", by: ORCHESTRATOR, at: AT, note: "", job: "merge-main", head: "1".repeat(40) };
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  assert.equal(assign(d, { runner: "home:old", kind: "home", agents, jobs: ["build", "plan"] }), null);
+  assert.deepEqual(assign(d, { runner: "home:new", kind: "home", agents, jobs: ["build", "plan", "merge-main"] }), { agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" });
 });
