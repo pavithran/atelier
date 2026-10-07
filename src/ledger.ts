@@ -25,7 +25,8 @@ import { integrationFailures, partAttempts, partReviewers, planActions, planPhas
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
-  byPartKey, plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
+  byPartKey, mainTakenOf, plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, refreshDecision, RUN_LIMITS, tickEvents, waitingParts,
+  type PlanRecord, type PlanRefresh,
 } from "./plans/state.ts";
 import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanView } from "./plans/show.ts";
@@ -51,8 +52,10 @@ export interface LedgerEvent {
 }
 
 // What a review claim returns: the part, the head under review, the review
-// need (null when it no longer holds), the plan account for the brief, and
-// the part's events for the builder's summary (docs/orchestrator.md, section 4).
+// need (null when it no longer holds), the plan account for the brief, the
+// part's events for the builder's summary and the owner's verdicts on earlier
+// findings (docs/orchestrator.md, section 4), and the project's review bar,
+// null when it sets none and the brief states the default.
 export interface ReviewClaim {
   item: Item;
   head: string;
@@ -60,6 +63,7 @@ export interface ReviewClaim {
   plan: { goal: string; part: PlanPart } | null;
   events: LedgerEvent[];
   owner: string;
+  reviewBar: string | null;
 }
 
 export interface ProjectRecord {
@@ -114,6 +118,8 @@ export interface ProjectInit {
   // The command that regenerates the project's fixtures in a task's workspace
   // after it merges main; null clears it (see ProjectPolicy.regenerate).
   regenerate?: string | null;
+  // What may block a review; null clears it (see ProjectPolicy.reviewBar).
+  reviewBar?: string | null;
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -226,6 +232,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
+  const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -241,6 +248,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(shipRuns.length ? { shipRuns } : {}),
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
+      ...(reviewBar ? { reviewBar } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -895,6 +903,9 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { fork, base, head: base }, at);
     this.log(id, actor, "fork.created", { fork, base }, at, proved);
+    // A plan forks from the baseline, so its base is main's head as it
+    // stands now.
+    if (base && this.item(id).kind === "plan") this.setMainHead(base, at);
   }
 
   // The worker has already read the fork's head from Artifacts; what is logged
@@ -1438,6 +1449,11 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
+    // Main is at the merge now. A plan's merge ends it, and a part merged
+    // onto main on its own is the path where the plan dispatches its
+    // dependants as its parts merge, so only another task's merge is taken
+    // as main moving under a plan.
+    if (item.kind !== "part" && item.kind !== "plan") this.setMainHead(mergeCommit, at);
     // A plan's merge lands its parts too: each integrated part is marked
     // merged with the plan it landed through (docs/orchestrator.md, section 5).
     if (item.kind === "plan") {
@@ -1584,11 +1600,7 @@ export class Ledger extends DurableObject<Env> {
     const rows = id
       ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`, id, below, limit).toArray()
       : this.sql.exec(`SELECT * FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?`, below, limit).toArray();
-    return rows.map((r) => ({
-      seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
-      ...(r.proved === 1 ? { proved: true as const } : {}),
-      actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
-    }));
+    return rows.map(eventOf);
   }
 
   // Who holds what, without titles, scopes or paths: safe to hand to a
@@ -1984,8 +1996,10 @@ export class Ledger extends DurableObject<Env> {
   // plan's phase and record, its newest proposal and, once approved, each
   // part with its state, routing, attempts and, when submitted or accepted,
   // its gate. With the pool, a plan not yet approved also shows the routing
-  // an approval would fix now, without paid models. Nothing here is written.
-  planView(id: string, pool: ModelEntry[] | null = null): PlanView {
+  // an approval would fix now, without paid models. `mainNow` is main's head
+  // as the Worker read it for this view, else the head the Ledger last
+  // observed is shown. Nothing here is written.
+  planView(id: string, pool: ModelEntry[] | null = null, mainNow: string | null = null): PlanView {
     const asked = this.item(id);
     const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
     if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404);
@@ -2034,6 +2048,11 @@ export class Ledger extends DurableObject<Env> {
       preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
       // The plan branch's integration head (docs/orchestrator.md, section 5).
       integration: { integrationHead: record.integrationHead ?? null },
+      // How the branch stands against main, and its latest refresh.
+      refresh: {
+        taken: mainTakenOf(record, item), main: mainNow ?? this.mainHead(),
+        last: record.refresh ?? null, running: record.refresh?.state === "dispatched" && item.owner === INTEGRATOR,
+      },
       harnessFailure,
       pastDeadline: pastDeadline(record, new Date().toISOString()),
     };
@@ -2296,6 +2315,15 @@ export class Ledger extends DurableObject<Env> {
       else chosen = chosen.slice(0, room);
     }
     this.setBlocked(id, record, blocked);
+    // Refresh (docs/orchestrator.md, section 5): a part forks from the plan's
+    // branch, so before one is dispatched a branch that does not hold main's
+    // head takes it. While that refresh is in flight, or waits for an
+    // integration to free the plan item, no part is dispatched.
+    if (!blocked && chosen.length) {
+      const decision = refreshDecision({ main: this.mainHead(), taken: mainTakenOf(record, plan), last: record.refresh ?? null, busy: !!plan.owner || plan.state !== "open" || !!plan.dispatch });
+      if (decision === "dispatch") this.dispatchRefresh(id, record, this.mainHead()!, ORCHESTRATOR, at, `main moved to ${this.mainHead()!.slice(0, 8)} since the branch last took it; refreshed before part ${chosen[0].part} is dispatched`);
+      if (decision !== "none") chosen = [];
+    }
     const waiting = waitingParts(events);
     const wanted = new Map(blocked ? [] : chosen.map((d) => [d.part, d]));
     for (const p of parts) {
@@ -2310,7 +2338,7 @@ export class Ledger extends DurableObject<Env> {
     }
     // Integration (docs/orchestrator.md, section 5): the next part ready to
     // integrate dispatches the plan item's integrate job to the integrator.
-    if (!blocked) this.integrateDispatch(id, plan, parts, at);
+    if (!blocked) this.integrateDispatch(id, this.item(id), parts, at);
   }
 
   // Automatic review (docs/orchestrator.md, section 4): asks for a review
@@ -2402,8 +2430,8 @@ export class Ledger extends DurableObject<Env> {
       const slash = reviewer.indexOf("/");
       const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
       const brief = reviewBrief({
-        need, item: p, events: this.events(p.id),
-        plan: { goal: plan.goal, part }, diff: null, owner: this.owner,
+        need, item: p, events: this.briefEvents(p.id),
+        plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
       });
       const briefHash = briefFingerprint(brief);
       this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state) VALUES (?, ?, ?, ?, 'open')`,
@@ -2498,8 +2526,9 @@ export class Ledger extends DurableObject<Env> {
     const record = item.plan ? this.planRecord(item.plan) : null;
     const plan = record?.approval ? this.approvedPlan(item.plan!, record.approval.hash) : null;
     const part = plan?.parts.find((x) => x.key === item.partKey) ?? null;
+    const policy = this.project().policy;
     const need = reviewNeeded({
-      item, part: item.kind === "part", policy: this.project().policy,
+      item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
       requests: [], wanted: !!row.wanted, now: new Date(at), owner: this.owner,
     });
@@ -2509,8 +2538,19 @@ export class Ledger extends DurableObject<Env> {
       item, head,
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
-      events: this.events(itemId), owner: this.owner,
+      events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null,
     };
+  }
+
+  // The events a review brief reads: the item's latest, for the builder's
+  // summary, and every verdict the owner recorded on a finding of it, however
+  // old, so a later round shows each one.
+  private briefEvents(id: string): LedgerEvent[] {
+    const latest = this.events(id);
+    const oldest = latest.length ? latest[latest.length - 1].seq : Number.MAX_SAFE_INTEGER;
+    const older = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' AND seq < ? ORDER BY seq DESC`, id, oldest).toArray()
+      .map(eventOf);
+    return [...latest, ...older];
   }
 
   // A review request for a submitted item the gate needs reviewed, asked for
@@ -2697,6 +2737,124 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
+  // ── refresh (docs/orchestrator.md, section 5) ────────────────────────────
+  // A plan's branch takes main's later work through a refresh: the
+  // integrator merges main's head into the branch, and the merge becomes the
+  // integration head. The Ledger cannot read Artifacts, so it keeps main's
+  // head as last observed: by a merge it recorded, a plan's fork, or the
+  // Worker reading the baseline (noteMainHead). Each observation is true when
+  // made, so the latest stands.
+
+  // Main's head as the Ledger last observed it, or null before any observation.
+  private mainHead(): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'main-head'`).toArray()[0];
+    return row ? (JSON.parse(row.value as string) as { head: string }).head : null;
+  }
+
+  private setMainHead(head: string, at: string): void {
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('main-head', ?)`, JSON.stringify({ head, at }));
+  }
+
+  // The Worker reports main's head as it read it from the baseline.
+  noteMainHead(head: string): void {
+    if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
+    this.setMainHead(head, new Date().toISOString());
+  }
+
+  // Puts the plan item's refresh job in the queue for the integrator, to
+  // merge `mainHead`, and records it as the plan's latest refresh.
+  private dispatchRefresh(id: string, record: PlanRecord, mainHead: string, by: string, at: string, reason: string): void {
+    const d = { ...makeDispatch({ to: "home", agent: "atelier", model: "integrator", note: `refresh from main at ${mainHead.slice(0, 8)}` }, by, at), job: "refresh" as const, head: mainHead };
+    this.writeDispatch(id, d, { reason });
+    record.refresh = { mainHead, state: "dispatched", by, at };
+    this.savePlanRecord(id, record);
+  }
+
+  // The owner's atelier plan refresh: dispatches the refresh job for main's
+  // head as the Worker read it (and noted first with noteMainHead). Refused for a plan not approved, or not
+  // building any more (submitted, accepted, merged or stopped); while the
+  // plan item's integrate or refresh job is queued or held; and when the
+  // branch already holds main's head, which the Worker found (`holds`).
+  planRefresh(id: string, actor: string, mainHead: string, holds: boolean): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner refreshes a plan's branch", 403);
+    const plan = this.planItem(id);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    const record = this.planRecord(id);
+    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved; its branch is refreshed only once the plan is building`, 409);
+    if (plan.state === "submitted" || plan.state === "accepted") {
+      throw new RuleError("not_building", `${id} is ${plan.state}: every part is integrated, and the owner lands the branch with atelier merge ${id}, which merges it with main`, 409);
+    }
+    const job = plan.dispatch?.job;
+    if (plan.owner || job === "integrate" || job === "refresh" || record.refresh?.state === "dispatched") {
+      const what = plan.owner ? `${plan.owner} holds ${id}` : job === "integrate" ? `${id}'s integrate job for part ${plan.dispatch?.part} is queued` : `a refresh from main at ${(record.refresh?.mainHead ?? "").slice(0, 8)} is queued`;
+      throw new RuleError("job_in_flight", `${what}; run atelier plan refresh again once it is done`, 409);
+    }
+    if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
+    if (holds) {
+      throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to refresh`, 409);
+    }
+    this.dispatchRefresh(id, record, mainHead, actor, new Date().toISOString(), "the project owner asked for a refresh");
+    return this.item(id);
+  }
+
+  // What the Worker needs to verify a refresh: the plan item, its
+  // integration head, and the refresh in flight.
+  refreshTarget(id: string): { plan: Item; integrationHead: string | null; refresh: PlanRefresh | null } {
+    const plan = this.planItem(id);
+    const record = this.planRecord(id);
+    return { plan, integrationHead: record.integrationHead ?? null, refresh: record.refresh ?? null };
+  }
+
+  // The refresh in flight that the integrator reports on, refusing any other.
+  private reportedRefresh(id: string, actor: string, mainHead: string, what: string): { plan: Item; record: PlanRecord; refresh: PlanRefresh } {
+    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records a refresh${what}`, 403);
+    const plan = this.planItem(id);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    if (plan.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}; claim its refresh job first`, 403);
+    const record = this.planRecord(id);
+    const refresh = record.refresh;
+    if (!refresh || refresh.state !== "dispatched") throw new RuleError("no_refresh", `${id} has no refresh in flight`, 409);
+    if (refresh.mainHead !== mainHead) throw new RuleError("other_refresh", `${id}'s refresh in flight merges main at ${refresh.mainHead.slice(0, 8)}, not ${mainHead.slice(0, 8)}`, 409);
+    return { plan, record, refresh };
+  }
+
+  // Records a verified refresh: main's head is what the branch holds now,
+  // and the merge commit, when there is one, is the integration head that
+  // later parts fork from and later integrations sit on. With no merge
+  // commit the branch already held main's head and the integration head
+  // stays. The refresh job clears. The Worker has verified the merge
+  // against the plan branch's log and passes `verified: true`.
+  refreshed(id: string, actor: string, mainHead: string, mergeCommit: string | null, verified: boolean): Item {
+    const { record, refresh } = this.reportedRefresh(id, actor, mainHead, "");
+    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the plan's branch", 409);
+    const at = new Date().toISOString();
+    if (mergeCommit) record.integrationHead = mergeCommit;
+    record.mainTaken = mainHead;
+    record.refresh = { ...refresh, state: "refreshed", endedAt: at, mergeCommit };
+    this.savePlanRecord(id, record);
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+    this.log(id, actor, "plan.refreshed", { mainHead, mergeCommit }, at);
+    this.afterPlanChange(id);
+    return this.item(id);
+  }
+
+  // A refresh that conflicted or failed the plan's checks, after the
+  // integrator rolled the branch back. It is the plan's, not a part's: no
+  // builder is charged. It is recorded as the plan's latest refresh, so the
+  // tick does not dispatch it again for the same main head and plan show
+  // gives the reason; the refresh job clears.
+  refreshFailed(id: string, actor: string, mainHead: string, reason: string, kind: string | null): Item {
+    const { record, refresh } = this.reportedRefresh(id, actor, mainHead, " failure");
+    const at = new Date().toISOString();
+    const why = reason.slice(0, 500);
+    record.refresh = { ...refresh, state: "failed", endedAt: at, reason: why, kind };
+    this.savePlanRecord(id, record);
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+    this.log(id, actor, "plan.refresh_failed", { mainHead, reason: why, ...(kind ? { kind } : {}) }, at);
+    this.afterPlanChange(id);
+    return this.item(id);
+  }
+
   // Before approval: once the planner has let the plan go twice without a
   // valid proposal, the plan job leaves the queue and the plan is blocked.
   private plannerTick(id: string, record: PlanRecord, at: string): void {
@@ -2772,6 +2930,15 @@ export class Ledger extends DurableObject<Env> {
 }
 
 function toEvent(r: Row): LedgerEvent {
+  return {
+    seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
+    ...(r.proved === 1 ? { proved: true as const } : {}),
+    actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
+  };
+}
+
+// An events row as the Ledger returns it.
+function eventOf(r: Row): LedgerEvent {
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
