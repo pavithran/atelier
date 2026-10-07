@@ -1140,15 +1140,16 @@ const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompar
 // The brief above sums the reviews at the current head into one line and cuts
 // the newest rejection's note to it; this is the record a session reads to
 // learn why a review rejected the task (t173). One flattened line per field,
-// so no note or finding can pose as a line of Atelier's own. A tier review
-// (src/review/tier.ts), the second opinion beside the gate's, is labelled.
+// so no note or finding can pose as a line of Atelier's own. A separate tier
+// review (src/review/tier.ts), beside the gate's, is labelled, and so is a
+// gate review by a tier model, which gives the tier review too.
 export function formatReviews(reviews, owner = OWNER) {
   const ordered = newestReviews(reviews);
   if (!ordered.length) return "No reviews are recorded.";
   const lines = ["Reviews:"];
   for (const r of ordered) {
     const recorded = recordedText(r, owner);
-    lines.push(`  ${r.tier ? "Tier review: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
+    lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
     for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
   }
@@ -1926,7 +1927,7 @@ const commands = {
     console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks only for a correctness, security or data-loss defect"}`);
     // A server older than the review bar ignores it and answers without one.
     if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
-    console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change beside the gate's review` : "none"}`);
+    console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
     if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);

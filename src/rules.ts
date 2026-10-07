@@ -150,6 +150,11 @@ export interface Review {
   // review. Its rejection blocks as any rejection does; its approval is never
   // the independent review the gate counts (independentApproval).
   tier?: boolean;
+  // Set when the review answered the gate's request asked of a tier model of
+  // another family than every contributor: the gate's review, which gives
+  // the tier review too (gateServesTier in src/review/tier.ts). It counts for
+  // the gate as any review does.
+  topTier?: boolean;
 }
 
 export type ChangeClass = "direct" | "coordinated" | "protected";
@@ -191,9 +196,12 @@ export interface ProjectPolicy {
   // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
   reviewBar?: string;
   // The project's top review tier, as harness/model actors (`atelier init
-  // --review-tier`): every protected change that gets its gate review also
-  // gets a tier review from one of these that did not build it, whatever its
-  // family. Absent or empty, no tier review is asked for.
+  // --review-tier`): every protected change that gets its gate review is
+  // also reviewed by one of these. The gate's review goes to a tier model of
+  // another family than every contributor first, and then serves both; a
+  // gate reviewer outside the tier gets a separate tier request beside it,
+  // for a tier model that did not build the change, whatever its family.
+  // Absent or empty, no tier review is asked for.
   reviewTier?: string[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
@@ -1043,7 +1051,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
     }
   }
   const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
-  for (const r of rejected) blockers.push(`rejected by ${r.by}${r.tier ? " (tier review)" : ""}: ${r.note || "no note"}`);
+  for (const r of rejected) blockers.push(`rejected by ${r.by}${r.tier ? " (tier review)" : r.topTier ? " (gate review, top tier)" : ""}: ${r.note || "no note"}`);
   // Scope is matched as written: a path in another letter case is reported
   // outside it, which shows the variant rather than hiding it.
   const outOfScope = item.scope.length ? changed.filter((p) => !matchesAny(p, item.scope)) : [];

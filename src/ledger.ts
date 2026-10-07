@@ -37,7 +37,7 @@ import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { independenceRefusal } from "./review/independence.ts";
-import { pickTierReviewer } from "./review/tier.ts";
+import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -406,6 +406,9 @@ export class Ledger extends DurableObject<Env> {
     // Set on a tier review request (src/review/tier.ts), asked beside the
     // gate's review; it never holds the gate's request or a landing back.
     if (!requestColumns.includes("tier")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN tier INTEGER`);
+    // Set on a gate's request asked of a tier model of another family than
+    // every contributor, whose review serves as the tier review too.
+    if (!requestColumns.includes("topTier")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN topTier INTEGER`);
     this.backfillReviewProvenance();
     // A deploy can change the tick's logic, and a plan waiting on nothing
     // the new logic would read sits idle until something else changes; the
@@ -1171,7 +1174,7 @@ export class Ledger extends DurableObject<Env> {
     // owner when the owner token named it. A review answering a request the
     // reviewer claimed at this head was served through the request flow,
     // which the gate counts even when the owner token recorded it.
-    const claims = this.sql.exec(`SELECT id, claimedBy, tier FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed'`, r.itemId, r.head).toArray()
+    const claims = this.sql.exec(`SELECT id, claimedBy, tier, topTier FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed'`, r.itemId, r.head).toArray()
       .filter((c) => typeof c.claimedBy === "string" && sameActor(c.claimedBy, r.by));
     const claimed = claims.length > 0;
     // A review answering a tier request this reviewer claimed is a tier
@@ -1186,11 +1189,14 @@ export class Ledger extends DurableObject<Env> {
         throw new RuleError("tier_withdrawn", `the tier review of ${r.itemId} at ${r.head.slice(0, 8)} asked of ${r.by} was withdrawn; a tier review never holds a landing, and this one is no longer asked for`, 409);
       }
     }
-    r = { ...r, recordedBy: proved ? r.by : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}) };
+    // A review answering a gate's request asked of a tier model gives the
+    // tier review too (gateServesTier): the gate's review, top tier.
+    const topTier = !tierClaim && claims.some((c) => c.tier !== 1 && c.topTier === 1);
+    r = { ...r, recordedBy: proved ? r.by : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
@@ -2641,6 +2647,9 @@ export class Ledger extends DurableObject<Env> {
         item: p, pool: approval.pool, policy, allowPaid: approval.allowPaid,
         part, route,
         previous: need.previousReviewer,
+        // A protected part's review goes to the tier first, so one review
+        // serves the gate and the tier (src/review/tier.ts).
+        tier: need.changeClass === "protected" ? policy.reviewTier : undefined,
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
       });
@@ -2666,9 +2675,10 @@ export class Ledger extends DurableObject<Env> {
         plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
       });
       const briefHash = briefFingerprint(brief);
-      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state) VALUES (?, ?, ?, ?, 'open')`,
-        p.id, need.head, JSON.stringify(dispatch), briefHash);
-      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round }, at);
+      const topTier = this.gateIsTier(p, need, reviewer);
+      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, topTier) VALUES (?, ?, ?, ?, 'open', ?)`,
+        p.id, need.head, JSON.stringify(dispatch), briefHash, topTier ? 1 : null);
+      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, ...(topTier ? { topTier: true } : {}) }, at);
       this.askTierReview(p, need, reviewer, ORCHESTRATOR, at);
     }
   }
@@ -2711,7 +2721,7 @@ export class Ledger extends DurableObject<Env> {
   // the part has no open or claimed request. With `tier`, the live tier
   // request (src/review/tier.ts) instead of the gate's.
   private partReviewRequest(id: string, tier = false): PlanPartReview | null {
-    const row = this.sql.exec(`SELECT head, dispatch, state, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND tier IS ${tier ? "1" : "NULL"} ORDER BY id DESC LIMIT 1`, id).toArray()[0];
+    const row = this.sql.exec(`SELECT head, dispatch, state, claimedBy, claimedAt, topTier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND tier IS ${tier ? "1" : "NULL"} ORDER BY id DESC LIMIT 1`, id).toArray()[0];
     if (!row) return null;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
     if (!dispatch.agent || !dispatch.model) return null;
@@ -2721,6 +2731,7 @@ export class Ledger extends DurableObject<Env> {
       state: row.state === "claimed" ? "claimed" : "open",
       claimedBy: (row.claimedBy as string | null) ?? null,
       claimedAt: (row.claimedAt as string | null) ?? null,
+      ...(row.topTier === 1 ? { topTier: true } : {}),
     };
   }
 
@@ -2873,6 +2884,9 @@ export class Ledger extends DurableObject<Env> {
       const pick = pickReviewer({
         item, pool, policy, allowPaid: false,
         previous: need.previousReviewer,
+        // A protected change's review goes to the tier first, so one review
+        // serves the gate and the tier (src/review/tier.ts).
+        tier: need.changeClass === "protected" ? policy.reviewTier : undefined,
         avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
         owner: this.owner,
       });
@@ -2883,8 +2897,9 @@ export class Ledger extends DurableObject<Env> {
     }
     const slash = chosen.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted) VALUES (?, ?, ?, ?, 'open', ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null);
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(wanted ? { wanted: true } : {}) }, at, proved);
+    const topTier = this.gateIsTier(item, need, chosen);
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier) VALUES (?, ?, ?, ?, 'open', ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
     return { needed: true, requested: true, reason: need.reason, at, head: need.head, reviewer: chosen };
   }
@@ -2906,16 +2921,27 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL`, itemId, head);
   }
 
-  // Asks the project's top review tier (src/review/tier.ts) for one review of
-  // a protected change, beside the gate's request just made for the same
-  // head: from the first tier model that did not build it and is not asked
-  // for the gate, whatever its family. Nothing is asked when the project has
-  // no tier, the change is not protected, a tier request was made for this
-  // head already, or no tier model remains.
+  // Whether the gate's request just being made for a protected change is
+  // asked of a tier model that gives the tier review too (gateServesTier in
+  // src/review/tier.ts), so no separate tier request is needed.
+  private gateIsTier(item: Item, need: ReviewRequired, reviewer: string): boolean {
+    return need.changeClass === "protected" && gateServesTier(this.project().policy.reviewTier, reviewer, contributorsOf(item));
+  }
+
+  // Asks the project's top review tier (src/review/tier.ts) for a separate
+  // review of a protected change, beside the gate's request just made for the
+  // same head, when the gate's reviewer is outside the tier: from the first
+  // tier model that did not build it and is not asked for the gate, whatever
+  // its family. Nothing is asked when the project has no tier, the change is
+  // not protected, the gate's reviewer gives the tier review too, a tier
+  // request was made or a tier review recorded for this head already, or no
+  // tier model remains.
   private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false): void {
     const policy = this.project().policy;
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
+    if (this.gateIsTier(item, need, gateReviewer)) return;
     if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1`, item.id, need.head).toArray().length) return;
+    if (this.reviewsFor(item.id).some((r) => r.head === need.head && (r.tier || r.topTier))) return;
     const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
       .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));

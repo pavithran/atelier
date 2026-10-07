@@ -23,7 +23,8 @@ import { unoffered } from "../src/dispatch/rules.ts";
 // asks the server for the independent review the gate needs, or the one the
 // owner names with --reviewer whether or not the gate needs it, and waits
 // for the verdict, then accepts and merges. It waits for the gate's review
-// only: a tier review the server asks beside it (src/review/tier.ts) stops
+// only, which the server routes to the review tier first so one review serves
+// both; a separate tier review asked beside it (src/review/tier.ts) stops
 // the landing when it rejects, never holds it, and the server withdraws a
 // tier request still open when the task is accepted. Every step, its duration and the
 // commits that came from main are recorded on the ledger as land.* events
@@ -697,7 +698,7 @@ export async function runLand(io) {
               await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
               throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${verdict.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
             }
-            print(`${verdict.by} approved ${id} at ${short(head)}.`);
+            print(`${verdict.by} approved ${id} at ${short(head)}${verdict.topTier ? ", as the gate review and the top tier's" : ""}.`);
             await record("review", Date.now() - t0, { verdict: "approve", reviewer: verdict.by, resolvedBy: verdict.by });
             break;
           }
