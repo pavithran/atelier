@@ -10,18 +10,22 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
 // In the task's workspace it merges main (stopping on conflicts, which it
-// leaves for the owner to resolve, naming the files, unless every conflicted
-// file is one the project's regenerate command rewrites, when it takes
-// either side, regenerates and goes on), regenerates the project's fixtures
-// when its policy declares how, then pushes and runs the
-// required checks through the CLI's own commands, each as a child process so
-// a failure can still release the lease and record the step. It asks the
-// server for the independent review the gate needs, or the one the owner names
-// with --reviewer whether or not the gate needs it, and waits for the verdict,
-// then accepts and merges. Every step, its duration and the commits that came
-// from main are recorded on the ledger as land.* events (t186 reads them for
-// the integration cost), and the server must be at this CLI's route level or
-// newer, or the landing refuses before it starts, saying to deploy.
+// leaves for the owner to resolve, naming the files — or sends back to the
+// task's builder with atelier dispatch ID --job merge-main, whose runner
+// merges main again and leaves the conflicts for the builder, where a plain
+// rework would reset the workspace to a head that cannot reach main, t243 —
+// unless every conflicted file is one the project's regenerate command
+// rewrites, when it takes either side, regenerates and goes on), regenerates
+// the project's fixtures when its policy declares how, then pushes and runs
+// the required checks through the CLI's own commands, each as a child
+// process so a failure can still release the lease and record the step. It
+// asks the server for the independent review the gate needs, or the one the
+// owner names with --reviewer whether or not the gate needs it, and waits
+// for the verdict, then accepts and merges. Every step, its duration and the
+// commits that came from main are recorded on the ledger as land.* events
+// (t186 reads them for the integration cost), and the server must be at this
+// CLI's route level or newer, or the landing refuses before it starts,
+// saying to deploy.
 //
 // The lease never strands the project (t214): a landing renews it every
 // LEASE_RENEW_MS while it runs, the server treats a lease not renewed for
@@ -165,7 +169,7 @@ export async function runLand(io) {
   if (dryRun) {
     print(`Dry run: atelier land ${id} in ${name} would:`);
     print(`  1. ${waitingOn ? `wait behind ${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)}), then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name})`);
-    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files`);
+    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch ${id} --job merge-main`);
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
     print(`  4. push the merged head to ${id}'s fork`);
     print(`  5. run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of the pushed head`);
@@ -410,8 +414,15 @@ export async function runLand(io) {
         if (!settled) {
           const data = { fromMain, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
           await record("merge", Date.now() - t0, { failed: true, ...data });
+          // The conflicts can go back to the task's builder instead of the
+          // owner's session (t243): a merge-main dispatch makes a runner
+          // merge main here again — the workspace's reset clears the merge
+          // this landing left — and brief the builder to resolve it, where a
+          // plain rework dispatch would reset the workspace to a head that
+          // cannot reach main. The holder is named, for a task that has one.
+          const holder = typeof d0.item.owner === "string" && d0.item.owner.includes("/") ? d0.item.owner : null;
           throw new StepError(conflicts.length
-            ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit. Then run atelier land ${id} again.`
+            ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve and commit, and then atelier land ${id} again.`
             : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
         }
       }

@@ -1155,6 +1155,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      // A merge-main dispatch names the main head its job merges. The owner
+      // names none after a landing conflicted, so the head is main's as the
+      // baseline holds it now (read as plan refresh reads it, t243): a newer
+      // head than the one the landing saw meets the same conflict, and an
+      // unreadable baseline is refused rather than guessed at.
+      if (body.job === "merge-main" && !body.head) {
+        const main = await mainHeadOf(env, L);
+        if (!main) throw new RuleError("bad_head", "main's head could not be read from the baseline to name the merge-main job's head; try again, or name it: atelier dispatch ID --job merge-main --head FULL_HASH", 503);
+        body.head = main;
+      }
       // A held task is released as it is queued, so its holder's write token
       // is revoked first, as for a release.
       const oldToken = await L.tokenId(id);
