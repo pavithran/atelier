@@ -85,7 +85,9 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       if (req.method === "GET") answer = { lease: box.lease };
       else if (body.cancel === true) { box.lease = null; answer = { held: true }; }
       else {
-        if (box.lease && box.lease.item !== item) return fail(409, "landing_lease", `${box.lease.holder} has been landing ${box.lease.item} since ${box.lease.at}; one landing runs at a time in this project`);
+        // Another queued landing takes the lease first, once, when a test asks.
+        if (box.takenFirst) { box.lease = box.takenFirst; box.takenFirst = null; }
+        if (box.lease && box.lease.item !== item && !["merged", "abandoned"].includes(box.states[box.lease.item])) return fail(409, "landing_lease", `${box.lease.holder} has been landing ${box.lease.item} since ${box.lease.at}; one landing runs at a time in this project`);
         box.lease = { item, holder: "owner", at: new Date().toISOString() };
         answer = { item: { id: item, state: box.states[item] } };
       }
@@ -110,12 +112,13 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const url = `http://127.0.0.1:${server.address().port}`;
   writeFileSync(join(config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: { proj: { path: checkout, branch: "main" } } }));
   const run = async (cwd, ...args) => {
-    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url } });
-    let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ...fx.env } });
+    let output = ""; child.stdout.on("data", (s) => { output += s; fx.onOutput?.(output); }); child.stderr.on("data", (s) => output += s);
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
   };
-  return { p, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
+  const fx = { p, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
+  return fx;
 }
 
 test("a clean landing takes the lease, merges main, regenerates, checks, waits for the review, accepts and merges", async (t) => {
@@ -217,11 +220,101 @@ test("the lease refuses a second landing with who holds it and since when", asyn
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /owner has been landing t2 since 2026-10-06 09:30 UTC/);
+  assert.match(r.output, /atelier land t1 --wait queues behind it/);
   // Nothing changed: no lease was taken or posted, the workspace did not move.
   assert.ok(f.box.requests.every((x) => !(x.method === "POST" && x.path.endsWith("/landing-lease"))));
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
   assert.ok(!existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
   assert.deepEqual(f.posts("/land"), []);
+});
+
+// --wait (t223): the landing queues for the lease instead of refusing.
+const WAITING = /Waiting behind (\S+)'s landing of (t\d) \(since ([^)]+)\); t1 starts as soon as the lease is free\./g;
+
+test("a lease held for a task that has closed guards nothing, so the landing starts without --wait", async (t) => {
+  const f = await landFixture(t);
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z" };
+  f.box.states.t2 = "merged";
+  const r = await f.run(f.checkout, "land", "t1", "--no-review");
+  assert.equal(r.status, 0, r.output);
+  assert.doesNotMatch(r.output, /already in progress|Waiting behind/);
+  assert.equal(f.box.lease, null);
+});
+
+test("--wait queues behind another landing, says whose each time it changes, and starts once the lease is free", async (t) => {
+  const f = await landFixture(t);
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z" };
+  f.env = { ATELIER_LAND_POLL_MS: "40" };
+  let freedAt = null;
+  f.onOutput = (out) => {
+    const seen = [...out.matchAll(WAITING)].length;
+    // The landing of t2 is started again (the lease moves to a new time), then ends.
+    if (seen === 1 && f.box.lease?.at === "2026-10-06T09:30:00.000Z") setTimeout(() => { f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T10:05:00.000Z" }; }, 120);
+    if (seen === 2 && freedAt === null) { freedAt = -1; setTimeout(() => { f.box.lease = null; freedAt = f.box.requests.length; }, 120); }
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
+  assert.equal(r.status, 0, r.output);
+  const waits = [...r.output.matchAll(WAITING)].map((m) => m.slice(1));
+  assert.deepEqual(waits, [["owner", "t2", "2026-10-06 09:30 UTC"], ["owner", "t2", "2026-10-06 10:05 UTC"]]);
+  // It polled while it waited and took the lease only once it was free.
+  const takes = f.box.requests.map((x, i) => ({ ...x, i })).filter((x) => x.method === "POST" && x.path.endsWith("/landing-lease") && x.body.item === "t1");
+  assert.equal(takes.length, 1);
+  assert.ok(freedAt > 0 && takes[0].i >= freedAt, "the lease was taken before it was free");
+  assert.ok(f.box.requests.filter((x) => x.method === "GET" && x.path.endsWith("/landing-lease")).length > 3);
+  assert.match(r.output, /Landing lease taken for t1/);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review"]);
+  assert.equal(f.box.lease, null);
+});
+
+test("--wait queues again when another queued landing takes the lease first", async (t) => {
+  const f = await landFixture(t);
+  f.box.takenFirst = { item: "t2", holder: "owner", at: "2026-10-06T11:00:00.000Z" };
+  f.env = { ATELIER_LAND_POLL_MS: "40" };
+  let freeing = false;
+  f.onOutput = (out) => {
+    if (!freeing && [...out.matchAll(WAITING)].length === 1) { freeing = true; setTimeout(() => { f.box.lease = null; }, 120); }
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-06 11:00 UTC\)/);
+  assert.equal(f.posts("/landing-lease").filter((x) => x.body.item === "t1").length, 2);
+  assert.equal(f.posts("/land").filter((x) => x.body.step === "lease").length, 1);
+  assert.equal(f.box.lease, null);
+});
+
+test("--wait asks the refusals again once the lease is free, so a workspace changed while it queued is not landed", async (t) => {
+  const f = await landFixture(t);
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z" };
+  f.env = { ATELIER_LAND_POLL_MS: "40" };
+  let freeing = false;
+  f.onOutput = () => {
+    if (freeing) return;
+    freeing = true;
+    writeFileSync(join(f.workspace("t1"), "stray.txt"), "uncommitted\n");
+    setTimeout(() => { f.box.lease = null; }, 120);
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--wait");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /Waiting behind owner's landing of t2/);
+  assert.match(r.output, /t1's workspace has uncommitted changes/);
+  assert.deepEqual(f.posts("/landing-lease"), []);
+  assert.deepEqual(f.posts("/land"), []);
+});
+
+test("--wait gives up after its limit with nothing changed, and --dry-run says it would wait", async (t) => {
+  const f = await landFixture(t);
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z" };
+  const dry = await f.run(f.checkout, "land", "t1", "--wait", "--dry-run");
+  assert.equal(dry.status, 0, dry.output);
+  assert.match(dry.output, /1\. wait behind owner's landing of t2 \(since 2026-10-06 09:30 UTC\), then take the project's landing lease for t1/);
+  const before = git(f.workspace("t1"), "rev-parse", "HEAD");
+  f.env = { ATELIER_LAND_POLL_MS: "40", ATELIER_LAND_WAIT_TIMEOUT: "2000" };
+  const r = await f.run(f.checkout, "land", "t1", "--wait");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the landing lease was not free within 2 seconds: owner still holds it for t2\. Nothing was changed/);
+  assert.deepEqual(f.posts("/landing-lease"), []);
+  assert.deepEqual(f.posts("/land"), []);
+  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
 });
 
 test("a conflict stops the landing with the files named and the merge left for the owner", async (t) => {

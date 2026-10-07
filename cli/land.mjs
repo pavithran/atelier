@@ -18,11 +18,17 @@ import { ROUTE_LEVEL } from "../src/route-level.ts";
 // then accepts and merges. Every step, its duration and the commits that came
 // from main are recorded on the ledger as land.* events (t186 reads them for
 // the integration cost), and the server must be at this CLI's route level or
-// newer, or the landing refuses before it starts, saying to deploy.
+// newer, or the landing refuses before it starts, saying to deploy. While
+// another task's landing holds the lease the landing refuses, or with --wait
+// (t223) queues for it, saying whose landing it waits behind, and starts as
+// soon as the lease is free, so several landings started at once run in turn.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 const REVIEW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_REVIEW_TIMEOUT ?? 30 * 60_000);
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
+// How long --wait queues for the landing lease before it gives up, so a
+// landing left holding the lease does not keep a queued one waiting for ever.
+const WAIT_TIMEOUT_MS = Number(process.env.ATELIER_LAND_WAIT_TIMEOUT ?? 3 * 60 * 60_000);
 
 const short = (sha) => (sha ? sha.slice(0, 8) : "—");
 
@@ -36,6 +42,7 @@ export async function runLand(io) {
   const { args, name, id, p, request, git, die, print } = io;
   const dryRun = args["dry-run"] === true;
   const noReview = args["no-review"] === true;
+  const wait = args.wait === true;
   const reviewer = args.reviewer;
   if (reviewer !== undefined && (typeof reviewer !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(reviewer))) {
     die(`--reviewer needs harness/model, such as codex/gpt-6-astra: atelier land ${id} --reviewer H/M`);
@@ -63,25 +70,41 @@ export async function runLand(io) {
 
   // The lease is read, not taken, so the checks that only refuse are asked
   // before anything changes. A lease held for another live task refuses the
-  // landing with who holds it and since when.
-  const { lease } = await request("GET", leasePath);
-  if (lease && lease.item !== id) {
-    die(`a landing is already in progress: ${lease.holder} has been landing ${lease.item} since ${String(lease.at).slice(0, 16).replace("T", " ")} UTC. One landing runs at a time in ${name}; wait for it, or run atelier land ${lease.item} again to finish or release that landing`);
+  // landing with who holds it and since when; with --wait (t223) the landing
+  // queues behind it instead. A lease whose task has closed guards nothing,
+  // as the server says when it hands the lease over.
+  const since = (lease) => `${String(lease.at).slice(0, 16).replace("T", " ")} UTC`;
+  const blocking = async () => {
+    const { lease } = await request("GET", leasePath);
+    if (!lease || lease.item === id) return null;
+    let holder = null;
+    try { holder = await request("GET", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(lease.item)}`); } catch { /* an item that cannot be read still holds the lease, as the server sees it */ }
+    return holder && ["merged", "abandoned"].includes(holder.item?.state) ? null : lease;
+  };
+  let lease = await blocking();
+  if (lease && !wait) {
+    die(`a landing is already in progress: ${lease.holder} has been landing ${lease.item} since ${since(lease)}. One landing runs at a time in ${name}; wait for it (atelier land ${id} --wait queues behind it), or run atelier land ${lease.item} again to finish or release that landing`);
   }
 
-  const d0 = await request("GET", itemPath);
-  if (["merged", "abandoned"].includes(d0.item.state)) die(`${id} is ${d0.item.state}; there is nothing to land`);
-  if (d0.item.state === "accepted") die(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}`);
-  if (!existsSync(join(dir, ".git"))) die(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one`);
-  const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
-  if (held.project !== name || held.item !== id) die(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace`);
-  if (existsSync(join(dir, ".git", "MERGE_HEAD"))) die(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again`);
-  if (git(["status", "--porcelain"], { cwd: dir })) die(`${id}'s workspace has uncommitted changes; commit or set them aside before landing`);
+  // The refusals that need no lease, asked again after a wait, since the task
+  // or its workspace may have changed while it queued.
+  const preflight = async () => {
+    const d = await request("GET", itemPath);
+    if (["merged", "abandoned"].includes(d.item.state)) die(`${id} is ${d.item.state}; there is nothing to land`);
+    if (d.item.state === "accepted") die(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}`);
+    if (!existsSync(join(dir, ".git"))) die(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one`);
+    const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
+    if (held.project !== name || held.item !== id) die(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace`);
+    if (existsSync(join(dir, ".git", "MERGE_HEAD"))) die(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again`);
+    if (git(["status", "--porcelain"], { cwd: dir })) die(`${id}'s workspace has uncommitted changes; commit or set them aside before landing`);
+    return d;
+  };
+  const d0 = await preflight();
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
   if (dryRun) {
     print(`Dry run: atelier land ${id} in ${name} would:`);
-    print(`  1. take the project's landing lease for ${id} (one landing at a time in ${name})`);
+    print(`  1. ${lease ? `wait behind ${lease.holder}'s landing of ${lease.item} (since ${since(lease)}), then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name})`);
     print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files`);
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes` : "regenerate nothing (the project declares no regenerate command)"}`);
     print(`  4. push the merged head to ${id}'s fork`);
@@ -111,14 +134,46 @@ export async function runLand(io) {
     try { await request("POST", leasePath, { cancel: true }); }
     catch (error) { print(`Warning: the landing lease could not be released; a later landing of ${id} takes it over: ${error.message}`); }
   };
+  // --wait polls the lease until no live task holds it, saying whose landing
+  // it waits behind each time that changes. Nothing is taken while it waits,
+  // so ending the command then leaves nothing to release.
+  const queue = async () => {
+    const start = Date.now();
+    let shown = null;
+    for (;;) {
+      const current = await blocking();
+      if (!current) return;
+      const key = `${current.holder} ${current.item} ${current.at}`;
+      if (key !== shown) {
+        print(`Waiting behind ${current.holder}'s landing of ${current.item} (since ${since(current)}); ${id} starts as soon as the lease is free.`);
+        shown = key;
+      }
+      if (Date.now() - start >= WAIT_TIMEOUT_MS) die(`the landing lease was not free within ${WAIT_TIMEOUT_MS < 60_000 ? `${Math.round(WAIT_TIMEOUT_MS / 1000)} seconds` : `${Math.round(WAIT_TIMEOUT_MS / 60_000)} minutes`}: ${current.holder} still holds it for ${current.item}. Nothing was changed; run atelier land ${current.item} again to finish or release that landing, then atelier land ${id} again`);
+      await new Promise((ok) => setTimeout(ok, POLL_MS));
+    }
+  };
+
   try {
     let t0 = Date.now();
-    try {
-      const { item } = await request("POST", leasePath, { item: id });
-      leased = true;
-      print(`Landing lease taken for ${id} (${item.state}); one landing at a time in ${name}.`);
-    } catch (error) {
-      throw new StepError(error.message.replace(/^landing_lease: /, "") || `the landing lease could not be taken: ${error.message}`);
+    for (;;) {
+      if (lease) {
+        await queue();
+        await preflight();
+      }
+      // The lease step's duration is the taking alone: time spent queued
+      // behind another landing is not this task's cost of landing.
+      t0 = Date.now();
+      try {
+        const { item } = await request("POST", leasePath, { item: id });
+        leased = true;
+        print(`Landing lease taken for ${id} (${item.state}); one landing at a time in ${name}.`);
+        break;
+      } catch (error) {
+        // Another queued landing can take the lease between the poll and
+        // this request; with --wait this one queues again behind it.
+        if (wait && /^landing_lease: /.test(error.message)) { lease = true; continue; }
+        throw new StepError(error.message.replace(/^landing_lease: /, "") || `the landing lease could not be taken: ${error.message}`);
+      }
     }
     await record("lease", Date.now() - t0);
 
