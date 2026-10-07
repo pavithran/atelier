@@ -970,16 +970,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
   // One landing at a time per project (atelier land, t187): GET reads who
-  // holds the lease; POST takes it for one task, refusing while another live
-  // task's landing holds it and naming a lapsed lease it took over,
-  // { item, renew: true } is the holder's heartbeat, and { cancel: true, item }
-  // releases that task's lease, answering which task held it since when, and
-  // leaves another task's lease alone.
+  // holds the lease and the landings queued for it (t249); POST takes it for
+  // one task, refusing while another live task's landing holds it or a
+  // landing that queued earlier still waits for it, and naming a lapsed
+  // lease it took over, { item, renew: true } is the holder's heartbeat, {
+  // item, queued: true } is a waiting landing's ask, which refreshes its
+  // place in the queue and answers the lease and the queue as the server
+  // sees them (with leave: true it gives up its place instead), and {
+  // cancel: true, item } releases that task's lease, answering which task
+  // held it since when, and leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
-    if (m === "GET") return json({ lease: await L.readProjectLanding() });
+    if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
     requireOwner(env, actor);
     if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
+    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
