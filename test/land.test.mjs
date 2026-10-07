@@ -24,7 +24,10 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // named, --release-lease frees it saying which task held it since when, and
 // every early refusal of the task holding it offers that command. With --wait
 // (t223) the landing queues behind a live lease instead of refusing, asks the
-// refusals again once it is free, and gives up after its limit.
+// refusals again once it is free, and gives up after its limit. A landing
+// that loses its lease stops (t232): one that slept while another landing
+// took the lease over ends without accepting or merging, however it learns
+// of the loss, and leaves the lease that took it over where it is.
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -690,6 +693,57 @@ test("a refused renewal stops the heartbeat and is said once, and the lost lease
   // Ending the landing leaves t2's lease where it is.
   landing.child.kill("SIGTERM");
   await landing.done;
+  assert.equal(f.box.lease?.item, "t2");
+  assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
+});
+
+test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", async (t) => {
+  const f = await landFixture(t);
+  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
+  await until(() => f.box.review.pending, 15_000, "the review request");
+  const before = { checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
+  // The Mac sleeps (t232): the renewals pause, the lease lapses, and t2's
+  // landing, queued with --wait, takes it over.
+  const taken = new Date().toISOString();
+  f.box.lease = { item: "t2", holder: "owner", at: taken, renewedAt: taken };
+  const ended = await landing.done;
+  assert.equal(ended.status, 1, landing.output());
+  assert.match(landing.output(), /no longer t1's/);
+  assert.match(landing.output(), /another landing took the landing lease of proj over, so this landing stops without accepting or merging t1/);
+  assert.match(landing.output(), /Nothing was merged; run atelier land t1 again once the other landing ends/);
+  // Nothing was accepted or merged, and main did not move.
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.checkout);
+  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
+  // The lease the other landing took stands, and the landing that lost it
+  // did not try to free it.
+  assert.equal(f.box.lease?.item, "t2");
+  assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
+});
+
+test("before accepting, the landing asks for the lease again, so a takeover its heartbeat has not reported stops it", async (t) => {
+  const f = await landFixture(t);
+  // The heartbeat is slow, so the takeover (the Mac slept and woke at the
+  // verdict) must be caught by the renewal the landing asks for itself
+  // before the steps that publish.
+  f.env = { ATELIER_LAND_RENEW_MS: "3600000", ATELIER_LAND_POLL_MS: "40" };
+  f.onOutput = (out) => {
+    if (out.includes("Review requested")) f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
+  };
+  const before = { checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the landing lease is no longer t1's \(no_lease: the landing lease is held for t2, not t1\); this landing stops before accepting or merging t1\. Nothing was merged/);
+  // The verdict came and was recorded, but nothing was accepted or merged.
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "approve");
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.checkout);
+  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
+  // The lease the other landing took stands.
   assert.equal(f.box.lease?.item, "t2");
   assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
 });
