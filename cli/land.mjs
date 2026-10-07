@@ -33,6 +33,16 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // --wait (t223) queues for it, saying whose landing it waits behind, and
 // starts as soon as the lease is free, so several landings started at once
 // run in turn.
+//
+// A landing that loses the lease stops (t232): a Mac can sleep through a
+// landing, pausing the timers, so the lease lapses and a landing queued with
+// --wait takes it over, and the first landing, woken, would otherwise go on
+// to accept and merge beside the second. A renewal the server refuses ends
+// the landing at the next step (and the wait for a verdict with it), the
+// lease is asked for by hand again before the steps that publish to main,
+// and the server refuses a merge while another task's landing holds the
+// lease (beginLanding), so two landings never race on main however the
+// loss is missed.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // The review wait outlasts a build on the runner (its task timeout is 45
@@ -262,15 +272,49 @@ export async function runLand(io) {
     // another landing's now. A renewal that fails to reach the server, or
     // that the server fails (a 5xx), is retried on the next beat and warned
     // of once, until a renewal succeeds again.
-    let renewFailing = false;
+    // A landing that has lost the lease stops (t232): the loss is learned
+    // here or by the renewal before the publishing steps, and guardLease
+    // stops the next step (the wait for a verdict with it), so the landing
+    // never accepts or merges beside the landing that holds the lease now.
+    let renewFailing = false, lostLease = null;
+    // `why` is the server's word on the refusal, kept for the guard's error;
+    // the warning names the loss in the heartbeat's own phrase, said once.
+    const loseLease = (why) => {
+      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+      leased = false;
+      lostLease = why;
+    };
+    const guardLease = () => {
+      if (!lostLease) return;
+      throw new StepError(`another landing took the landing lease of ${name} over, so this landing stops without accepting or merging ${id}: the server said, when this landing last asked to renew it, "${lostLease}". Nothing was merged; run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
+    };
+    // The steps that publish to main ask for the lease by hand first, so a
+    // landing whose heartbeat has not had a beat since the loss (the Mac
+    // slept through the takeover and woke at the verdict) learns it here and
+    // stops before accepting. A renewal that cannot reach the server, or
+    // that the server fails, decides nothing here: the accept and the merge
+    // call the server themselves and stop if it still cannot be asked.
+    const renewBeforePublish = async () => {
+      guardLease();
+      try {
+        await request("POST", leasePath, { item: id, renew: true });
+        if (renewFailing) { renewFailing = false; print("The landing lease is renewed again."); }
+      } catch (error) {
+        if (error.status >= 400 && error.status < 500) {
+          loseLease(error.message);
+          throw new StepError(`the landing lease is no longer ${id}'s (${error.message}); this landing stops before accepting or merging ${id}. Nothing was merged; run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
+        }
+        print(`Warning: the landing lease could not be renewed before this step (${error.message}); the merge asks the server again itself.`);
+      }
+    };
     heartbeat = setInterval(async () => {
       try {
         await request("POST", leasePath, { item: id, renew: true });
         if (renewFailing) { renewFailing = false; print("The landing lease is renewed again."); }
       } catch (error) {
         if (error.status >= 400 && error.status < 500) {
-          clearInterval(heartbeat); heartbeat = null; leased = false;
-          print(`Warning: the landing lease is no longer ${id}'s (${error.message}); the landing stops renewing it. Stop this landing, or run atelier land ${id} again once the other landing ends.`);
+          loseLease(error.message);
+          print(`Warning: the landing lease is no longer ${id}'s (${error.message}); this landing stops when the step it runs ends, and accepts and merges nothing. Run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
         } else if (!renewFailing) {
           renewFailing = true;
           print(`Warning: the landing lease could not be renewed (${error.message}); trying again every ${Math.round(LEASE_RENEW_MS / 1000)}s. It lapses after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes without a renewal.`);
@@ -282,6 +326,7 @@ export async function runLand(io) {
 
     // Merge main into the workspace, no-ff, so the task carries main's
     // commits as a merge of their own.
+    guardLease();
     t0 = Date.now();
     const base = await request("POST", `${itemPath}/base-token`, { scope: "read" });
     git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
@@ -357,6 +402,7 @@ export async function runLand(io) {
     // settle conflicts, running it again changes nothing: what it wrote is
     // committed, and only anything else it changes is committed here.
     if (regenerate) {
+      guardLease();
       t0 = Date.now();
       print(`Regenerating with \`${regenerate}\`…`);
       const r = runRegenerate();
@@ -378,6 +424,7 @@ export async function runLand(io) {
     // workspace, so their output is their own and a failure still ends the
     // landing here, with the lease released and the step recorded.
     const step = async (kind, argv, cwd, data = {}) => {
+      guardLease();
       const t = Date.now();
       const r = await runCommand([process.execPath, io.atelier, ...argv, "--project", name], { cwd, env: io.env });
       if (!r.passed) {
@@ -407,6 +454,7 @@ export async function runLand(io) {
       // A named reviewer is a review the owner asks for, so the server makes
       // the request even where the gate needs none, and refuses, with its
       // reason, where the gate cannot proceed at all.
+      guardLease();
       const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
       if (!ask.needed && reviewer) throw new StepError(`the server made no review request for ${reviewer} (${ask.reason}); ${id} stays submitted`);
       if (!ask.needed) {
@@ -435,6 +483,10 @@ export async function runLand(io) {
           if (line !== busyLine) { busyLine = line; print(line); }
         };
         for (let waited = 0; ; waited += POLL_MS) {
+          // The wait for a verdict is where a sleeping landing wakes: the
+          // lease may have been lost whole beats ago, so each poll asks the
+          // guard first and a verdict that arrived meanwhile is not taken.
+          guardLease();
           const d = await request("GET", itemPath);
           const verdict = (d.reviews ?? []).filter((v) => v.head === head && Date.parse(v.at) >= Date.parse(since)).at(-1);
           if (verdict) {
@@ -459,7 +511,11 @@ export async function runLand(io) {
 
     // Accept and merge, again as this CLI's own commands. merge runs in the
     // registered checkout's project, publishes the merge to the baseline and
-    // records it on the ledger.
+    // records it on the ledger. The lease is asked for by hand first: these
+    // are the steps that publish to main, and a landing that slept through
+    // losing it stops here rather than merge beside the landing that holds
+    // the lease now (t232).
+    await renewBeforePublish();
     await step("accept", ["accept", id], p.path);
     const landed = await step("merged", ["merge", id], p.path, () => ({ mergeCommit: git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path }) }));
     print(`${id} landed: ${landed.output.split("\n").filter(Boolean).at(-1) ?? "merged"}`);
