@@ -1347,9 +1347,14 @@ own figures.
 
 Set it up once:
 
-1. Put the account id in `CF_ACCOUNT_ID` under `vars` in `wrangler.jsonc`
-   (it ships empty, which keeps the gateway off). `AI_GATEWAY_ID` names the
-   gateway and defaults to `atelier`.
+1. Give the Worker the account id (the dashboard shows it on the account's
+   overview) as the secret `CF_ACCOUNT_ID`, so the public source names no
+   account; unset, it keeps the gateway off. `AI_GATEWAY_ID` under `vars` in
+   `wrangler.jsonc` names the gateway and defaults to `atelier`.
+
+   ```sh
+   npx wrangler secret put CF_ACCOUNT_ID
+   ```
 2. In the dashboard, under My Profile → API Tokens → Create Token → Custom
    token, create a token with the permission Account · AI Gateway · Read,
    scoped to this account only, and give it to the Worker:

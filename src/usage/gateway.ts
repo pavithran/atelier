@@ -96,7 +96,7 @@ export function gatewayConfig(env: { CF_ACCOUNT_ID?: string; AI_GATEWAY_ID?: str
   const token = env.AI_GATEWAY_TOKEN?.trim();
   if (!token) return "AI Gateway costs are off: set AI_GATEWAY_TOKEN";
   const account = env.CF_ACCOUNT_ID?.trim();
-  if (!account) return "AI Gateway costs are off: set CF_ACCOUNT_ID in wrangler.jsonc";
+  if (!account) return "AI Gateway costs are off: set CF_ACCOUNT_ID";
   return { account, gateway: env.AI_GATEWAY_ID?.trim() || "atelier", token };
 }
 
