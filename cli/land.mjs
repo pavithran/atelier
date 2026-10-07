@@ -10,8 +10,10 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
 // In the task's workspace it merges main (stopping on conflicts, which it
-// leaves for the owner to resolve, naming the files), regenerates the
-// project's fixtures when its policy declares how, then pushes and runs the
+// leaves for the owner to resolve, naming the files, unless every conflicted
+// file is one the project's regenerate command rewrites, when it takes
+// either side, regenerates and goes on), regenerates the project's fixtures
+// when its policy declares how, then pushes and runs the
 // required checks through the CLI's own commands, each as a child process so
 // a failure can still release the lease and record the step. It asks the
 // server for the independent review the gate needs, or the one the owner names
@@ -120,7 +122,7 @@ export async function runLand(io) {
     print(`Dry run: atelier land ${id} in ${name} would:`);
     print(`  1. take the project's landing lease for ${id} (one landing at a time in ${name})`);
     print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files`);
-    print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes` : "regenerate nothing (the project declares no regenerate command)"}`);
+    print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
     print(`  4. push the merged head to ${id}'s fork`);
     print(`  5. run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of the pushed head`);
     print(`  6. submit ${id} with a summary of the merge`);
@@ -141,6 +143,16 @@ export async function runLand(io) {
   const record = async (step, ms, data = {}) => {
     try { await request("POST", `${itemPath}/land`, { step, ms: Math.max(0, Math.round(ms)), ...data }); }
     catch (error) { print(`Warning: the landing's ${step} step could not be recorded: ${error.message}`); }
+  };
+  // The regenerate command, run in the workspace the way a check runs it.
+  // Both the merge (to settle conflicts that lie only in generated files)
+  // and the regenerate step below (to bring every generated file current
+  // with the merged tree) come through here.
+  const runRegenerate = () => {
+    const r = spawnSync("/bin/sh", ["-c", regenerate], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
+    if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
+    return { ok: !r.error && r.status === 0, why: r.error ? r.error.message : `exit ${r.status}` };
   };
   // The heartbeat renews the lease while the landing runs; the timer never
   // keeps the process alive on its own (unref), and a renewal the server
@@ -205,7 +217,7 @@ export async function runLand(io) {
     const base = await request("POST", `${itemPath}/base-token`, { scope: "read" });
     git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
     const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
-    let fromMain = [], mergedIn = false;
+    let fromMain = [], mergedIn = false, settled = null, settledConflicts = [];
     if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
       print(`main at ${short(mainHead)} is already merged into ${id}'s workspace.`);
     } else {
@@ -214,30 +226,74 @@ export async function runLand(io) {
       const r = git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
       if (r.status !== 0) {
         const conflicts = git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
-        const data = { fromMain, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand" } : {}) };
-        await record("merge", Date.now() - t0, { failed: true, ...data });
-        throw new StepError(conflicts.length
-          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\nThe merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit. Then run atelier land ${id} again.`
-          : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
+        // A conflict that lies only in files the regenerate command rewrites
+        // is not the owner's to settle by hand: whichever side such a file
+        // took, the command writes it again from the merged code, so either
+        // side is a place to start. Each conflicted file is taken from ours
+        // (theirs where the task deleted the file), the command runs, and
+        // when it rewrote every conflicted file, what it wrote is committed
+        // as the resolution; what it changed elsewhere waits for the
+        // regenerate step below, which runs it once more. A file the command
+        // left exactly as the side taken is not one it rewrites, so the
+        // landing stops as it always did: the workspace was clean before the
+        // merge began, so a hard reset returns it to where the merge started
+        // and the merge made again leaves the conflicts in it for the owner.
+        let reason = null;
+        if (conflicts.length && regenerate) {
+          print(`The merge stops on conflicts in ${conflicts.join(", ")}; taking either side and regenerating with \`${regenerate}\`…`);
+          const shaOf = (file) => (existsSync(join(dir, file)) ? git(["hash-object", "--", file], { cwd: dir }) : "gone");
+          const taken = new Map();
+          let either = true, regen = null, unwritten = null;
+          for (const file of conflicts) {
+            if (git(["checkout", "--ours", "--", file], { cwd: dir, allowFail: true }).status !== 0
+              && git(["checkout", "--theirs", "--", file], { cwd: dir, allowFail: true }).status !== 0) { either = false; break; }
+            taken.set(file, shaOf(file));
+          }
+          if (either) {
+            regen = runRegenerate();
+            unwritten = regen.ok ? conflicts.filter((file) => shaOf(file) === taken.get(file)) : null;
+          }
+          if (regen?.ok && !unwritten.length) {
+            git(["add", "-A", "--", ...conflicts], { cwd: dir });
+            git(["commit", "--quiet", "--no-edit"], { cwd: dir });
+            settled = "atelier land, taking either side and regenerating";
+            settledConflicts = conflicts;
+            print(`The conflicts were all in files \`${regenerate}\` rewrites; took either side and let the command write them again.`);
+          } else {
+            reason = !either ? "a conflicted file had neither side to take"
+              : !regen.ok ? `the regenerate command \`${regenerate}\` failed (${regen.why})`
+                : `the regenerate command left ${unwritten.join(", ")} as either side had it`;
+            const back = git(["reset", "--hard", "HEAD"], { cwd: dir, allowFail: true });
+            if (back.status !== 0) print(`Warning: the workspace could not be reset after the regeneration did not settle the conflicts (${(back.stderr || back.stdout || "").trim()}); resolve what is there by hand`);
+            else git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+          }
+        }
+        if (!settled) {
+          const data = { fromMain, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
+          await record("merge", Date.now() - t0, { failed: true, ...data });
+          throw new StepError(conflicts.length
+            ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit. Then run atelier land ${id} again.`
+            : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
+        }
       }
       mergedIn = true;
       print(`Merged main at ${short(mainHead)} into ${id}'s workspace (${fromMain.length} commit${fromMain.length === 1 ? "" : "s"} from main).`);
     }
-    await record("merge", Date.now() - t0, { fromMain, ...(mergedIn ? {} : { skipped: true }) });
+    await record("merge", Date.now() - t0, { fromMain, ...(settled ? { conflicts: settledConflicts, resolvedBy: settled } : {}), ...(mergedIn ? {} : { skipped: true }) });
 
     // The project's fixtures, regenerated now that both lines sit in one
     // tree, so the checks below see fixtures current with them. The command
     // runs in the workspace as a check runs, and what it changes is
-    // committed before the push.
+    // committed before the push. Where the merge above already ran it to
+    // settle conflicts, running it again changes nothing: what it wrote is
+    // committed, and only anything else it changes is committed here.
     if (regenerate) {
       t0 = Date.now();
       print(`Regenerating with \`${regenerate}\`…`);
-      const r = spawnSync("/bin/sh", ["-c", regenerate], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-      const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
-      if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
-      if (r.status !== 0) {
+      const r = runRegenerate();
+      if (!r.ok) {
         await record("regenerate", Date.now() - t0, { command: regenerate, failed: true });
-        throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.error ? r.error.message : `exit ${r.status}`}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
+        throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
       }
       let changed = false;
       if (git(["status", "--porcelain"], { cwd: dir })) {
