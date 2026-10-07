@@ -15,7 +15,7 @@ import { cleanSummary } from "./brief";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -363,6 +363,9 @@ export class Ledger extends DurableObject<Env> {
         actor TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
       );
     `);
+    // An item's events are read by its id (item(), and the queue's push
+    // actors), so the log is not scanned whole for each read.
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS events_item ON events (item_id)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
@@ -697,13 +700,30 @@ export class Ledger extends DurableObject<Env> {
   // ── runner offers ─────────────────────────────────────────────────────────
   // What each runner can run, as it last said when it asked the queue for
   // work, on the index instance beside the model pool: one row per runner,
-  // replaced by each ask. Read back to say when a dispatch names a model or a
-  // job no live runner offers, so a request that can never be claimed is not
-  // mistaken for one merely waiting its turn (unoffered in
+  // replaced by an ask whose offer changed or whose row is older than
+  // OFFER_REFRESH_MS (askQueue). Read back to say when a dispatch names a
+  // model or a job no live runner offers, so a request that can never be
+  // claimed is not mistaken for one merely waiting its turn (unoffered in
   // src/dispatch/rules.ts).
 
   putRunnerOffer(offer: RunnerOffer, at: string): void {
     this.sql.exec(`INSERT OR REPLACE INTO runner_offers (runner, json) VALUES (?, ?)`, offer.runner, JSON.stringify({ ...offer, at }));
+  }
+
+  // A runner's ask of the queue, in one call on the index: its offer is
+  // recorded unless the row already holds the same offer recorded within
+  // OFFER_REFRESH_MS, so a runner polling unchanged rewrites its row about
+  // once a minute rather than on every poll, and the projects are returned
+  // for the queue to read. `at` stays within OFFER_REFRESH_MS of the last ask.
+  askQueue(offer: RunnerOffer | null, at: string): ProjectRecord[] {
+    if (offer) {
+      const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, offer.runner).toArray()[0];
+      const seen = row ? (JSON.parse(row.json as string) as SeenOffer) : null;
+      const same = !!seen && row!.json === JSON.stringify({ ...offer, at: seen.at });
+      const fresh = !!seen && Date.parse(at) - Date.parse(seen.at) < OFFER_REFRESH_MS && Date.parse(at) >= Date.parse(seen.at);
+      if (!same || !fresh) this.putRunnerOffer(offer, at);
+    }
+    return this.projects();
   }
 
   runnerOffers(): SeenOffer[] {
@@ -951,16 +971,48 @@ export class Ledger extends DurableObject<Env> {
   // is held; the owner's listing shows them with what each waits on. Not
   // named queue(): that is a reserved handler name, which Durable Object RPC
   // will not call.
+  //
+  // Read on every runner's poll, so it reads only the rows it answers from:
+  // the open dispatched items, and only when one waits and the project names
+  // core files, the live items that could hold one (claimed, submitted or
+  // accepted, the only states coreHold counts), in id order as items() lists
+  // them, so the first holder found is the same. The event log is read only
+  // for the waiting items' push actors.
   waiting(): (Item & { held?: CoreHold })[] {
-    const items = this.items();
+    const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
+    if (!rows.length) return [];
+    const open = this.withPushActors(rows)
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
     const coreFiles = this.project().policy.coreFiles;
-    return items
-      .filter((i) => i.state === "open" && !i.owner && i.dispatch)
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
-      .map((i) => {
-        const held = coreHold(i, items, coreFiles);
-        return held ? { ...i, held } : i;
-      });
+    if (!coreFiles?.length) return open;
+    const live = this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem);
+    return open.map((i) => {
+      const held = coreHold(i, live, coreFiles);
+      return held ? { ...i, held } : i;
+    });
+  }
+
+  // Both halves of the queue in one call, as a runner's poll reads them:
+  // the open tasks waiting (waiting) and the open review requests
+  // (reviewWaiting).
+  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: Item[] } {
+    return { waiting: this.waiting(), reviews: this.reviewWaiting() };
+  }
+
+  // Items as item() reads them, from their rows, with each one's push actors
+  // read from the event log in one query for all of them (the ids go as one
+  // JSON list, so any number fits in one bound value).
+  private withPushActors(rows: Row[]): Item[] {
+    const ids = JSON.stringify(rows.map((r) => r.id as string));
+    const histories = new Map<string, Parameters<typeof pushActors>[0]>();
+    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE item_id IN (SELECT value FROM json_each(?)) AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`, ids).toArray();
+    for (const row of events) {
+      const id = row.item_id as string;
+      const history = histories.get(id) ?? [];
+      history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
+      histories.set(id, history);
+    }
+    return rows.map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
   }
 
   // A failed fork must not leave an owner holding nothing.
@@ -2725,12 +2777,18 @@ export class Ledger extends DurableObject<Env> {
 
   // Open review requests, as the queue offers them: the part item with its
   // dispatch overlaid by the review dispatch, whose job names "review".
+  // Each part is read once, however many requests name it.
   reviewWaiting(): Item[] {
-    return this.sql.exec(`SELECT item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray()
-      .map((r) => {
-        const item = this.item(r.item as string);
-        return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
-      });
+    const requests = this.sql.exec(`SELECT item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
+    if (!requests.length) return [];
+    const ids = [...new Set(requests.map((r) => r.item as string))];
+    const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
+    const items = new Map(this.withPushActors(rows).map((i) => [i.id, i]));
+    return requests.map((r) => {
+      const item = items.get(r.item as string);
+      if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
+      return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+    });
   }
 
   // The live review request for a part, as planView shows it: the reviewer
