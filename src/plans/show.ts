@@ -9,7 +9,7 @@ import type { Brief, Verdict } from "../brief.ts";
 import type { Dispatch } from "../dispatch/rules.ts";
 import type { Item, ItemState } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
-import type { Attempt, PlanPhase } from "./phase.ts";
+import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
 import type { PartRoute } from "./route.ts";
 import type { Plan } from "./schema.ts";
 import type { PlanLimits } from "./state.ts";
@@ -29,6 +29,7 @@ export interface PlanPartView {
   attempts: Attempt[];            // counted from the owner's latest reroute or retry
   gate: { ready: boolean; blockers: string[] } | null;  // while submitted or accepted
   integration: { head: string; mergeCommit: string } | null;  // recorded when the part became integrated
+  integrationFailure?: IntegrationFailure | null;  // the part's latest failed integration, if any
   blocked?: { reason: string; by: string } | null;  // while blocked: why, and who blocked it
 }
 
@@ -87,6 +88,15 @@ function attemptsLine(attempts: Attempt[]): string | null {
   return `attempts: ${attempts.map((a) => `${a.actor} ${words[a.outcome]}`).join("; ")}`;
 }
 
+// A part's latest failed integration, while it has not been integrated
+// since: why it failed, and whether its builder was charged an attempt.
+function integrationFailureLine(p: PlanPartView): string | null {
+  const f = p.integrationFailure;
+  if (!f || p.state === "integrated" || p.state === "merged" || p.state === "abandoned") return null;
+  const what = f.kind === "conflict" ? "a merge conflict" : f.kind === "checks" ? "failing checks" : f.kind ? `kind ${flat(f.kind)}` : "kind not recorded";
+  return `integration failed at ${when(f.at)} (${what}; ${chargesBuilder(f.kind) ? "charged to the builder" : "not charged to the builder"}): ${cut(flat(f.reason) || "no reason given", 500)}`;
+}
+
 function routeLines(route: PartRoute | undefined | null, preview: boolean): string[] {
   if (!route) return [];
   const lead = preview ? "would be built by" : "builder";
@@ -127,7 +137,7 @@ export function planText(v: PlanView, project: string): string {
     for (const p of v.parts) {
       lines.push(`  ${p.id}  ${p.key}  ${partState(p, v.parts)}  ${flat(p.title)}`);
       const deps = p.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`);
-      const detail = [`scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), attemptsLine(p.attempts), ownerStep(p, flag)];
+      const detail = [`scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
       for (const line of detail) if (line) lines.push(`      ${line}`);
     }
   } else if (v.plan) {
