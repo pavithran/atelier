@@ -309,6 +309,40 @@ it("ownership moves by handoff, ends by release or abandonment", async () => {
   expect(await L.abandon("t2", "owner", "obsolete")).toMatchObject({ state: "abandoned", owner: null });
 });
 
+it("a task is closed as delivered by a merged task, which the event records", async () => {
+  const L = await setup("delivered-by");
+  await L.newItem("One", ["src/**"], "owner");
+  await L.newItem("Two", ["src/**"], "owner");
+  await refusal(L.abandon("t2", "owner", "", undefined, "t2"), "bad_delivered_by", /cannot be delivered by itself/);
+  await refusal(L.abandon("t2", "owner", "", undefined, "t1"), "not_delivered", /t1 is open, not merged/);
+  await refusal(L.abandon("t2", "owner", "", undefined, "t9"), "no_item", /t9/);
+  expect(await L.item("t2")).toMatchObject({ state: "open" });
+
+  await L.claim("t1", A);
+  await L.setFork("t1", "delivered-by--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["src/ledger.ts"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner");
+  await L.merged("t1", "owner", "m1", true);
+
+  expect(await L.abandon("t2", "owner", "same change", undefined, "t1")).toMatchObject({ state: "abandoned" });
+  const closed = ((await L.events("t2")) as unknown as LedgerEvent[]).find((e) => e.kind === "item.abandoned");
+  expect(closed?.data).toEqual({ note: "same change", deliveredBy: "t1" });
+});
+
+it("events page back from a sequence number, so every one can be read", async () => {
+  const L = await setup("event-pages");
+  for (let i = 0; i < 5; i++) await L.newItem(`Task ${i}`, ["src/**"], "owner");
+  const seqs = async (limit: number, before?: number) => ((await L.events(undefined, limit, before)) as unknown as LedgerEvent[]).map((e) => e.seq);
+  const all = await seqs(1000);
+  expect(all.length).toBeGreaterThanOrEqual(5);
+  const first = await seqs(2);
+  expect(first).toEqual(all.slice(0, 2));
+  expect(await seqs(2, first[1])).toEqual(all.slice(2, 4));
+  expect(await seqs(2, all[all.length - 1])).toEqual([]);
+});
+
 it("the owners view reports live items without titles, scopes or paths", async () => {
   const L = await setup("owners-view");
   await L.newItem("A title with detail in it", ["src/**"], "owner");
