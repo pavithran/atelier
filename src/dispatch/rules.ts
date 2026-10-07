@@ -52,9 +52,11 @@ export interface Dispatch {
   overlapOk?: true;
 }
 
-// What a runner says it can run when it asks for work. `jobs` names the
-// jobs besides building that it runs; a dispatch for any other job is never
-// offered to it.
+// What a runner says it can run when it asks for work. `jobs` names every
+// job it takes, build among them; a dispatch for a job the list lacks is
+// never offered to it, a plain build included (t252). An offer that names no
+// job at all is an older runner's, which took builds before jobs were named,
+// so build needs no naming there (missingJob below).
 export interface RunnerOffer {
   runner: string;          // "home:studio", "cloud:atelier"
   kind: RunnerKind;
@@ -180,13 +182,20 @@ export function assertDispatchable(item: Item): void {
   }
 }
 
-// The jobs a runner must offer to take a dispatch besides building: its job,
-// "merge-plan" when it carries a plan head to merge, and "merge-main-task"
-// for a task's merge-main job (t243). Returns the first the offer lacks, or
-// null when it offers them all.
+// The jobs a runner must offer to take a dispatch: its job, "merge-plan"
+// when it carries a plan head to merge, "merge-main-task" for a task's
+// merge-main job (t243), and "build" for a plain build, which an offer names
+// like any other job — a runner kept for reviews alone must never be handed
+// one, or a single long build on it holds every review behind it while
+// unoffered() stays silent (t252). An offer naming no job at all is an older
+// runner's, which offered none before jobs were named and took builds, so
+// "build" alone defaults to offered there. Returns the first the offer
+// lacks, or null when it offers them all.
 function missingJob(d: Dispatch, offer: RunnerOffer): string | null {
-  const needs = [d.job, d.planHead ? "merge-plan" : null, d.job === "merge-main" && d.task ? "merge-main-task" : null];
-  return needs.find((job): job is string => !!job && !(offer.jobs ?? []).includes(job)) ?? null;
+  const jobs = offer.jobs ?? [];
+  const needs = [d.job, d.planHead ? "merge-plan" : null, d.job === "merge-main" && d.task ? "merge-main-task" : null,
+    d.job === undefined && !d.planHead ? "build" : null];
+  return needs.find((job): job is string => !!job && !jobs.includes(job) && !(job === "build" && !jobs.length)) ?? null;
 }
 
 // The agent and model a runner should use for a dispatch, or null if it cannot.

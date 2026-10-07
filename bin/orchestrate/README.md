@@ -211,8 +211,10 @@ config of its own with `"jobs": ["review"]`, like:
 }
 ```
 
-It then takes no build, plan or merge job, and the queue's builds wait for a
-runner that takes them. Its models are still offered to the server, because a
+It then takes no build, plan or merge job: the server never offers one to a
+runner whose `jobs` lacks it, `atelier status` names a dispatch no live
+runner can take, and the queue's builds wait for a runner that takes them.
+Its models are still offered to the server, because a
 review is handed to a model, so keep them on a build runner too if plans may
 route builds to them. A runner that takes reviews and builds both lists them
 all: `["build", "plan", "merge-main", "merge-main-task", "merge-plan",
