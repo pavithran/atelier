@@ -289,6 +289,17 @@ test("a tier approval that comes first is said and not taken for the gate's verd
   assert.equal(f.box.states.t1, "merged");
 });
 
+test("a tier rejection that arrives in the same poll as the gate's later approval still stops the landing", async (t) => {
+  const f = await landFixture(t);
+  f.box.tier = { by: "claude-code/sonnet-5.5", approve: false };
+  f.box.review.approveAfter = 0;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /claude-code\/sonnet-5\.5 \(tier review\) rejected t1/);
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+});
+
 test("a tier rejection stops the landing as any rejection does", async (t) => {
   const f = await landFixture(t);
   f.box.tier = { by: "claude-code/sonnet-5.5", approve: false };

@@ -696,7 +696,11 @@ export async function runLand(io) {
             tierSeen.add(`${v.by}\n${v.at}`);
             print(`${v.by} approved ${id} at ${short(head)} as its tier review; the landing still waits for the gate's review.`);
           }
-          const verdict = fresh.filter((v) => !(v.tier && v.approve)).at(-1);
+          // Any rejection among the fresh verdicts decides, whatever came
+          // after it: a tier rejection and the gate's approval that arrive
+          // between two polls leave the task rejected on the server.
+          const counted = fresh.filter((v) => !(v.tier && v.approve));
+          const verdict = counted.find((v) => !v.approve) ?? counted.at(-1);
           if (verdict) {
             if (!verdict.approve) {
               await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
