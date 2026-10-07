@@ -1,0 +1,24 @@
+atelier atelier/t262 "Schedule by scope (PAVI, 2026-10-07, after the bottleneck review): the queue does not offer a task, part or merge-main job whose scope overlaps the scope of a live task (claimed or submitted, not yet merged) in a file the project marks as core (policy coreFiles, globs, set with atelier init --core GLOB; default: none), so overlapping work waits until the other lands instead of colliding at landing; a held dispatch says which live task it waits on in status, plan show and land; the owner can override per dispatch with --overlap-ok. On 2026-10-07 about half the landings stopped on conflicts in cli/runner.mjs, src/ledger.ts and src/dispatch/rules.ts"
+accepted head 464b54f04bf900216fe7dc45ef7f15104fb4eb28
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T16:33:02.686Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T16:33:06.817Z
+REVIEW approve by antigravity/gemini-3.1-pro at 464b54f04bf900216fe7dc45ef7f15104fb4eb28, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T16:12:02.053Z pavi item.created
+2026-10-07T16:12:35.314Z claude-code/opus-5.5 item.claimed
+2026-10-07T16:12:41.294Z claude-code/opus-5.5 fork.created
+2026-10-07T16:29:24.599Z pavi land.lease
+2026-10-07T16:29:28.457Z pavi land.merge
+2026-10-07T16:29:36.642Z pavi land.regenerate
+2026-10-07T16:29:41.208Z claude-code/opus-5.5 push.observed
+2026-10-07T16:29:41.502Z pavi land.push
+2026-10-07T16:33:03.692Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:33:07.286Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:33:07.955Z pavi land.check
+2026-10-07T16:33:08.466Z claude-code/opus-5.5 item.submitted
+2026-10-07T16:33:08.799Z pavi land.submit
+2026-10-07T16:33:09.056Z pavi review.requested
+2026-10-07T16:33:12.119Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T16:36:47.684Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T16:36:50.512Z pavi land.review
+2026-10-07T16:36:51.356Z pavi item.accepted
+2026-10-07T16:36:51.502Z pavi land.accept
