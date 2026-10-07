@@ -199,6 +199,11 @@ test("a merge-main part is keyed and scoped from the main head and the conflict,
   const reason = "merging main conflicted: Auto-merging src/a.ts\nCONFLICT (content): Merge conflict in src/diagrams.ts\nCONFLICT (modify/delete): docs/x.md deleted in HEAD and modified in 1234.\nCONFLICT (content): Merge conflict in src/diagrams.ts";
   assert.deepEqual(conflictPaths(reason), ["src/diagrams.ts", "docs/x.md"]);
   assert.deepEqual(conflictPaths("merging main conflicted"), []);
+  // Paths with spaces, from lines joined by newlines and by single spaces.
+  const spaced = "merging main conflicted: Auto-merging docs/a b.md\nCONFLICT (content): Merge conflict in docs/a b.md\nCONFLICT (modify/delete): my dir/x y.ts deleted in HEAD and modified in 1234.\nAutomatic merge failed; fix conflicts and then commit the result.";
+  assert.deepEqual(conflictPaths(spaced), ["docs/a b.md", "my dir/x y.ts"]);
+  assert.deepEqual(conflictPaths(spaced.replace(/\n/g, " ")), ["docs/a b.md", "my dir/x y.ts"]);
+  assert.deepEqual(conflictPaths("merging main conflicted: Auto-merging src/diagrams.ts CONFLICT (content): Merge conflict in src/diagrams.ts Auto-merging src/how-data.ts Automatic merge failed; fix conflicts and then commit the result."), ["src/diagrams.ts"]);
   assert.deepEqual(mergeMainScope(reason, ["src/**"]), ["src/diagrams.ts", "docs/x.md"]);
   assert.deepEqual(mergeMainScope("no paths", ["src/**"]), ["src/**"]);
   assert.deepEqual(mergeMainScope("no paths", []), ["**"]);
