@@ -5,22 +5,25 @@ import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
 
 // Cloudflare Access in front of the owner's pages (t270), driven through the
-// Worker's own fetch handler. With the team and audience named, every owner
-// route needs an assertion Access signed — verified against the keys the
-// team publishes, which jose fetches, so global fetch serves them — while
-// the public pages, the sign-out form and the /api routes, whose bearer
-// tokens never pass Access, stand as before.
+// Worker's own fetch handler. With the team, audience and owner's email named,
+// every owner route needs an assertion Access signed for the owner — verified
+// against the keys the team publishes, which jose fetches, so global fetch
+// serves them — while the public pages, the sign-out form and the /api routes,
+// whose bearer tokens never pass Access, stand as before. /login is behind
+// the check with its token form, so the server token can only be tried by
+// whoever Access vouches for as the owner.
 
 const ISS = "https://atelier-test.cloudflareaccess.com";
 const AUD = "47c6b47feb5b3f0dcbe5f3f7f9e1d2c8";
+const OWNER = "owner@example.com";
 const TOKEN = "access-test-token";
-const bindings = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: ISS, CF_ACCESS_AUD: AUD } as typeof env;
+const bindings = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: ISS, CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER } as typeof env;
 
 const pair = await generateKeyPair("RS256");
 const jwks = { keys: [{ ...(await exportJWK(pair.publicKey)), kid: "atelier-test", alg: "RS256" }] };
 
-async function assertion(expires = "5m") {
-  return new SignJWT({})
+async function assertion(expires = "5m", email = OWNER) {
+  return new SignJWT({ email })
     .setProtectedHeader({ alg: "RS256", kid: "atelier-test" })
     .setIssuer(ISS)
     .setAudience(AUD)
@@ -41,10 +44,10 @@ function serveKeys() {
 const get = (path: string, headers: Record<string, string> = {}) =>
   worker.fetch(new Request(`https://atelier.test${path}`, { redirect: "manual", headers }), bindings);
 
-it("owner pages are refused without an assertion Access signed, with or without a session", async () => {
+it("owner pages are refused without an assertion Access signed for the owner, with or without a session", async () => {
   const send = serveKeys();
   try {
-    const cookie = await signIn(TOKEN, bindings);
+    const cookie = await signIn(TOKEN, bindings, { "cf-access-jwt-assertion": await assertion() });
     for (const headers of [{}, { cookie }] as Record<string, string>[]) {
       const page = await get("/", headers);
       expect(page.status).toBe(401);
@@ -52,6 +55,20 @@ it("owner pages are refused without an assertion Access signed, with or without 
     }
     expect((await get("/", { "cf-access-jwt-assertion": "not-a-jwt", cookie })).status).toBe(401);
     expect((await get("/models", { cookie })).status).toBe(401);
+    // /login is behind the check too, form and token form: the server token
+    // cannot be tried, let alone guessed, without Access's sign-in first.
+    const login = await get("/login");
+    expect(login.status).toBe(401);
+    const guess = await worker.fetch(new Request("https://atelier.test/login", {
+      method: "POST", body: new URLSearchParams({ token: "a-wrong-guess" }), redirect: "manual",
+    }), bindings);
+    expect(guess.status).toBe(401);
+    expect(await guess.text()).toContain("behind Cloudflare Access");
+    // A teammate's assertion — a token Access signed, for someone else —
+    // vouches for no owner route either.
+    const teammate = await assertion("5m", "someone.else@example.com");
+    expect((await get("/", { cookie, "cf-access-jwt-assertion": teammate })).status).toBe(401);
+    expect((await get("/login", { "cf-access-jwt-assertion": teammate })).status).toBe(401);
     // An assertion Access did not sign for this hour does not pass either.
     expect((await get("/", { cookie, "cf-access-jwt-assertion": await assertion("-1m") })).status).toBe(401);
   } finally { send.mockRestore(); }
@@ -65,7 +82,14 @@ it("a signed assertion lets the owner's pages through, and the session still dec
     const door = await get("/", { "cf-access-jwt-assertion": jwt });
     expect(door.status).toBe(303);
     expect(door.headers.get("location")).toBe("https://atelier.test/login");
-    const cookie = await signIn(TOKEN, bindings);
+    // /login serves behind Access: Access first, the server token after.
+    const form = await get("/login", { "cf-access-jwt-assertion": jwt });
+    expect(form.status).toBe(200);
+    const wrong = await worker.fetch(new Request("https://atelier.test/login", {
+      method: "POST", body: new URLSearchParams({ token: "no" }), headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual",
+    }), bindings);
+    expect(wrong.status).toBe(401);
+    const cookie = await signIn(TOKEN, bindings, { "cf-access-jwt-assertion": jwt });
     const home = await get("/", { cookie, "cf-access-jwt-assertion": jwt });
     expect(home.status).toBe(200);
     const models = await get("/models", { cookie, "cf-access-jwt-assertion": jwt });
@@ -77,7 +101,6 @@ it("the public pages, the sign-out form and the API routes stand as before, with
   const send = serveKeys();
   try {
     expect((await get("/how")).status).toBe(200);
-    expect((await get("/login")).status).toBe(200);
     expect((await get("/live.js")).status).toBe(200);
     expect((await get("/showcase")).status).toBe(404);
     const out = await worker.fetch(new Request("https://atelier.test/logout", {
