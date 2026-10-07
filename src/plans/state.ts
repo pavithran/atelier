@@ -168,11 +168,12 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
   return { actor: null, reasons: [why], passedOver };
 }
 
-// How many times the planner has let the plan go without a valid proposal
-// since the plan last asked for one (its creation, a valid proposal, or the
-// owner's revise, reroute or retry), and the errors of the last proposal it
-// posted in such an attempt. An attempt is a claim; it fails when the claim
-// is released with no valid proposal posted in it.
+// How many times the planner has let the plan go with a proposal the server
+// refused, since the plan last asked for one (its creation, a valid proposal,
+// or the owner's revise, reroute or retry), and the errors of the last such
+// proposal. An attempt is a claim; it fails only when a proposal was posted in
+// it and refused as invalid. A release for a harness that failed, an interrupt
+// or an infrastructure failure posts no proposal, so it fails no attempt.
 export const PLANNER_ATTEMPTS = 2;
 const PLAN_ASKED = new Set(["item.created", "plan.proposed", "plan.revised", "plan.rerouted", "plan.retried"]);
 
@@ -180,11 +181,11 @@ export function plannerAttempts(events: readonly LedgerEvent[]): { failed: numbe
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
   let from = 0;
   sorted.forEach((event, i) => { if (PLAN_ASKED.has(event.kind)) from = i + 1; });
-  let failed = 0, holding = false, errors: string[] = [], lastErrors: string[] = [];
+  let failed = 0, holding = false, invalid = false, errors: string[] = [], lastErrors: string[] = [];
   for (const event of sorted.slice(from)) {
-    if (event.kind === "item.claimed") { holding = true; errors = []; }
-    else if (event.kind === "plan.invalid" && holding) errors = Array.isArray(event.data.errors) ? event.data.errors.map(String) : [];
-    else if (event.kind === "item.released" && holding) { failed++; lastErrors = errors; holding = false; }
+    if (event.kind === "item.claimed") { holding = true; invalid = false; errors = []; }
+    else if (event.kind === "plan.invalid" && holding) { invalid = true; errors = Array.isArray(event.data.errors) ? event.data.errors.map(String) : []; }
+    else if (event.kind === "item.released" && holding) { if (invalid) { failed++; lastErrors = errors; } holding = false; }
     else if (event.kind === "item.abandoned") holding = false;
   }
   return { failed, lastErrors };
