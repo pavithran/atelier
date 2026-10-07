@@ -23,6 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { assertEligible, checkApplies, pathCollisions, recordedText } from "../src/rules.ts";
+import { holdText } from "../src/dispatch/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -217,7 +218,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
@@ -264,7 +265,7 @@ export const FLAGS = {
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
   ship: { "dry-run": true, push: true },
-  dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false },
+  dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false, "overlap-ok": true },
   undispatch: {},
   queue: {},
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
@@ -509,6 +510,18 @@ function summaryArg(cmd) {
 function listArg(flag, cmd) {
   const values = args.multi[flag] ?? [];
   if (values.some((v) => typeof v !== "string" || !v.trim())) die(`--${flag} needs text: atelier ${cmd} --${flag} "TEXT", once per entry`);
+  return values.map((v) => v.trim());
+}
+
+// --core, as init sends it: the globs given, once per use, or [] for one
+// --core "" alone, which clears them; null when --core is not given, so the
+// server keeps the recorded ones. Any other empty value is refused as a bare
+// flag is, with the flag table's wording.
+function coreArg() {
+  const values = args.multi.core;
+  if (values === undefined) return null;
+  if (values.length === 1 && values[0] === "") return [];
+  if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS.init.core);
   return values.map((v) => v.trim());
 }
 
@@ -1854,6 +1867,10 @@ const commands = {
     // setting on; given as --sandbox-only=false or --sandbox-only false, off.
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
+    // --core names the core files, once per glob, replacing the recorded
+    // ones; --core "" alone clears them, and --reset without it does too.
+    const core = coreArg();
+    if (core || reset) policy.coreFiles = core ?? [];
     const r = await call("PUT", P(name), {
       ...policy,
       ...(reset ? { reset: true } : {}),
@@ -1924,6 +1941,9 @@ const commands = {
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
+    console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
+    // A server older than core files ignores them and answers without any.
+    if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   },
 
@@ -2956,9 +2976,12 @@ const commands = {
     const name = project(), id = itemArg();
     if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
     if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
-    const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}) };
+    const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
     const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
     const d = item.dispatch;
+    // A server older than the override ignores it and answers without it.
+    if (args["overlap-ok"] === true && !d.overlapOk) console.log("Warning: the server did not record --overlap-ok; deploy the server, then dispatch again.");
+    else if (d.overlapOk) console.log(`${id} is offered to a runner although its scope may overlap a live item's in a core file.`);
     if (d.job === "merge-main") {
       console.log(`${id} goes back to its builder to merge main at ${d.head.slice(0, 8)} into its workspace and resolve the conflicts: a runner that offers the merge-main job claims it, merges main there and leaves the conflicts for the harness to resolve and commit${d.agent ? ` (built by ${d.agent}${d.model ? ` with ${d.model}` : ""})` : ""}. Then run atelier land ${id} again.`);
       return;
@@ -2984,6 +3007,7 @@ const commands = {
     for (const { project, item } of queued) {
       const d = item.dispatch;
       console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
+      if (item.held) console.log(`  held: ${holdText(item.held)}`);
     }
   },
 

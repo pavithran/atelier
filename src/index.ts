@@ -801,8 +801,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
-  // The queue across every project. GET lists it for the owner; a runner POSTs
-  // what it can run and gets back the tasks it may claim, with the name to claim under.
+  // The queue across every project. GET lists it for the owner, each dispatch
+  // the project's core files hold carrying `held`, the live item it waits on;
+  // a runner POSTs what it can run and gets back the tasks it may claim, with
+  // the name to claim under, leaving out every held one (coreHold in
+  // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
     // Each ask records what the runner can run (putRunnerOffer), so the
@@ -823,6 +826,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
+          if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
           return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
         })
@@ -895,6 +899,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      // The core-file globs the queue holds overlapping dispatches on; [] clears them.
+      ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };

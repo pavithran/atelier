@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertDispatchable, assertDispatchedClaim, assign, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offering, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
+import { assertDispatchable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offering, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
 
 const T = "2026-10-04T12:00:00.000Z";
 const item = (over: Record<string, unknown> = {}) => ({
@@ -131,4 +131,44 @@ test("an offer is live for OFFER_LIVE_MS after its runner asked, and which runne
   // Two runners may offer the same actor; both are named.
   const also = asked("home:desk", [{ agent: "codex", models: ["GPT-6-Astra"] }], now);
   assert.deepEqual(offering([atelier, also]).get("codex/gpt-6-astra"), ["cloud:atelier", "home:desk"]);
+});
+
+test("the core files hold a building dispatch whose scope overlaps a live item's within one", () => {
+  const d = makeDispatch({}, "pavi", T);
+  const live = item({ id: "t1", scope: ["src/**"], state: "claimed", owner: "codex/gpt-6" });
+  const waiting = (over: Record<string, unknown>) => item({ id: "t2", dispatch: d, ...over });
+  const core = ["src/ledger.ts", "cli/runner.mjs"];
+  // Within a core file: held, naming the live item and the core glob.
+  assert.deepEqual(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], core), { id: "t1", owner: "codex/gpt-6", state: "claimed", title: "Work", core: "src/ledger.ts" });
+  // An overlap outside every core file, and a project with no core files, hold nothing.
+  assert.equal(coreHold(waiting({ scope: ["src/index.ts"] }), [live], core), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], []), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], undefined), null);
+  // Two scopes that each reach a core glob, but not the same path, hold nothing.
+  const both = item({ id: "t1", scope: ["src/index.ts"], state: "submitted", owner: "x/y" });
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [both], ["src/**"]), null);
+  // An unscoped item reaches every core file.
+  assert.equal(coreHold(waiting({ scope: [] }), [live], core)?.core, "src/ledger.ts");
+  // Submitted and accepted items hold; merged, abandoned, open and integrated ones do not.
+  for (const state of ["submitted", "accepted"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core)?.id, "t1", state);
+  for (const state of ["merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
+  // The owner's override, and the jobs that build nothing, are never held; merge-main is.
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: makeDispatch({ overlapOk: true }, "pavi", T) }), [live], core), null);
+  for (const job of ["plan", "integrate", "refresh", "review"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job } }), [live], core), null, job);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job: "merge-main", head: "a".repeat(40), task: true } }), [live], core)?.id, "t1");
+  // Items of one plan never hold each other; a part is held by work outside its plan.
+  const sibling = item({ id: "t5", scope: ["src/**"], state: "claimed", owner: "x/y", kind: "part", plan: "t4" });
+  const queuedPart = waiting({ scope: ["src/ledger.ts"], kind: "part", plan: "t4" });
+  assert.equal(coreHold(queuedPart, [sibling], core), null);
+  assert.equal(coreHold(queuedPart, [sibling, live], core)?.id, "t1");
+  // A plan item its planner or the integrator holds changes no main; a submitted one does.
+  const planItem = item({ id: "t6", scope: ["src/**"], state: "claimed", owner: "atelier/integrator", kind: "plan" });
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [planItem], core), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core)?.id, "t6");
+});
+
+test("a dispatch keeps the owner's overlap override only when it is asked for", () => {
+  assert.equal(makeDispatch({ overlapOk: true }, "pavi", T).overlapOk, true);
+  assert.equal("overlapOk" in makeDispatch({ overlapOk: false }, "pavi", T), false);
+  assert.throws(() => makeDispatch({ overlapOk: "yes" }, "pavi", T), /overlapOk must be true or false/);
 });
