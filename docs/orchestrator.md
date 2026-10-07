@@ -228,8 +228,10 @@ A failed integration attempts to restore its previous head.
 - **`plan show`** says which main head the branch last took and where main is now (read from the baseline), the refresh in flight, and a failed one with its reason and the command that runs it again, or the merge-main part that resolves it. A merge-main part is listed as any part, with a line saying it was added by Atelier for main at M, after the refresh conflicted or at the owner's request, outside the approved plan.
 
 **Finishing.** After the last part is integrated and the checks pass, the integrator submits the plan item with a summary of its parts.
-- `planGate()` adds blockers to `gate()`: every part integrated, and each with a cross-family approval at the head that was integrated.
-- The owner accepts and lands the plan with `atelier merge tP --head H`, as for any item. A plan whose changes touch a protected path also needs an independent review of the plan item, and no reviewer qualifies: `atelier/integrator` is one of its contributors and its family is not recognised, so `familyRefusal` fails every reviewer. The owner accepts such a plan only by recording an override, `atelier merge tP --head H --override-review "reason"`. `--approve` records the owner's own review, which is not the independent review.
+- `planGate()` adds blockers to `gate()`: every part integrated, and each with a cross-family approval at the head that was integrated, and the plan's head at its integration head.
+- The parts' reviews are the plan's review. When the plan's head is its integration head, every commit on its branch is an integration of a reviewed part or a refresh that merged main's head, each recorded as the integration head, and the integrator's merges are not contributions. So `planGate` asks no independent review of the plan item, however its changes are classed, and does not compare `atelier/integrator`, whose family is not recognised, with any reviewer (`reviewHeld` in `gate()`). The rest of `gate()` still applies to the plan item: it must be submitted with a verified head, its required checks observed passing there (and on main where main has moved), its changed paths observed, its change class allowed by an execution policy, and no rejection recorded on it at that head.
+- A plan whose head is not its integration head is refused for that, and is gated as any item: where its changes need an independent review, no reviewer qualifies, because `atelier/integrator` is among its contributors and `familyRefusal` fails every reviewer, so only the owner's override recorded on the plan item lifts that blocker.
+- The owner accepts and lands the plan with `atelier merge tP --head H`, H being the integration head `plan show` prints. `atelier land tP` refuses a plan before it takes the landing lease: its merge of main would put a commit beside the recorded integrations. A plan branch behind main takes main through `atelier plan refresh tP`.
 - `Ledger.merged` then marks the parts merged, with `{via: tP}`.
 
 **Where the merge can run.**
@@ -259,7 +261,7 @@ A failed integration attempts to restore its previous head.
 | `atelier plan refresh tP` | Merge main's head into the plan's branch now, through the integrator's refresh job; section 5 |
 | `atelier plan refresh tP --resolve [--to H/M]` | Add a merge-main part for main's head, whose builder resolves the conflict; section 5 |
 | `atelier plan post tP FILE` | The planner, holding the plan item's claim, posts its plan document |
-| `atelier merge tP --head H [--override-review "reason"]` | Accept and land the whole plan; section 5 says when the override is needed |
+| `atelier merge tP --head H` | Accept and land the whole plan at its integration head; section 5 says why it needs no review of its own |
 
 **What is built.** `src/index.ts` and `cli/atelier.mjs` (step 6):
 - A plan starts through `POST items` with `{kind: "plan", goal, scope, planner}`, so t43 refuses it to agent tokens as it refuses any new item.
