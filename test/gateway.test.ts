@@ -5,7 +5,7 @@ import {
   durationsSql, fetchNewLogs, gatewayConfig, gatewayView, logsUrl, MAX_PAGES, PAGE_SIZE, parseDurations, parseLog, parseMetadata, parsePage, parseTotals,
   ROW_LIMIT, summarize, totalsSql, writeLog, type GatewayLog,
 } from "../src/usage/gateway.ts";
-import { query, queryConfig, sqlString, writeMetric } from "../src/metrics.ts";
+import { query, queryConfig, sqlString, writeMetric, neverWritten } from "../src/metrics.ts";
 import { describeGateway } from "../cli/usage.mjs";
 
 // The AI Gateway pieces that need no Worker: parsing the logs route's
@@ -173,6 +173,15 @@ test("with no token the gateway is off and says which setting to set", () => {
   const off = gatewayView("AI Gateway costs are off: set AI_GATEWAY_TOKEN", [{ provider: "p", model: "m", calls: 1, failures: 0, tokensIn: 1, tokensOut: 1, cost: 1 }], [], null, [], NOW);
   assert.deepEqual(off.models, []);
   assert.deepEqual(describeGateway(off, (s: string) => s), ["AI Gateway: AI Gateway costs are off: set AI_GATEWAY_TOKEN."]);
+  // Figures that cannot be read still show the last pull, which says whether the gateway's logs are reachable.
+  const unread = gatewayView("AI Gateway costs could not be read just now: x", [], [], { at: "2026-10-07T11:55:00.000Z", added: 0, error: "the AI Gateway logs route answered 404" }, [], NOW);
+  assert.deepEqual(describeGateway(unread, (s: string) => s), ["AI Gateway: AI Gateway costs could not be read just now: x.", "  last pull 2026-10-07T11:55Z failed: the AI Gateway logs route answered 404"]);
+});
+
+test("a dataset never written to reads as no rows, any other refusal as a failure", () => {
+  assert.equal(neverWritten(new Error('the Analytics Engine SQL API answered 422: Input was invalid: unable to find type of column: "timestamp".')), true);
+  assert.equal(neverWritten(new Error("the Analytics Engine SQL API answered 422: Input was invalid: the 2nd and 3rd arguments to IF() function must have the same type")), false);
+  assert.equal(neverWritten(new Error("the Analytics Engine SQL API answered 500")), false);
 });
 
 test("the metrics module writes a typed point and queries the SQL API", async () => {

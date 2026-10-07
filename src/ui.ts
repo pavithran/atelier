@@ -758,12 +758,14 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
 
 export function gatewaySection(g: GatewayView): string {
   const head = `<h2 class="section-title">AI Gateway · last ${g.days} days</h2>`;
-  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p></section>`;
   const pull = g.pull
     ? g.pull.error
       ? `The last pull, ${e(stamp(g.pull.at))}, failed: ${e(g.pull.error)}.`
       : `Logs last pulled ${e(stamp(g.pull.at))}, ${plural(g.pull.added, "new call")}.`
     : "No logs pulled yet; the Worker pulls them every five minutes.";
+  // When the figures cannot be read, the last pull still says whether the
+  // gateway's logs are reachable.
+  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p>${g.pull ? `<p class="meta">${pull}</p>` : ""}</section>`;
   const row = (m: GatewayView["models"][number]) => `<tr><th scope="row"><code>${e(m.model)}</code><span class="meta"> ${e(m.provider)}</span></th>
     <td class="num">${e(m.calls.toLocaleString("en"))}${m.failures ? ` <span class="meta">${e(m.failures.toLocaleString("en"))} failed</span>` : ""}</td>
     <td class="num">${e(tokens(m.tokensIn))} in · ${e(tokens(m.tokensOut))} out</td>
