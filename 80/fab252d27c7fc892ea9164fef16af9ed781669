@@ -1,0 +1,24 @@
+atelier atelier/t286 "The Models page and atelier runner --usage say only 'the Analytics Engine SQL API answered 422' (2026-10-07, first read after t278's deploy), because query() in src/metrics.ts drops the API's answer, which on an error is plain text naming the cause (an unknown table, a syntax error). Name the API's own message, cut and stripped of control characters, in the error; same for the AI Gateway logs route"
+accepted head 31d6c46f7471f9b4b9b51d7f735a64334e17f000
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T21:39:25.474Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T21:39:28.403Z
+REVIEW approve by antigravity/gemini-3.1-pro at 31d6c46f7471f9b4b9b51d7f735a64334e17f000, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T21:32:32.361Z pavi item.created
+2026-10-07T21:32:35.788Z claude-code/opus-5.5 item.claimed
+2026-10-07T21:32:50.081Z claude-code/opus-5.5 fork.created
+2026-10-07T21:36:27.857Z pavi land.lease
+2026-10-07T21:36:29.232Z pavi land.merge
+2026-10-07T21:36:37.358Z pavi land.regenerate
+2026-10-07T21:36:40.074Z claude-code/opus-5.5 push.observed
+2026-10-07T21:36:40.217Z pavi land.push
+2026-10-07T21:39:26.270Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:39:28.655Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:39:29.060Z pavi land.check
+2026-10-07T21:39:29.505Z claude-code/opus-5.5 item.submitted
+2026-10-07T21:39:29.811Z pavi land.submit
+2026-10-07T21:39:29.960Z pavi review.requested
+2026-10-07T21:39:56.883Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T21:44:02.546Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T21:44:03.127Z pavi land.review
+2026-10-07T21:44:04.009Z pavi item.accepted
+2026-10-07T21:44:04.151Z pavi land.accept
