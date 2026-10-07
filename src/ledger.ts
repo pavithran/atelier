@@ -1,4 +1,5 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
+import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
 import { type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
@@ -23,14 +24,14 @@ import { routeParts, type PartRoute } from "./plans/route.ts";
 import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
 import { jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
-  cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
+  cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
 } from "./plans/state.ts";
 import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
-import { reviewNeeded, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { independenceRefusal } from "./review/independence.ts";
 
@@ -169,7 +170,8 @@ export type PlanPost =
 // A part's routing with the plan's later changes applied. The owner's
 // reroute names the actor that builds it from now on, and the routed
 // alternates stay behind it. A reviewer the plan tick picked in place of the
-// routed one (reviewTick) reviews it from now on, with the reason shown.
+// routed one (reviewTick), or the owner named, reviews it from now on, with
+// the reason shown.
 function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "reviewers">): PartRoute {
   const actor = record.reroutes[route.key];
   const change = record.reviewers?.[route.key];
@@ -178,11 +180,23 @@ function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "revie
   if (change) {
     out = {
       ...out,
-      reviewer: { actor: change.actor, reasons: [`Picked by the plan in place of ${change.from ?? "no reviewer"}: ${change.reason}`] },
+      reviewer: { actor: change.actor, reasons: [change.by ? `Named by the project owner in place of ${change.from ?? "no reviewer"}` : `Picked by the plan in place of ${change.from ?? "no reviewer"}: ${change.reason}`] },
       reviewerChange: { from: change.from, reason: change.reason, at: change.at },
     };
   }
   return out;
+}
+
+// Whether the project's policy lets `actor` review, as namedActor judged it
+// when the owner named it; the policy may have changed since.
+function mayAssess(actor: string, policy: ProjectPolicy, owner: string): boolean {
+  try {
+    assertEligible(actor, policy, owner, "assessor");
+    return true;
+  } catch (err) {
+    if (err instanceof RuleError) return false;
+    throw err;
+  }
 }
 
 // What the Worker found in a fork's history for a push (see recordPush):
@@ -361,6 +375,10 @@ export class Ledger extends DurableObject<Env> {
     const requestColumns = this.sql.exec(`PRAGMA table_info(review_requests)`).toArray().map((c) => c.name);
     if (!requestColumns.includes("wanted")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN wanted INTEGER`);
     this.backfillReviewProvenance();
+    // A deploy can change the tick's logic, and a plan waiting on nothing
+    // the new logic would read sits idle until something else changes; the
+    // ledger ticks its open plans once per deploy (retickDeployed).
+    this.retickDeployed((this.env as unknown as { DEPLOYED_MAIN?: string }).DEPLOYED_MAIN ?? null);
   }
 
   // Reviews recorded before each said who recorded it gain the fields
@@ -1101,7 +1119,7 @@ export class Ledger extends DurableObject<Env> {
   // its limit is refused before the token is revoked.
   checkHandoff(id: string, from: string, to: string, note: string): void { this.handoffAllowed(id, from, to, note); }
   checkRelease(id: string, actor: string, note: string): void { this.releaseAllowed(id, actor, note); }
-  checkAbandon(id: string, actor: string, note: string): void { this.abandonAllowed(id, actor, note); }
+  checkAbandon(id: string, actor: string, note: string, deliveredBy?: string): void { this.abandonAllowed(id, actor, note, deliveredBy); }
 
   private handoffAllowed(id: string, from: string, to: string, note: string): Item {
     assertLength(note, NOTE_MAX, "the handoff note");
@@ -1151,10 +1169,16 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
-  private abandonAllowed(id: string, actor: string, note: string): Item {
+  private abandonAllowed(id: string, actor: string, note: string, deliveredBy?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
     assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
+    // A task closed as delivered by another names a task that has merged.
+    if (deliveredBy !== undefined) {
+      if (deliveredBy === id) throw new RuleError("bad_delivered_by", `${id} cannot be delivered by itself`, 400);
+      const by = this.item(deliveredBy);
+      if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409);
+    }
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     // A plan's parts go with it; stopping the plan closes them in one step.
     const open = item.kind === "plan" ? this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned") : [];
@@ -1271,39 +1295,80 @@ export class Ledger extends DurableObject<Env> {
 
   // One landing at a time per project (atelier land, t187): while one land
   // holds this lease no other landing of the project starts, so two sessions
-  // never race main. Like the merge's landing lease it has no expiry; land
-  // releases it when it ends, a later land of the same task takes it over to
-  // resume, and a lease whose task has closed no longer guards anything, so
-  // another landing may take it.
-  private projectLanding(): { item: string; holder: string; at: string } | null {
+  // never race main. The holder renews it while it lands (renewProjectLanding,
+  // the heartbeat of atelier land), and a lease not renewed for
+  // LANDING_LEASE_EXPIRY_MS is treated as free, so a landing killed without
+  // releasing it (t214) blocks nobody for longer than that: the next landing
+  // takes it over and is told whose lease lapsed. A later land of the same
+  // task takes its own lease over to resume, and a lease whose task has
+  // closed no longer guards anything, so another landing may take it.
+  private projectLanding(): LandingLease | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'landing-lease'`).toArray()[0];
     return row ? JSON.parse(row.value as string) : null;
   }
 
-  readProjectLanding(): { item: string; holder: string; at: string } | null {
+  readProjectLanding(): LandingLease | null {
     return this.projectLanding();
   }
 
-  beginProjectLanding(id: string, actor: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
-    const item = this.item(id);
-    const held = this.projectLanding();
-    if (held && held.item !== id) {
-      const holder = this.item(held.item);
-      if (holder.state !== "merged" && holder.state !== "abandoned") {
-        const since = held.at.slice(0, 16).replace("T", " ");
-        throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project. Wait for it to finish, or run atelier land ${held.item} again to finish or release that landing`, 409);
-      }
-    }
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at: new Date().toISOString() }));
-    return item;
+  // Whether a lease still guards the project at `at`: renewed (or taken)
+  // within the expiry, for a task that is still open.
+  private landingLive(held: LandingLease, at: string): boolean {
+    if (landingLeaseLapsed(held, Date.parse(at))) return false;
+    const holder = this.item(held.item);
+    return holder.state !== "merged" && holder.state !== "abandoned";
   }
 
-  cancelProjectLanding(actor: string): { held: boolean } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
+  beginProjectLanding(id: string, actor: string): { item: Item; expired: LandingLease | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    const item = this.item(id);
+    const at = new Date().toISOString();
     const held = this.projectLanding();
+    let expired: LandingLease | null = null;
+    if (held && held.item !== id) {
+      if (this.landingLive(held, at)) {
+        const since = held.at.slice(0, 16).replace("T", " ");
+        throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or atelier land ${held.item} --release-lease to free the lease`, 409);
+      }
+      // A lease that lapsed is reported to the landing that takes it over,
+      // so a killed landing is named rather than silently replaced.
+      if (landingLeaseLapsed(held, Date.parse(at))) expired = held;
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
+    return { item, expired };
+  }
+
+  // The holder's heartbeat: moves the lease's renewal time on, so the lease
+  // stays live through the long steps of a landing. Refused when the lease
+  // is held for another task or by nobody, which tells the landing it no
+  // longer holds the project.
+  renewProjectLanding(id: string, actor: string): LandingLease {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    const at = new Date().toISOString();
+    const held = this.projectLanding();
+    if (!held || held.item !== id) {
+      throw new RuleError("no_lease", held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`, 409);
+    }
+    const renewed = { ...held, renewedAt: at };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify(renewed));
+    return renewed;
+  }
+
+  // Frees the lease held for one task, answering which task held it since
+  // when (null when none did), so atelier land --release-lease can say what
+  // it freed. A lease held for another task is left alone and named: a
+  // landing whose lease lapsed and was taken over must not free the
+  // landing that took it, or two landings would run at once.
+  cancelProjectLanding(id: string, actor: string): { held: boolean; lease: LandingLease | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
+    if (!id) throw new RuleError("bad_item", "a cancel names the task whose landing lease it releases: { cancel: true, item: ID }", 400);
+    const held = this.projectLanding();
+    if (held && held.item !== id) {
+      const since = held.at.slice(0, 16).replace("T", " ");
+      throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409);
+    }
     this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
-    return { held: !!held };
+    return { held: !!held, lease: held };
   }
 
   // One step of a landing (atelier land, t187): what the step was, how long
@@ -1348,13 +1413,13 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  abandon(id: string, actor: string, note: string, token?: string | null): Item {
-    this.abandonAllowed(id, actor, note);
+  abandon(id: string, actor: string, note: string, token?: string | null, deliveredBy?: string): Item {
+    this.abandonAllowed(id, actor, note, deliveredBy);
     this.dropToken(id, token);
     // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
-    this.log(id, actor, "item.abandoned", { note }, at);
+    this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}) }, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -1474,10 +1539,12 @@ export class Ledger extends DurableObject<Env> {
     return actionRuns(this.sql, limit);
   }
 
-  events(id?: string, limit = 200): LedgerEvent[] {
+  // Newest first. `before` pages back: only events with a lower seq than it.
+  events(id?: string, limit = 200, before?: number): LedgerEvent[] {
+    const below = before === undefined ? Number.MAX_SAFE_INTEGER : before;
     const rows = id
-      ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? ORDER BY seq DESC LIMIT ?`, id, limit).toArray()
-      : this.sql.exec(`SELECT * FROM events ORDER BY seq DESC LIMIT ?`, limit).toArray();
+      ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`, id, below, limit).toArray()
+      : this.sql.exec(`SELECT * FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?`, below, limit).toArray();
     return rows.map((r) => ({
       seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
       ...(r.proved === 1 ? { proved: true as const } : {}),
@@ -1515,7 +1582,7 @@ export class Ledger extends DurableObject<Env> {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
-    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name), ...this.shipEntries(p)]
+    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p)]
       .sort((a, b) => b.weight - a.weight);
   }
 
@@ -1682,6 +1749,9 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner approves a plan", 403);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    // The plan item must be unheld: a planner that still holds its claim would
+    // keep a live write token through the plan's completion.
+    if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; approve it once its claim is released`, 409);
     const record = this.planRecord(id);
     if (record.approval) throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; a plan is approved once`, 409);
     if (!/^[a-f0-9]{64}$/.test(hash)) throw new RuleError("bad_hash", `give the full hash atelier plan show ${id} prints`, 400);
@@ -1728,6 +1798,8 @@ export class Ledger extends DurableObject<Env> {
   // nobody: reroute names the actor that builds it from now on, and retry
   // counts its attempts afresh. Each is logged on the item it concerns, and
   // attempts are counted from the latest (plannerAttempts, tickEvents).
+  // Reroute of a part that is submitted, or blocked while submitted, names
+  // its reviewer instead (rerouteReviewer).
   revisePlan(id: string, actor: string, note: unknown): Item {
     const { record } = this.planningPlan(id, actor, "revise");
     const text = cleanNote(note);
@@ -1752,6 +1824,7 @@ export class Ledger extends DurableObject<Env> {
       this.askPlanner(id, record, actor, at);
       return this.item(id);
     }
+    if (item.kind === "part" && (item.state === "submitted" || (item.state === "blocked" && item.blocked?.from === "submitted"))) return this.rerouteReviewer(item, actor, to, at);
     const { record, key } = this.openPart(item, "reroute");
     const builder = namedActor(to, policy, "executor", this.owner);
     const slash = builder.indexOf("/");
@@ -1765,6 +1838,47 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "plan.rerouted", { to: builder, from }, at);
     this.afterPlanChange(id);
     return this.item(id);
+  }
+
+  // The owner names the reviewer of a submitted part, or of one blocked
+  // while submitted, such as one the plan blocked for want of an eligible
+  // reviewer. The plan picks reviewers from the pool fixed at approval; a
+  // named one need not be in it, so a model added since can review. It must
+  // be of another family than every contributor, as the gate counts a
+  // review. A review it would replace that is open is withdrawn; one already
+  // claimed by another reviewer is left to finish. The plan's own block is
+  // lifted and the tick asks the named reviewer; a block someone else made
+  // stays until they unblock it. The builder's attempts are not touched.
+  private rerouteReviewer(item: Item, actor: string, to: unknown, at: string): Item {
+    const plan = this.item(item.plan!);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
+    const reviewer = namedActor(to, this.project().policy, "assessor", this.owner);
+    const refusal = independenceRefusal(reviewer, contributorsOf(item));
+    if (refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${item.id}: ${refusal}; name a model of another family than every contributor`, 409);
+    const claimed = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND state = 'claimed'`, item.id).toArray()
+      .map((r) => r.claimedBy as string).find((by) => !sameActor(by, reviewer));
+    if (claimed) throw new RuleError("review_claimed", `${claimed} is reviewing ${item.id} now; wait for its verdict, or let its claim lapse, before naming ${reviewer}`, 409);
+    const record = this.planRecord(plan.id);
+    const key = item.partKey!;
+    const route = record.approval!.routes.find((r) => r.key === key)!;
+    const from = rerouted(route, record).reviewer?.actor ?? null;
+    const open = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state = 'open'`, item.id).toArray();
+    for (const r of open) {
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+      if (asked && sameActor(asked, reviewer)) continue;
+      this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+      this.log(item.id, actor, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at);
+    }
+    (record.reviewers ??= {})[key] = { actor: reviewer, from, reason: "named by the project owner", at, by: actor };
+    this.savePlanRecord(plan.id, record);
+    this.log(item.id, actor, "plan.reviewer_changed", { from, to: reviewer, reason: "named by the project owner" }, at);
+    if (item.state === "blocked" && item.blocked?.by === ORCHESTRATOR) {
+      this.update(item.id, { state: "submitted", blocked: null }, at);
+      this.log(item.id, actor, "item.unblocked", { reason: item.blocked.reason, to: "submitted" }, at);
+    }
+    this.afterPlanChange(item.id);
+    return this.item(item.id);
   }
 
   retryPlan(id: string, actor: string): Item {
@@ -1833,6 +1947,12 @@ export class Ledger extends DurableObject<Env> {
     const all = approval ? this.partEvents(item.id) : [];
     const attempts = partAttempts(tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!]))));
     const ids = new Map(parts.map((p) => [p.partKey!, p.id]));
+    // The planner's last release note, when the harness failed before posting
+    // a proposal: plan show tells the owner the harness failed, distinct from
+    // an invalid proposal, which blocks the plan instead.
+    const released = this.events(item.id).find((e) => e.kind === "item.released");
+    const releasedNote = released && typeof released.data.note === "string" ? released.data.note : "";
+    const harnessFailure = releasedNote.startsWith("the harness failed: ") ? releasedNote : null;
     return {
       item,
       phase: planPhase({ proposed: newest !== null, approved: approval !== null, blocked: record.blocked, state: item.state }),
@@ -1856,28 +1976,70 @@ export class Ledger extends DurableObject<Env> {
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
           integration: this.partIntegration(p.id),
+          blocked: p.state === "blocked" && p.blocked ? { reason: p.blocked.reason, by: p.blocked.by } : null,
         };
       }),
       preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
       // The plan branch's integration head (docs/orchestrator.md, section 5).
       integration: { integrationHead: record.integrationHead ?? null },
+      harnessFailure,
+      pastDeadline: pastDeadline(record, new Date().toISOString()),
     };
   }
 
-  // Timeouts. The alarm is set for an approved plan's deadline; it runs the
-  // tick of every approved plan that is still open, which blocks one past
-  // its deadline, and is set again for a deadline still to come.
+  // Timeouts. The alarm is set for an approved plan's deadline and for the
+  // moment a part's claimed review would lapse (see claimReview); it runs
+  // the tick of every approved plan that is still open, which blocks one
+  // past its deadline, asks a lapsed review again of another reviewer, and
+  // is set again for a moment still to come.
   async alarm(): Promise<void> {
     const ids = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
+    const now = Date.now();
     let next = Infinity;
     for (const id of ids) {
       const approval = this.planRecord(id).approval;
       if (!approval) continue;
       this.afterPlanChange(id);
       const deadline = Date.parse(approval.deadline);
-      if (deadline >= Date.now()) next = Math.min(next, deadline + 1000);
+      if (deadline >= now) next = Math.min(next, deadline + 1000);
+      next = Math.min(next, this.nextLapse(id, now));
     }
     if (next !== Infinity) await this.ctx.storage.setAlarm(next);
+  }
+
+  // When the plan's earliest claimed review lapses, so the alarm fires then
+  // and the tick asks the review again of another reviewer. A claim already
+  // lapsed lies in the past and never re-fires an alarm: the tick that just
+  // ran has either asked again or found nothing to ask.
+  private nextLapse(id: string, now: number): number {
+    let next = Infinity;
+    for (const r of this.sql.exec(`SELECT claimedAt FROM review_requests WHERE state = 'claimed' AND item IN (SELECT id FROM items WHERE plan = ?)`, id).toArray()) {
+      const claimed = typeof r.claimedAt === "string" ? Date.parse(r.claimedAt) : NaN;
+      const lapse = claimed + REVIEW_CLAIM_TIMEOUT_MS + 1000;
+      if (Number.isFinite(lapse) && lapse > now) next = Math.min(next, lapse);
+    }
+    return next;
+  }
+
+  // The tick's logic changes with a deploy (a reviewer re-picked where it
+  // was fixed at approval, a lapse acted on where it was only waited out),
+  // and a plan that is waiting on nothing the new logic reads — a review
+  // routed to a contributor, a lapsed claim, a block that no longer holds —
+  // would sit idle until something else changed: t197 waited with a review
+  // routed to a contributor until the owner repeated a reroute. So the
+  // ledger ticks every open plan once per deploy: the main commit the
+  // deploy was built from (DEPLOYED_MAIN, npm run deploy) is compared with
+  // the last it ticked under, and a new one ticks now. Nothing ticks when
+  // no commit is named, since no deploy is then tellable from the last; the
+  // constructor passes the one it reads.
+  retickDeployed(deployed: string | null): void {
+    if (!deployed) return;
+    const held = this.sql.exec(`SELECT value FROM meta WHERE key = 'deployed-main'`).toArray()[0];
+    if (held && held.value === deployed) return;
+    for (const row of this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray()) {
+      this.afterPlanChange(row.id as string);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('deployed-main', ?)`, deployed);
   }
 
   private planRecord(id: string): PlanRecord {
@@ -1926,12 +2088,12 @@ export class Ledger extends DurableObject<Env> {
     return row?.kind === "plan.proposed";
   }
 
-  private planEntries(project: string): InboxEntry[] {
+  private planEntries(project: string, now: string): InboxEntry[] {
     const ids = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
     return planInboxEntries(ids.map((id) => {
       const newest = this.proposal(id);
       return { project, plan: this.item(id), record: this.planRecord(id), proposal: newest && { hash: newest.hash, parts: newest.plan.parts.length }, answered: this.answered(id) };
-    }));
+    }), now);
   }
 
   // A plan not yet approved, open and held by nobody, for a decision about its planner.
@@ -1953,11 +2115,17 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind !== "part") throw new RuleError("not_a_plan", `${item.id} is not a plan or a part of one`, 400);
     const plan = this.item(item.plan!);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
+    const record = this.planRecord(plan.id);
+    // A deadline block is fixed at approval, so reroute and retry cannot lift
+    // it; the owner stops the plan instead.
+    if (pastDeadline(record, new Date().toISOString())) {
+      throw new RuleError("plan_deadline", `${item.id}'s plan ${plan.id} is past its deadline ${record.approval!.deadline}; the deadline is fixed at approval, so ${verb === "reroute" ? "rerouting" : "retrying"} a part cannot lift it. Stop the plan with atelier plan stop ${plan.id}`, 409);
+    }
     if (item.state !== "open" || item.owner) {
       const release = item.state === "claimed" ? `; ask ${item.owner} to release it, or release it with atelier release ${item.id}` : "";
       throw new RuleError("part_busy", `${item.id} is ${item.state}${item.owner ? `, held by ${item.owner}` : ""}; a part is ${verb === "reroute" ? "rerouted" : "retried"} only while it is open and held by nobody${release}`, 409);
     }
-    return { record: this.planRecord(plan.id), key: item.partKey! };
+    return { record, key: item.partKey! };
   }
 
   // Asks the planner again: the plan job is dispatched to the record's
@@ -2147,21 +2315,27 @@ export class Ledger extends DurableObject<Env> {
         now, owner: this.owner,
       });
       if (!need.needed) continue;
+      // The reviewer the owner named is asked first, in or out of the pool,
+      // while it is independent of every contributor, may review under the
+      // policy, and has not let a claim on this head lapse.
+      const change = record.reviewers?.[p.partKey!];
+      const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors)
+        && mayAssess(change.actor, policy, this.owner) ? change.actor : null;
       // pickReviewer passes over every contributor and every model of a
       // contributor's family, the routed reviewer included, and asks the
       // alternates and then the pool.
-      const pick = pickReviewer({
+      const pick = named ? null : pickReviewer({
         item: p, pool: approval.pool, policy, allowPaid: approval.allowPaid,
         part, route,
         previous: need.previousReviewer,
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
       });
-      if (!pick.reviewer) {
-        this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval, so add a model of another family than every contributor with atelier models add, then stop this plan with atelier plan stop ${id} and plan this part's work again. ${pick.unpicked}`, at);
+      if (pick && !pick.reviewer) {
+        this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name one of another family than every contributor, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
         continue;
       }
-      const reviewer = pick.reviewer.actor;
+      const reviewer = named ?? pick!.reviewer!.actor;
       // The routed reviewer that can no longer review is replaced on the
       // part's routing, so plan show and the plan page name the reviewer
       // asked and why, and later rounds ask that reviewer first.
@@ -2221,7 +2395,23 @@ export class Ledger extends DurableObject<Env> {
   // route binds an item. Refused for a stale head, a reviewer that wrote the
   // item, or a runner or actor the dispatch did not ask for. Returns what the
   // review job needs to build the brief and clone the part.
-  claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): ReviewClaim {
+  //
+  // A refusal also runs the plan's tick: a review the claiming agent cannot
+  // take is often one the tick would withdraw and ask again — its reviewer
+  // has become a contributor, its head has moved, its claim has lapsed — and
+  // without the tick the plan waits idle for a change that may not come
+  // (t197 waited with a review routed to a contributor). The tick rescues
+  // the plan, never the claim, so the refusal is thrown as it was.
+  async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): Promise<ReviewClaim> {
+    try {
+      return await this.bindReview(itemId, actor, runner, proved);
+    } catch (err) {
+      if (err instanceof RuleError) this.afterPlanChange(itemId);
+      throw err;
+    }
+  }
+
+  private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
     const item = this.item(itemId);
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (contributorsOf(item).some((c) => sameActor(c, actor))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
@@ -2240,6 +2430,16 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner?.runner ?? null, at, row.id);
     this.log(itemId, actor, "review.claimed", { head, runner: runner.runner }, at, proved);
+    // A part's claimed review can lapse (REVIEW_CLAIM_TIMEOUT_MS,
+    // reviewNeeded), and when it does, nothing but the alarm ticks the plan
+    // unprompted: the alarm is set for the lapse, never later than one
+    // already held. A review outside a plan sets none; its landing asks
+    // again itself (requestReview).
+    if (item.plan) {
+      const lapse = Date.parse(at) + REVIEW_CLAIM_TIMEOUT_MS + 1000;
+      const held = await this.ctx.storage.getAlarm();
+      if (held === null || lapse < held) await this.ctx.storage.setAlarm(lapse);
+    }
     // A part's claim carries the plan's account of it for the brief; an item
     // outside a plan has none, and its need is read as the gate reads it.
     const record = item.plan ? this.planRecord(item.plan) : null;
@@ -2470,8 +2670,17 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "part" && item.state === "open" && !item.dispatch) {
       throw new RuleError("not_dispatched", `${item.id} is a part of plan ${item.plan}, which dispatches it once the parts it depends on have merged; it is not dispatched now. See atelier plan show ${item.plan}`, 409);
     }
-    if (item.kind === "plan" && this.planRecord(item.id).approval) {
-      throw new RuleError("plan_approved", `${item.id} is an approved plan, and its parts carry the work; see atelier plan show ${item.id}`, 409);
+    if (item.kind === "plan") {
+      if (this.planRecord(item.id).approval) {
+        throw new RuleError("plan_approved", `${item.id} is an approved plan, and its parts carry the work; see atelier plan show ${item.id}`, 409);
+      }
+      // A plan item's only work is its plan job. Once a valid proposal clears
+      // that dispatch (postPlan) the plan waits for the owner, so no eligible
+      // actor claims the plan item by hand: only the plan job's dispatch lets
+      // the routed planner claim it.
+      if (item.dispatch?.job !== "plan") {
+        throw new RuleError("not_dispatched", `${item.id}'s plan job has left the queue, so it cannot be claimed by hand; it waits for the owner's decision. See atelier plan show ${item.id}`, 409);
+      }
     }
   }
 

@@ -40,6 +40,7 @@ A plan is an item with `kind = "plan"`. That gives it everything an item already
 
 **Approval binds to a hash.** The owner calls `POST items/tP/plan/approve {hash}`.
 - The Ledger refuses unless `hash` is the newest valid proposal. This is the same idea as `assertRevision`.
+- It is refused while the planner still holds the plan item's claim, so a write token never outlives the plan: the planner releases before the owner approves.
 - It stores the approval in the plan's record (`hash`, `at`, `allowPaid`, the limits, the deadline, the part items and each part's routing) and logs `plan.approved`.
 - It is refused while a part has no builder, or no reviewer of another family, under `routeParts`: approving such a plan would only block it. The owner adds models to the pool, or approves with `allowPaid`, and approves the same hash again.
 - A new proposal before approval makes the older hash impossible to approve, just as a push withdraws acceptance.
@@ -114,13 +115,13 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 
 ## 3. Dispatch after approval
 
-`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm. `merged` is how a dependency lands until t16, and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
+`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm; a refused review claim runs it too (the request the claiming agent could not take is re-judged: withdrawn and asked again), the alarm fires not only for the deadline but for the moment a part's claimed review lapses, and a deploy ticks every open plan once, comparing the main commit it was built from (`DEPLOYED_MAIN`) with the last it ticked under, so changed tick logic reaches a plan waiting on nothing else. `merged` is how a dependency lands until t16, and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
 - its dependencies have landed;
 - the plan is not blocked;
 - fewer than `maxParallel` parts are live (default 2, one per Mac);
 - the budget has room.
 
-**Who dispatches.** An internal method, `dispatchPart`, writes the same `Dispatch` record from the frozen routing. It is not the owner-only `dispatch()` route. Its event's actor is `atelier/orchestrator`, with `{approval: hash, reason}`. `assertDispatchedClaim()` is unchanged. The owner's `dispatch` and `undispatch` refuse a plan or a part. A part is claimed only through its dispatch: an open part with none is refused, so no one takes it before its dependencies land. An approved plan's own item is claimed by nobody until the integrator exists (t16).
+**Who dispatches.** An internal method, `dispatchPart`, writes the same `Dispatch` record from the frozen routing. It is not the owner-only `dispatch()` route. Its event's actor is `atelier/orchestrator`, with `{approval: hash, reason}`. `assertDispatchedClaim()` is unchanged. The owner's `dispatch` and `undispatch` refuse a plan or a part. A part is claimed only through its dispatch: an open part with none is refused, so no one takes it before its dependencies land. A plan item is claimed only through its plan job's dispatch: once a valid proposal clears it, the plan waits for the owner and nobody claims the item by hand. An approved plan's own item is claimed by nobody until the integrator exists (t16).
 
 **What the tick adds to `planActions`.** `maxJobs` is counted here, as the part dispatches `atelier/orchestrator` has made; `planActions` does not count jobs. The block `planActions` reports is stored as the plan's reason, and cleared when it no longer holds, so a plan stays blocked until the owner's decision changes what the tick reads. While it is blocked, parts waiting in the queue are taken out (`item.undispatched`). A released part's dispatch record is cleared unless the tick dispatches it again, so it never waits in the queue for an actor the tick did not choose. Attempts are counted from the owner's latest reroute or retry of each part, and a reroute keeps the routed alternates behind the actor it names. The spend budget is not passed (`budget: null`), and neither is availability: nothing records them yet.
 
@@ -132,7 +133,8 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 - **A runner gives up with no commit.** It already releases the part, so the part re-queues. After two releases by the same actor, the dispatch moves to the next alternate.
 - **Checks fail during `finish`.** For an ordinary task the runner keeps the claim. For a part it releases instead (step 7b); the fork keeps the commits. The part goes back to the same actor once, with the failing output in its next brief, then to an alternate.
   - `handoff` cannot be used here: it leaves the item `claimed`, and `waiting()` never lists a claimed item.
-- **A part reaches 3 attempts, or there are no alternates, or the deadline or budget is hit.** The plan becomes `blocked` with the reason. The owner chooses: reroute, retry, abandon the part, or stop.
+- **A part reaches 3 attempts, or there are no alternates.** The plan becomes `blocked` with the reason. The owner chooses: reroute, retry, abandon the part, or stop.
+- **The deadline or budget is hit.** The plan becomes `blocked` with the reason. These limits are fixed at approval, so reroute and retry cannot lift them: the owner stops the plan.
 
 ## 4. t39: automatic cross-family review
 

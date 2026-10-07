@@ -30,7 +30,12 @@ export interface BriefInput {
   item: Pick<Item, "id" | "title" | "base" | "scope">;
   events: readonly LedgerEvent[];          // the builder's summary for this head, read by submission()
   plan?: { goal: string; part: PlanPart } | null;
-  diff?: string | null;                    // git diff base head, when the caller has it
+  diff?: string | null;                    // git diff from `compare.from` (or the base) to the head, when the caller has it
+  // Where the diff runs from, when the caller computed it: the merge base of
+  // the head and the branch the item merges into, or the fork point with the
+  // reason the merge base could not be found. Absent, the brief compares
+  // from the item's base, as the ledger does when it fingerprints a request.
+  compare?: { from: string | null; branch?: string; fallback?: string } | null;
   diffLimit?: number;
   owner?: string;
 }
@@ -79,7 +84,8 @@ export function reviewBrief(input: BriefInput): string {
   const { need, item } = input;
   const owner = input.owner ?? DEFAULT_OWNER;
   const head = need.head;
-  const compare = item.base ? `git diff ${inline(item.base)} ${head}` : null;
+  const from = input.compare ? input.compare.from : item.base;
+  const compare = from ? `git diff ${inline(from)} ${head}` : null;
   const out: string[] = [];
   const section = (...lines: string[]) => out.push(lines.join("\n"));
 
@@ -108,8 +114,7 @@ export function reviewBrief(input: BriefInput): string {
     "Title, as written for the item:",
     block(item.title),
     `Head: ${head}`,
-    `Base: ${item.base ? inline(item.base) : "not recorded"}`,
-    compare ? `The change is everything from the base to the head: ${compare}` : "The base is not recorded; compare the head with its fork point in your clone.",
+    ...baseLines(item.base, input.compare, compare),
     `Change class: ${need.changeClass}, because ${CLASS_GLOSS[need.changeClass]}. ${basis}`,
     "",
     ...(item.scope.length ? ["Scope, the globs the item intends to touch:", block(item.scope.join("\n"))] : ["The item has no scope, so no changed file is outside it."]),
@@ -184,6 +189,30 @@ export function reviewBrief(input: BriefInput): string {
 
   section("## Reply format", "", REPLY_FORMAT);
   return out.join("\n\n");
+}
+
+// What the change is measured from. A task that merged its target branch
+// after it forked holds that branch's newer commits, so the change is read
+// from the merge base of the head and that branch; when the caller could not
+// find it, the brief says the diff runs from the fork point and may hold the
+// branch's commits too.
+function baseLines(base: string | null, given: BriefInput["compare"], compare: string | null): string[] {
+  if (given?.branch && given.from) {
+    return [
+      `Base: ${inline(given.from)}, the merge base of the head and ${code(given.branch)}, the branch it merges into. The task forked at ${base ? inline(base) : "a commit not recorded"}; commits it merged in from ${code(given.branch)} since are not part of the change.`,
+      `The change is everything from the merge base to the head: ${compare}`,
+    ];
+  }
+  if (given?.fallback) {
+    return [
+      `Base: ${base ? inline(base) : "not recorded"}, the fork point. The merge base with the branch the task merges into could not be found (${inline(given.fallback)}), so the diff runs from the fork point and may also hold commits the task merged in from that branch since; those are not the task's own change.`,
+      compare ? `The change is at most everything from the fork point to the head: ${compare}` : "The base is not recorded; compare the head with its fork point in your clone.",
+    ];
+  }
+  return [
+    `Base: ${base ? inline(base) : "not recorded"}`,
+    compare ? `The change is everything from the base to the head: ${compare}` : "The base is not recorded; compare the head with its fork point in your clone.",
+  ];
 }
 
 // Earlier reviews, oldest first. A round is an earlier head a model rejected,
