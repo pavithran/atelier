@@ -76,6 +76,21 @@ test("paging stops at the last stored id, and reads no further page", async () =
   assert.deepEqual((await fetchNewLogs(CFG, { id: all[0].id, at: all[0].at }, NOW, logsRoute(all).fetcher)).logs, []);
 });
 
+test("a full page holding a log that does not parse is not taken for the last page", async () => {
+  const all = minutes(PAGE_SIZE * 2);
+  const fetcher = (async (url: string) => {
+    const page = Number(new URL(url).searchParams.get("page"));
+    const result: unknown[] = all.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(raw);
+    if (page === 1) result[3] = { created_at: all[3].at };
+    return Response.json({ success: true, errors: [], result });
+  }) as typeof fetch;
+  const { logs, pages, gap } = await fetchNewLogs(CFG, null, NOW, fetcher);
+  assert.equal(pages, 3);
+  assert.equal(gap, null);
+  assert.equal(logs.length, PAGE_SIZE * 2 - 1);
+  assert.equal(logs.at(-1)?.id, all.at(-1)?.id);
+});
+
 test("a first pull reads back a window, stops at a short page, and never reads more than MAX_PAGES", async () => {
   const old = [...minutes(3), log("old", new Date(NOW - 8 * 86_400_000).toISOString())];
   assert.deepEqual((await fetchNewLogs(CFG, null, NOW, logsRoute(old).fetcher)).logs.map((l) => l.id), ["L0003", "L0002", "L0001"]);

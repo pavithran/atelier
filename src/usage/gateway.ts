@@ -182,15 +182,17 @@ export async function fetchNewLogs(cfg: GatewayConfig, last: GatewayMark | null,
     const res = await fetcher(logsUrl(cfg, page), { headers: { authorization: `Bearer ${cfg.token}`, accept: "application/json" } });
     const body = await res.json().catch(() => null);
     const found = parsePage(res.status, body);
+    // A short page is judged by what the list answered, not by the logs that
+    // parsed: a full page holding one log without an id is not the last.
+    const answered = (body as { result: unknown[] }).result.length;
     for (const log of found) {
       if (last && (log.id === last.id || log.at < last.at)) return { logs, pages: page, gap: null };
       if (log.at < floor) return { logs, pages: page, gap: null };
       logs.push(log);
     }
-    if (found.length < PAGE_SIZE) return { logs, pages: page, gap: null };
+    if (answered < PAGE_SIZE) return { logs, pages: page, gap: null };
   }
-  const oldest = logs[logs.length - 1];
-  return { logs, pages: MAX_PAGES, gap: { from: last?.at ?? floor, to: oldest.at, atLeast: 1 } };
+  return { logs, pages: MAX_PAGES, gap: { from: last?.at ?? floor, to: logs[logs.length - 1]?.at ?? new Date(now).toISOString(), atLeast: 1 } };
 }
 
 // One log as an Analytics Engine data point of kind "gateway": blobs
