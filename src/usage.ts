@@ -44,7 +44,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it." },
   ], [
     { form: "ls [--all] [--json]", about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them." },
-    { form: "show ID [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--json` prints it for scripts." },
+    { form: "show ID [--reviews] [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--reviews` also prints each review at each head with its whole note and findings; `--json` prints the brief, carrying the reviews, for scripts." },
     { form: "owners [--json]", about: "Prints one line per live task: its state, its owner and since when." },
     { form: "inbox [--json]", about: "Prints the decision brief of each task that needs the project owner, most urgent first. `--json` prints the entries for scripts." },
     { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, which pairs of live tasks name overlapping scopes (each pair once, nothing waiting on the owner), what is in progress and what waits for a runner. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, the overlapping pairs under `overlaps` and the same local facts under `local`." },
@@ -249,7 +249,13 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     },
     example: "atelier ls --all --project demo",
   },
-  show: { flags: { "--json": "prints the brief as JSON" }, example: "atelier show t3 --project demo" },
+  show: {
+    flags: {
+      "--reviews": "prints each review at each head, with its whole note and every finding",
+      "--json": "prints the brief as JSON, with every review and its findings",
+    },
+    example: "atelier show t3 --project demo",
+  },
   owners: { flags: { "--json": "prints the list as JSON" }, example: "atelier owners --project demo" },
   inbox: { flags: { "--json": "prints the entries as JSON" }, example: "atelier inbox" },
   status: {

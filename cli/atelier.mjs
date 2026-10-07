@@ -22,7 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
-import { assertEligible, checkApplies, pathCollisions } from "../src/rules.ts";
+import { assertEligible, checkApplies, pathCollisions, recordedText } from "../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -227,7 +227,7 @@ export const FLAGS = {
   block: {},
   unblock: {},
   ls: { all: true, json: true },
-  show: { json: true },
+  show: { reviews: true, json: true },
   start: { runner: false },
   claim: { runner: false },
   push: { force: true },
@@ -1129,6 +1129,29 @@ export function formatBrief(project, id, brief, origin) {
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 
+// Every review, newest first: the order `show --reviews` prints them and its
+// JSON carries them, so the review that decides the current head leads.
+const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompare(a.at));
+
+// Each review of a task, at each head it was made at, in full: who reviewed,
+// the verdict, when, how it was recorded, the whole note and every finding.
+// The brief above sums the reviews at the current head into one line and cuts
+// the newest rejection's note to it; this is the record a session reads to
+// learn why a review rejected the task (t173). One flattened line per field,
+// so no note or finding can pose as a line of Atelier's own.
+export function formatReviews(reviews, owner = OWNER) {
+  const ordered = newestReviews(reviews);
+  if (!ordered.length) return "No reviews are recorded.";
+  const lines = ["Reviews:"];
+  for (const r of ordered) {
+    const recorded = recordedText(r, owner);
+    lines.push(`  ${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
+    lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
+    for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+  }
+  return lines.join("\n");
+}
+
 // ── commands ───────────────────────────────────────────────────────────────
 
 // The checkout's state against the baseline, in words. The baseline's head
@@ -2004,9 +2027,16 @@ const commands = {
   },
 
   async show() {
-    const name = project(), id = itemArg();
-    const brief = await call("GET", `${I(name, id)}/brief`, undefined, await actor(OWNER));
-    console.log(args.json ? JSON.stringify(brief, null, 2) : formatBrief(name, id, brief, server()));
+    const name = project(), id = itemArg(), as = await actor(OWNER);
+    const brief = await call("GET", `${I(name, id)}/brief`, undefined, as);
+    // The brief sums the reviews at the current head into one line and carries
+    // none of their findings. The item's own record holds every review at
+    // every head; --reviews prints it in full and --json carries it, so a
+    // session can read why a review rejected the task (t173).
+    const d = args.reviews || args.json ? await call("GET", I(name, id), undefined, as) : null;
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
+    const text = formatBrief(name, id, brief, server());
+    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
   },
 
   async start() {
