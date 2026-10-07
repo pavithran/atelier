@@ -313,8 +313,10 @@ export function pairReader(fork: ArtifactsRepo, baseline: ArtifactsRepo): Reader
 }
 
 // The merge base the preview works from: the newest commit on main's
-// first-parent line that the workspace holds, either on its own first-parent
-// line or as a parent of a commit there. A workspace rebased with `atelier
+// first-parent line that the workspace holds, either among the commits of
+// the workspace read (its first-parent line, and the chains behind its
+// merges' further parents: mergedHistory in src/preview/merge.ts) or as a
+// parent of one of them. A workspace rebased with `atelier
 // update` is previewed against what it was rebased onto, and one that merged
 // main is previewed against the main commit it merged, not against where it
 // forked, whose newer main commits it already holds (t230). The agent shapes

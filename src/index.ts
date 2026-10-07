@@ -826,21 +826,27 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
-    // Each ask records what the runner can run (putRunnerOffer), so the
-    // server can say when a dispatch names a model or a job no live runner
-    // offers, instead of letting it wait as though merely unclaimed, and plan
-    // routing picks from the models live runners offer (src/plans/route.ts).
-    if (offer) await index(env).putRunnerOffer(offer, new Date().toISOString());
-    const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
+    // Each step's time in milliseconds goes out in a server-timing header
+    // (index, projects, total), so a slow poll can be measured live.
+    const started = Date.now();
+    // Each ask records what the runner can run (askQueue, which rewrites an
+    // unchanged offer at most once a minute), so the server can say when a
+    // dispatch names a model or a job no live runner offers, instead of
+    // letting it wait as though merely unclaimed, and plan routing picks from
+    // the models live runners offer (src/plans/route.ts). The same call on
+    // the index returns the projects to read.
+    const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    const indexed = Date.now();
     const unreadable: string[] = [];
+    // One call per project reads both its waiting tasks and its open review requests.
     const lists = await Promise.all(projects.map(async (p) => {
       try {
-        const waiting = (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item }));
-        const reviews = (await ledgerOf(env, p).reviewWaiting()).map((item) => ({ project: p.name, item }));
-        return [...waiting, ...reviews];
+        const { waiting, reviews } = await ledgerOf(env, p).queued();
+        return [...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
+    const read = Date.now();
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
@@ -852,6 +858,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
+    res.headers.set("server-timing", `index;dur=${indexed - started}, projects;dur=${read - indexed};desc="${projects.length}", total;dur=${Date.now() - started}`);
     return res;
   }
   // What each runner last said it can run, as the server recorded it when the
@@ -1429,7 +1436,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", mainHead);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
       }
-      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null));
+      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null, await index(env).runnerOffers()));
     }
     case "integration-failed": {
       // The integrator reports a failed merge. The Worker checks the branch was
@@ -1573,7 +1580,10 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
   switch (sub) {
     case "approve": {
       if (body.allowPaid !== undefined && typeof body.allowPaid !== "boolean") throw new RuleError("bad_allow_paid", "allowPaid must be true or false", 400);
-      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models());
+      // The runner offers come with the pool, so the routing an approval
+      // fixes counts a reviewer only when a live runner offers it for the
+      // review job (routeParts in src/plans/route.ts).
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers());
       return json(await L.planView(id));
     }
     case "revise":
@@ -1606,7 +1616,9 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       const reopening = await L.checkPlanRefresh(id, actor, main, holds, body.resolve === true, body.to);
       const oldToken = reopening ? await L.tokenId(id) : undefined;
       if (reopening) await revoke(env, plan.fork, oldToken ?? null);
-      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, oldToken);
+      // The runner offers the Worker read come with the resolve, for the
+      // merge-main part's routing as approval routes it.
+      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, await index(env).runnerOffers(), oldToken);
       else await L.planRefresh(id, actor, main, holds, oldToken);
       // `reopened` says what was withdrawn, for the command to say so.
       const reopened = reopening ? { from: plan.state, acceptedHead: plan.state === "accepted" ? plan.acceptedHead : null } : null;
@@ -1795,12 +1807,23 @@ async function onMainLine(env: Env, repo: string, commit: string): Promise<boole
 // now, previewed from the plan's fork as the merge preview reads a task's
 // workspace (previewAgainstMain). A conflict would stop atelier merge after
 // the acceptance, so the owner is told to take main into the branch first,
-// with plan refresh. A preview that cannot be read holds nothing back:
-// atelier merge still stops on a conflict, and withdraws the acceptance then.
+// with plan refresh. A branch whose history holds main's head (holdsCommit,
+// which follows every merge parent) merges as a fast-forward or cleanly and
+// is accepted without a preview; the preview itself follows merges' further
+// parents too (mergedHistory in src/preview/merge.ts), so main taken in by
+// an integrated merge-main part is its fork point (t274). A preview that
+// cannot be read holds nothing back: atelier merge still stops on a
+// conflict, and withdraws the acceptance then.
 async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<void> {
   const item = await L.item(id);
   if (item.kind !== "plan" || !item.fork) return;
   const { repo } = await L.project();
+  try {
+    const [main, head] = await Promise.all([headOf(env, repo), headOf(env, item.fork)]);
+    if (main && head && (await holdsCommit(env, item.fork, head, main)).holds) return;
+  } catch (err) {
+    console.error("plan history unavailable", err);
+  }
   let preview: Awaited<ReturnType<typeof previewAgainstMain>>;
   try {
     preview = await previewAgainstMain(env.ARTIFACTS, repo, item.fork);

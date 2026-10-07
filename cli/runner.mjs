@@ -856,6 +856,21 @@ export async function runRefresh(assignment, config, name, io) {
   }
 }
 
+// Whether a failed queue poll is the server being slow or briefly away: a
+// poll marked transient by its caller (atelier.mjs marks a timeout, a
+// network error, a 5xx and a 429), or one that timed out. The runner logs
+// the first of a run of them, backs off and polls again; it is no task's
+// failure and counts toward nothing.
+export function transientQueueError(error) {
+  return error?.transient === true || error?.name === "TimeoutError" || /^queue: (5\d\d|429)$/.test(String(error?.message ?? ""));
+}
+
+// The wait before the next poll after `misses` transient queue failures in
+// a row: the usual 30 seconds, doubled for each further miss, at most five minutes.
+export function queueBackoffMs(misses) {
+  return misses <= 1 ? 30_000 : Math.min(30_000 * 2 ** (misses - 1), 5 * 60_000);
+}
+
 export function failureCount(count, state) {
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
 }
@@ -1082,10 +1097,25 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       const refusal = versionRefusal(await version(controller.signal));
       if (refusal) throw new Error(refusal);
     }
+    // Transient queue failures in a row (transientQueueError): the first is
+    // logged, the rest are quiet until the queue answers again, and each
+    // lengthens the wait before the next poll (queueBackoffMs).
+    let misses = 0;
     while (!controller.signal.aborted) {
       let state;
       try {
-        const tasks = await queue(offer, controller.signal);
+        let tasks;
+        try { tasks = await queue(offer, controller.signal); }
+        catch (error) {
+          if (controller.signal.aborted || !transientQueueError(error)) throw error;
+          misses++;
+          if (misses === 1) line(`queue unavailable (${error.message}); polling again with backoff`);
+          if (args.once) break;
+          await wait(queueBackoffMs(misses), undefined, { signal: controller.signal }).catch((error) => { if (error.name !== "AbortError") throw error; });
+          continue;
+        }
+        if (misses) line(`queue answering again after ${misses} failed poll${misses === 1 ? "" : "s"}`);
+        misses = 0;
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
         // Review jobs come first, in the queue's order, then the rest in

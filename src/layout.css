@@ -796,3 +796,23 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .lay-rail { fill: none; stroke: var(--text-muted); stroke-width: 1.25; stroke-dasharray: 5 3; }
 .lay-head { fill: var(--text); }
 .lay-head-rail { fill: var(--text-muted); }
+
+/* The plan flow (src/diagrams.ts), in /how's orchestrator section. It too
+   scrolls inside its frame on a narrow screen instead of shrinking its text. */
+.pf-fig { margin: 24px 0 8px; }
+.pf-fig .scroll { overflow-x: auto; background: var(--sheet); border: 1px solid var(--line); border-radius: var(--radius-medium); }
+.pf-fig svg { display: block; width: 100%; min-width: 880px; height: auto; color: var(--text); }
+.pf-fig figcaption { max-width: 80ch; margin-top: 12px; font-size: 14px; color: var(--text-muted); }
+.pf-lane { fill: rgba(var(--lift-rgb), .04); }
+.pf-lane-atelier { fill: rgba(var(--observed-rgb), .07); }
+.pf-label { fill: var(--text-muted); font: 500 12px var(--font-sans); }
+.pf-node { fill: var(--surface); stroke: var(--line-bright); stroke-width: 1.25; }
+.pf-node.pf-owner { stroke: var(--signal); }
+.pf-node.pf-atelier { stroke: var(--observed); }
+.pf-name { fill: var(--text-bright); font: 600 12px var(--font-sans); }
+.pf-sub { fill: var(--text-muted); font: 400 11px var(--font-sans); }
+.pf-note { fill: var(--text-muted); font: italic 400 11px var(--font-sans); }
+.pf-flow { fill: none; stroke: var(--text); stroke-width: 1.25; }
+.pf-return { fill: none; stroke: var(--text-muted); stroke-width: 1.25; stroke-dasharray: 5 3; }
+.pf-head { fill: var(--text); }
+.pf-head-return { fill: var(--text-muted); }

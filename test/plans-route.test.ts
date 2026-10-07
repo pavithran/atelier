@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { LedgerEvent } from "../src/ledger.ts";
 import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
+import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { paidPerToken, routeParts, SIZE_M_CONTEXT, type PartRoute, type RouteInput } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
@@ -189,6 +189,54 @@ test("a paused actor gets nothing and a reserved one only the kinds of work name
   assert.deepEqual(own.excluded, [{ actor: "claude-code/opus-5.5", reasons: ["reserved for nothing (availability of claude-code/opus-5.5); this part is feature work"] }]);
 });
 
+// A reviewer is routed only to a model a live runner offers for the review
+// job (offering in src/dispatch/rules.ts), because the queue offers a
+// review to such a runner alone: a model only a build runner offers would
+// sit unclaimed however long the review waited (t197's part t210, the t250
+// case of 2026-10-07). When no runner is live the pool stands and the
+// reviewer's reasons say so with a warning. Beside it a model no live
+// runner offers at all cannot build or review (offeredActors, the per-model
+// half), so these stages offer every model for build and let the review
+// job's offer alone tell the candidates apart.
+test("a reviewer is routed only to a model a live runner offers for the review job", () => {
+  // routing asks the offers as of now, so a live offer carries a fresh ask.
+  const seen = (runner: string, over: Partial<SeenOffer> = {}): SeenOffer => ({ runner, kind: "home", agents: [], at: new Date().toISOString(), ...over });
+  // A live build runner names every model but offers no review job: a
+  // review would wait forever on it, so the part is unrouted and says why,
+  // naming what the live runner offers instead.
+  const buildOnly = one([opus, gpt], { offers: [seen("home:mbp", { jobs: ["build", "plan"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }] })] });
+  assert.equal(buildOnly.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(buildOnly.reviewer, null);
+  assert.equal(buildOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5 for the review job: home:mbp offers no review job)");
+  // A cloud runner offering the models is not a home review runner either.
+  const cloud = one([opus, gpt], { offers: [seen("cloud:far", { kind: "cloud", jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }] })] });
+  assert.equal(cloud.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(cloud.reviewer, null);
+  assert.match(cloud.unrouted!, /no live runner offers claude-code\/opus-5\.5 for the review job: cloud:far is a cloud runner, not a home one/);
+  // A live runner offering review under another cross-family model routes
+  // the reviewer to it alone, its reasons naming the runner, and the build
+  // side is untouched by the review job's offer.
+  const offered = one([opus, sonnet, gpt], { offers: [
+    seen("home:mbp", { jobs: ["build", "plan"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }] }),
+    seen("home:studio", { jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }] }),
+  ] });
+  assert.equal(offered.builder!.actor, "codex/gpt-6-astra");
+  assert.deepEqual(actors(offered.alternates), ["claude-code/opus-5.5", "claude-code/sonnet-5.5"]);
+  assert.equal(offered.reviewer!.actor, "claude-code/sonnet-5.5");
+  has(offered.reviewer, /Offered for the review job by home:studio/);
+  assert.ok(!offered.reviewer!.reasons.some((reason) => reason.startsWith("No runner is live")));
+  // Offers read but no runner live: the pool stands, with the warning that
+  // the review waits for a runner that offers the reviewer.
+  const noneLive = one([opus, gpt], { offers: [] });
+  assert.equal(noneLive.unrouted, null);
+  assert.equal(noneLive.reviewer!.actor, "claude-code/opus-5.5");
+  has(noneLive.reviewer, /No runner is live; routed from the pool, and the review waits until a runner that offers claude-code\/opus-5\.5 for the review job asks for work/);
+  // Offers not read at all: routing is as it was, with nothing said of runners.
+  const unread = one([opus, gpt], { offers: null });
+  assert.equal(unread.reviewer!.actor, "claude-code/opus-5.5");
+  assert.ok(!unread.reviewer!.reasons.some((reason) => /runner/i.test(reason)));
+});
+
 test("a part no model can take is unrouted with the reason, never silently", () => {
   const empty = routeParts(plan(part("a"), part("b")), input());
   assert.deepEqual(empty, [
@@ -299,20 +347,25 @@ test("routing picks builders, alternates and reviewers only from the models live
   assert.equal(gptOnly.reviewer, null);
   assert.equal(gptOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5, so no runner could claim its dispatch), claude-code/sonnet-5.5 (no live runner offers claude-code/sonnet-5.5, so no runner could claim its dispatch)");
 
-  // A runner offering the whole pool routes as no offers would; the case of
-  // the offered names is not the case of the pool's.
-  const whole = offer("home:studio", [
+  // A runner offering the whole pool, the review job among its own, routes
+  // as no offers would; the case of the offered names is not the case of
+  // the pool's, and a reviewer the offers count needs the job offered too.
+  const whole = { ...offer("home:studio", [
     { agent: "Codex", models: ["GPT-6-Astra"] },
     { agent: "Claude-Code", models: ["opus-5.5", "sonnet-5.5"] },
-  ], now);
+  ], now), jobs: ["build", "review"] };
   const routed = one([opus, sonnet, gpt], { offers: [whole] });
   const unconstrained = one([opus, sonnet, gpt]);
   assert.deepEqual([routed.builder!.actor, routed.reviewer!.actor, actors(routed.alternates), routed.unrouted], [unconstrained.builder!.actor, unconstrained.reviewer!.actor, actors(unconstrained.alternates), unconstrained.unrouted]);
 
-  // A stale offer is no offer: the offer's runner asked too long ago.
+  // A stale offer is no offer: every ask has gone stale, so no runner is
+  // live and routing falls back to the whole pool (routable decides the
+  // same for the ledger's own reads), the reviewer's reasons carrying the
+  // warning that the review waits for a runner that offers it.
   const stale = one([opus, gpt], { offers: [offer("home:studio", [{ agent: "codex", models: ["gpt-6-astra"] }], now - OFFER_LIVE_MS - 60_000)] });
-  assert.equal(stale.builder, null);
-  assert.match(stale.unrouted!, /^no eligible builder: (claude-code\/opus-5\.5|codex\/gpt-6-astra) \(no live runner offers/);
+  assert.equal(stale.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(stale.unrouted, null);
+  has(stale.reviewer, /No runner is live; routed from the pool, and the review waits until a runner that offers claude-code\/opus-5\.5 for the review job asks for work/);
 
   // A preference for a model no live runner offers says why it was not chosen.
   const prefer = one([opus, gpt], { offers: [offer("home:studio", [{ agent: "codex", models: ["gpt-6-astra"] }], now)] }, part("a", { prefer: { actor: "claude-code/opus-5.5", reason: "knows the module" } }));
