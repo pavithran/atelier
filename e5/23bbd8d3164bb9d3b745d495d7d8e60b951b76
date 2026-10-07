@@ -1,0 +1,43 @@
+atelier atelier/t227 "A rejected task cannot go back to a runner for rework: atelier dispatch refuses a held task (not_open), and the runner offers rework only for plan parts, so a task a runner built and a review rejected needs a session to brief its builder by hand (t173, 2026-10-07). Let the owner dispatch a held task's rework to its holder (or another model, through a handoff), and give the runner's brief the review's findings, as part rework does"
+accepted head fbffa701560404edf079aebba7899d2d193f6f32
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-07T04:42:57.796Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-07T04:43:01.012Z
+REVIEW approve by antigravity/gemini-3.1-pro at fbffa701560404edf079aebba7899d2d193f6f32, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T02:56:41.489Z pavi item.created
+2026-10-07T02:57:27.278Z pavi item.dispatched
+2026-10-07T02:57:57.929Z claude-code/sonnet-5.5 item.claimed
+2026-10-07T02:58:05.757Z claude-code/sonnet-5.5 fork.created
+2026-10-07T03:01:36.359Z claude-code/sonnet-5.5 push.observed
+2026-10-07T03:04:41.243Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T03:04:46.154Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T03:43:49.226Z pavi land.lease
+2026-10-07T03:43:51.473Z pavi land.merge
+2026-10-07T03:44:00.863Z pavi land.regenerate
+2026-10-07T03:44:04.244Z claude-code/sonnet-5.5 push.observed
+2026-10-07T03:44:04.341Z pavi land.push
+2026-10-07T03:46:59.179Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T03:47:01.844Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T03:47:02.435Z pavi land.check
+2026-10-07T03:47:02.808Z claude-code/sonnet-5.5 item.submitted
+2026-10-07T03:47:02.992Z pavi land.submit
+2026-10-07T03:47:03.096Z pavi review.requested
+2026-10-07T03:50:51.440Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T03:54:19.081Z antigravity/gemini-3.1-pro review.rejected
+2026-10-07T03:54:22.334Z pavi land.review
+2026-10-07T03:54:56.991Z pavi review.finding
+2026-10-07T04:40:14.267Z pavi land.lease
+2026-10-07T04:40:16.535Z pavi land.merge
+2026-10-07T04:40:27.131Z pavi land.regenerate
+2026-10-07T04:40:30.519Z claude-code/sonnet-5.5 push.observed
+2026-10-07T04:40:30.928Z pavi land.push
+2026-10-07T04:42:58.831Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T04:43:01.175Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T04:43:01.605Z pavi land.check
+2026-10-07T04:43:01.951Z claude-code/sonnet-5.5 item.submitted
+2026-10-07T04:43:02.142Z pavi land.submit
+2026-10-07T04:43:02.234Z pavi review.requested
+2026-10-07T04:43:04.870Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T04:46:25.063Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T04:46:30.209Z pavi land.review
+2026-10-07T04:46:30.689Z pavi item.accepted
+2026-10-07T04:46:30.818Z pavi land.accept
