@@ -95,7 +95,7 @@ globalThis.fetch = async (url, options = {}) => {
     else {
       const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(rest) ?? [];
       if (verb === "handoff") data = { item: { ...item(id), owner: body.to }, next: "next" };
-      else if (verb === "dispatch") data = { ...item(id), dispatch: { to: body.to ?? "any" } };
+      else if (verb === "dispatch") data = { ...item(id), dispatch: { to: body.to ?? "any", agent: body.agent ?? null, model: body.model ?? null, ...(body.job !== undefined ? { job: body.job, head: body.head ?? "5".repeat(40) } : {}) } };
       else if (verb === "block") data = { ...item(id), state: "blocked", blocked: { reason: body.reason, by: "codex/test" } };
       else if (verb === "unblock") data = { ...item(id), state: "claimed" };
       else if (verb === "edit") data = { ...item(id), ...body };
@@ -221,6 +221,36 @@ test("merge --cancel t1 in the checkout cancels t1 instead of asking which item"
   assert.doesNotMatch(r.stderr, /which item\?/);
   assert.match(r.stdout, /t1: the merge is cancelled/);
   assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/landing", { cancel: true }]]);
+});
+
+// The owner's dispatch of a merge-main job (t243): the request carries the
+// job and the head the server reads when none is named, the message says
+// what the job does and what follows it, and the other jobs are refused.
+test("dispatch --job merge-main sends the conflicted task back to its builder, and no other job is dispatched by hand", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.checkout, ["dispatch", "t1", "--job", "merge-main", "--agent", "codex", "--model", "test", "--project", "demo"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]),
+    [["/api/projects/demo/items/t1/dispatch", { agent: "codex", model: "test", job: "merge-main" }]]);
+  assert.equal(r.stdout, "t1 goes back to its builder to merge main at 55555555 into its workspace and resolve the conflicts: a runner that offers the merge-main job claims it, merges main there and leaves the conflicts for the harness to resolve and commit (built by codex with test). Then run atelier land t1 again.\n");
+  // --head names the head when the owner gives one; without the job it is refused.
+  f.clear();
+  const named = f.run(f.checkout, ["dispatch", "t3", "--job", "merge-main", "--head", "a".repeat(40), "--project", "demo"]);
+  assert.equal(named.status, 0, named.stderr);
+  assert.deepEqual(f.requests().at(-1).body, { job: "merge-main", head: "a".repeat(40) });
+  for (const [argv, why] of [
+    [["dispatch", "t1", "--job", "plan"], /only merge-main is dispatched by hand: atelier dispatch t1 --job merge-main/],
+    [["dispatch", "t1", "--head", "a".repeat(40)], /--head names the main head a merge-main job merges; give it with --job merge-main/],
+  ]) {
+    const refused = f.run(f.checkout, [...argv, "--project", "demo"]);
+    assert.equal(refused.status, 1, argv.join(" "));
+    assert.match(refused.stderr, why, argv.join(" "));
+  }
+  // An ordinary dispatch is unchanged.
+  f.clear();
+  const plain = f.run(f.checkout, ["dispatch", "t3", "--to", "home", "--project", "demo"]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal(plain.stdout, "t3 is waiting for a home runner.\n");
 });
 
 test("a flag that needs a value refuses a bare one before any request", (t) => {
