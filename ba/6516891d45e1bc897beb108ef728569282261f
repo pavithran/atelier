@@ -1,0 +1,29 @@
+atelier atelier/t224 "A plan part blocked for want of an eligible reviewer has no way back short of stopping the plan: plan reroute names only builders of open parts, and the plan picks reviewers from the pool fixed at approval, so a model added later is not seen. Let plan reroute name a reviewer for a submitted or blocked part (--reviewer H/M), and let the plan's reviewer pick include models added to the pool after approval (found building t222, 2026-10-07)"
+accepted head 0597a6c9fa24a0a680f9c4da04b47d763c97a156
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T02:43:40.377Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T02:43:45.884Z
+REVIEW approve by antigravity/gemini-3.1-pro at 0597a6c9fa24a0a680f9c4da04b47d763c97a156, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T00:29:25.868Z pavi item.created
+2026-10-07T01:01:40.818Z pavi item.dispatched
+2026-10-07T02:07:28.245Z claude-code/opus-5.5 item.claimed
+2026-10-07T02:07:34.506Z claude-code/opus-5.5 fork.created
+2026-10-07T02:17:11.514Z claude-code/opus-5.5 push.observed
+2026-10-07T02:19:45.710Z claude-code/opus-5.5 evidence.observed
+2026-10-07T02:19:48.830Z claude-code/opus-5.5 evidence.observed
+2026-10-07T02:19:49.485Z claude-code/opus-5.5 item.submitted
+2026-10-07T02:41:35.442Z pavi land.lease
+2026-10-07T02:41:41.317Z pavi land.merge
+2026-10-07T02:41:49.190Z pavi land.regenerate
+2026-10-07T02:41:52.114Z claude-code/opus-5.5 push.observed
+2026-10-07T02:41:52.297Z pavi land.push
+2026-10-07T02:43:41.578Z claude-code/opus-5.5 evidence.observed
+2026-10-07T02:43:46.233Z claude-code/opus-5.5 evidence.observed
+2026-10-07T02:43:46.749Z pavi land.check
+2026-10-07T02:43:47.202Z claude-code/opus-5.5 item.submitted
+2026-10-07T02:43:47.471Z pavi land.submit
+2026-10-07T02:43:47.644Z pavi review.requested
+2026-10-07T02:43:58.813Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T02:48:35.796Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T02:48:40.892Z pavi land.review
+2026-10-07T02:48:41.494Z pavi item.accepted
+2026-10-07T02:48:41.646Z pavi land.accept
