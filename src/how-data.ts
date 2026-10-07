@@ -163,6 +163,29 @@ export const LIMITS: string[] = [
   "The merge happens on the owner's machine. Artifacts can be read through its binding but written only by a git push with a write token, so Atelier merges in git in the owner's checkout and pushes the result.",
 ];
 
+// The owner's guide, docs/using-atelier.md, in fewer words. Each point
+// carries a phrase or command that appears verbatim both in the point and in
+// the guide, so test/how.test.ts fails when the two drift apart.
+export const USING_WELL_DOC = "docs/using-atelier.md";
+
+export interface Advice {
+  point: string;
+  // Found verbatim in the point and in USING_WELL_DOC.
+  from: string;
+}
+
+export const USING_WELL: Advice[] = [
+  { from: "atelier status", point: "Start with `atelier status`. It lists, for every project, what needs the owner: a plan to approve, work to accept, failing checks, a change outside its scope. When nothing waits, there is nothing to do." },
+  { from: "what should be true afterwards", point: "Something with several parts becomes a plan, `atelier plan \"goal\"`; one clear change becomes a task, `atelier new \"title\"`. A good goal or title says what should be true afterwards, names the files it may touch, and asks that every claim match the code." },
+  { from: "Keep scopes narrow", point: "Keep scopes narrow. Two live tasks whose scopes overlap usually conflict when the second lands, and `atelier status` lists such pairs." },
+  { from: "atelier plan show", point: "Read a plan before approving it, with `atelier plan show`: the parts sensible and ordered, each routed to a model you want doing it, nothing contradicting what you asked. Then approve once, by the hash of its newest proposal." },
+  { from: "never overridden quietly", point: "Accept deliberately. Look at the gate, the reviewer's findings and the scope flag. A finding is a claim about the code and can be wrong: have a wrong one answered with the file and line that show it, never overridden quietly." },
+  { from: "`atelier land` never overrides a review", point: "Land one task with `atelier land ID --reviewer H/M`, which merges main, checks, submits, waits for the independent review, then accepts and merges. `atelier land` never overrides a review; an override while accepting takes a reason and is recorded where everyone can see it." },
+  { from: "file anything odd as a task", point: "Let a session act for you. Say a standing decision plainly, so it is recorded in the skill's `decisions.md` and every later session follows it, and ask it to file anything odd as a task rather than work around it quietly." },
+  { from: "Watch three numbers", point: "Watch three numbers: spend on pay-per-use models against the daily limit, the plan windows of the subscription tools, and each model's record on the Models page when choosing who builds." },
+  { from: "ask what task it becomes", point: "Run one home runner per machine, deploy between landings, and do not edit inside an agent's workspace while its agent runs. When something breaks, ask what task it becomes, not only how to get past it." },
+];
+
 export interface Part {
   name: string;
   // Where the design puts it: docs/orchestrator.md, section 8.
@@ -192,9 +215,9 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Part routing", stage: "t15, build step 3", built: true,
-    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them.",
+    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them. A model no live runner offers cannot build or review at all, since no runner could claim its dispatch (`offeredActors` in `src/dispatch/rules.ts`), and a reviewer is routed besides only to a model a live runner offers for the review job (`offering` in `src/dispatch/rules.ts`, which counts a model only when a runner that offers the job lists it, so a model only a build runner offers never reviews, the t210 case of 2026-10-07); when no runner is live the pool stands and the routing says so with a warning.",
     files: ["src/plans/route.ts"],
-    code: [{ file: "src/plans/route.ts", symbol: "routeParts" }],
+    code: [{ file: "src/plans/route.ts", symbol: "routeParts" }, { file: "src/dispatch/rules.ts", symbol: "offering" }],
   },
   {
     name: "Dispatch decisions", stage: "t15, build step 4", built: true,
@@ -204,7 +227,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Plan ledger", stage: "t15, build step 5", built: true,
-    what: "The project's ledger keeps plans. A plan is a task whose planner is dispatched as a plan job and posts a plan document; each valid proposal is kept, unchanged, and an invalid one gets the planner one more attempt before the plan blocks. The owner approves the newest proposal by its hash, once: the routing of each part is fixed then, with the limits (2 parts live, 3 attempts a part, 4 dispatches a part, 24 hours), and the parts become tasks. After each push, check, review, submit, release, merge or abandon of a part, and at the deadline, the ledger runs `planActions` and dispatches what may start, as `atelier/orchestrator`, or blocks the plan with the reason. The inbox gains `approve-plan` and `plan-blocked`; a part never appears there to accept, review, fix, rescope or hand off, and tasks of one plan are not flagged as overlapping. Until the integration branch exists, each part reaches main by the owner's own merge, and the plan is complete when every part has merged.",
+    what: "The project's ledger keeps plans. A plan is a task whose planner is dispatched as a plan job and posts a plan document; each valid proposal is kept, unchanged, and an invalid one gets the planner one more attempt before the plan blocks. The owner approves the newest proposal by its hash, once: the routing of each part is fixed then, with the limits (2 parts live, 3 attempts a part, 4 dispatches a part, 24 hours), and the parts become tasks. After each push, check, review, submit, release, merge or abandon of a part, and at the deadline, the ledger runs `planActions` and dispatches what may start, as `atelier/orchestrator`, or blocks the plan with the reason. The inbox gains `approve-plan` and `plan-blocked`; a part never appears there to accept, review, fix, rescope or hand off, and tasks of one plan are not flagged as overlapping. Each part reaches main through the plan's integration branch, and the plan is complete when every part has merged or been abandoned, with at least one merged.",
     files: ["src/plans/state.ts", "test/plans.spec.ts"],
     code: [{ file: "src/ledger.ts", symbol: "approvePlan" }, { file: "src/ledger.ts", symbol: "dispatchPart" }, { file: "src/ledger.ts", symbol: "postPlan" }],
   },
@@ -234,9 +257,9 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: true,
-    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor, and the queue offers them as `review` jobs. A reviewer's runner claims one, clones the part read-only, gives the model the review brief and posts the verdict with its findings. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request. Each runner's offer is recorded as it asks the queue for work (`putRunnerOffer`), and a dispatch no live runner offers, which could never be claimed however long it waits, is said as that by `unoffered`: `atelier land` while it waits for a verdict, `atelier plan show` for a routed review and `atelier status` for the queue, each naming what the live runners offer instead.",
-    files: ["src/ledger.ts", "cli/runner.mjs", "test/review-requests.spec.ts"],
-    code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "verdict_file" }, { file: "src/dispatch/rules.ts", symbol: "unoffered" }, { file: "src/ledger.ts", symbol: "putRunnerOffer" }],
+    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor, and the queue offers them as `review` jobs to a home runner whose config lists that job. The runner's `runReview` claims one, clones the part read-only, gives the model the review brief and the diff, and posts the verdict with its findings. `cli/agy-review.mjs` is the review command for the antigravity harness: it runs Antigravity's CLI on the brief and the diff and writes the reply to the verdict file. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request. Each runner's offer is recorded as it asks the queue for work (`putRunnerOffer`), and a dispatch no live runner offers, which could never be claimed however long it waits, is said as that by `unoffered`: `atelier land` while it waits for a verdict, `atelier plan show` for a routed review and `atelier status` for the queue, each naming what the live runners offer instead.",
+    files: ["src/ledger.ts", "cli/runner.mjs", "cli/agy-review.mjs", "test/review-requests.spec.ts", "test/review-runner.test.mjs", "test/agy-review.test.mjs"],
+    code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/ledger.ts", symbol: "reviewTick" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "runReview" }, { file: "cli/runner.mjs", symbol: "verdict_file" }, { file: "src/dispatch/rules.ts", symbol: "unoffered" }, { file: "src/ledger.ts", symbol: "putRunnerOffer" }],
   },
   {
     name: "Integration rules", stage: "t16, build step 11", built: true,
@@ -248,6 +271,12 @@ export const ORCHESTRATOR: Part[] = [
     name: "Integration jobs", stage: "t16, build steps 12 to 14", built: true,
     what: "Each part forks from its plan's fork and is measured against it, never the baseline (`baseRepoOf` in src/plans/integrate.ts and the `base-token` route), so a part reports only its own files. A part claimed again with no commits of its own, after the branch has moved, has its fork forked again at the branch's head (`movePartFork` in src/index.ts), so its builder starts from every part integrated since; a fork whose head is a later commit of the branch, which a move that failed to record its base leaves, is moved on the next claim the same way, and a fork whose head changes while it is moved is kept. The integrator, a reserved actor reached only through its token, claims the plan item's integrate job, merges the part onto the plan's branch, runs the plan's checks, and posts `integrated` or `integration-failed`, both verified against the branch's log by the Worker. `planGate` adds its blockers to the plan item's gate, and `Ledger.merged` marks the parts merged with `{via: tP}` when the plan lands. The runner's `--integrate` merges each part with `--no-ff` and rolls the branch back when the checks fail or the merge conflicts, and its refresh job merges main's head into the plan's fork, dispatched by the tick before a part when main has moved, or by the owner with `atelier plan refresh`, and recorded with `refreshed` or `refresh-failed`. A refresh that conflicts adds a merge-main part to the plan, outside the approved document and its hash: the runner merges main into that part's workspace and leaves the conflicts for its builder to resolve, no other part is dispatched until it is integrated, and its integration records main as taken. The owner adds one with `atelier plan refresh --resolve`. A plan is accepted only where its branch would merge with main (`assertPlanMergeable` in src/index.ts), and a plan submitted or accepted that must take main, the owner's plan refresh, or atelier merge stopped by a conflict, goes back to building first (`reopenPlan` in src/ledger.ts); the integrator submits it again once every part is integrated on a branch that holds main. A task outside a plan whose landing conflicted with main goes back to its builder the same way (t243): `atelier dispatch ID --job merge-main` queues the merge-main job on the task, whose runner merges main into its workspace and leaves the conflicts for it to resolve, where a plain rework would reset the workspace to a head that cannot reach main.",
     files: ["test/integration.spec.ts"],
-    code: [{ file: "src/index.ts", symbol: "base-token" }, { file: "src/index.ts", symbol: "integration-failed" }, { file: "cli/runner.mjs", symbol: "integrate" }],
+    code: [{ file: "src/index.ts", symbol: "base-token" }, { file: "src/index.ts", symbol: "integration-failed" }, { file: "cli/runner.mjs", symbol: "runIntegrate" }],
+  },
+  {
+    name: "Landing a single task", stage: "t187, outside the plan flow", built: true,
+    what: "`atelier land ID` lands one task whole, from the owner's machine. It takes the project's landing lease on the server (`beginProjectLanding`), so one landing runs at a time, merges main into the task's workspace with `--no-ff` and stops on conflicts, naming the files, regenerates the project's fixtures when its policy says how, then pushes, runs the required checks and submits, each as the CLI's own command. It asks the server for the review the gate needs through the `review-request` route (`requestReview`), which picks a model of another family than every contributor, or takes the one `--reviewer` names, and queues a review job; it waits for the verdict, then accepts and merges. Each step, its duration and the commits that came from main are recorded as `land.*` events (`landEvent`), and the lease is released when the landing ends, by a failure too. `--no-review` leaves the task submitted for the owner to settle, and `--dry-run` prints the steps without changing anything.",
+    files: ["cli/land.mjs", "test/land.test.mjs", "test/land-routes.spec.ts"],
+    code: [{ file: "cli/land.mjs", symbol: "runLand" }, { file: "src/index.ts", symbol: "landing-lease" }, { file: "src/index.ts", symbol: "review-request" }, { file: "src/ledger.ts", symbol: "beginProjectLanding" }, { file: "src/ledger.ts", symbol: "requestReview" }, { file: "src/ledger.ts", symbol: "landEvent" }, { file: "src/usage.ts", symbol: "land ID" }],
   },
 ];
