@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  fetchNewLogs, gatewayConfig, gatewayView, logsUrl, MAX_PAGES, PAGE_SIZE, parseCalls, parseLog, parseMetadata, parsePage, summarize,
-  windowSql, writeLog, type GatewayCall, type GatewayLog,
+  durationsSql, fetchNewLogs, gatewayConfig, gatewayView, logsUrl, MAX_PAGES, PAGE_SIZE, parseDurations, parseLog, parseMetadata, parsePage, parseTotals,
+  ROW_LIMIT, summarize, totalsSql, writeLog, type GatewayLog,
 } from "../src/usage/gateway.ts";
 import { query, queryConfig, sqlString, writeMetric } from "../src/metrics.ts";
 import { describeGateway } from "../cli/usage.mjs";
@@ -62,9 +62,10 @@ test("paging stops at the last stored id, and reads no further page", async () =
   const all = minutes(PAGE_SIZE * 3);
   const last = all[PAGE_SIZE + 10];
   const { fetcher, asked } = logsRoute(all);
-  const { logs, pages } = await fetchNewLogs(CFG, { id: last.id, at: last.at }, NOW, fetcher);
+  const { logs, pages, gap } = await fetchNewLogs(CFG, { id: last.id, at: last.at }, NOW, fetcher);
   assert.deepEqual(logs.map((l) => l.id), all.slice(0, PAGE_SIZE + 10).map((l) => l.id));
   assert.equal(pages, 2);
+  assert.equal(gap, null);
   assert.deepEqual(asked, [{ page: 1, auth: "Bearer test-gateway-token" }, { page: 2, auth: "Bearer test-gateway-token" }]);
 
   // A stored log the gateway no longer lists: the first log older than it
@@ -83,6 +84,16 @@ test("a first pull reads back a window, stops at a short page, and never reads m
   assert.equal(capped.pages, MAX_PAGES);
   assert.equal(capped.logs.length, PAGE_SIZE * MAX_PAGES);
   assert.equal(many.asked.length, MAX_PAGES);
+  // The stretch below the oldest log read, down to the floor, was not read.
+  assert.deepEqual(capped.gap, { from: new Date(NOW - 7 * 86_400_000).toISOString(), to: capped.logs.at(-1)!.at, atLeast: 1 });
+});
+
+test("a pull capped short of the mark names the stretch it did not read, from the mark to the oldest log read", async () => {
+  const all = minutes(PAGE_SIZE * (MAX_PAGES + 2));
+  const mark = all.at(-5)!;
+  const { logs, gap } = await fetchNewLogs(CFG, { id: mark.id, at: mark.at }, NOW, logsRoute(all).fetcher);
+  assert.equal(logs.length, PAGE_SIZE * MAX_PAGES);
+  assert.deepEqual(gap, { from: mark.at, to: logs.at(-1)!.at, atLeast: 1 });
 });
 
 test("a log is one Analytics Engine point of kind gateway, read back by the window's SQL", () => {
@@ -96,35 +107,44 @@ test("a log is one Analytics Engine point of kind gateway, read back by the wind
     { blobs: ["gateway", "deepseek", "deepseek-v4-flash", "t278", "build", "home:studio", "01JTESTLOG0000000000000003"], doubles: [18250, 912, 0.004213, 2140, 1], indexes: ["deepseek-v4-flash"] },
     { blobs: ["gateway", "openrouter", "openai/gpt-6-mini", null, null, null, "01JTESTLOG0000000000000002"], doubles: [0, 0, -1, 860, 0], indexes: ["openai/gpt-6-mini"] },
   ]);
-  assert.match(windowSql(), /FROM atelier_metrics WHERE blob1 = 'gateway' AND timestamp > NOW\(\) - INTERVAL '7' DAY/);
-  assert.deepEqual(parseCalls([
-    { timestamp: "2026-10-07 11:58:02", provider: "deepseek", model: "deepseek-v4-flash", tokens_in: "18250", tokens_out: 912, cost: 0.004213, duration_ms: 2140, success: 1, weight: "1" },
-    { timestamp: "2026-10-07 11:57:40", provider: "openrouter", model: "openai/gpt-6-mini", tokens_in: 0, tokens_out: 0, cost: -1, duration_ms: -1, success: 0, weight: 4 },
-  ]), [
-    { at: "2026-10-07T11:58:02.000Z", provider: "deepseek", model: "deepseek-v4-flash", tokensIn: 18250, tokensOut: 912, cost: 0.004213, durationMs: 2140, success: true, weight: 1 },
-    { at: "2026-10-07T11:57:40.000Z", provider: "openrouter", model: "openai/gpt-6-mini", tokensIn: 0, tokensOut: 0, cost: null, durationMs: null, success: false, weight: 4 },
-  ]);
 });
 
-test("each model's figures: calls, failures, tokens and cost by weight, the median over the window with its sample size", () => {
-  const at = (minutesAgo: number) => new Date(NOW - minutesAgo * 60_000).toISOString();
-  const call = (over: Partial<GatewayCall>): GatewayCall => ({ provider: "deepseek", model: "deepseek-v4-flash", tokensIn: 100, tokensOut: 10, cost: 0.01, durationMs: 1000, success: true, weight: 1, ...over });
-  const calls = [
-    call({ at: at(1), durationMs: 900 }),
-    call({ at: at(2), durationMs: 3000 }),
-    call({ at: at(3), durationMs: 1200, success: false }),
-    call({ at: at(4), durationMs: null }),
-    call({ at: at(8 * 24 * 60), durationMs: 50_000 }),              // outside the 7 days
-    call({ at: at(5), provider: "openrouter", model: "openai/gpt-6-mini", cost: null, durationMs: 400, weight: 3 }),
-    call({ at: at(6), provider: "openrouter", model: "openai/gpt-6-mini", cost: null, durationMs: 600 }),
-  ];
-  assert.deepEqual(summarize(calls, NOW), [
-    { provider: "deepseek", model: "deepseek-v4-flash", calls: 4, failures: 1, tokensIn: 400, tokensOut: 40, cost: 0.04, medianMs: 1200, sample: 3 },
-    { provider: "openrouter", model: "openai/gpt-6-mini", calls: 4, failures: 0, tokensIn: 400, tokensOut: 40, cost: null, medianMs: 500, sample: 2 },
+test("totals are summed in SQL per model, weighted by _sample_interval; durations are a capped sample", () => {
+  const totals = totalsSql();
+  assert.match(totals, /FROM atelier_metrics WHERE blob1 = 'gateway' AND timestamp > NOW\(\) - INTERVAL '7' DAY GROUP BY blob2, blob3$/);
+  for (const sum of ["SUM(_sample_interval) AS calls", "SUM(IF(double5 = 1, 0, _sample_interval)) AS failures", "SUM(_sample_interval * double1) AS tokens_in",
+    "SUM(_sample_interval * double2) AS tokens_out", "SUM(IF(double3 >= 0, _sample_interval * double3, 0)) AS cost", "SUM(IF(double3 >= 0, _sample_interval, 0)) AS priced"]) {
+    assert.ok(totals.includes(sum), sum);
+  }
+  assert.doesNotMatch(totals, /LIMIT/);
+  assert.match(durationsSql(), new RegExp(`AND double4 >= 0 ORDER BY timestamp DESC LIMIT ${ROW_LIMIT}$`));
+
+  // Totals past ROW_LIMIT calls come back whole, numbers as strings or not.
+  const t = parseTotals([
+    { provider: "deepseek", model: "deepseek-v4-flash", calls: "250000", failures: 12, tokens_in: 4.5e9, tokens_out: "3e8", cost: 912.3456789, priced: 250000 },
+    { provider: "openrouter", model: "openai/gpt-6-mini", calls: 40, failures: 0, tokens_in: 100, tokens_out: 10, cost: 0, priced: 0 },
   ]);
-  // A shorter window leaves the older calls out.
-  assert.deepEqual(summarize(calls, NOW, 2.5 * 60_000).map((m) => [m.model, m.calls, m.medianMs, m.sample]), [["deepseek-v4-flash", 2, 1950, 2]]);
-  assert.deepEqual(summarize([], NOW), []);
+  assert.deepEqual(t, [
+    { provider: "deepseek", model: "deepseek-v4-flash", calls: 250_000, failures: 12, tokensIn: 4.5e9, tokensOut: 3e8, cost: 912.345679 },
+    { provider: "openrouter", model: "openai/gpt-6-mini", calls: 40, failures: 0, tokensIn: 100, tokensOut: 10, cost: null },
+  ]);
+  const d = parseDurations([
+    { provider: "deepseek", model: "deepseek-v4-flash", duration_ms: 900 },
+    { provider: "deepseek", model: "deepseek-v4-flash", duration_ms: "3000" },
+    { provider: "deepseek", model: "deepseek-v4-flash", duration_ms: 1200 },
+    { provider: "openrouter", model: "openai/gpt-6-mini", duration_ms: 400 },
+    { provider: "openrouter", model: "openai/gpt-6-mini", duration_ms: 600 },
+    { provider: "openrouter", model: "openai/gpt-6-mini", duration_ms: -1 },
+  ]);
+  assert.deepEqual(summarize(t, d), [
+    { provider: "deepseek", model: "deepseek-v4-flash", calls: 250_000, failures: 12, tokensIn: 4.5e9, tokensOut: 3e8, cost: 912.345679, medianMs: 1200, sample: 3 },
+    { provider: "openrouter", model: "openai/gpt-6-mini", calls: 40, failures: 0, tokensIn: 100, tokensOut: 10, cost: null, medianMs: 500, sample: 2 },
+  ]);
+  assert.deepEqual(summarize([], []), []);
+  // A full sample is marked, so the page says the medians are of the newest durations only.
+  const full = Array.from({ length: ROW_LIMIT }, () => ({ provider: "deepseek", model: "deepseek-v4-flash", durationMs: 1000 }));
+  assert.equal(gatewayView(null, t, full, null, [], NOW).sampled, true);
+  assert.equal(gatewayView(null, t, d, null, [], NOW).sampled, false);
 });
 
 test("with no token the gateway is off and says which setting to set", () => {
@@ -132,7 +152,7 @@ test("with no token the gateway is off and says which setting to set", () => {
   assert.equal(gatewayConfig({ AI_GATEWAY_TOKEN: "t" }), "AI Gateway costs are off: set CF_ACCOUNT_ID");
   assert.deepEqual(gatewayConfig({ CF_ACCOUNT_ID: "a", AI_GATEWAY_TOKEN: "t" }), { account: "a", gateway: "atelier", token: "t" });
   assert.equal(queryConfig({ CF_ACCOUNT_ID: "a" }), "set ANALYTICS_TOKEN");
-  const off = gatewayView("AI Gateway costs are off: set AI_GATEWAY_TOKEN", [{ provider: "p", model: "m", tokensIn: 1, tokensOut: 1, cost: 1, durationMs: 1, success: true, weight: 1 }], null, NOW);
+  const off = gatewayView("AI Gateway costs are off: set AI_GATEWAY_TOKEN", [{ provider: "p", model: "m", calls: 1, failures: 0, tokensIn: 1, tokensOut: 1, cost: 1 }], [], null, [], NOW);
   assert.deepEqual(off.models, []);
   assert.deepEqual(describeGateway(off, (s: string) => s), ["AI Gateway: AI Gateway costs are off: set AI_GATEWAY_TOKEN."]);
 });
@@ -158,12 +178,17 @@ test("the metrics module writes a typed point and queries the SQL API", async ()
 });
 
 test("the runner's usage prints the gateway's figures the server read", () => {
-  const view = gatewayView(null, [
-    { at: new Date(NOW - 60_000).toISOString(), provider: "deepseek", model: "deepseek-v4-flash", tokensIn: 18_250, tokensOut: 912, cost: 0.004213, durationMs: 2140, success: true, weight: 1 },
-  ], { at: "2026-10-07T11:55:00.000Z", added: 1, error: null }, NOW);
+  const gaps = [
+    { from: "2026-10-07T10:00:00.000Z", to: "2026-10-07T11:00:00.000Z", atLeast: 1, pulledAt: "2026-10-07T11:50:00.000Z" },
+    { from: "2026-09-20T10:00:00.000Z", to: "2026-09-20T11:00:00.000Z", atLeast: 1, pulledAt: "2026-09-20T11:50:00.000Z" },   // before the window
+  ];
+  const view = gatewayView(null, [{ provider: "deepseek", model: "deepseek-v4-flash", calls: 1, failures: 0, tokensIn: 18_250, tokensOut: 912, cost: 0.004213 }],
+    [{ provider: "deepseek", model: "deepseek-v4-flash", durationMs: 2140 }], { at: "2026-10-07T11:55:00.000Z", added: 1, error: null }, gaps, NOW);
+  assert.deepEqual(view.gaps, [gaps[0]]);
   assert.deepEqual(describeGateway(view, (s: string) => s), [
     "AI Gateway, last 7 days:",
     "  deepseek-v4-flash (deepseek): 1 call, 18k in, 912 out, $0.00, median 2.1 s (n=1)",
+    "  incomplete: at least 1 call between 2026-10-07T10:00Z and 2026-10-07T11:00Z not read; totals undercount",
     "  logs last pulled 2026-10-07T11:55Z",
   ]);
   assert.match(describeGateway(undefined, (s: string) => s)[0], /reports no gateway figures/);

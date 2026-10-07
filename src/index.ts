@@ -25,7 +25,7 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
-import { fetchNewLogs, gatewayConfig, gatewayView, parseCalls, windowSql, writeLog, type GatewayPull, type GatewayView } from "./usage/gateway.ts";
+import { durationsSql, fetchNewLogs, gatewayConfig, gatewayView, parseDurations, parseTotals, totalsSql, writeLog, type GatewayGap, type GatewayMark, type GatewayPull, type GatewayView } from "./usage/gateway.ts";
 import { query, queryConfig } from "./metrics.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
@@ -1687,37 +1687,60 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
 // them, read back through the SQL API (src/metrics.ts). With no gateway
 // token the pull does nothing and the view says the gateway is off.
 
-// Writes the logs newer than the last one written, then records the newest
-// as the next pull's stop. Null when the gateway is off or the pull failed.
-export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number } | null> {
+// Writes the logs newer than the last one written, oldest first, and moves
+// the mark to the newest log written: a missing binding or a failed write
+// stops the writing there, so the mark never passes a log that was not
+// written and the next pull reads it again. A pull capped short of the
+// mark records the stretch it did not read. Null when the gateway is off or
+// the logs could not be read.
+export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
   const cfg = gatewayConfig(env);
   if (typeof cfg === "string") return null;
   const I = index(env);
   const at = new Date(now).toISOString();
+  let read;
   try {
-    const { logs } = await fetchNewLogs(cfg, await I.gatewayMark(), now, fetcher);
-    let added = 0;
-    for (const log of logs) if (writeLog(env.METRICS, log)) added++;
-    await I.recordGatewayPull({ at, added, error: null }, logs.length ? { id: logs[0].id, at: logs[0].at } : null);
-    return { added };
+    read = await fetchNewLogs(cfg, await I.gatewayMark(), now, fetcher);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await I.recordGatewayPull({ at, added: 0, error }, null);
     console.error("AI Gateway pull failed", error);
     return null;
   }
+  let added = 0, mark: GatewayMark | null = null, error: string | null = null;
+  if (read.logs.length && !env.METRICS) error = "the METRICS binding is missing, so no log was written";
+  else {
+    for (const log of [...read.logs].reverse()) {
+      try {
+        if (!writeLog(env.METRICS, log)) throw new Error("no dataset");
+      } catch (err) {
+        error = `writing log ${log.id} failed: ${err instanceof Error ? err.message : String(err)}`;
+        break;
+      }
+      added++;
+      mark = { id: log.id, at: log.at };
+    }
+  }
+  // The gap lies below the oldest log read, the first written; it is lost
+  // only once the mark has moved past it.
+  const gap = read.gap && added ? { ...read.gap, pulledAt: at } : null;
+  await I.recordGatewayPull({ at, added, error }, mark, gap);
+  if (error) console.error("AI Gateway pull failed", error);
+  return { added, error };
 }
 
 export async function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
   const cfg = gatewayConfig(env);
-  if (typeof cfg === "string") return gatewayView(cfg, [], null, now);
+  if (typeof cfg === "string") return gatewayView(cfg, [], [], null, [], now);
   const read = queryConfig(env);
-  if (typeof read === "string") return gatewayView(`AI Gateway costs cannot be read: ${read}`, [], null, now);
-  const pull = (await index(env).gatewayPull()) as GatewayPull | null;
+  if (typeof read === "string") return gatewayView(`AI Gateway costs cannot be read: ${read}`, [], [], null, [], now);
+  const I = index(env);
+  const [pull, gaps] = await Promise.all([I.gatewayPull() as Promise<GatewayPull | null>, I.gatewayGaps() as Promise<GatewayGap[]>]);
   try {
-    return gatewayView(null, parseCalls(await query(read, windowSql(), fetcher)), pull, now);
+    const [totals, durations] = await Promise.all([query(read, totalsSql(), fetcher), query(read, durationsSql(), fetcher)]);
+    return gatewayView(null, parseTotals(totals), parseDurations(durations), pull, gaps, now);
   } catch (err) {
-    return gatewayView(`AI Gateway costs could not be read just now: ${err instanceof Error ? err.message : String(err)}`, [], pull, now);
+    return gatewayView(`AI Gateway costs could not be read just now: ${err instanceof Error ? err.message : String(err)}`, [], [], pull, gaps, now);
   }
 }
 

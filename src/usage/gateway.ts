@@ -9,11 +9,16 @@
 // a Bearer token, and writes one Analytics Engine data point per log
 // (src/metrics.ts, kind "gateway"). The newest log written, its id and
 // time, is kept on the index Ledger, and a pull writes only logs newer than
-// it, so a log is written once however many pulls see it. The Models page
+// it, oldest first, moving the mark past each log only once it is written,
+// so a log is written once however many pulls see it and none is passed
+// over unwritten. A pull that reads MAX_PAGES pages without reaching the
+// mark records the stretch it did not read as a gap (GatewayGap), and the
+// figures say so for as long as the gap is in their window. The Models page
 // and GET /api/usage read the last GATEWAY_WINDOW_DAYS days back through the
-// Analytics Engine SQL API (ANALYTICS_TOKEN) and show each model's calls,
-// tokens, cost and median duration. With no AI_GATEWAY_TOKEN the trigger
-// does nothing and the page says so.
+// Analytics Engine SQL API (ANALYTICS_TOKEN): each model's calls, failures,
+// tokens and cost summed in SQL, so they are exact at any volume, and its
+// median duration over the newest ROW_LIMIT durations, with the sample size.
+// With no AI_GATEWAY_TOKEN the trigger does nothing and the page says so.
 //
 // The response fields read (parseLog) are those of a log in the list:
 // id, created_at, provider, model, tokens_in, tokens_out, cost (dollars),
@@ -36,7 +41,7 @@ export const GATEWAY_WINDOW_DAYS = 7;
 export const GATEWAY_WINDOW_MS = GATEWAY_WINDOW_DAYS * 86_400_000;
 // A first pull, with nothing written yet, reads back this far.
 export const FIRST_PULL_MS = GATEWAY_WINDOW_MS;
-// The most rows one read of the window asks Analytics Engine for.
+// The most durations one read of the window asks Analytics Engine for.
 export const ROW_LIMIT = 10_000;
 // Logs per page, the most the list route serves, and pages per pull: a pull
 // every five minutes reads at most PAGE_SIZE × MAX_PAGES logs.
@@ -67,9 +72,18 @@ export interface GatewayMark { id: string; at: string }
 // wrote, and what went wrong if it failed.
 export interface GatewayPull { at: string; added: number; error: string | null }
 
-// One call as the window's read gives it back: `weight` is how many calls
-// the row stands for (Analytics Engine's _sample_interval, 1 unsampled).
-export type GatewayCall = Pick<GatewayLog, "provider" | "model" | "tokensIn" | "tokensOut" | "cost" | "durationMs" | "success"> & { at?: string; weight: number };
+// Logs a pull did not read: it read MAX_PAGES pages, newest first, without
+// reaching the mark, so of the logs between `from` (the mark's time, or the
+// first pull's floor) and `to` (the oldest it read) at least `atLeast` were
+// never written. The list route says only that a further page exists, so
+// the count is a floor, not the number missed.
+export interface GatewayGap { from: string; to: string; atLeast: number; pulledAt: string }
+
+// One model's totals over the window, as the totals query sums them.
+export interface GatewayTotals { provider: string; model: string; calls: number; failures: number; tokensIn: number; tokensOut: number; cost: number | null }
+
+// One duration from the newest ROW_LIMIT of the window.
+export interface GatewayDuration { provider: string; model: string; durationMs: number }
 
 export interface GatewayModel {
   provider: string;
@@ -89,6 +103,8 @@ export interface GatewayView {
   since: string;
   models: GatewayModel[];
   pull: GatewayPull | null;
+  gaps: GatewayGap[];          // stretches of the window no pull read
+  sampled: boolean;            // the medians read ROW_LIMIT durations, not every one
 }
 
 // The configuration, or the sentence saying why the gateway is off.
@@ -156,8 +172,10 @@ export function parsePage(status: number, body: unknown): GatewayLog[] {
 
 // Every log newer than `last`, newest first: pages are read until one holds
 // the last written id or a log older than it, a log older than
-// FIRST_PULL_MS (a first pull), a short page, or MAX_PAGES pages.
-export async function fetchNewLogs(cfg: GatewayConfig, last: GatewayMark | null, now: number, fetcher: typeof fetch = fetch): Promise<{ logs: GatewayLog[]; pages: number }> {
+// FIRST_PULL_MS (a first pull), or a short page. After MAX_PAGES full pages
+// the pull stops short of all of those, and `gap` names the stretch it did
+// not read, from the mark (or the floor) to the oldest log it read.
+export async function fetchNewLogs(cfg: GatewayConfig, last: GatewayMark | null, now: number, fetcher: typeof fetch = fetch): Promise<{ logs: GatewayLog[]; pages: number; gap: Omit<GatewayGap, "pulledAt"> | null }> {
   const floor = new Date(now - FIRST_PULL_MS).toISOString();
   const logs: GatewayLog[] = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
@@ -165,13 +183,14 @@ export async function fetchNewLogs(cfg: GatewayConfig, last: GatewayMark | null,
     const body = await res.json().catch(() => null);
     const found = parsePage(res.status, body);
     for (const log of found) {
-      if (last && (log.id === last.id || log.at < last.at)) return { logs, pages: page };
-      if (log.at < floor) return { logs, pages: page };
+      if (last && (log.id === last.id || log.at < last.at)) return { logs, pages: page, gap: null };
+      if (log.at < floor) return { logs, pages: page, gap: null };
       logs.push(log);
     }
-    if (found.length < PAGE_SIZE) return { logs, pages: page };
+    if (found.length < PAGE_SIZE) return { logs, pages: page, gap: null };
   }
-  return { logs, pages: MAX_PAGES };
+  const oldest = logs[logs.length - 1];
+  return { logs, pages: MAX_PAGES, gap: { from: last?.at ?? floor, to: oldest.at, atLeast: 1 } };
 }
 
 // One log as an Analytics Engine data point of kind "gateway": blobs
@@ -186,28 +205,40 @@ export function writeLog(dataset: AnalyticsEngineDataset | undefined, l: Gateway
     l.model);
 }
 
-// The calls of the last `days` days, newest first, at most ROW_LIMIT rows.
-export function windowSql(days = GATEWAY_WINDOW_DAYS): string {
-  return `SELECT timestamp, blob2 AS provider, blob3 AS model, double1 AS tokens_in, double2 AS tokens_out, double3 AS cost, double4 AS duration_ms, double5 AS success, _sample_interval AS weight FROM ${METRICS_DATASET} WHERE blob1 = 'gateway' AND timestamp > NOW() - INTERVAL '${Math.round(days)}' DAY ORDER BY timestamp DESC LIMIT ${ROW_LIMIT}`;
+const inWindow = (days: number) => `FROM ${METRICS_DATASET} WHERE blob1 = 'gateway' AND timestamp > NOW() - INTERVAL '${Math.round(days)}' DAY`;
+
+// Each model's totals over the last `days` days, summed by Analytics Engine.
+// A sampled row stands for _sample_interval calls, so every count and sum
+// is weighted by it; a cost of -1 (unpriced) adds nothing and is not
+// counted as priced.
+export function totalsSql(days = GATEWAY_WINDOW_DAYS): string {
+  return `SELECT blob2 AS provider, blob3 AS model, SUM(_sample_interval) AS calls, SUM(IF(double5 = 1, 0, _sample_interval)) AS failures, SUM(_sample_interval * double1) AS tokens_in, SUM(_sample_interval * double2) AS tokens_out, SUM(IF(double3 >= 0, _sample_interval * double3, 0)) AS cost, SUM(IF(double3 >= 0, _sample_interval, 0)) AS priced ${inWindow(days)} GROUP BY blob2, blob3`;
 }
 
-// The rows windowSql read, as calls. The SQL API gives the timestamp as
-// "YYYY-MM-DD hh:mm:ss" in UTC and may give a number as a string; a
-// negative cost or duration is one the log did not carry.
-export function parseCalls(rows: MetricRow[]): GatewayCall[] {
-  const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN);
+// The newest ROW_LIMIT durations of the last `days` days, for the medians.
+export function durationsSql(days = GATEWAY_WINDOW_DAYS): string {
+  return `SELECT blob2 AS provider, blob3 AS model, double4 AS duration_ms ${inWindow(days)} AND double4 >= 0 ORDER BY timestamp DESC LIMIT ${ROW_LIMIT}`;
+}
+
+// The SQL API may give a number as a string.
+const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN);
+const names = (r: MetricRow) => ({ provider: text(r.provider, 64) || "unknown", model: text(r.model, 128) || "unknown" });
+
+export function parseTotals(rows: MetricRow[]): GatewayTotals[] {
   return rows.map((r) => {
-    const cost = num(r.cost), ms = num(r.duration_ms), weight = num(r.weight);
-    const t = typeof r.timestamp === "string" ? Date.parse(`${r.timestamp.replace(" ", "T")}${/Z|[+-]\d\d:?\d\d$/.test(r.timestamp) ? "" : "Z"}`) : NaN;
+    const cost = num(r.cost), priced = num(r.priced);
     return {
-      ...(Number.isNaN(t) ? {} : { at: new Date(t).toISOString() }),
-      provider: text(r.provider, 64) || "unknown", model: text(r.model, 128) || "unknown",
+      ...names(r), calls: count(num(r.calls)), failures: count(num(r.failures)),
       tokensIn: count(num(r.tokens_in)), tokensOut: count(num(r.tokens_out)),
-      cost: Number.isFinite(cost) && cost >= 0 ? cost : null,
-      durationMs: Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : null,
-      success: num(r.success) === 1,
-      weight: Number.isFinite(weight) && weight >= 1 ? weight : 1,
+      cost: Number.isFinite(priced) && priced > 0 && Number.isFinite(cost) ? Math.round(cost * 1e6) / 1e6 : null,
     };
+  });
+}
+
+export function parseDurations(rows: MetricRow[]): GatewayDuration[] {
+  return rows.flatMap((r) => {
+    const ms = num(r.duration_ms);
+    return Number.isFinite(ms) && ms >= 0 ? [{ ...names(r), durationMs: Math.round(ms) }] : [];
   });
 }
 
@@ -218,32 +249,27 @@ function median(values: number[]): number | null {
   return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 }
 
-// Each provider's model over the calls given: calls, failures, tokens and
-// cost (each row counted `weight` times), and the median duration over the
-// rows that report one, with that number as the sample size. A call with a
-// time outside the window ending at `now` is left out. Most cost first,
-// then most calls.
-export function summarize(calls: GatewayCall[], now: number, windowMs = GATEWAY_WINDOW_MS): GatewayModel[] {
-  const since = new Date(now - windowMs).toISOString(), until = new Date(now).toISOString();
-  const by = new Map<string, { m: GatewayModel; durations: number[] }>();
-  for (const c of calls) {
-    if (c.at !== undefined && (c.at < since || c.at > until)) continue;
-    const key = `${c.provider}\n${c.model}`;
-    let g = by.get(key);
-    if (!g) by.set(key, g = { m: { provider: c.provider, model: c.model, calls: 0, failures: 0, tokensIn: 0, tokensOut: 0, cost: null, medianMs: null, sample: 0 }, durations: [] });
-    g.m.calls += c.weight;
-    if (!c.success) g.m.failures += c.weight;
-    g.m.tokensIn += c.tokensIn * c.weight;
-    g.m.tokensOut += c.tokensOut * c.weight;
-    if (c.cost !== null) g.m.cost = Math.round(((g.m.cost ?? 0) + c.cost * c.weight) * 1e6) / 1e6;
-    if (c.durationMs !== null) g.durations.push(c.durationMs);
+// Each provider's model: its totals as summed, and the median of its
+// durations among those read, with their number as the sample size. Most
+// cost first, then most calls.
+export function summarize(totals: GatewayTotals[], durations: GatewayDuration[]): GatewayModel[] {
+  const by = new Map<string, number[]>();
+  for (const d of durations) {
+    const key = `${d.provider}\n${d.model}`;
+    by.set(key, [...(by.get(key) ?? []), d.durationMs]);
   }
-  return [...by.values()].map(({ m, durations }) => ({ ...m, medianMs: median(durations), sample: durations.length }))
-    .sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0) || b.calls - a.calls || a.model.localeCompare(b.model));
+  return totals.map((t) => {
+    const ds = by.get(`${t.provider}\n${t.model}`) ?? [];
+    return { ...t, medianMs: median(ds), sample: ds.length };
+  }).sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0) || b.calls - a.calls || a.model.localeCompare(b.model));
 }
 
-export function gatewayView(off: string | null, calls: GatewayCall[], pull: GatewayPull | null, now: number): GatewayView {
-  return { off, days: GATEWAY_WINDOW_DAYS, since: new Date(now - GATEWAY_WINDOW_MS).toISOString(), models: off ? [] : summarize(calls, now), pull };
+export function gatewayView(off: string | null, totals: GatewayTotals[], durations: GatewayDuration[], pull: GatewayPull | null, gaps: GatewayGap[], now: number): GatewayView {
+  const since = new Date(now - GATEWAY_WINDOW_MS).toISOString();
+  return {
+    off, days: GATEWAY_WINDOW_DAYS, since, models: off ? [] : summarize(totals, durations), pull,
+    gaps: gaps.filter((g) => g.to >= since), sampled: durations.length >= ROW_LIMIT,
+  };
 }
 
 // "850 ms", "12.4 s"
