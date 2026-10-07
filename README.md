@@ -1501,7 +1501,7 @@ The steps in between:
    start calling a route the server did not have, or changes the meaning of
    a route the CLI already calls; the waiting queue the landing's `--wait`
    asks about (`{ item, queued: true }` on the landing-lease route) raised
-   it to 9.
+   it to 10 (main had already reached 9 with another route change).
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,

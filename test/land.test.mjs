@@ -429,6 +429,37 @@ test("a landing without --wait cannot take the lease ahead of one that queued fo
   assert.equal(f.box.states.t1, "submitted");
 });
 
+// The queue a landing reads is the server's answer already pruned (a row
+// whose landing stopped asking for the expiry's span no longer counts), so
+// the CLI judges no row by its own machine's clock — a clock ahead of the
+// server's would drop a live row and jump the queue.
+test("a row whose landing stopped asking no longer counts: the landing reads the queue as the server pruned it", async (t) => {
+  const f = await landFixture(t);
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
+  // t3 queued ahead of this landing but stopped asking more than the expiry
+  // ago; the server drops its row before answering, so t1 waits behind the
+  // holder alone and never names t3.
+  const gone = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS - 60_000).toISOString();
+  f.box.waiting = [{ item: "t3", holder: "owner", at: "2026-10-07T08:00:00.000Z", renewedAt: gone }];
+  f.env = { ATELIER_LAND_POLL_MS: "40" };
+  let freeing = false;
+  f.onOutput = (out) => {
+    if (freeing) return;
+    if (out.includes("Waiting behind owner's landing of t2 (since 2026-10-07 09:00 UTC)")) { freeing = true; setTimeout(() => { f.box.lease = null; }, 120); }
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-07 09:00 UTC\); t1 starts as soon as the lease is free\./);
+  assert.doesNotMatch(r.output, /queued ahead/);
+  assert.doesNotMatch(r.output, /t3/);
+  // The lease was taken once it freed, not held up behind the stale row, and
+  // the landing ran to its end.
+  assert.equal(f.posts("/landing-lease").filter((x) => x.body.item === "t1" && !x.body.cancel && !x.body.renew && x.body.queued !== true).length, 1);
+  assert.match(r.output, /Landing lease taken for t1/);
+  assert.equal(f.box.states.t1, "submitted");
+  assert.equal(f.box.lease, null);
+});
+
 test("--wait gives up behind the landing that queued first, saying it is still first, and leaves the queue", async (t) => {
   const f = await landFixture(t);
   f.box.waiting = [{ item: "t2", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
@@ -667,6 +698,29 @@ test("a server a route level lower than the CLI's refuses, naming both levels an
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
   assert.equal(f.box.lease, null);
+});
+
+// The queued ask is the route whose meaning changed (t249), so --wait is
+// where an older server would bite: a level 9 server, which lacks the
+// queue, would read `{ item, queued: true }` as a take and refuse it, so
+// the wait would crash on the 409 instead of waiting. The start refusal
+// above must reach --wait too, before any queued ask is made of it.
+test("a server a route level lower than the CLI's refuses --wait at start, saying to deploy, before any queued ask", async (t) => {
+  const f = await landFixture(t);
+  f.box.routeLevel = ROUTE_LEVEL - 1;
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
+  f.box.waiting = [{ item: "t3", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
+  f.box.requests.length = 0;
+  const r = await f.run(f.checkout, "land", "t1", "--wait");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
+  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /Deploy the server/);
+  // Nothing was asked of the lease — no queued ask, no take — and the lease
+  // and the queue stand exactly as they were.
+  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
+  assert.equal(f.box.lease?.item, "t2");
+  assert.deepEqual(f.box.waiting.map((w) => w.item), ["t3"]);
 });
 
 test("a server that reports no route level refuses, saying to deploy", async (t) => {
