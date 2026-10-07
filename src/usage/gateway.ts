@@ -213,8 +213,10 @@ const inWindow = (days: number) => `FROM ${METRICS_DATASET} WHERE blob1 = 'gatew
 // A sampled row stands for _sample_interval calls, so every count and sum
 // is weighted by it; a cost of -1 (unpriced) adds nothing and is not
 // counted as priced.
+// Analytics Engine wants both branches of an IF() of one type, so each
+// is a Double (0.0, or _sample_interval * 1.0).
 export function totalsSql(days = GATEWAY_WINDOW_DAYS): string {
-  return `SELECT blob2 AS provider, blob3 AS model, SUM(_sample_interval) AS calls, SUM(IF(double5 = 1, 0, _sample_interval)) AS failures, SUM(_sample_interval * double1) AS tokens_in, SUM(_sample_interval * double2) AS tokens_out, SUM(IF(double3 >= 0, _sample_interval * double3, 0)) AS cost, SUM(IF(double3 >= 0, _sample_interval, 0)) AS priced ${inWindow(days)} GROUP BY blob2, blob3`;
+  return `SELECT blob2 AS provider, blob3 AS model, SUM(_sample_interval) AS calls, SUM(IF(double5 = 1, 0.0, _sample_interval * 1.0)) AS failures, SUM(_sample_interval * double1) AS tokens_in, SUM(_sample_interval * double2) AS tokens_out, SUM(IF(double3 >= 0, _sample_interval * double3, 0.0)) AS cost, SUM(IF(double3 >= 0, _sample_interval * 1.0, 0.0)) AS priced ${inWindow(days)} GROUP BY blob2, blob3`;
 }
 
 // The newest ROW_LIMIT durations of the last `days` days, for the medians.

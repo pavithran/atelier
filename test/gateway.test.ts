@@ -127,8 +127,11 @@ test("a log is one Analytics Engine point of kind gateway, read back by the wind
 test("totals are summed in SQL per model, weighted by _sample_interval; durations are a capped sample", () => {
   const totals = totalsSql();
   assert.match(totals, /FROM atelier_metrics WHERE blob1 = 'gateway' AND timestamp > NOW\(\) - INTERVAL '7' DAY GROUP BY blob2, blob3$/);
-  for (const sum of ["SUM(_sample_interval) AS calls", "SUM(IF(double5 = 1, 0, _sample_interval)) AS failures", "SUM(_sample_interval * double1) AS tokens_in",
-    "SUM(_sample_interval * double2) AS tokens_out", "SUM(IF(double3 >= 0, _sample_interval * double3, 0)) AS cost", "SUM(IF(double3 >= 0, _sample_interval, 0)) AS priced"]) {
+  // Analytics Engine refuses an IF() whose branches differ in type (a Double
+  // and an integer), so no branch is a bare integer literal.
+  for (const sql of [totalsSql(), durationsSql()]) assert.doesNotMatch(sql, /IF\([^,]+,\s*\d+\s*[,)]|IF\([^,]+,[^,]+,\s*\d+\s*\)/);
+  for (const sum of ["SUM(_sample_interval) AS calls", "SUM(IF(double5 = 1, 0.0, _sample_interval * 1.0)) AS failures", "SUM(_sample_interval * double1) AS tokens_in",
+    "SUM(_sample_interval * double2) AS tokens_out", "SUM(IF(double3 >= 0, _sample_interval * double3, 0.0)) AS cost", "SUM(IF(double3 >= 0, _sample_interval * 1.0, 0.0)) AS priced"]) {
     assert.ok(totals.includes(sum), sum);
   }
   assert.doesNotMatch(totals, /LIMIT/);
