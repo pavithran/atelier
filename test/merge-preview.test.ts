@@ -75,14 +75,15 @@ test("live tasks touching the same paths are paired, with the paths", () => {
   ]), [{ a: "t1", b: "t3", paths: ["src/a.ts", "src/b.ts"] }]);
 });
 
-// Artifacts as the binding presents it: a log newest first, trees and blobs.
-function artifactsOf(repos: Record<string, { log: string[]; trees: Record<string, Record<string, string>> }>) {
+// Artifacts as the binding presents it: a first-parent log newest first,
+// trees and blobs. `merged` names a merge commit's further parents.
+function artifactsOf(repos: Record<string, { log: string[]; trees: Record<string, Record<string, string>>; merged?: Record<string, string[]> }>) {
   return {
     get: async (name: string) => {
       const r = repos[name];
       const reader = repo(r.trees);
       return {
-        log: async () => r.log.map((h, i) => ({ hash: h, treeHash: h, parents: r.log[i + 1] ? [r.log[i + 1]] : [] })),
+        log: async () => r.log.map((h, i) => ({ hash: h, treeHash: h, parents: [...(r.log[i + 1] ? [r.log[i + 1]] : []), ...(r.merged?.[h] ?? [])] })),
         readTree: (h: string) => reader.tree(h),
         readBlob: async (h: string) => { const b = await reader.blob(h); return b ? new Blob([b]) : null; },
         [Symbol.dispose]() {},
@@ -107,6 +108,15 @@ test("the preview says main has not moved when its head is the fork point, and g
   assert.deepEqual([still?.ahead, still?.merge.clean], [0, true]);
   const gone = await previewAgainstMain(artifactsOf({ main: { log: ["m1"], trees }, fork: { log: ["task", "base"], trees } }), "main", "fork");
   assert.equal(gone, null, "a fork point not on a fully read main gives no preview");
+});
+
+// t230: a task that merged main holds main's head as the merge's second
+// parent, while its first-parent line runs back to where it forked. The
+// preview works from the main commit it merged, so main has not moved.
+test("the preview of a task that merged main's head says main has not moved since", async () => {
+  const trees = { base: { "a.ts": "1\n" }, m1: { "a.ts": "1\n", "b.ts": "b\n" }, task: { "a.ts": "2\n" }, merge: { "a.ts": "2\n", "b.ts": "b\n" } };
+  const p = await previewAgainstMain(artifactsOf({ main: { log: ["m1", "base"], trees }, fork: { log: ["merge", "task", "base"], trees, merged: { merge: ["m1"] } } }), "main", "fork");
+  assert.deepEqual([p?.ahead, p?.merge.clean, p?.merge.ours], [0, true, 0]);
 });
 
 // Each case was run through git merge on 2026-10-04 and 2026-10-05; the expected answer is git's.

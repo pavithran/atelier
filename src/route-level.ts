@@ -7,4 +7,4 @@
 // route the server did not have, or changes the meaning of an existing route
 // the CLI relies on; a merge that changes neither changes nothing here,
 // whatever commit it moves to.
-export const ROUTE_LEVEL = 3;
+export const ROUTE_LEVEL = 4;
