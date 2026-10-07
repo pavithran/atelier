@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  INTEGRABLE_FROM, integrationBlockers, integrationChecks, LANDED, landed, nextToIntegrate, planGate, rollbackFor, verifyIntegration, verifyRefresh,
+  INTEGRABLE_FROM, integrationBlockers, integrationChecks, LANDED, landed, mergeBaseFor, nextToIntegrate, planGate, rollbackFor, verifyIntegration, verifyRefresh,
   type LogCommit, type Part, type PartState, type PlanGateInput,
 } from "../src/plans/integrate.ts";
 import { PROTECTED_NEED, type AgentRole, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
@@ -295,4 +295,15 @@ test("verifyRefresh accepts main's head merged onto the integration head, and an
   const next = [commit(MB, R, B), ...log];
   assert.deepEqual(verifyIntegration({ log: next, integrationHead: R, partHead: B, mergeCommit: MB }), []);
   assert.ok(verifyIntegration({ log: next, integrationHead: MA, partHead: B, mergeCommit: MB }).length > 0);
+});
+
+test("mergeBaseFor measures from the part's merged plan head unless the part holds the plan's top", () => {
+  // The part holds the plan head it merged; the plan's top is not held, or
+  // the bounded search ran out before it could say.
+  assert.equal(mergeBaseFor(false, "p".repeat(40), "b".repeat(40), true), "p".repeat(40));
+  assert.equal(mergeBaseFor(null, "p".repeat(40), "b".repeat(40), true), "p".repeat(40));
+  // Without a merged plan head, or one the part does not hold, the fork point.
+  assert.equal(mergeBaseFor(null, null, "b".repeat(40), null), "b".repeat(40));
+  assert.equal(mergeBaseFor(false, "p".repeat(40), "b".repeat(40), null), "b".repeat(40));
+  assert.equal(mergeBaseFor(false, "b".repeat(40), "b".repeat(40), true), "b".repeat(40));
 });
