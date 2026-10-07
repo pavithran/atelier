@@ -100,9 +100,12 @@ misread:
   run ends; watch its log file for progress.
 - **Antigravity** (Gemini, GPT-OSS): in plan mode it cannot run commands,
   and an attempt returns an empty answer. Reviews therefore run in a
-  throwaway clone with commands allowed and the terminal sandboxed
-  (`bin/orchestrate/review.sh`), so the reviewer can search the code and
-  run tests before it calls something a defect.
+  throwaway clone with commands allowed and the terminal sandboxed, so the
+  reviewer can search the code and run tests before it calls something a
+  defect: a session runs `bin/orchestrate/review.sh`, and a home runner
+  serving a review job runs `cli/agy-review.mjs`, the adapter its config
+  names as the review command, which hands `agy` the brief and the diff as
+  one prompt on standard input and writes its reply as the verdict.
 - **Agents that write a commit message to a file** (`COMMIT_MSG.txt`) also
   stage it; check that no such file, and no `.scratch/` file, is committed.
 - **A run can outlive the shell that started it.** If the session's shells
@@ -139,23 +142,33 @@ So land one task at a time, in this order:
 5. Run the type check on main after every merge, and the full suite before
    pushing main to its own remotes.
 
-`atelier land ID --reviewer H/M` is the default way to land a task. It does
-these steps under the project's landing lease on the server, so two sessions
-never land at once, and records how long each took. `bin/orchestrate/queue.sh`
-and `land.sh` are the fallback for a session without a runner to serve the
-review. When the review waits because the runners are busy (one runner works
-one job at a time), the session can start a second runner
-(`atelier runner --name home:NAME-2`, see "The home runner" in
-`bin/orchestrate/README.md`) or review by hand.
+`atelier land` (task t187, `cli/land.mjs`) is the default way to land a
+task: `atelier land ID --reviewer H/M` does these steps under the
+project's landing lease, taken on the server, so two sessions never land
+at once: while one landing runs, another in the same project is refused
+with who holds the lease and since when. It regenerates the project's
+fixtures when its policy declares how, asks the server for the
+independent review the gate needs and waits for the verdict (`--reviewer
+H/M` names the reviewer, `--no-review` leaves the task submitted), then
+accepts and merges. Each step and how long it took are recorded on the
+task as `land.*` events, and a landing stopped partway is resumed by
+running the same command again, which takes its lease back. The same
+lease guards every merge, a plan's included (`POST items/tP/landing` in
+`cli/atelier.mjs`). `bin/orchestrate/queue.sh` and `land.sh` are the
+fallback for a session without a runner to serve the review. When the
+review waits because the runners are busy (one runner works one job at a
+time), the session can start a second runner (`atelier runner --name
+home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
+review by hand.
 
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls, or changes
 the meaning of a route the CLI already calls, breaks every check until the
 server has the new behaviour too. Each such merge raises `ROUTE_LEVEL`
 (`src/route-level.ts`) by one, and `atelier land` and the home runner refuse
-to run against a server whose level is lower, naming both levels and saying
-to deploy. Deploy after such merges, before landing the next task or
-starting a runner.
+before they start while the server's route level (`GET /api/version`) is
+older than the CLI's, naming both levels and saying to deploy. Deploy after
+such merges, before landing the next task or starting a runner.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
