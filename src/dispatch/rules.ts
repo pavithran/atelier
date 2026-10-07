@@ -20,11 +20,13 @@ export interface Dispatch {
   // A job other than building the item: "plan" asks the runner to write the
   // plan item's plan document (docs/orchestrator.md, section 2), "integrate"
   // and "refresh" ask atelier/integrator to merge a part onto the plan's
-  // branch or main into it (section 5), and "merge-main" asks a part's
-  // builder to merge main into the part's workspace and resolve what
+  // branch or main into it (section 5), and "merge-main" asks the builder of
+  // a part or a task to merge main into its workspace and resolve what
   // conflicts. "review" is the review dispatch a review request carries
   // (section 4): it is stored with the request, not on the item, and offered
-  // to a runner whose offer lists the job. Absent for ordinary work.
+  // to a runner whose offer lists the job. Absent for ordinary work. The
+  // owner writes none of these by hand but merge-main (t243): the plan's own
+  // jobs are the plan's.
   job?: "plan" | "review" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
@@ -37,6 +39,12 @@ export interface Dispatch {
   // workspace before the builder starts. Only a runner that offers the
   // "merge-plan" job takes such a dispatch.
   planHead?: string;
+  // Set on a merge-main job the owner dispatched for a task outside a plan
+  // (t243), whose runner reads main through the task's own base token rather
+  // than a plan's. A runner from before t243 offers merge-main but refuses
+  // such an assignment, so only a runner that offers the "merge-main-task"
+  // job takes it.
+  task?: true;
 }
 
 // What a runner says it can run when it asks for work. `jobs` names the
@@ -78,7 +86,7 @@ export function parseRunner(header: string | null): { runner: string; kind: Runn
   return { runner: header.toLowerCase(), kind: kind.toLowerCase() as RunnerKind };
 }
 
-export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown }, by: string, at: string): Dispatch {
+export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown; job?: unknown; head?: unknown }, by: string, at: string): Dispatch {
   const to = String(input.to ?? "any");
   if (to !== "any" && !RUNNER_KINDS.includes(to as RunnerKind)) {
     throw new RuleError("bad_dispatch", `send to cloud, home or any, not "${to}"`, 400);
@@ -93,17 +101,41 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   const model = optional(input.model, "model");
   if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
   if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
+  // One job the owner may dispatch by hand: merge-main, a task's builder
+  // merging main at a named head into its workspace and resolving what
+  // conflicts (t243), as a conflicted plan's part does. The plan, integrate
+  // and refresh jobs are dispatched by the plan itself, never written here.
+  const job = input.job === undefined || input.job === null || input.job === "" ? null : String(input.job);
+  if (job !== null && job !== "merge-main") {
+    throw new RuleError("bad_dispatch", `"${job}" is not a job a dispatch names; only merge-main is dispatched by hand (atelier dispatch ID --job merge-main), and the plan, integrate and refresh jobs are the plan's own`, 400);
+  }
+  const head = input.head === undefined || input.head === null || input.head === "" ? null : String(input.head);
+  if (job === "merge-main" && !/^[a-f0-9]{40,64}$/.test(head ?? "")) {
+    throw new RuleError("bad_head", "a merge-main dispatch names main's head to merge as the full commit hash git rev-parse prints", 400);
+  }
+  if (job === null && head !== null) {
+    throw new RuleError("bad_dispatch", `head names the main head a merge-main job merges; give it with --job merge-main, not alone`, 400);
+  }
   // The note is the owner's and is stored with the dispatch for every runner
   // to read, so one over its limit is refused, never cut.
   const note = String(input.note ?? "");
   assertLength(note, OWNER_TEXT_MAX, "the dispatch note");
-  return { to: to as Dispatch["to"], agent, model, by, at, note };
+  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}) };
 }
 
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
     throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
   }
+}
+
+// The jobs a runner must offer to take a dispatch besides building: its job,
+// "merge-plan" when it carries a plan head to merge, and "merge-main-task"
+// for a task's merge-main job (t243). Returns the first the offer lacks, or
+// null when it offers them all.
+function missingJob(d: Dispatch, offer: RunnerOffer): string | null {
+  const needs = [d.job, d.planHead ? "merge-plan" : null, d.job === "merge-main" && d.task ? "merge-main-task" : null];
+  return needs.find((job): job is string => !!job && !(offer.jobs ?? []).includes(job)) ?? null;
 }
 
 // The agent and model a runner should use for a dispatch, or null if it cannot.
@@ -116,8 +148,7 @@ export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
     return { agent: "atelier", model: "integrator", actor: "atelier/integrator" };
   }
   if (d.to !== "any" && d.to !== offer.kind) return null;
-  if (d.job && !(offer.jobs ?? []).includes(d.job)) return null;
-  if (d.planHead && !(offer.jobs ?? []).includes("merge-plan")) return null;
+  if (missingJob(d, offer)) return null;
   for (const { agent, models } of offer.agents) {
     if (d.agent && agent !== d.agent) continue;
     const usable = models.filter((m) => claimable(agent, m));
@@ -195,7 +226,7 @@ export function offering(offers: readonly SeenOffer[]): Map<string, string[]> {
 // fact is what could take the job instead, not which harness is missing.
 function offeredNames(d: Dispatch, offer: RunnerOffer): string[] | null {
   if (d.to !== "any" && d.to !== offer.kind) return null;
-  if (d.job && !(offer.jobs ?? []).includes(d.job)) return null;
+  if (missingJob(d, offer)) return null;
   const names: string[] = [];
   for (const { agent, models } of offer.agents) {
     for (const model of models) if (claimable(agent, model)) names.push(`${agent}/${model}`);
@@ -222,7 +253,7 @@ export function unoffered(d: Dispatch, offers: readonly SeenOffer[], now = new D
     const names = offeredNames(d, offer);
     if (names === null) {
       if (d.to !== "any" && d.to !== offer.kind) return `${offer.runner} is a ${offer.kind} runner, not a ${d.to} one`;
-      return `${offer.runner} offers no ${d.job} job`;
+      return `${offer.runner} offers no ${missingJob(d, offer)} job`;
     }
     return `${offer.runner} offers ${d.job ?? "build"} as ${names.length ? names.join(", ") : "nothing it could claim as"}`;
   });
