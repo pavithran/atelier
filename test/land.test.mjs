@@ -538,6 +538,21 @@ async function until(ready, ms = 15_000, what = "the condition") {
   }
 }
 
+// Waits until `count()` has gone quiet — unchanged for `quiet` ms, several
+// of the heartbeat's beats — and returns what it settled on. A stream that
+// keeps coming never settles, so this waits on the renewal calls themselves
+// rather than proving they stopped with a fixed sleep on the clock.
+async function settled(count, quiet, ms = 15_000, what = "the count") {
+  let last = count(), at = Date.now();
+  for (const t0 = Date.now();;) {
+    if (Date.now() - t0 > ms) throw new Error(`${what} did not settle within ${ms}ms`);
+    await new Promise((ok) => setTimeout(ok, 10));
+    const now = count();
+    if (now !== last) { last = now; at = Date.now(); }
+    else if (Date.now() - at >= quiet) return last;
+  }
+}
+
 // A landing that is waiting for a review verdict that never comes, spawned
 // rather than awaited, so a test can signal it or watch its heartbeat.
 function waitingLanding(f, env = {}) {
@@ -678,28 +693,32 @@ test("while the review request is unclaimed, the landing names the runner's job 
 
 test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
   const f = await landFixture(t);
-  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 2, 15_000, "two renewals");
+  const beatMs = 40;
+  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: String(beatMs) });
+  const renewals = () => f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
+  await until(() => renewals() >= 2, 15_000, "two renewals");
   // The server cannot be reached for a while: one warning, renewals go on.
   f.box.renewFails = true;
   await until(() => landing.output().includes("could not be renewed"), 15_000, "the warning");
-  const failed = f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
-  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= failed + 3, 15_000, "three more renewals");
+  const failed = renewals();
+  await until(() => renewals() >= failed + 3, 15_000, "three more renewals");
   assert.equal(landing.output().split("could not be renewed").length - 1, 1);
   f.box.renewFails = false;
   await until(() => landing.output().includes("renewed again"), 15_000, "the recovery");
   // Another landing took the lease over: the renewal is refused, said once,
-  // and no renewal follows.
+  // and no renewal follows — the renewal calls themselves must settle, quiet
+  // for several beats, at the count the refusal left them at.
   f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
   await until(() => landing.output().includes("no longer t1's"), 15_000, "the loss");
-  const after = f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
-  await new Promise((ok) => setTimeout(ok, 300));
-  assert.equal(f.posts("/landing-lease").filter((x) => x.body.renew === true).length, after, "renewals continued after the refusal");
-  assert.equal(landing.output().split("no longer t1's").length - 1, 1);
+  const after = renewals();
+  // The landing stops on its own — every step, and each poll of the review
+  // wait, asks the guard — so its end is waited for, not raced with a sleep.
+  const ended = await landing.done;
+  assert.equal(ended.status, 1, landing.output());
   assert.match(landing.output(), /run atelier land t1 again once the other landing ends/);
-  // Ending the landing leaves t2's lease where it is.
-  landing.child.kill("SIGTERM");
-  await landing.done;
+  assert.equal(await settled(renewals, beatMs * 5, 15_000, "the renewals"), after, "renewals continued after the refusal");
+  assert.equal(landing.output().split("no longer t1's").length - 1, 1);
+  // The landing's end leaves t2's lease where it is.
   assert.equal(f.box.lease?.item, "t2");
   assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
 });
