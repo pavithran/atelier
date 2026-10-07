@@ -44,7 +44,8 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
 3. Check that main type-checks and that the deployed server holds main's
    routes.
 4. Read the owner's standing decisions where the project keeps them, and
-   the review bar in force.
+   the review bar in force (`atelier init` prints it; every review brief
+   states it).
 
 Then pick up where the record says the work stands, not where a summary
 says it does.
@@ -119,7 +120,8 @@ So land one task at a time, in this order:
 5. Run the type check on main after every merge, and the full suite before
    pushing main to its own remotes.
 
-`atelier land` (task t187, `cli/land.mjs`) does these steps under the
+`atelier land` (task t187, `cli/land.mjs`) is the default way to land a
+task: `atelier land ID --reviewer H/M` does these steps under the
 project's landing lease, taken on the server, so two sessions never land
 at once: while one landing runs, another in the same project is refused
 with who holds the lease and since when. It regenerates the project's
@@ -130,14 +132,21 @@ accepts and merges. Each step and how long it took are recorded on the
 task as `land.*` events, and a landing stopped partway is resumed by
 running the same command again, which takes its lease back. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
-`cli/atelier.mjs`).
+`cli/atelier.mjs`). `bin/orchestrate/queue.sh` and `land.sh` are the
+fallback for a session without a runner to serve the review. When the
+review waits because the runners are busy (one runner works one job at a
+time), the session can start a second runner (`atelier runner --name
+home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
+review by hand.
 
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
-project's own checkout, a merge that adds a route the CLI calls breaks every
-check until the server has it too. Deploy after such merges, before landing
-the next task: `atelier land` refuses before it starts while the server's
-route level (`GET /api/version`, `ROUTE_LEVEL` in `src/route-level.ts`) is
-older than the CLI's, naming both levels and saying to deploy.
+project's own checkout, a merge that adds a route the CLI calls, or changes
+the meaning of a route the CLI already calls, breaks every check until the
+server has the new behaviour too. Each such merge raises `ROUTE_LEVEL`
+(`src/route-level.ts`) by one, and `atelier land` and the home runner refuse
+before they start while the server's route level (`GET /api/version`) is
+older than the CLI's, naming both levels and saying to deploy. Deploy after
+such merges, before landing the next task or starting a runner.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
@@ -158,7 +167,8 @@ owner it read as a defect. The other half were real, and some were serious.
   quietly, and never let a reviewer overrule the owner's decision.
 - Record the verdict on each finding (`atelier finding`, task t186). Which
   reviewers are right, and how often, is the most useful thing Atelier can
-  measure about them.
+  measure about them. The next review brief shows each verdict and its note,
+  so put the file and line that answer a refuted finding in the note.
 
 ## Keeping the record honest
 

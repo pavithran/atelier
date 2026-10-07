@@ -146,7 +146,7 @@ it("a protected path is accepted only after an independent approval", async () =
   await L.addReview(review("t1", "codex/opus-5.5", H1, true));
   await refusal(L.accept("t1", "owner"), "not_ready", /protected path/);
 
-  await L.addReview(review("t1", B, H1, true, "independent model, looks right"));
+  await L.addReview(review("t1", B, H1, true, "independent model, looks right"), undefined, true);
   const accepted = await L.accept("t1", "owner");
   expect(accepted).toMatchObject({ state: "accepted", acceptedHead: H1, owner: A });
 
@@ -184,7 +184,7 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
   expect((await L.item("t1")).reviewOverride).toBeUndefined();
   // Where another family has approved, there is nothing to override.
-  await L.addReview(review("t1", B, H1, true));
+  await L.addReview(review("t1", B, H1, true), undefined, true);
   await refusal(L.accept("t1", "owner", H1, reason), "override_unneeded", /not missing an independent review/);
 
   // At a new head the approval no longer counts, and the owner overrides.
@@ -227,7 +227,7 @@ it("the holder under another letter case, profile or registered name cannot revi
   // Another harness may record a review, but the same model does not count for a protected change.
   for (const by of ["codex/Opus-5.5", "antigravity/claude-opus-5-5:fast"]) await L.addReview(review("t1", by, H1, true));
   await refusal(L.accept("t1", "owner"), "not_ready", /protected path/);
-  await L.addReview(review("t1", B, H1, true));
+  await L.addReview(review("t1", B, H1, true), undefined, true);
   expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
 });
 
@@ -309,6 +309,40 @@ it("ownership moves by handoff, ends by release or abandonment", async () => {
   expect(await L.abandon("t2", "owner", "obsolete")).toMatchObject({ state: "abandoned", owner: null });
 });
 
+it("a task is closed as delivered by a merged task, which the event records", async () => {
+  const L = await setup("delivered-by");
+  await L.newItem("One", ["src/**"], "owner");
+  await L.newItem("Two", ["src/**"], "owner");
+  await refusal(L.abandon("t2", "owner", "", undefined, "t2"), "bad_delivered_by", /cannot be delivered by itself/);
+  await refusal(L.abandon("t2", "owner", "", undefined, "t1"), "not_delivered", /t1 is open, not merged/);
+  await refusal(L.abandon("t2", "owner", "", undefined, "t9"), "no_item", /t9/);
+  expect(await L.item("t2")).toMatchObject({ state: "open" });
+
+  await L.claim("t1", A);
+  await L.setFork("t1", "delivered-by--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["src/ledger.ts"]));
+  await L.submit("t1", A);
+  await L.accept("t1", "owner");
+  await L.merged("t1", "owner", "m1", true);
+
+  expect(await L.abandon("t2", "owner", "same change", undefined, "t1")).toMatchObject({ state: "abandoned" });
+  const closed = ((await L.events("t2")) as unknown as LedgerEvent[]).find((e) => e.kind === "item.abandoned");
+  expect(closed?.data).toEqual({ note: "same change", deliveredBy: "t1" });
+});
+
+it("events page back from a sequence number, so every one can be read", async () => {
+  const L = await setup("event-pages");
+  for (let i = 0; i < 5; i++) await L.newItem(`Task ${i}`, ["src/**"], "owner");
+  const seqs = async (limit: number, before?: number) => ((await L.events(undefined, limit, before)) as unknown as LedgerEvent[]).map((e) => e.seq);
+  const all = await seqs(1000);
+  expect(all.length).toBeGreaterThanOrEqual(5);
+  const first = await seqs(2);
+  expect(first).toEqual(all.slice(0, 2));
+  expect(await seqs(2, first[1])).toEqual(all.slice(2, 4));
+  expect(await seqs(2, all[all.length - 1])).toEqual([]);
+});
+
 it("the owners view reports live items without titles, scopes or paths", async () => {
   const L = await setup("owners-view");
   await L.newItem("A title with detail in it", ["src/**"], "owner");
@@ -370,13 +404,15 @@ it("push events read the authoritative branch head and ignore duplicate or unrel
   await index.registerProject({name:'events-project',repo:'events-project',policy,createdAt:new Date().toISOString()});
   // The fork's history as the consumer reads it: H2 on top of H0, the base.
   // The first event reads the head and then the history that holds the
-  // recorded head; the duplicate reads the head alone, since it has not moved.
+  // recorded head, then the base's line, where the pushed commits whose Agent
+  // lines it reads end (t215); the duplicate reads the head alone, since it
+  // has not moved.
   let reads=0,acks=0,retries=0;
   const artifacts={get:async()=>({info:async()=>({defaultBranch:'main'}),log:async()=>{reads++;return[{hash:H2,parents:[H0]},{hash:H0,parents:[]}]},[Symbol.dispose](){}})} as unknown as Artifacts;
   const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'events-project--t1'},payload:{ref:'refs/heads/main',after:H1}};
   const send=async(body:unknown)=>worker.queue({messages:[{body,ack(){acks++},retry(){retries++}}]} as unknown as MessageBatch<unknown>,{...env,ARTIFACTS:artifacts});
   await send(notice);await send(notice);await send({...notice,payload:{...notice.payload,ref:'refs/heads/other'}});
-  expect((await L.item('t1')).head).toBe(H2);expect(acks).toBe(3);expect(retries).toBe(0);expect(reads).toBe(3);
+  expect((await L.item('t1')).head).toBe(H2);expect(acks).toBe(3);expect(retries).toBe(0);expect(reads).toBe(4);
   expect(kinds(await L.events('t1')).filter(k=>k==='push.observed')).toHaveLength(1);
 });
 
@@ -416,7 +452,9 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   expect(await L.waiting()).toEqual([]);
   const events = (await L.events(item.id)) as unknown as LedgerEvent[];
   expect(events.find((e) => e.kind === "item.claimed")?.data).toEqual({ runner: "home:studio" });
-  await refusal(L.dispatch(item.id, "owner", {}), "not_open", /owned by opencode/);
+  // A refused dispatch leaves the holder in place.
+  await refusal(L.dispatch(item.id, "owner", { to: "mars" }), "bad_dispatch", /send to cloud, home or any/);
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash" });
 
   // A runner that gives up releases the task, and it waits in the queue again.
   await L.release(item.id, "opencode/glm-5.3-flash", "out of time");
@@ -429,6 +467,51 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   const { item: byHand } = await L.claim(item.id, A);
   expect(byHand.owner).toBe(A);
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.dispatched", "item.undispatched", "item.released"]));
+});
+
+it("the owner can dispatch a held task, which releases its holder and queues it for rework", async () => {
+  const L = await setup("dispatch-held");
+  const item = await L.newItem("Rework me", ["docs/**"], "owner");
+  await L.claim(item.id, A);
+  await L.setFork(item.id, "dispatch-held--t1", H0, A);
+  await L.recordPush(item.id, A, H1, null);
+  await L.submit(item.id, A);
+  await L.addReview(review(item.id, B, H1, false));
+  expect((await L.item(item.id)).state).toBe("submitted");
+  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the project owner dispatches/);
+  const queued = await L.dispatch(item.id, "owner", { to: "home", note: "address the review" });
+  expect(queued).toMatchObject({ state: "open", owner: null, head: H1, dispatch: { to: "home", note: "address the review" } });
+  expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
+  expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.released", "item.dispatched"]));
+  // A runner claims it again and finds the earlier commits.
+  const { item: again, needsFork } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  expect(again).toMatchObject({ state: "claimed", head: H1 });
+  expect(needsFork).toBe(false);
+});
+
+it("a merge-main dispatch sends a conflicted landing back to its builder, and needs a workspace to merge into", async () => {
+  const L = await setup("dispatch-merge-main");
+  const M = "5".repeat(40);
+  // No workspace yet: nothing for a builder to merge main into.
+  const bare = await L.newItem("Never built", ["docs/**"], "owner");
+  await refusal(L.dispatch(bare.id, "owner", { job: "merge-main", head: M }), "no_fork", /has no workspace yet, so there is nothing for its builder to merge main into/);
+  await refusal(L.dispatch(bare.id, "owner", { job: "plan" }), "bad_dispatch", /only merge-main is dispatched by hand/);
+
+  // A submitted task whose landing conflicted: the holder is released and
+  // the merge-main job queued in its place, keeping the workspace.
+  const item = await L.newItem("Landed on a conflict", ["docs/**"], "owner");
+  await L.claim(item.id, A);
+  await L.setFork(item.id, "dispatch-merge-main--t2", H0, A);
+  await L.recordPush(item.id, A, H1, null);
+  await L.submit(item.id, A);
+  const queued = await L.dispatch(item.id, "owner", { job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" });
+  expect(queued).toMatchObject({ state: "open", owner: null, head: H1, dispatch: { job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" } });
+  expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
+  const events = (await L.events(item.id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "item.dispatched")?.data).toMatchObject({ job: "merge-main", head: M });
+  // A runner that offers the merge-main job claims it and finds the commits.
+  const { item: claimed } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  expect(claimed).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash", head: H1 });
 });
 
 it("the queue lists the oldest dispatch first and skips tasks that are not open", async () => {
@@ -552,6 +635,13 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(full, { ...base, title: "U" }, "later")).toEqual({ ...full, title: "U", revision: 2 });
   // An explicit null clears; reset starts from the defaults.
   expect(mergeProject(full, { ...base, title: null, approval: null }, "later")).toEqual({ ...full, revision: 2, title: undefined, policy: { ...full.policy, approval: undefined } } as never);
+  // The review bar is set, kept by an init that does not name it, and cleared by null.
+  const barred = mergeProject(full, { ...base, reviewBar: "Block only for data loss." }, "later");
+  expect(barred.policy.reviewBar).toBe("Block only for data loss.");
+  expect(mergeProject(barred, { ...base, title: "V" }, "later").policy.reviewBar).toBe("Block only for data loss.");
+  expect(mergeProject(barred, { ...base, reviewBar: null }, "later").policy).not.toHaveProperty("reviewBar");
+  expect(full.policy).not.toHaveProperty("reviewBar");
+  expect(mergeProject(barred, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewBar");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
   expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], eligible: [], refuseOverlap: false, sandboxOnly: false });
@@ -824,7 +914,7 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.addReview(review("t1", "owner", H1, true));
   expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
   await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
-  await L.addReview(review("t1", B, H1, true));
+  await L.addReview(review("t1", B, H1, true), undefined, true);
   for (let i = 0; i < 2; i++) {
     await L.accept("t1", "owner", H1);
     expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(changed.protected);
@@ -920,4 +1010,24 @@ it("the framing is stored with the item, carried by its brief, and edited only b
 
   await L.abandon(item.id, "owner", "done elsewhere");
   await refusal(L.editItem(item.id, "owner", { nextGate: "x" }), "closed", /its fields stay as they were/);
+});
+
+it("a task sent back for rework gets the rejecting review's findings in its job brief", async () => {
+  const L = await setup("dispatch-held-brief");
+  const item = await L.newItem("Rework me", ["docs/**"], "owner");
+  await L.claim(item.id, A);
+  await L.setFork(item.id, "dispatch-held-brief--t1", H0, A);
+  await L.recordPush(item.id, A, H1, null);
+  await L.submit(item.id, A);
+  await L.addReview({ ...review(item.id, B, H1, false, "the guard is missing"), findings: [
+    { file: "docs/a.md", line: 7, severity: "blocking", text: "guard the empty case" },
+    { file: "docs/b.md", line: null, severity: "follow-up", text: "rename the heading" },
+  ] });
+  await L.dispatch(item.id, "owner", { to: "home", note: "address the review" });
+  await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  const brief = await L.jobBrief(item.id, "opencode/glm-5.3-flash");
+  expect(brief.job).toBe("rework");
+  for (const text of [B, "the guard is missing", "docs/a.md:7 guard the empty case", "docs/b.md rename the heading", "Blocking findings", "Follow-ups"]) expect(brief.text).toContain(text);
+  // Only the holder reads it.
+  await refusal(L.jobBrief(item.id, A), "not_a_plan", /writes its own brief/);
 });

@@ -61,11 +61,20 @@ test("splitLines ignores one trailing newline", () => {
   assert.deepEqual(splitLines(""), []);
 });
 
+const line = (...hashes: string[]) => hashes.map((hash) => ({ hash }));
+
 test("the merge base is the newest workspace commit the baseline has", () => {
-  assert.equal(mergeBase(["w3", "w2", "b2", "b1"], ["b3", "b2", "b1"]), "b2");
+  assert.equal(mergeBase(line("w3", "w2", "b2", "b1"), ["b3", "b2", "b1"]), "b2");
   // After `atelier update` the workspace sits on top of the newer baseline.
-  assert.equal(mergeBase(["w3", "b3", "b2", "b1"], ["b3", "b2", "b1"]), "b3");
-  assert.equal(mergeBase(["w1"], ["b1"]), null);
+  assert.equal(mergeBase(line("w3", "b3", "b2", "b1"), ["b3", "b2", "b1"]), "b3");
+  assert.equal(mergeBase(line("w1"), ["b1"]), null);
+});
+
+// t230: a workspace that merged main holds main's newer commit as a merge's
+// second parent; its first-parent line still runs back to the fork point b1.
+test("the merge base of a workspace that merged main is the main commit it merged, not its fork point", () => {
+  const merged = [{ hash: "w2", parents: ["m"] }, { hash: "m", parents: ["w1", "b3"] }, { hash: "w1", parents: ["b1"] }, { hash: "b1", parents: [] }];
+  assert.equal(mergeBase(merged, ["b3", "b2", "b1"]), "b3");
 });
 
 // A tiny content-addressed store standing in for an Artifacts repo.
@@ -289,7 +298,7 @@ test("a merge that makes an older main commit the fork point cannot hide a rever
   // What the evidence route records, by the same measure.
   assert.deepEqual(await measureWorkspace(A, "main", "fork"), { head: "M", main: "new", changedPaths: ["AGENTS.md", "a.ts"] });
   // The first-parent fork point is the one the agent built, and lists only a.ts.
-  const base = mergeBase((await fork.log({ limit: 500 })).map((c) => c.hash), (await main.log({ limit: 1000 })).map((c) => c.hash));
+  const base = mergeBase(await fork.log({ limit: 500 }), (await main.log({ limit: 1000 })).map((c) => c.hash));
   assert.equal(base, "old");
   assert.deepEqual(await changedPaths(repoReader(fork), "old", "M"), ["a.ts"]);
 });
