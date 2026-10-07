@@ -67,6 +67,9 @@ export interface TickInput {
   deadline?: string | null;         // an ISO timestamp; the plan blocks once now is past it
   budget?: Budget | null;           // the spend budget; the plan blocks once used reaches cap
   reviewers?: ReadonlyMap<string, readonly string[]>;  // by part key, the actors that reviewed it (partReviewers)
+  // Part keys that go first: while one of them is not integrated, merged or
+  // abandoned, no other part is dispatched (parts already live go on).
+  holds?: readonly string[];
   now: string;                      // an ISO timestamp; the tick's moment
 }
 
@@ -227,6 +230,20 @@ export function integrationFailures(events: readonly LedgerEvent[]): Map<string,
   return out;
 }
 
+// The parts whose latest integration failure since their last finished
+// attempt was a merge conflict with the plan's branch: their rework starts
+// by merging the plan's branch into the workspace. A later submission,
+// acceptance or merge, or a failure of another kind, ends it.
+export function conflictedParts(events: readonly LedgerEvent[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (e.itemId === null) continue;
+    if (e.kind === "integration.failed" && e.data.kind === "conflict") out.add(e.itemId);
+    else if (e.kind === "integration.failed" || e.kind === "item.submitted" || e.kind === "item.accepted" || e.kind === "item.merged") out.delete(e.itemId);
+  }
+  return out;
+}
+
 // How many times each part has been attempted and by whom, from the event log.
 export function partAttempts(events: readonly LedgerEvent[]): Map<string, Attempt[]> {
   return new Map([...histories(events)].map(([key, h]) => [key, h.attempts]));
@@ -305,9 +322,11 @@ export function planActions(input: TickInput): TickResult {
     return state === "open" && (history.get(p.key)?.waiting ?? false);
   }).length;
 
+  const holding = new Set((input.holds ?? []).filter((key) => states.has(key) && !settled(states.get(key))));
   const dispatch: DispatchAction[] = [];
   for (const part of input.plan.parts) {
     if (live >= maxParallel) break;
+    if (holding.size && !holding.has(part.key)) continue; // a part that goes first is not settled
     if (states.get(part.key) !== "open") continue;
     if (history.get(part.key)?.waiting) continue; // already dispatched and waiting
     if (!part.dependsOn.every((dep) => settled(states.get(dep)))) continue; // dependencies not landed

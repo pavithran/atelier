@@ -6,6 +6,7 @@
 // `node --test` as phase.ts's are.
 
 import type { LedgerEvent } from "../ledger.ts";
+import { liveOffers, offering, type SeenOffer } from "../dispatch/rules.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { route } from "../models/routing.ts";
@@ -16,7 +17,7 @@ import {
 } from "../rules.ts";
 import type { Choice, PartRoute } from "./route.ts";
 import { paidPerToken, profileFor, recordFor } from "./route.ts";
-import { PLAN_LIMITS } from "./schema.ts";
+import { PLAN_LIMITS, type Plan, type PlanPart } from "./schema.ts";
 
 // The actor the Ledger names when it acts for an approved plan: creating
 // its parts, dispatching them, blocking and completing the plan.
@@ -93,6 +94,154 @@ export interface PlanRecord {
   // merge commit of its latest recorded integration or refresh, or null when
   // none is recorded (the branch then sits at the commit the plan forked from).
   integrationHead?: string | null;
+  // The main head the branch last took: the one its latest recorded refresh
+  // merged in, or found already held. Absent until a refresh is recorded;
+  // the branch then holds main as it stood when the plan forked (the plan
+  // item's base).
+  mainTaken?: string | null;
+  // The plan's latest refresh, dispatched, recorded or failed.
+  refresh?: PlanRefresh | null;
+  // Parts the Ledger added after approval, in the order added: a merge-main
+  // part for each main head whose refresh conflicted, or that the owner
+  // asked to resolve. They are kept here, apart from the approved document,
+  // so the approved hash still names exactly what the owner approved.
+  // Absent when none was added.
+  added?: AddedPart[];
+}
+
+// A part the Ledger added to an approved plan (docs/orchestrator.md,
+// section 5): its spec, the item made for it, its routing, computed when it
+// was added from the pool fixed at approval, the main head it merges, who
+// added it (the orchestrator after a conflicted refresh, or the owner with
+// plan refresh --resolve), when and why.
+export interface AddedPart {
+  id: string;
+  part: PlanPart;
+  route: PartRoute;
+  mainHead: string;
+  by: string;
+  at: string;
+  reason: string;
+}
+
+// One refresh of a plan's branch (docs/orchestrator.md, section 5): the
+// integrator merges main's head into the branch, so later parts fork from
+// it and later integrations build on it. `by` is the owner, who ran
+// atelier plan refresh, or the orchestrator, whose tick dispatched it.
+export interface PlanRefresh {
+  mainHead: string;                 // the main head the refresh merges
+  state: "dispatched" | "refreshed" | "failed";
+  by: string;
+  at: string;                       // when it was dispatched
+  endedAt?: string;                 // when it was recorded or failed
+  mergeCommit?: string | null;      // the merge on the branch; null when the branch already held main's head
+  reason?: string;                  // why it failed
+  kind?: string | null;             // a failure's kind, conflict or checks, or null when the report names none
+}
+
+// The main head a plan's branch holds: its latest recorded refresh's, or
+// else the commit the plan forked from.
+export function mainTakenOf(record: PlanRecord, plan: Pick<Item, "base">): string | null {
+  return record.mainTaken ?? plan.base ?? null;
+}
+
+// What the tick does about main before it dispatches a part:
+//   wait: a refresh is in flight, or one is wanted and the plan item is busy
+//     with an integration, so no part is dispatched until it is done;
+//   dispatch: main has moved past what the branch holds, and no refresh has
+//     been tried for main's head, so the refresh is dispatched first;
+//   none: the branch holds main's head, main's head is not known, or a
+//     refresh for this head was already tried. A failed refresh is not tried
+//     again for the same head; the owner runs atelier plan refresh for that.
+// Any move of main is reason enough, with or without a predicted conflict: a
+// part may need a file main gained (t208 needed docs/using-atelier.md), and
+// a refresh on every move also takes in every move that would conflict, so
+// no separate conflict preview is needed to decide.
+export function refreshDecision(input: { main: string | null; taken: string | null; last: PlanRefresh | null; busy: boolean }): "none" | "wait" | "dispatch" {
+  const { main, taken, last, busy } = input;
+  if (last?.state === "dispatched") return "wait";
+  if (!main || main === taken) return "none";
+  if (last && last.mainHead === main) return "none";
+  return busy ? "wait" : "dispatch";
+}
+
+// ── merge-main parts ─────────────────────────────────────────────────────
+// A refresh that conflicts leaves main where the plan's branch cannot take it
+// without a model resolving the conflict, and the plan's own merge to main
+// would meet the same conflict. The Ledger adds a merge-main part for that
+// main head: its builder's workspace forks from the plan's branch, the runner
+// merges main into it and leaves the conflicts for the builder to resolve,
+// and its integration puts main on the plan's branch.
+
+export const MERGE_MAIN = "merge-main-";
+export const mergeMainKey = (mainHead: string) => `${MERGE_MAIN}${mainHead.slice(0, 8)}`;
+
+// The paths a refresh's failure reason names as conflicting, from git's
+// CONFLICT lines, in order, each once; empty when it names none. A path may
+// hold spaces, and the reason may carry git's lines joined by newlines or by
+// single spaces: "Merge conflict in PATH" runs to the end of its line or to
+// the next line git would print, and "PATH deleted in ..." (and added,
+// renamed or modified) runs to that phrase.
+export function conflictPaths(reason: string): string[] {
+  const out: string[] = [];
+  for (const m of reason.matchAll(/CONFLICT \([^)]*\): (?:Merge conflict in (.+?)(?=\n| Auto-merging | CONFLICT \(| Automatic merge failed|$)|(.+?) (?:deleted|added|renamed|modified) in )/g)) {
+    const path = (m[1] ?? m[2] ?? "").trim().replace(/[.,;:]+$/, "");
+    if (path && !out.includes(path)) out.push(path);
+  }
+  return out;
+}
+
+// The scope of a merge-main part: the conflicting paths when the reason
+// names them and they fit a part's scope, else the plan's scope, else every
+// path.
+export function mergeMainScope(reason: string, planScope: readonly string[]): string[] {
+  const paths = conflictPaths(reason);
+  if (paths.length && paths.length <= PLAN_LIMITS.scope.count) return paths;
+  if (planScope.length) return planScope.slice(0, PLAN_LIMITS.scope.count);
+  return ["**"];
+}
+
+// The merge-main part's spec. It depends on nothing and provides nothing;
+// keeping two sides' behaviour while changing neither is refactor work.
+export function mergeMainPart(mainHead: string, scope: readonly string[]): PlanPart {
+  const short = mainHead.slice(0, 8);
+  return {
+    key: mergeMainKey(mainHead),
+    title: `Merge main at ${short} into the plan's branch`,
+    kind: "build", taskKind: "refactor", scope: [...scope], dependsOn: [], provides: [], uses: [],
+    brief: `Main at ${mainHead} conflicts with the plan's branch. The runner merges it into this part's workspace, which forks from the plan's branch, and leaves the conflicts in place. Resolve each so that both sides' behaviour and both sides' claims hold, then commit the merge.`,
+    acceptance: [
+      `The head is a merge that has main at ${short} as a parent, or descends from one.`,
+      "No conflict markers remain in any file.",
+      "Each conflict keeps the behaviour of both sides; in prose, the meaning of both sides is merged, not one side picked.",
+      "The project's required checks pass.",
+    ],
+    tests: [], size: "M",
+  };
+}
+
+// The approved document with the parts the Ledger added after it, which
+// the tick, the briefs and the reviews read; the approved hash is the
+// document's alone.
+export function planWithAdded(plan: Plan, record: Pick<PlanRecord, "added">): Plan {
+  const added = record.added ?? [];
+  return added.length ? { ...plan, parts: [...plan.parts, ...added.map((a) => a.part)] } : plan;
+}
+
+// The routing fixed at approval with each added part's.
+export function routesOf(record: PlanRecord): PartRoute[] {
+  return [...(record.approval?.routes ?? []), ...(record.added ?? []).map((a) => a.route)];
+}
+
+// The part dispatches the plan may make: the approval's, and as many again
+// for each added part as for each approved one.
+export function maxJobsOf(record: PlanRecord): number {
+  return (record.approval?.limits.maxJobs ?? 0) + RUN_LIMITS.jobsPerPart * (record.added ?? []).length;
+}
+
+// The added part with this key, or null.
+export function addedPart(record: Pick<PlanRecord, "added">, key: string | null | undefined): AddedPart | null {
+  return (record.added ?? []).find((a) => a.part.key === key) ?? null;
 }
 
 // A goal as the plan stores it: text in NFC with controls and invisible
@@ -145,10 +294,13 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // work that may plan. A refused model is passed over, as routing passes it
 // over; so is a model paid per token, because a plan is not yet approved and
 // paid models are used only when the owner allows them (the owner may still
-// name one); so is one the project's policy does not let plan.
-export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES): PlannerPick {
+// name one); so is one the project's policy does not let plan; and so is one
+// no live runner offers, since the plan job would wait for a runner that
+// never asks for it.
+export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[]): PlannerPick {
   const entries = new Map(pool.map((entry) => [actorOf(entry), entry]));
   const ranked = route({ kind: "research" }, pool.map((entry) => profileFor(entry, profiles)), recordFor(pool, events), { localOnly: false, allowedWhere: "any" });
+  const offered = offers ? offering(liveOffers(offers)) : null;
   const passedOver: Choice[] = [];
   for (const [i, candidate] of ranked.entries()) {
     const entry = entries.get(candidate.actor!)!;
@@ -156,6 +308,7 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     const refusals: string[] = [];
     if (entry.status?.state === "refused") refusals.push(`status refused, reported by ${entry.status.by} at ${entry.status.at}`);
     if (paidPerToken(entry)) refusals.push(`paid per token (${entry.provider}); name it with --planner to use it`);
+    if (offered && !offered.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor}, so no runner could claim the plan job`);
     try { assertEligible(actor, policy, DEFAULT_OWNER, "planner"); } catch (err) {
       const rule = parseRuleError(err);
       if (!rule) throw err;

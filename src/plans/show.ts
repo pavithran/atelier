@@ -6,13 +6,25 @@
 // line, so it cannot pose as a line of Atelier's own.
 
 import type { Brief, Verdict } from "../brief.ts";
-import type { Dispatch } from "../dispatch/rules.ts";
+import { holdText, liveOffers, unoffered, type CoreHold, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 import type { Item, ItemState } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
 import type { PartRoute } from "./route.ts";
 import type { Plan } from "./schema.ts";
-import type { PlanLimits } from "./state.ts";
+import type { PlanLimits, PlanRefresh } from "./state.ts";
+
+// A part's live review request (docs/orchestrator.md, section 4), as planView
+// reads it from the ledger's requests: who was asked to review, at what head,
+// and whether a runner has claimed the request.
+export interface PlanPartReview {
+  reviewer: string;              // harness/model, the dispatch's agent and model
+  head: string;                  // the head the review was asked of
+  state: "open" | "claimed";
+  claimedBy: string | null;
+  claimedAt: string | null;      // ISO time the request was claimed
+  topTier?: boolean;             // the gate's request asked of a tier model, whose review serves as the tier review too
+}
 
 export interface PlanPartView {
   id: string;
@@ -25,12 +37,18 @@ export interface PlanPartView {
   scope: string[];
   dependsOn: { key: string; id: string | null }[];
   dispatch: Dispatch | null;
+  held?: CoreHold | null;         // while queued: the live item outside the plan it waits on (coreHold)
   route: PartRoute | null;        // the routing fixed at approval, with the owner's reroute
   attempts: Attempt[];            // counted from the owner's latest reroute or retry
   gate: { ready: boolean; blockers: string[] } | null;  // while submitted or accepted
+  review?: PlanPartReview | null; // the part's live review request, if any
+  tierReview?: PlanPartReview | null; // the part's live tier review request (src/review/tier.ts), if any
   integration: { head: string; mergeCommit: string } | null;  // recorded when the part became integrated
   integrationFailure?: IntegrationFailure | null;  // the part's latest failed integration, if any
   blocked?: { reason: string; by: string } | null;  // while blocked: why, and who blocked it
+  // Set for a part the Ledger added after approval, outside the approved
+  // document: the main head it merges, who added it and when.
+  added?: { mainHead: string; by: string; at: string } | null;
 }
 
 export interface PlanView {
@@ -48,8 +66,13 @@ export interface PlanView {
   parts: PlanPartView[];
   preview: PartRoute[] | null;    // before approval: the routing an approval would fix now
   integration: { integrationHead: string | null };  // the plan branch's integration head; null when none is recorded
+  // How the branch stands against main: the main head it last took (from a
+  // refresh, or the commit the plan forked from), main's head now as read or
+  // last observed, the latest refresh, and whether the integrator holds it.
+  refresh?: { taken: string | null; main: string | null; last: PlanRefresh | null; running: boolean };
   harnessFailure: string | null;  // the release note when the harness failed, shown while the plan waits for the planner
   pastDeadline: boolean;          // an approved plan past its deadline, whose block only stop can lift
+  offers?: SeenOffer[] | null;    // the runner offers the Worker read for this view, to judge a routed review against; null when none were read
 }
 
 const flat = (text: string) => text.replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim();
@@ -82,6 +105,13 @@ function ownerStep(p: PlanPartView, flag: string): string | null {
   return `not ready: ${p.gate.blockers.map(flat).join("; ")}`;
 }
 
+// A queued part the project's core files hold: the live item it waits on,
+// and that the queue offers it once that item merges or is abandoned.
+function heldLine(p: PlanPartView): string | null {
+  if (!p.held || !p.dispatch || p.state !== "open") return null;
+  return `held in the queue: ${holdText(p.held)}; offered once ${p.held.id} merges or is abandoned`;
+}
+
 function attemptsLine(attempts: Attempt[]): string | null {
   if (!attempts.length) return null;
   const words = { "give-up": "released with no commit", failed: "released after a failed finish", finished: "finished" } as const;
@@ -95,6 +125,66 @@ function integrationFailureLine(p: PlanPartView): string | null {
   if (!f || p.state === "integrated" || p.state === "merged" || p.state === "abandoned") return null;
   const what = f.kind === "conflict" ? "a merge conflict" : f.kind === "checks" ? "failing checks" : f.kind ? `kind ${flat(f.kind)}` : "kind not recorded";
   return `integration failed at ${when(f.at)} (${what}; ${chargesBuilder(f.kind) ? "charged to the builder" : "not charged to the builder"}): ${cut(flat(f.reason) || "no reason given", 500)}`;
+}
+
+// What a part's live review request says (docs/orchestrator.md, section 4):
+// who was asked, and whether the request stands open or a runner claimed it.
+// An open request the runner offers were read for is judged against them, so
+// one routed to a model no live runner offers says it can never be claimed —
+// with what would change that — instead of reading as merely not claimed
+// yet, which is how it waited unnoticed for hours (t197's part t210).
+function reviewLines(p: PlanPartView, v: PlanView, flag: string, now = new Date()): string[] {
+  const r = p.review;
+  if (!r) return [];
+  const head = r.head.slice(0, 8);
+  // The gate's review asked of a tier model gives the tier review too.
+  const what = r.topTier ? "gate review, top tier," : "review";
+  if (r.state === "claimed") return [`${what} of ${head} asked of ${r.reviewer}, claimed at ${r.claimedAt ? when(r.claimedAt) : "a time not recorded"}`];
+  const slash = r.reviewer.indexOf("/");
+  const asked = v.offers
+    ? unoffered(
+        { to: "home", agent: r.reviewer.slice(0, slash), model: r.reviewer.slice(slash + 1), by: "atelier/orchestrator", at: "", note: "", job: "review" },
+        v.offers, now,
+      )
+    : null;
+  return asked
+    ? [
+        `${what} of ${head} asked of ${r.reviewer}; the request is open, and ${asked}`,
+        `it will not be claimed until a runner that offers ${r.reviewer} for the review job asks for work; name another reviewer: atelier plan reroute ${p.id} --to H/M ${flag}`,
+      ]
+    : [`${what} of ${head} asked of ${r.reviewer}; the request is open`];
+}
+
+// A part's live tier review request (src/review/tier.ts): a second opinion
+// beside the gate's review, which the part's integration never waits for.
+function tierLines(p: PlanPartView): string[] {
+  const r = p.tierReview;
+  if (!r) return [];
+  const head = r.head.slice(0, 8);
+  return [r.state === "claimed"
+    ? `tier review of ${head} asked of ${r.reviewer}, claimed at ${r.claimedAt ? when(r.claimedAt) : "a time not recorded"}; integration does not wait for it`
+    : `tier review of ${head} asked of ${r.reviewer}; the request is open, and integration does not wait for it`];
+}
+
+// Routing fell back to the whole pool because no runner is live, though
+// runners have asked before (routable in src/ledger.ts): the offers the view
+// was read with say when one last asked, and the owner reading a pool-wide
+// routing is warned it is a fallback rather than taking it for what the
+// runners offer now. Null when offers were not read, a runner is live, or
+// the plan is approved and its routing is already fixed.
+function fallbackLine(v: PlanView, now: Date): string | null {
+  if (v.approval || !v.offers?.length || liveOffers(v.offers, now).length) return null;
+  const last = v.offers.map((o) => o.at).sort().at(-1) ?? "";
+  return `No runner is live now; the last to ask for work did so at ${when(last)}, so routing falls back to the whole pool, and a dispatch may wait until a runner asks again.`;
+}
+
+// A part the Ledger added: for which main head, by whom, and that it goes
+// before every other part.
+function addedLine(p: PlanPartView): string | null {
+  const a = p.added;
+  if (!a) return null;
+  const who = a.by === "atelier/orchestrator" ? "after the refresh conflicted" : `at ${a.by}'s request`;
+  return `added by Atelier for main at ${a.mainHead.slice(0, 8)}, ${who}, at ${when(a.at)}; not in the approved plan. No other part is dispatched until it is integrated`;
 }
 
 function routeLines(route: PartRoute | undefined | null, preview: boolean): string[] {
@@ -115,7 +205,7 @@ function routeLines(route: PartRoute | undefined | null, preview: boolean): stri
 
 // What `atelier plan show` prints: the phase and record, each part, and the
 // commands the owner's next decisions take.
-export function planText(v: PlanView, project: string): string {
+export function planText(v: PlanView, project: string, now = new Date()): string {
   const id = v.item.id, flag = `--project ${project}`;
   const lines = [`${id}  plan  ${flat(v.item.title)}`, `Goal: ${flat(v.goal)}`, `Phase: ${v.phase}.`];
   if (v.blocked) lines.push(`Blocked: ${flat(v.blocked)}.`);
@@ -137,7 +227,7 @@ export function planText(v: PlanView, project: string): string {
     for (const p of v.parts) {
       lines.push(`  ${p.id}  ${p.key}  ${partState(p, v.parts)}  ${flat(p.title)}`);
       const deps = p.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`);
-      const detail = [`scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
+      const detail = [addedLine(p), `scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), heldLine(p), ...reviewLines(p, v, flag, now), ...tierLines(p), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
       for (const line of detail) if (line) lines.push(`      ${line}`);
     }
   } else if (v.plan) {
@@ -154,12 +244,50 @@ export function planText(v: PlanView, project: string): string {
     }
     if (v.preview) lines.push("", "The routing shown is what an approval would fix now, without paid models; it is computed again when you approve.");
   }
+  // While the plan is not approved, routing still decides from the offers,
+  // so a fallback to the pool is the owner's to know before approving.
+  const fallen = fallbackLine(v, now);
+  if (fallen) lines.push("", fallen);
   if (v.approval) {
     const head = v.integration.integrationHead;
     lines.push("", head ? `Integration branch at ${head.slice(0, 8)}.` : "No part is integrated yet; the integration branch still sits at the commit the plan forked from.");
+    lines.push(...refreshLines(v, flag));
   }
   lines.push("", ...nextSteps(v, flag));
   return lines.join("\n");
+}
+
+// How far behind main the plan's branch is, and its latest refresh: one in
+// flight, which parts wait for, or one that failed, with why and the command
+// that runs it again. A refresh is the plan's own work and charges no part.
+function refreshLines(v: PlanView, flag: string): string[] {
+  const r = v.refresh;
+  if (!r || v.item.state === "merged" || v.item.state === "abandoned") return [];
+  const s = (hash: string) => hash.slice(0, 8);
+  const lines: string[] = [];
+  const again = `atelier plan refresh ${v.item.id} ${flag}`;
+  const last = r.last;
+  const inFlight = last?.state === "dispatched";
+  if (!r.taken) lines.push(r.main ? `Main is at ${s(r.main)}; the commit the branch forked from is not recorded.` : "");
+  else if (!r.main) lines.push(`The branch last took main at ${s(r.taken)}; main's head is not known yet.`);
+  else if (r.main === r.taken) lines.push(`The branch holds main's head ${s(r.main)}.`);
+  else {
+    const triedHere = last && last.mainHead === r.main;
+    lines.push(`The branch last took main at ${s(r.taken)}; main is now at ${s(r.main)}.${inFlight || triedHere ? "" : ` Take it now: ${again}`}`);
+  }
+  if (last && inFlight) {
+    lines.push(`A refresh from main at ${s(last.mainHead)} is ${r.running ? "being merged by atelier/integrator" : "queued for atelier/integrator"}, asked by ${last.by} at ${when(last.at)}; parts wait for it before they are dispatched.`);
+  } else if (last?.state === "failed") {
+    const what = last.kind === "conflict" ? "a merge conflict" : last.kind === "checks" ? "failing checks" : last.kind ? `kind ${flat(last.kind)}` : "kind not recorded";
+    const resolving = v.parts.find((p) => p.added?.mainHead === last.mainHead);
+    const next = resolving
+      ? `Part ${resolving.id} (${resolving.key}) resolves it and goes before every other part.`
+      : `Parts are dispatched without it. Run it again: ${again}, or have a part resolve it: ${again.replace(`refresh ${v.item.id}`, `refresh ${v.item.id} --resolve`)}`;
+    lines.push(`The refresh from main at ${s(last.mainHead)} failed at ${when(last.endedAt ?? last.at)} (${what}; charged to no part): ${cut(flat(last.reason ?? "") || "no reason given", 500)}. It is not tried again for that head. ${next}`);
+  } else if (last?.state === "refreshed") {
+    lines.push(`Refreshed from main at ${s(last.mainHead)} at ${when(last.endedAt ?? last.at)}${last.mergeCommit ? `, as ${s(last.mergeCommit)}` : "; the branch already held it"}.`);
+  }
+  return lines.filter(Boolean);
 }
 
 function nextSteps(v: PlanView, flag: string): string[] {

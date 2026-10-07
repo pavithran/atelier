@@ -24,6 +24,11 @@ export const OUTPUT_MAX = 4000;
 // Text only the owner writes and every runner and page reads back: the note
 // on a dispatch and the approval recorded with a policy.
 export const OWNER_TEXT_MAX = 500;
+// The project's review bar, which every review brief states: a paragraph,
+// longer than a note on a dispatch, short beside the brief it sits in.
+export const REVIEW_BAR_MAX = 1000;
+// The most models a project's review tier lists (`atelier init --review-tier`).
+export const REVIEW_TIER_MAX = 10;
 
 export function assertLength(text: string, max: number, what: string): void {
   if (text.length > max) {
