@@ -1097,7 +1097,7 @@ it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing foc
  expect(cached).toContain('Shown work');expect(cached).not.toContain('Later work');
  const plain=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x'} as typeof env);
  expect(await plain.text()).not.toContain('class="login-backdrop"');
- const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',headers:{origin:'https://atelier.test'},body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
  expect(wrong.status).toBe(401);
   expect(await wrong.text()).toContain('class="login-backdrop"');
 });
