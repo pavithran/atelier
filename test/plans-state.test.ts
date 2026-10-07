@@ -257,3 +257,13 @@ test("a merge-main dispatch goes only to a runner that offers the merge-main job
   assert.equal(assign(d, { runner: "home:old", kind: "home", agents, jobs: ["build", "plan"] }), null);
   assert.deepEqual(assign(d, { runner: "home:new", kind: "home", agents, jobs: ["build", "plan", "merge-main"] }), { agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" });
 });
+
+test("a dispatch naming a plan head to merge goes only to a runner that offers the merge-plan job", () => {
+  const d: Dispatch = { to: "home", agent: "codex", model: "gpt-6-astra", by: ORCHESTRATOR, at: AT, note: "", planHead: "2".repeat(40) };
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  assert.equal(assign(d, { runner: "home:old", kind: "home", agents, jobs: ["build", "plan", "merge-main"] }), null);
+  assert.deepEqual(assign(d, { runner: "home:new", kind: "home", agents, jobs: ["build", "plan", "merge-main", "merge-plan"] }), { agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" });
+  const both: Dispatch = { ...d, job: "merge-main", head: "1".repeat(40) };
+  assert.equal(assign(both, { runner: "home:mid", kind: "home", agents, jobs: ["build", "merge-main"] }), null);
+  assert.ok(assign(both, { runner: "home:new", kind: "home", agents, jobs: ["build", "merge-main", "merge-plan"] }));
+});

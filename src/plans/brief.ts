@@ -87,6 +87,7 @@ export interface JobBriefInput {
   findings?: ReviewFindings | null;            // rework after a rejection
   failure?: CheckFailure | null;               // rework after a failing check
   mergeMain?: { head: string } | null;         // a merge-main part: the main head the runner merges into the workspace
+  mergePlan?: { head: string } | null;         // a part whose integration conflicted: the plan branch's head the runner merges into the workspace
   limits?: Partial<JobBriefLimits> | null;
 }
 
@@ -120,6 +121,7 @@ interface Resolved {
   findings: { by: string; head: string; summary: string | null; findings: ResolvedFinding[] } | null;
   failure: { claim: string; head: string | null; where: "sandbox" | "runner" | null; output: string } | null;
   mergeMain?: { head: string };  // left out for any other part, so its hash is as before
+  mergePlan?: { head: string };  // left out unless the part's integration conflicted, so other briefs' hashes are as before
   limits: JobBriefLimits;
 }
 
@@ -229,6 +231,7 @@ function resolve(input: JobBriefInput): Resolved {
       : null,
     failure: failure ? { claim: failure.claim, head: failure.head ?? null, where: failure.where ?? null, output: failure.output } : null,
     mergeMain: input.mergeMain ? { head: input.mergeMain.head } : undefined,
+    mergePlan: input.mergePlan ? { head: input.mergePlan.head } : undefined,
     limits: { findings: limit(input.limits?.findings, JOB_BRIEF_LIMITS.findings), output: limit(input.limits?.output, JOB_BRIEF_LIMITS.output) },
   };
 }
@@ -284,6 +287,20 @@ function render(r: Resolved): string {
       "- Remove every conflict marker, and stage each resolved file with git add.",
       "- Run the checks, fix what the merge broke, then commit the merge.",
       "- Once it is committed, main's head is on this part's branch; its integration puts it on the plan's branch.",
+    );
+  }
+
+  const planMerge = r.mergePlan ?? null;
+  if (planMerge) {
+    section(
+      "## Merging the plan's branch",
+      "",
+      `The earlier attempt conflicted with the plan's branch when the orchestrator integrated it: other parts landed on the branch after this part's workspace forked from it. The runner has merged the plan's branch at ${short(planMerge.head)} (${planMerge.head}) into this workspace before you start. The conflicts remain in the files listed under "Conflicts in this workspace" at the end of this brief, with git's conflict markers in place and the merge in progress; \`git diff --name-only --diff-filter=U\` lists them too. When that section says the workspace already holds the plan's branch, an earlier attempt committed that merge: check that it kept both sides, and finish the part from there.`,
+      "",
+      "- Resolve each conflict keeping both sides' behaviour: what this part does and what the plan's branch does must both still hold. Where the conflict is prose, keep both sides' claims and merge their meaning; do not pick one side.",
+      "- Remove every conflict marker, and stage each resolved file with git add.",
+      "- Run the checks and fix what the merge broke.",
+      `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}. Any later fix is an ordinary commit with that same final line. Do not start the merge again, abort it, rebase or reset it.`,
     );
   }
 

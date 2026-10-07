@@ -22,7 +22,7 @@ import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelecti
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
-import { integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
+import { conflictedParts, integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
@@ -1840,6 +1840,7 @@ export class Ledger extends DurableObject<Env> {
         findings: rejection ? reviewFindings(rejection) : null,
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "" } : null,
         mergeMain: added ? { head: added.mainHead } : null,
+        mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
       }),
     };
   }
@@ -2285,11 +2286,14 @@ export class Ledger extends DurableObject<Env> {
   // by atelier/orchestrator, with the approval's hash and the tick's reason.
   // It is never a route.
   // A merge-main part's dispatch is its merge-main job, naming the main head
-  // the runner merges into the workspace before the builder starts.
-  private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null): void {
+  // the runner merges into the workspace before the builder starts. A part
+  // sent back after a conflict with the plan's branch names that branch's
+  // head as `planHead`, which the runner merges the same way.
+  private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null, planHead: string | null = null): void {
     const slash = to.indexOf("/");
     const d = makeDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, ORCHESTRATOR, at);
-    this.writeDispatch(id, mainHead ? { ...d, job: "merge-main", head: mainHead } : d, { approval: hash, reason });
+    const merging = mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d;
+    this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
 
   private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[] }, data: Record<string, unknown>): string {
@@ -2398,10 +2402,15 @@ export class Ledger extends DurableObject<Env> {
     }
     const waiting = waitingParts(events);
     const wanted = new Map(blocked ? [] : chosen.map((d) => [d.part, d]));
+    // A part whose integration conflicted with the plan's branch is
+    // dispatched with the branch's head as the Ledger records it, its latest
+    // integration or refresh merge, for the runner to merge before rework.
+    const conflicted = conflictedParts(byPartKey(all, parts));
+    const planHead = record.integrationHead ?? plan.base ?? null;
     for (const p of parts) {
       if (p.state !== "open" || p.owner) continue;
       const want = wanted.get(p.partKey!);
-      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at, addedPart(record, p.partKey)?.mainHead ?? null);
+      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at, addedPart(record, p.partKey)?.mainHead ?? null, conflicted.has(p.partKey!) ? planHead : null);
       else if (p.dispatch && !waiting.has(p.partKey!)) this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
       else if (p.dispatch && blocked) {
         this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
