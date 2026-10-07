@@ -1,0 +1,24 @@
+atelier atelier/t236 "A runner-served review cannot see the review bar or the owner's answers (2026-10-07): the brief asks for blocking or follow-up findings but never says what may block, and a later round does not show the owner's verdicts on earlier findings, so gemini-3.1-pro rejected t233 twice on a finding outside the bar that the owner had refuted with file and line (atelier finding). The review brief states the project's review bar (a project setting, atelier init --review-bar TEXT, defaulting to: block only for a correctness, security or data-loss defect the change introduces or fails to fix while claiming to; owner decisions are not defects), and from round 2 lists each earlier finding with the owner's verdict and note, asking the reviewer to repeat a refuted finding only with new evidence"
+accepted head 88accd925eed64a799ff119d21b78003f9c5a5cb
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T08:09:00.416Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T08:09:02.948Z
+REVIEW approve by antigravity/gemini-3.1-pro at 88accd925eed64a799ff119d21b78003f9c5a5cb, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T07:07:59.574Z pavi item.created
+2026-10-07T07:08:15.376Z claude-code/opus-5.5 item.claimed
+2026-10-07T07:08:20.217Z claude-code/opus-5.5 fork.created
+2026-10-07T08:07:06.131Z pavi land.lease
+2026-10-07T08:07:08.635Z pavi land.merge
+2026-10-07T08:07:15.557Z pavi land.regenerate
+2026-10-07T08:07:18.557Z claude-code/opus-5.5 push.observed
+2026-10-07T08:07:18.665Z pavi land.push
+2026-10-07T08:09:00.867Z claude-code/opus-5.5 evidence.observed
+2026-10-07T08:09:03.219Z claude-code/opus-5.5 evidence.observed
+2026-10-07T08:09:03.633Z pavi land.check
+2026-10-07T08:09:03.945Z claude-code/opus-5.5 item.submitted
+2026-10-07T08:09:04.144Z pavi land.submit
+2026-10-07T08:09:04.256Z pavi review.requested
+2026-10-07T08:09:29.104Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T08:13:35.201Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T08:13:37.956Z pavi land.review
+2026-10-07T08:13:38.455Z pavi item.accepted
+2026-10-07T08:13:38.538Z pavi land.accept
