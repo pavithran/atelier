@@ -5,7 +5,8 @@ import how from "../src/how.css";
 import layout from "../src/layout.css";
 import { escapeText, renderLogin, renderShowcase } from "../src/ui";
 import { HELP_FORMS, guideText } from "../src/usage.ts";
-import { LOOP, ORCHESTRATOR, RULES } from "../src/how-data.ts";
+import { LOOP, ORCHESTRATOR, RULES, USING_WELL, USING_WELL_DOC } from "../src/how-data.ts";
+import { REPO_URL } from "../src/ui";
 import { PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_LABEL, PLAN_FLOW_RETURNS } from "../src/diagrams.ts";
 
 // The public How it works page, driven through the Worker's own fetch handler.
@@ -157,8 +158,23 @@ it("lists every rule, and every contents link has its section", async () => {
   const { body } = await page();
   for (const rule of RULES) expect(body).toContain(`<h3>${escapeText(rule.title)}</h3>`);
   const links = [...body.matchAll(/<a href="#([a-z-]+)"/g)].map((m) => m[1]);
-  expect(links).toEqual(["terms", "where-it-runs", "the-loop", "rules", "the-orchestrator", "commands"]);
+  expect(links).toEqual(["terms", "where-it-runs", "the-loop", "rules", "the-orchestrator", "using-atelier-well", "commands"]);
   for (const id of links) expect(body).toContain(`<section id="${id}" class="how-section">`);
+});
+
+it("has a Using Atelier well section in the contents, linking to docs/using-atelier.md on GitHub, with each point of the data", async () => {
+  const { body } = await page();
+  expect(body).toContain('<a href="#using-atelier-well">Using Atelier well</a>');
+  const section = /<section id="using-atelier-well" class="how-section">[\s\S]*?<\/section>/.exec(body)?.[0] ?? "";
+  expect(section).not.toBe("");
+  expect(section).toContain("<h2>Using Atelier well</h2>");
+  expect(section).toContain(`<a href="${REPO_URL}/blob/main/${USING_WELL_DOC}">${USING_WELL_DOC}</a>`);
+  const items = section.match(/<li>/g) ?? [];
+  expect(items).toHaveLength(USING_WELL.length);
+  for (const { point } of USING_WELL) expect(section).toContain(escapeText(point).replace(/`([^`]+)`/g, "<code>$1</code>"));
+  // It sits between the orchestrator and the command reference.
+  expect(body.indexOf('id="the-orchestrator"')).toBeLessThan(body.indexOf('id="using-atelier-well"'));
+  expect(body.indexOf('id="using-atelier-well"')).toBeLessThan(body.indexOf('id="commands"'));
 });
 
 it("reads no project and no setting: the same bytes whatever the server holds", async () => {
