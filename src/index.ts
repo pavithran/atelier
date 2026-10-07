@@ -2170,6 +2170,11 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 
 // ── entry ──────────────────────────────────────────────────────────────────
 
+// The API's own top-level paths, as api() and the routes before it read them.
+// A caller without a token is refused on them (401); anything else under /api
+// answers 404 before auth is asked, as it does after it.
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+
 export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
@@ -2202,18 +2207,24 @@ export default {
   },
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    const pathname = url.pathname.endsWith("/") && url.pathname.length > 1 ? url.pathname.slice(0, -1) : url.pathname;
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
+      if (pathname === "/showcase" && (req.method === "GET" || req.method === "HEAD")) return await showcase(env, url);
       // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
-      if (url.pathname === "/live.js" && req.method === "GET") {
+      if (pathname === "/live.js" && (req.method === "GET" || req.method === "HEAD")) {
         return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });
       }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
-      if (url.pathname === "/how" && req.method === "GET") { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
-      if (url.pathname === "/login") {
+      if (pathname === "/how" && (req.method === "GET" || req.method === "HEAD")) { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
+      if (pathname === "/login") {
         if (req.method === "POST") {
+          // A cross-site form post carries another origin and is refused. A
+          // post without an Origin header did not come from a browser form,
+          // so the token alone judges it, as it always has.
+          const origin = req.headers.get("origin");
+          if (origin !== null && origin !== url.origin) return html("Cross-origin form refused.", 403);
           const token = String((await req.formData()).get("token") ?? "");
           const want = serverToken(env);
           if (!want || !sameString(token, want)) return await loginPage(env, "That token is not this server's.", 401);
@@ -2223,7 +2234,7 @@ export default {
       }
       // Sign out: a form in every signed-in page's rail. The Origin check is
       // the one every owner form makes, so another site cannot end a session.
-      if (url.pathname === "/logout" && req.method === "POST") {
+      if (pathname === "/logout" && req.method === "POST") {
         if (req.headers.get("origin") !== url.origin) return html("Cross-origin form refused.", 403);
         return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
@@ -2236,10 +2247,16 @@ export default {
         // and a session checks them before it signs in. atelier land
         // refuses on the level, saying to deploy, when the server's is
         // lower than the CLI's.
-        if (parts.length === 2 && parts[1] === "version" && req.method === "GET") {
+        if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
           return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
         }
-        if (how !== "api" && (typeof how !== "object" || !how)) return json({ error: "unauthorised" }, 401);
+        if (how !== "api" && (typeof how !== "object" || !how)) {
+          // A path that names no part of the API answers 404 whoever asks:
+          // a caller without a token is told that before it is told the
+          // route needs one, as api() tells a signed-in caller.
+          if (!API_PATHS.has(parts[1] ?? "")) return json({ error: "not_found", detail: "no such route" }, 404);
+          return json({ error: "unauthorised" }, 401);
+        }
         const token = typeof how === "object" && how ? how : undefined;
         const declared = req.headers.get("x-atelier-actor");
         if (token && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
@@ -2266,8 +2283,20 @@ export default {
         return res;
       }
       // The front door: a visitor who is not signed in sees the public showcase
-      // when there is one, and is otherwise asked to sign in.
+      // when there is one, and is otherwise asked to sign in — but only on a
+      // path the app itself serves. A path no page lives at answers 404,
+      // never a redirect that funnels stray traffic to the sign-in page.
+      // /how serves one public page at exactly that path (above); anything
+      // else asked under the name is sent to sign in like the app's own
+      // pages. Every path under /p/ is sent to sign in alike (below).
       if (!how) {
+        // A path under /p/ is answered the same whether or not a project is
+        // registered under the name it holds: the visitor is sent to sign in
+        // either way, so a guessed name learns nothing — a 404 for the rest
+        // would say which names, anonymised or private, are real.
+        const projectArea = parts[0] === "p" && parts.length >= 2;
+        const knownUI = parts.length === 0 || projectArea || ["models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
+        if (!knownUI) return html("Not found.", 404);
         const open = parts.length === 0 && (await liveShowcase(env).catch(() => [])).length > 0;
         return Response.redirect(new URL(open ? "/showcase" : "/login", url).toString(), 303);
       }
@@ -2277,7 +2306,7 @@ export default {
       const rule = parseRuleError(err);
       // The error page keeps the owner's name on the pages only the owner
       // reads; the public pages keep it to themselves (finding 18).
-      const who = ["/how", "/showcase", "/login", "/live.js"].includes(url.pathname) ? null : ownerName(env);
+      const who = ["/how", "/showcase", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
       if (rule) {
         return url.pathname.startsWith("/api/")
           ? json({ error: rule.code, detail: rule.detail }, rule.status)
