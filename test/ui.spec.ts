@@ -356,7 +356,7 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  expect(html).toContain('&lt;b&gt;local&lt;/b&gt;');
  expect(html).toContain('Took 2 tasks, merged 2');
  expect(html).toContain('checked by home:studio');
- expect(html).toContain('most recent 1,000 events');
+ expect(html).toContain('all 1,000 events');
  expect(html).toContain('family not recognised');
  expect(html).toContain('action="/models/add"');
  const TOKEN='models-page-token';
