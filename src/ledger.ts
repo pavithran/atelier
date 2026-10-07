@@ -1331,11 +1331,19 @@ export class Ledger extends DurableObject<Env> {
     return renewed;
   }
 
-  // Frees the lease, answering which task held it since when (null when
-  // none did), so atelier land --release-lease can say what it freed.
-  cancelProjectLanding(actor: string): { held: boolean; lease: LandingLease | null } {
+  // Frees the lease held for one task, answering which task held it since
+  // when (null when none did), so atelier land --release-lease can say what
+  // it freed. A lease held for another task is left alone and named: a
+  // landing whose lease lapsed and was taken over must not free the
+  // landing that took it, or two landings would run at once.
+  cancelProjectLanding(id: string, actor: string): { held: boolean; lease: LandingLease | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
+    if (!id) throw new RuleError("bad_item", "a cancel names the task whose landing lease it releases: { cancel: true, item: ID }", 400);
     const held = this.projectLanding();
+    if (held && held.item !== id) {
+      const since = held.at.slice(0, 16).replace("T", " ");
+      throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409);
+    }
     this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
     return { held: !!held, lease: held };
   }
