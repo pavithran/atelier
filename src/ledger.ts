@@ -26,6 +26,7 @@ import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency,
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
   byPartKey, mainTakenOf, plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, refreshDecision, RUN_LIMITS, tickEvents, waitingParts,
+  addedPart, maxJobsOf, mergeMainKey, mergeMainPart, mergeMainScope, planWithAdded, routesOf,
   type PlanRecord, type PlanRefresh,
 } from "./plans/state.ts";
 import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
@@ -1767,7 +1768,7 @@ export class Ledger extends DurableObject<Env> {
     const record = this.planRecord(planId);
     const approval = record.approval;
     if (!approval) throw new RuleError("no_approval", `${id} is a part of ${planId}, which has no approved plan`, 409);
-    const document = this.approvedPlan(planId, approval.hash);
+    const document = planWithAdded(this.approvedPlan(planId, approval.hash), record);
     const spec = document.parts.find((p) => p.key === item.partKey);
     if (!spec) throw new RuleError("no_proposal", `${id}'s key ${item.partKey} is not in ${planId}'s approved plan`, 500);
     const parts = this.planParts(planId);
@@ -1782,6 +1783,7 @@ export class Ledger extends DurableObject<Env> {
     const reason = dispatched && typeof dispatched.data.reason === "string" ? dispatched.data.reason : null;
     const failed = this.evidenceFor(id).filter((e) => e.grade === "observed" && e.passed === false).at(-1) ?? null;
     const rejection = this.reviewsFor(id).filter((r) => !r.approve).at(-1) ?? null;
+    const added = addedPart(record, item.partKey);
     return {
       job,
       ...await buildBrief({
@@ -1796,6 +1798,7 @@ export class Ledger extends DurableObject<Env> {
         reason,
         findings: rejection ? reviewFindings(rejection) : null,
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "" } : null,
+        mergeMain: added ? { head: added.mainHead } : null,
       }),
     };
   }
@@ -1892,7 +1895,7 @@ export class Ledger extends DurableObject<Env> {
     const slash = builder.indexOf("/");
     // Refuses a name no runner could claim under, before anything is written.
     makeDispatch({ to: "home", agent: builder.slice(0, slash), model: builder.slice(slash + 1) }, ORCHESTRATOR, at);
-    const route = record.approval!.routes.find((r) => r.key === key)!;
+    const route = routesOf(record).find((r) => r.key === key)!;
     const from = rerouted(route, record).builder?.actor ?? null;
     record.reroutes[key] = builder;
     this.savePlanRecord(item.plan!, record);
@@ -1922,7 +1925,7 @@ export class Ledger extends DurableObject<Env> {
     if (claimed) throw new RuleError("review_claimed", `${claimed} is reviewing ${item.id} now; wait for its verdict, or let its claim lapse, before naming ${reviewer}`, 409);
     const record = this.planRecord(plan.id);
     const key = item.partKey!;
-    const route = record.approval!.routes.find((r) => r.key === key)!;
+    const route = routesOf(record).find((r) => r.key === key)!;
     const from = rerouted(route, record).reviewer?.actor ?? null;
     const open = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state = 'open'`, item.id).toArray();
     for (const r of open) {
@@ -2025,12 +2028,15 @@ export class Ledger extends DurableObject<Env> {
       blocked: record.blocked, completedAt: record.completedAt ?? null,
       proposal: newest && { hash: newest.hash, by: newest.by, at: newest.at, count: newest.count, answered: this.answered(item.id) },
       plan: approval ? this.approvedPlan(item.id, approval.hash) : newest?.plan ?? null,
+      // The limits fixed at approval, with the part dispatches each part the
+      // Ledger added since brings.
       approval: approval && {
-        hash: approval.hash, at: approval.at, by: approval.by, allowPaid: approval.allowPaid, limits: approval.limits,
+        hash: approval.hash, at: approval.at, by: approval.by, allowPaid: approval.allowPaid, limits: { ...approval.limits, maxJobs: maxJobsOf(record) },
         deadline: approval.deadline, jobsUsed: jobsUsed(all),
       },
       parts: parts.map((p) => {
-        const route = approval?.routes.find((r) => r.key === p.partKey);
+        const route = routesOf(record).find((r) => r.key === p.partKey);
+        const added = addedPart(record, p.partKey);
         const judged = p.state === "submitted" || p.state === "accepted"
           ? gate({ ...p, state: "submitted" }, policy, this.evidenceFor(p.id), this.reviewsFor(p.id), this.owner) : null;
         return {
@@ -2043,6 +2049,7 @@ export class Ledger extends DurableObject<Env> {
           integration: this.partIntegration(p.id),
           integrationFailure: failures.get(p.partKey!) ?? null,
           blocked: p.state === "blocked" && p.blocked ? { reason: p.blocked.reason, by: p.blocked.by } : null,
+          added: added && { mainHead: added.mainHead, by: added.by, at: added.at },
         };
       }),
       preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
@@ -2225,9 +2232,12 @@ export class Ledger extends DurableObject<Env> {
   // fixed at approval: the same Dispatch record the owner's dispatch writes,
   // by atelier/orchestrator, with the approval's hash and the tick's reason.
   // It is never a route.
-  private dispatchPart(id: string, to: string, reason: string, hash: string, at: string): void {
+  // A merge-main part's dispatch is its merge-main job, naming the main head
+  // the runner merges into the workspace before the builder starts.
+  private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null): void {
     const slash = to.indexOf("/");
-    this.writeDispatch(id, makeDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, ORCHESTRATOR, at), { approval: hash, reason });
+    const d = makeDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, ORCHESTRATOR, at);
+    this.writeDispatch(id, mainHead ? { ...d, job: "merge-main", head: mainHead } : d, { approval: hash, reason });
   }
 
   private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[] }, data: Record<string, unknown>): string {
@@ -2301,17 +2311,27 @@ export class Ledger extends DurableObject<Env> {
     // Automatic review (docs/orchestrator.md, section 4): a submitted part
     // with its checks passing and paths measured asks for a review request.
     this.reviewTick(id, record, parts, at);
+    // A merge-main part the Ledger added goes first: while one is not
+    // integrated, no other part is dispatched, and no refresh either, since
+    // the part is what takes main.
+    const added = record.added ?? [];
+    const merging = added.some((a) => {
+      const state = parts.find((p) => p.id === a.id)?.state;
+      return state !== undefined && state !== "integrated" && state !== "merged" && state !== "abandoned";
+    });
     const result = planActions({
-      plan: this.approvedPlan(id, approval.hash),
+      plan: planWithAdded(this.approvedPlan(id, approval.hash), record),
       parts: parts.map((p) => ({ key: p.partKey!, state: p.state })),
-      routes: approval.routes.map((r) => rerouted(r, record)),
+      routes: routesOf(record).map((r) => rerouted(r, record)),
       events, maxParallel: approval.limits.maxParallel, deadline: approval.deadline, budget: null, now: at,
       reviewers: partReviewers(byPartKey(all, parts)),
+      holds: added.map((a) => a.part.key),
     });
     let blocked = result.blocked, chosen = result.dispatch;
     if (!blocked && chosen.length) {
-      const room = approval.limits.maxJobs - jobsUsed(all);
-      if (room <= 0) blocked = `the plan has used its ${approval.limits.maxJobs} part dispatches (${RUN_LIMITS.jobsPerPart} per part)`;
+      const maxJobs = maxJobsOf(record);
+      const room = maxJobs - jobsUsed(all);
+      if (room <= 0) blocked = `the plan has used its ${maxJobs} part dispatches (${RUN_LIMITS.jobsPerPart} per part)`;
       else chosen = chosen.slice(0, room);
     }
     this.setBlocked(id, record, blocked);
@@ -2319,7 +2339,7 @@ export class Ledger extends DurableObject<Env> {
     // branch, so before one is dispatched a branch that does not hold main's
     // head takes it. While that refresh is in flight, or waits for an
     // integration to free the plan item, no part is dispatched.
-    if (!blocked && chosen.length) {
+    if (!blocked && chosen.length && !merging) {
       const decision = refreshDecision({ main: this.mainHead(), taken: mainTakenOf(record, plan), last: record.refresh ?? null, busy: !!plan.owner || plan.state !== "open" || !!plan.dispatch });
       if (decision === "dispatch") this.dispatchRefresh(id, record, this.mainHead()!, ORCHESTRATOR, at, `main moved to ${this.mainHead()!.slice(0, 8)} since the branch last took it; refreshed before part ${chosen[0].part} is dispatched`);
       if (decision !== "none") chosen = [];
@@ -2329,7 +2349,7 @@ export class Ledger extends DurableObject<Env> {
     for (const p of parts) {
       if (p.state !== "open" || p.owner) continue;
       const want = wanted.get(p.partKey!);
-      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at);
+      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at, addedPart(record, p.partKey)?.mainHead ?? null);
       else if (p.dispatch && !waiting.has(p.partKey!)) this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
       else if (p.dispatch && blocked) {
         this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
@@ -2352,7 +2372,7 @@ export class Ledger extends DurableObject<Env> {
   // reviewer remains for is blocked with what the owner can do.
   private reviewTick(id: string, record: PlanRecord, parts: Item[], at: string): void {
     const approval = record.approval!;
-    const plan = this.approvedPlan(id, approval.hash);
+    const plan = planWithAdded(this.approvedPlan(id, approval.hash), record);
     const policy = this.project().policy;
     const now = new Date(at);
     for (const listed of parts) {
@@ -2386,7 +2406,7 @@ export class Ledger extends DurableObject<Env> {
       }
       const part = plan.parts.find((x) => x.key === p.partKey);
       if (!part) continue;
-      const found = approval.routes.find((r) => r.key === p.partKey);
+      const found = routesOf(record).find((r) => r.key === p.partKey);
       const route = found ? rerouted(found, record) : null;
       const need = reviewNeeded({
         item: p, part: true, policy,
@@ -2524,7 +2544,7 @@ export class Ledger extends DurableObject<Env> {
     // A part's claim carries the plan's account of it for the brief; an item
     // outside a plan has none, and its need is read as the gate reads it.
     const record = item.plan ? this.planRecord(item.plan) : null;
-    const plan = record?.approval ? this.approvedPlan(item.plan!, record.approval.hash) : null;
+    const plan = record?.approval ? planWithAdded(this.approvedPlan(item.plan!, record.approval.hash), record) : null;
     const part = plan?.parts.find((x) => x.key === item.partKey) ?? null;
     const policy = this.project().policy;
     const need = reviewNeeded({
@@ -2680,19 +2700,25 @@ export class Ledger extends DurableObject<Env> {
 
   // What the Worker needs to verify an integration: the plan item, the part
   // to integrate, and the integration head the merge must sit on.
-  integrationTarget(id: string, partKey: string): { plan: Item; part: Item; integrationHead: string | null } {
+  // For a merge-main part, `mainHead` is the main head it merges, which the
+  // Worker looks for under the merge; null for any other part.
+  integrationTarget(id: string, partKey: string): { plan: Item; part: Item; integrationHead: string | null; mainHead: string | null } {
     const plan = this.planItem(id);
     const part = this.planParts(id).find((p) => p.partKey === partKey);
     if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
-    return { plan, part, integrationHead: this.planRecord(id).integrationHead ?? null };
+    const record = this.planRecord(id);
+    return { plan, part, integrationHead: record.integrationHead ?? null, mainHead: addedPart(record, partKey)?.mainHead ?? null };
   }
 
   // Records a verified integration: the part becomes integrated with its head
   // and the merge commit, the integrate job clears, and the integration head
   // advances. When every part is integrated or landed, the plan item is ready
   // for the integrator to submit. The Worker has verified the merge commit
-  // against the plan branch's log and passes `verified: true`.
-  integratePart(id: string, actor: string, partKey: string, mergeCommit: string, verified: boolean): { item: Item; allIntegrated: boolean; parts: string[] } {
+  // against the plan branch's log and passes `verified: true`. For a
+  // merge-main part, `holdsMain` says the Worker found the part's main head
+  // under the merge commit; the branch then holds that main head, as after a
+  // refresh, so the tick does not dispatch a refresh for it.
+  integratePart(id: string, actor: string, partKey: string, mergeCommit: string, verified: boolean, holdsMain = false): { item: Item; allIntegrated: boolean; parts: string[] } {
     if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration`, 403);
     const plan = this.planItem(id);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
@@ -2703,11 +2729,14 @@ export class Ledger extends DurableObject<Env> {
     if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part is integrated`, 409);
     if (!verified) throw new RuleError("unverified_merge", "the merge commit is not on the plan's branch", 409);
     const at = new Date().toISOString();
+    const merged = addedPart(record, partKey);
+    const takes = merged && holdsMain ? merged.mainHead : null;
     this.update(part.id, { state: "integrated" }, at);
     this.sql.exec(`UPDATE items SET integration = ? WHERE id = ?`, JSON.stringify({ head: part.head, mergeCommit } as Integration), part.id);
-    this.log(part.id, actor, "part.integrated", { head: part.head, mergeCommit }, at);
+    this.log(part.id, actor, "part.integrated", { head: part.head, mergeCommit, ...(takes ? { mainTaken: takes } : {}) }, at);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     record.integrationHead = mergeCommit;
+    if (takes) record.mainTaken = takes;
     this.savePlanRecord(id, record);
     const parts = this.planParts(id);
     const landed = (s: string) => s === "integrated" || s === "merged" || s === "abandoned";
@@ -2851,6 +2880,69 @@ export class Ledger extends DurableObject<Env> {
     this.savePlanRecord(id, record);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     this.log(id, actor, "plan.refresh_failed", { mainHead, reason: why, ...(kind ? { kind } : {}) }, at);
+    if (kind === "conflict") this.addMergeMain(id, record, mainHead, mergeMainScope(why, record.scope), ORCHESTRATOR, at, `the refresh from main at ${mainHead.slice(0, 8)} conflicted`);
+    this.afterPlanChange(id);
+    return this.item(id);
+  }
+
+  // Adds the merge-main part for `mainHead` to an approved plan, once per
+  // main head: its item, made by `by`, and its routing, computed now from the
+  // pool fixed at approval for the plan's allowPaid, as approval routes a
+  // part. The owner's `to` is preferred as its builder, and named as its
+  // reroute when routing cannot choose it. A part no model can build or
+  // review is added unrouted, and the tick blocks the plan for it as for any
+  // part, until the owner reroutes it. The approved document and hash do not
+  // change; the record lists the part as added (PlanRecord.added).
+  private addMergeMain(id: string, record: PlanRecord, mainHead: string, scope: string[], by: string, at: string, reason: string, to: string | null = null): string | null {
+    const approval = record.approval!;
+    const key = mergeMainKey(mainHead);
+    if (addedPart(record, key) || this.planParts(id).some((p) => p.partKey === key)) return null;
+    const spec = mergeMainPart(mainHead, scope);
+    const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the project owner with plan refresh --resolve" } } : spec;
+    const [route] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
+      pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid,
+    });
+    const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [] },
+      { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });
+    record.added = [...(record.added ?? []), { id: partId, part: spec, route, mainHead, by, at, reason }];
+    if (to && route.builder?.actor !== to) record.reroutes[key] = to;
+    this.savePlanRecord(id, record);
+    this.log(id, by, "plan.part_added", { part: partId, key, mainHead, reason, builder: to ?? route.builder?.actor ?? null, reviewer: route.reviewer?.actor ?? null }, at);
+    return partId;
+  }
+
+  // The owner's atelier plan refresh --resolve: adds the merge-main part for
+  // main's head as the Worker read it, without trying a clean refresh first,
+  // with `to` as its builder when named. Refused as a refresh is for a plan
+  // not approved or not building, while a refresh is in flight (its outcome
+  // may add the part itself), when the branch already holds main's head
+  // (`holds`), when the part for this head exists, and while another
+  // merge-main part is not yet integrated.
+  planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner resolves a plan's branch with main", 403);
+    const plan = this.planItem(id);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    const record = this.planRecord(id);
+    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved; its branch takes main only once the plan is building`, 409);
+    if (plan.state === "submitted" || plan.state === "accepted") {
+      throw new RuleError("not_building", `${id} is ${plan.state}: every part is integrated, and the owner lands the branch with atelier merge ${id}, which merges it with main`, 409);
+    }
+    if (record.refresh?.state === "dispatched") {
+      throw new RuleError("job_in_flight", `a refresh from main at ${record.refresh.mainHead.slice(0, 8)} is queued; if it conflicts, the plan adds the part to resolve it itself`, 409);
+    }
+    if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
+    if (holds) throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to resolve`, 409);
+    const builder = to === undefined || to === null ? null : namedActor(to, this.project().policy, "executor", this.owner);
+    const parts = this.planParts(id);
+    const key = mergeMainKey(mainHead);
+    const existing = parts.find((p) => p.partKey === key);
+    if (existing) {
+      throw new RuleError("part_exists", `${existing.id} (${key}) already merges main at ${mainHead.slice(0, 8)}; it is ${existing.state}. Retry it with atelier plan retry ${existing.id}, or name its builder with atelier plan reroute ${existing.id} --to H/M`, 409);
+    }
+    const open = (record.added ?? []).map((a) => parts.find((p) => p.id === a.id)).find((p) => p && p.state !== "integrated" && p.state !== "merged" && p.state !== "abandoned");
+    if (open) throw new RuleError("merge_open", `${open.id} (${open.partKey}) is merging main into the branch and is ${open.state}; resolve that one first, or abandon it with atelier abandon ${open.id}`, 409);
+    const at = new Date().toISOString();
+    this.addMergeMain(id, record, mainHead, mergeMainScope("", record.scope), actor, at, "the project owner asked to resolve main into the branch", builder);
     this.afterPlanChange(id);
     return this.item(id);
   }
