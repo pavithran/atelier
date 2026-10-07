@@ -1892,6 +1892,11 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 
 // ── entry ──────────────────────────────────────────────────────────────────
 
+// The API's own top-level paths, as api() and the routes before it read them.
+// A caller without a token is refused on them (401); anything else under /api
+// answers 404 before auth is asked, as it does after it.
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "projects"]);
+
 export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
@@ -1937,7 +1942,11 @@ export default {
       if (pathname === "/how" && (req.method === "GET" || req.method === "HEAD")) { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
       if (pathname === "/login") {
         if (req.method === "POST") {
-          if (req.headers.get("origin") !== url.origin) return html("Cross-origin form refused.", 403);
+          // A cross-site form post carries another origin and is refused. A
+          // post without an Origin header did not come from a browser form,
+          // so the token alone judges it, as it always has.
+          const origin = req.headers.get("origin");
+          if (origin !== null && origin !== url.origin) return html("Cross-origin form refused.", 403);
           const token = String((await req.formData()).get("token") ?? "");
           const want = serverToken(env);
           if (!want || !sameString(token, want)) return await loginPage(env, "That token is not this server's.", 401);
@@ -1963,7 +1972,13 @@ export default {
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
           return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
         }
-        if (how !== "api" && (typeof how !== "object" || !how)) return json({ error: "unauthorised" }, 401);
+        if (how !== "api" && (typeof how !== "object" || !how)) {
+          // A path that names no part of the API answers 404 whoever asks:
+          // a caller without a token is told that before it is told the
+          // route needs one, as api() tells a signed-in caller.
+          if (!API_PATHS.has(parts[1] ?? "")) return json({ error: "not_found", detail: "no such route" }, 404);
+          return json({ error: "unauthorised" }, 401);
+        }
         const token = typeof how === "object" && how ? how : undefined;
         const declared = req.headers.get("x-atelier-actor");
         if (token && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
@@ -1990,9 +2005,20 @@ export default {
         return res;
       }
       // The front door: a visitor who is not signed in sees the public showcase
-      // when there is one, and is otherwise asked to sign in.
+      // when there is one, and is otherwise asked to sign in — but only on a
+      // path the app itself serves. A path no page lives at answers 404,
+      // never a redirect that funnels stray traffic to the sign-in page.
+      // /how serves one public page at exactly that path (above); anything
+      // else asked under the name is sent to sign in like the app's own
+      // pages. A project area (/p/…) is judged below by what it names.
       if (!how) {
-        const knownUI = parts.length === 0 || ["models", "usage", "projects", "flow", "history", "studio", "decisions", "p", "ui"].includes(parts[0]);
+        // A project area is a path of the app only while it names a project
+        // something is registered under: a name nothing answers to is an
+        // unknown path and answers 404, while a real project's pages still
+        // send the visitor to sign in.
+        let projectArea = false;
+        if (parts[0] === "p" && parts.length >= 2) projectArea = (await resolveProject(env, parts[1])).registered;
+        const knownUI = parts.length === 0 || projectArea || ["models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
         const open = parts.length === 0 && (await liveShowcase(env).catch(() => [])).length > 0;
         return Response.redirect(new URL(open ? "/showcase" : "/login", url).toString(), 303);
