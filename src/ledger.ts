@@ -31,7 +31,7 @@ import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView 
 import type { PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
-import { reviewNeeded, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { independenceRefusal } from "./review/independence.ts";
 
@@ -375,6 +375,10 @@ export class Ledger extends DurableObject<Env> {
     const requestColumns = this.sql.exec(`PRAGMA table_info(review_requests)`).toArray().map((c) => c.name);
     if (!requestColumns.includes("wanted")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN wanted INTEGER`);
     this.backfillReviewProvenance();
+    // A deploy can change the tick's logic, and a plan waiting on nothing
+    // the new logic would read sits idle until something else changes; the
+    // ledger ticks its open plans once per deploy (retickDeployed).
+    this.retickDeployed((this.env as unknown as { DEPLOYED_MAIN?: string }).DEPLOYED_MAIN ?? null);
   }
 
   // Reviews recorded before each said who recorded it gain the fields
@@ -1983,20 +1987,59 @@ export class Ledger extends DurableObject<Env> {
     };
   }
 
-  // Timeouts. The alarm is set for an approved plan's deadline; it runs the
-  // tick of every approved plan that is still open, which blocks one past
-  // its deadline, and is set again for a deadline still to come.
+  // Timeouts. The alarm is set for an approved plan's deadline and for the
+  // moment a part's claimed review would lapse (see claimReview); it runs
+  // the tick of every approved plan that is still open, which blocks one
+  // past its deadline, asks a lapsed review again of another reviewer, and
+  // is set again for a moment still to come.
   async alarm(): Promise<void> {
     const ids = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
+    const now = Date.now();
     let next = Infinity;
     for (const id of ids) {
       const approval = this.planRecord(id).approval;
       if (!approval) continue;
       this.afterPlanChange(id);
       const deadline = Date.parse(approval.deadline);
-      if (deadline >= Date.now()) next = Math.min(next, deadline + 1000);
+      if (deadline >= now) next = Math.min(next, deadline + 1000);
+      next = Math.min(next, this.nextLapse(id, now));
     }
     if (next !== Infinity) await this.ctx.storage.setAlarm(next);
+  }
+
+  // When the plan's earliest claimed review lapses, so the alarm fires then
+  // and the tick asks the review again of another reviewer. A claim already
+  // lapsed lies in the past and never re-fires an alarm: the tick that just
+  // ran has either asked again or found nothing to ask.
+  private nextLapse(id: string, now: number): number {
+    let next = Infinity;
+    for (const r of this.sql.exec(`SELECT claimedAt FROM review_requests WHERE state = 'claimed' AND item IN (SELECT id FROM items WHERE plan = ?)`, id).toArray()) {
+      const claimed = typeof r.claimedAt === "string" ? Date.parse(r.claimedAt) : NaN;
+      const lapse = claimed + REVIEW_CLAIM_TIMEOUT_MS + 1000;
+      if (Number.isFinite(lapse) && lapse > now) next = Math.min(next, lapse);
+    }
+    return next;
+  }
+
+  // The tick's logic changes with a deploy (a reviewer re-picked where it
+  // was fixed at approval, a lapse acted on where it was only waited out),
+  // and a plan that is waiting on nothing the new logic reads — a review
+  // routed to a contributor, a lapsed claim, a block that no longer holds —
+  // would sit idle until something else changed: t197 waited with a review
+  // routed to a contributor until the owner repeated a reroute. So the
+  // ledger ticks every open plan once per deploy: the main commit the
+  // deploy was built from (DEPLOYED_MAIN, npm run deploy) is compared with
+  // the last it ticked under, and a new one ticks now. Nothing ticks when
+  // no commit is named, since no deploy is then tellable from the last; the
+  // constructor passes the one it reads.
+  retickDeployed(deployed: string | null): void {
+    if (!deployed) return;
+    const held = this.sql.exec(`SELECT value FROM meta WHERE key = 'deployed-main'`).toArray()[0];
+    if (held && held.value === deployed) return;
+    for (const row of this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray()) {
+      this.afterPlanChange(row.id as string);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('deployed-main', ?)`, deployed);
   }
 
   private planRecord(id: string): PlanRecord {
@@ -2351,7 +2394,23 @@ export class Ledger extends DurableObject<Env> {
   // route binds an item. Refused for a stale head, a reviewer that wrote the
   // item, or a runner or actor the dispatch did not ask for. Returns what the
   // review job needs to build the brief and clone the part.
-  claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): ReviewClaim {
+  //
+  // A refusal also runs the plan's tick: a review the claiming agent cannot
+  // take is often one the tick would withdraw and ask again — its reviewer
+  // has become a contributor, its head has moved, its claim has lapsed — and
+  // without the tick the plan waits idle for a change that may not come
+  // (t197 waited with a review routed to a contributor). The tick rescues
+  // the plan, never the claim, so the refusal is thrown as it was.
+  async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): Promise<ReviewClaim> {
+    try {
+      return await this.bindReview(itemId, actor, runner, proved);
+    } catch (err) {
+      if (err instanceof RuleError) this.afterPlanChange(itemId);
+      throw err;
+    }
+  }
+
+  private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
     const item = this.item(itemId);
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (contributorsOf(item).some((c) => sameActor(c, actor))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
@@ -2370,6 +2429,16 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner?.runner ?? null, at, row.id);
     this.log(itemId, actor, "review.claimed", { head, runner: runner.runner }, at, proved);
+    // A part's claimed review can lapse (REVIEW_CLAIM_TIMEOUT_MS,
+    // reviewNeeded), and when it does, nothing but the alarm ticks the plan
+    // unprompted: the alarm is set for the lapse, never later than one
+    // already held. A review outside a plan sets none; its landing asks
+    // again itself (requestReview).
+    if (item.plan) {
+      const lapse = Date.parse(at) + REVIEW_CLAIM_TIMEOUT_MS + 1000;
+      const held = await this.ctx.storage.getAlarm();
+      if (held === null || lapse < held) await this.ctx.storage.setAlarm(lapse);
+    }
     // A part's claim carries the plan's account of it for the brief; an item
     // outside a plan has none, and its need is read as the gate reads it.
     const record = item.plan ? this.planRecord(item.plan) : null;
