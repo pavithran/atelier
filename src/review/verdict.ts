@@ -26,6 +26,11 @@ export type ParsedVerdict =
 // no verdict.
 export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2000, summary: 600 } as const;
 
+// What may block, when the project sets no review bar of its own (`atelier
+// init --review-bar`). Every review brief states the bar in force, and
+// bin/orchestrate/review.sh reads this one as its default.
+export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to. A claim in a commit message that the code does not support is a correctness defect. Decisions the project owner made are not defects; everything else is a follow-up.";
+
 export const REPLY_FORMAT = [
   "End your reply with these lines, each at the start of its own line:",
   "",

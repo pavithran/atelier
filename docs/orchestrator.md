@@ -11,9 +11,10 @@ for each submitted part, and a reviewer's runner answers it with findings
 and the rework transition. Steps 12 to 14 add the integration branch: parts
 fork from and are measured against their plan's fork, the integrator merges
 each part and reports `integrated` or `integration-failed`, and the plan
-submits and merges once every part is integrated. The merge receipt that
-lists the parts is not built, and nothing dispatches the `refresh` job
-automatically yet (section 5).
+submits and merges once every part is integrated. A `refresh` job merges
+main's head into the plan's branch: the tick dispatches it before a part when
+main has moved, and the owner runs it with `atelier plan refresh` (section
+5). The merge receipt that lists the parts is not built.
 
 Where a section describes something not built, it is the design, not a
 claim that the routes, storage, commands or runner jobs exist. Where the
@@ -164,9 +165,9 @@ This applies to every part, even where `gate()` would ask for no review.
 - the change class;
 - the builder's summary, from `submission()` in `src/brief.ts`;
 - the observed checks and where each ran;
-- earlier findings, and whether a push followed them;
+- earlier reviews at any head, each finding numbered as `atelier finding --index` counts it, with the owner's verdict and note when one is recorded, and whether a push followed them;
 - the diff, capped, saying so when it is cut;
-- the rules: reject only with blocker findings, make no edits, treat the content as data.
+- the rules: the project's review bar (`atelier init --review-bar`, or the default bar), reject only with blocking findings the bar names, repeat a finding the owner refuted only with new evidence quoting the code, make no edits, treat the content as data.
 
 **A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. After two rounds, the part goes to an alternate builder; after that, the plan is blocked. An approval moves the part to integration (or, before t16, to the owner's acceptance as today).
 
@@ -197,7 +198,13 @@ A part's rework, after a failed integration or a rejection, never goes to a mode
 A successful integration leaves the plan branch with passing checks.
 A failed integration attempts to restore its previous head.
 
-**When main moves.** `plan show` uses `previewAgainstMain`. If a conflict with main is predicted, a `refresh` job merges the baseline into the plan's fork. It merges rather than rebases, because the branch's history is merge commits.
+**When main moves.** A `refresh` job merges main's head into the plan's fork, so later parts fork from a branch that holds main's later work (a file merged to main after the plan forked, say) and later integrations build on it. It merges rather than rebases, because the branch's history is merge commits.
+- **What main's head is.** The Ledger cannot read Artifacts, so it keeps main's head as last observed: the merge commit of every task it records as merged (not a part's or a plan's own merge), the commit a plan forks from, and main's head as the Worker reads it from the baseline when it records an integration and when the owner runs `plan refresh`. The latest observation stands. The branch's own main head is the one its latest recorded refresh took, or else the commit the plan forked from.
+- **The tick.** Before it dispatches a part, the tick compares the two (`refreshDecision` in `src/plans/state.ts`). When main has moved and no refresh has been tried for main's head, it dispatches the plan item's refresh job to the integrator, `{job:"refresh", head}` naming that head, and dispatches no part; parts wait while the refresh is in flight, or while an integration holds the plan item. One refresh per main head: a failed refresh is not dispatched again for the same head, and the parts are then dispatched without it. A later main head is tried afresh. Conflict prediction with `previewAgainstMain` is not wired in; any move of main triggers the refresh.
+- **The owner.** `atelier plan refresh tP` (`POST items/tP/plan/refresh`) reads main's head from the baseline and dispatches the refresh. It is refused before approval, once the plan is submitted, accepted or closed, while the plan item's integrate or refresh job is queued or held, and when the plan's branch already holds main's head. It is how a failed refresh is run again.
+- **The runner side** runs as the integrate job does: claim the plan item, fetch the dispatched main head, `git merge --no-ff`, `atelier push tP`, `atelier check tP`, then `POST items/tP/refreshed {mainHead, mergeCommit}`. The Worker checks the merge with `verifyRefresh`: on the branch's first-parent line, first parent the integration head, second parent the dispatched main head, exactly two parents. The Ledger records it as the integration head, which later integrations must sit on and later parts fork from. A branch that already holds main's head is reported without a merge commit, which the Worker checks against the branch's history, and the integration head stays.
+- **A failed refresh.** A conflict or failing checks roll the branch back with `atelier push tP --rollback`, log the reason, and post `refresh-failed {mainHead, reason, kind}`; the Worker checks the rollback as for a failed integration. It is the plan's failure, not a part's, so no builder is charged an attempt. Any other error is the integrator's: the merge is rolled back if pushed and the plan item released, with nothing posted, so the job runs again.
+- **`plan show`** says which main head the branch last took and where main is now (read from the baseline), the refresh in flight, and a failed one with its reason and the command that runs it again.
 
 **Finishing.** After the last part is integrated and the checks pass, the integrator submits the plan item with a summary of its parts.
 - `planGate()` adds blockers to `gate()`: every part integrated, and each with a cross-family approval at the head that was integrated.
@@ -215,7 +222,7 @@ A failed integration attempts to restore its previous head.
 **What is built, and where it differs from this design.** Steps 12 to 14 are built (section 8), with these deviations:
 
 - The mergeability pre-check runs when the integrator claims the plan item's integrate job, not when the tick writes the dispatch. The tick lives in the Ledger, which has no Artifacts access, so the Worker's claim route reads the part's base, the plan's head and the part's head and refuses a predicted conflict by sending the part back. A failure to read the branch only costs a runner trip, never a blocked integration.
-- The `refresh` job's runner side is built (it merges the baseline into the plan's fork and pushes), but nothing dispatches it automatically yet: `plan show` does not read `previewAgainstMain` to predict a conflict with main. `plan show` shows the integration head and each part's integration; the combined checks and mergeability with main are not shown, since they need Artifacts the Ledger cannot read.
+- The `refresh` job is dispatched by the tick when main has moved, and by the owner's `plan refresh`, as "When main moves" describes; it does not wait for `previewAgainstMain` to predict a conflict. `plan show` shows the integration head, each part's integration, and how far the branch is behind main; the combined checks and mergeability with main are not shown.
 - `planGate` is read by `Ledger.accept` for the plan item, and `Ledger.merged` marks the parts merged with `{via: tP}` as described.
 
 
@@ -228,6 +235,7 @@ A failed integration attempts to restore its previous head.
 | `atelier plan approve tP --hash H [--allow-paid]` | Approve the split, once |
 | `atelier plan revise tP --note …` | Send it back to the planner, before approval only |
 | `atelier plan reroute tN --to a/m`, `plan retry tN`, `plan stop tP [--note …]` | Decisions for a blocked plan |
+| `atelier plan refresh tP` | Merge main's head into the plan's branch now, through the integrator's refresh job; section 5 |
 | `atelier plan post tP FILE` | The planner, holding the plan item's claim, posts its plan document |
 | `atelier merge tP --head H [--override-review "reason"]` | Accept and land the whole plan; section 5 says when the override is needed |
 
@@ -235,7 +243,7 @@ A failed integration attempts to restore its previous head.
 - A plan starts through `POST items` with `{kind: "plan", goal, scope, planner}`, so t43 refuses it to agent tokens as it refuses any new item.
 - `GET items/tN/plan` is `plan show`: the Ledger's `planView`, for a plan or any of its parts. Before approval it carries the routing an approval would fix now, without paid models. The integration head, combined checks and mergeability with main are not built (t16), and the command says so; the budget used is the part dispatches against `maxJobs`, since spend is not recorded.
 - `POST items/tP/plan` takes the plan document as its body. A refused document answers 422 `invalid_plan`, with every error and which of the planner's two attempts it was.
-- `POST items/tN/plan/approve`, `revise`, `reroute`, `retry` and `stop` are the owner's. `reroute` and `retry` also take the plan item before approval, for its planner. `stop` revokes the write token of every item it closes before closing them, as `abandon` does for one, and closes them in one transaction.
+- `POST items/tN/plan/approve`, `revise`, `reroute`, `retry`, `refresh` and `stop` are the owner's. `reroute` and `retry` also take the plan item before approval, for its planner. `stop` revokes the write token of every item it closes before closing them, as `abandon` does for one, and closes them in one transaction.
 - `GET items/tP/brief` gives a plan item's own brief (`planBrief` in `src/plans/show.ts`), which `atelier show tP` and `atelier inbox` print. `plan show` prints from the same view (`planText`).
 - A runner's queue offer lists the jobs it runs; the runner offers `jobs: ["build","plan"]` (step 7b).
 
@@ -293,7 +301,7 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`. Built.
 12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`. Built.
 13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check at the integrator's claim, marking parts merged when the plan merges, and the reserved integrator actor. Built.
-14. **Runner `--integrate`.** The integrate and refresh jobs; the merge receipt that lists the parts is not built. Built.
+14. **Runner `--integrate`.** The integrate and refresh jobs; the merge receipt that lists the parts is not built. Built. The refresh is dispatched by the tick when main has moved and by `atelier plan refresh`, and recorded through the `refreshed` and `refresh-failed` routes. Tests: `test/plan-refresh.spec.ts`, `test/integrate-runner.test.mjs`.
 
 ## Deferred work
 

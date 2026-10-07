@@ -217,7 +217,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
@@ -244,6 +244,8 @@ export const FLAGS = {
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
   "integration-failed": { part: false, reason: false, kind: false },
+  refreshed: { "main-head": false, "merge-commit": false },
+  "refresh-failed": { "main-head": false, reason: false, kind: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
@@ -280,7 +282,7 @@ export const FLAGS = {
 };
 const REST = new Set(["check"]);
 // The flags each plan subcommand takes; "" is a new plan's.
-const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], stop: ["note"], post: [] };
+const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: [], stop: ["note"], post: [] };
 const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
 
 export function parseArgs(argv, switches = SWITCHES) {
@@ -1858,6 +1860,9 @@ const commands = {
       // The command that regenerates the project's fixtures after a task
       // merges main (atelier land); omitted keeps it, "" clears it.
       ...(args.regenerate !== undefined ? { regenerate: args.regenerate } : {}),
+      // What may block a review, stated in every review brief; omitted keeps
+      // it, "" restores the default bar.
+      ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
       approval: args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title }),
@@ -1913,6 +1918,9 @@ const commands = {
     if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
     console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
     if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
+    console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks only for a correctness, security or data-loss defect"}`);
+    // A server older than the review bar ignores it and answers without one.
+    if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
@@ -2338,6 +2346,24 @@ const commands = {
     if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT [--kind conflict|checks]");
     if (args.kind !== undefined && args.kind !== "conflict" && args.kind !== "checks") die("--kind is conflict or checks");
     const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "", ...(args.kind ? { kind: args.kind } : {}) }, as);
+    console.log(JSON.stringify(r));
+  },
+
+  // The integrator's reports on a refresh of the plan's branch with main's
+  // head (docs/orchestrator.md, section 5). The server verifies the merge.
+  async refreshed() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args["main-head"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["main-head"])) die("usage: atelier refreshed tP --main-head SHA [--merge-commit SHA]; --main-head needs the full hash of the main head merged");
+    if (args["merge-commit"] !== undefined && (typeof args["merge-commit"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["merge-commit"]))) die("--merge-commit needs the full merge commit hash");
+    const r = await call("POST", `${I(name, id)}/refreshed`, { mainHead: args["main-head"], ...(args["merge-commit"] ? { mergeCommit: args["merge-commit"] } : {}) }, as);
+    console.log(JSON.stringify(r));
+  },
+
+  async "refresh-failed"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args["main-head"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["main-head"])) die("usage: atelier refresh-failed tP --main-head SHA --reason TEXT [--kind conflict|checks]");
+    if (args.kind !== undefined && args.kind !== "conflict" && args.kind !== "checks") die("--kind is conflict or checks");
+    const r = await call("POST", `${I(name, id)}/refresh-failed`, { mainHead: args["main-head"], reason: args.reason ?? "", ...(args.kind ? { kind: args.kind } : {}) }, as);
     console.log(JSON.stringify(r));
   },
 
@@ -3007,6 +3033,14 @@ const commands = {
       const view = await call("POST", `${I(name, id)}/plan/retry`, {}, OWNER);
       const part = view.parts.find((p) => p.id === id);
       console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
+      return;
+    }
+    if (sub === "refresh") {
+      const view = await call("POST", `${I(name, id)}/plan/refresh`, {}, OWNER);
+      const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
+      const taken = view.refresh?.taken;
+      console.log(`${view.item.id}'s refresh from main at ${main.slice(0, 8)} is queued for atelier/integrator${taken ? `; the branch last took main at ${taken.slice(0, 8)}` : ""}. A runner started with --integrate merges it; parts wait for it before they are dispatched.`);
+      console.log(`Follow it with atelier plan show ${view.item.id} ${flag}`);
       return;
     }
     if (sub === "stop") {

@@ -235,6 +235,26 @@ it("the title route keeps the stored title on re-init, clears it on an empty one
   }
 });
 
+it("the review bar route cleans the bar, keeps it on re-init, clears it on an empty one, and refuses one too long or not text", async () => {
+  await project("routes-review-bar");
+  const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-bar", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
+  }), artifactsEnv);
+  const barOf = async (fields: Record<string, unknown>) =>
+    (((await (await put(fields)).json()) as { project: { policy: { reviewBar?: string } } }).project.policy.reviewBar);
+  expect(await barOf({})).toBeUndefined();
+  expect(await barOf({ reviewBar: "  Block only\nfor data\u202e loss.\t" })).toBe("Block only for data loss.");
+  expect(await barOf({ title: "Kept" })).toBe("Block only for data loss.");
+  expect(await barOf({ reviewBar: "" })).toBeUndefined();
+  for (const [bad, code] of [["x".repeat(1001), "too_long"], [7, "bad_review_bar"], [{}, "bad_review_bar"]] as const) {
+    const res = await put({ reviewBar: bad });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(code);
+  }
+});
+
 it("a first init with no title creates the project without one", async () => {
   const res = await putTitle("routes-fresh", undefined);
   expect(res.status).toBe(200);
