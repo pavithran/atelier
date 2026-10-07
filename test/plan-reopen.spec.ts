@@ -150,6 +150,53 @@ it("accept refuses a plan whose branch conflicts with main and says to take main
   expect(await L.item(id)).toMatchObject({ state: "accepted", acceptedHead: MA });
 });
 
+// t274: a plan whose branch took main two merges deep. Part a was
+// integrated as PA; the merge-main part, forked from PA, merged main's M1
+// as MM (first parent PA, second M1) and resolved a.md; the integrator
+// merged MM onto the branch as MA (first parent PA, second MM). Main's
+// commits are on the branch only behind MA's second parent and then MM's.
+const PA = "5".repeat(40), MM = "6".repeat(40), M2 = "7".repeat(40), M3 = "8".repeat(40);
+const tookMain = (id: string, name: string, mainHead: string) => ({
+  commits: {
+    [H0]: { parents: [], files: { "a.md": "base\n" } },
+    [PART_A]: { parents: [H0], files: { "a.md": "plan\n" } },
+    [PA]: { parents: [H0, PART_A], files: { "a.md": "plan\n" } },
+    [M1]: { parents: [H0], files: { "a.md": "main\n" } },
+    [MM]: { parents: [PA, M1], files: { "a.md": "resolved\n" } },
+    [MA]: { parents: [PA, MM], files: { "a.md": "resolved\n" } },
+    // Main moved on after M1: on another file only, or on a.md again.
+    [M2]: { parents: [M1], files: { "a.md": "main\n", "b.md": "main\n" } },
+    [M3]: { parents: [M1], files: { "a.md": "main again\n" } },
+  } as Record<string, Commit>,
+  heads: { [`fork-${id}`]: MA, [`${name}--baseline`]: mainHead } as Record<string, string>,
+});
+
+it("accept takes a plan whose branch holds main's head through an integrated merge-main part", async () => {
+  const name = "reopen-took-main";
+  const L = await setup(name);
+  const { id } = await submittedPlan(L);
+  const h = tookMain(id, name, M1);
+  const ok = await call(name, `${id}/accept`, { head: MA }, artifacts(h.commits, h.heads));
+  expect(ok.status, JSON.stringify(await ok.clone().json())).toBe(200);
+  expect(await L.item(id)).toMatchObject({ state: "accepted", acceptedHead: MA });
+});
+
+it("accept previews a plan that took main two merges deep from the main commit it took: newer main work on the same lines is refused, on another file accepted", async () => {
+  const name = "reopen-took-older-main";
+  const L = await setup(name);
+  const { id } = await submittedPlan(L);
+  const conflicting = tookMain(id, name, M3);
+  const res = await call(name, `${id}/accept`, { head: MA }, artifacts(conflicting.commits, conflicting.heads));
+  const body = await errorOf(res);
+  expect([res.status, body.error]).toEqual([409, "conflicts_with_main"]);
+  expect(body.detail).toMatch(/would conflict with main at 88888888: a\.md \(both sides changed the same lines\)/);
+  expect(await L.item(id)).toMatchObject({ state: "submitted", acceptedHead: null });
+  const clean = tookMain(id, name, M2);
+  const ok = await call(name, `${id}/accept`, { head: MA }, artifacts(clean.commits, clean.heads));
+  expect(ok.status, JSON.stringify(await ok.clone().json())).toBe(200);
+  expect(await L.item(id)).toMatchObject({ state: "accepted", acceptedHead: MA });
+});
+
 it("plan refresh on an accepted plan withdraws the acceptance, puts it back to building and queues the refresh; once main is merged the integrator is told to submit it again", async () => {
   const name = "reopen-refresh";
   const L = await setup(name);
