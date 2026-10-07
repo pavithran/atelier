@@ -27,9 +27,17 @@ async function project(name: string) {
   const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await ledger(name).setProject(record, "owner");
   await index().registerProject(record);
-  for (const [id, harness] of [["opus-5.5", "claude-code"], ["gpt-6-astra", "codex"], ["glm-5.3", "zcode"]]) {
+  const pool = [["opus-5.5", "claude-code"], ["gpt-6-astra", "codex"], ["glm-5.3", "zcode"]] as const;
+  for (const [id, harness] of pool) {
     await index().putModel({ id, harness, where: "cloud", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
   }
+  // A live runner offers every pool model, as the home runner would: routing
+  // picks only from the models live runners offer (t246), so a plan routes
+  // here only while this offer stands.
+  await index().putRunnerOffer({
+    runner: "home:coverage", kind: "home", jobs: ["build", "plan", "review"],
+    agents: pool.map(([id, harness]) => ({ agent: harness, models: [id] })),
+  }, new Date().toISOString());
 }
 
 async function agentToken(actor: string) {
