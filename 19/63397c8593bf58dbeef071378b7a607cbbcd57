@@ -1,0 +1,60 @@
+atelier atelier/t250 "Plan routing counts a model as available to review when any live runner offers that model, whatever jobs the runner offers (offering() in src/dispatch/rules.ts ignores the job), so a review can still be routed to a model only a build runner offers, the t210 case from 2026-10-07. Route a reviewer only from runners whose offer lists the review job, and a builder only from those that take builds (every runner does); test both"
+accepted head 5731c38eb8631144c9ed65c1e79affe5653e8011
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T19:23:34.785Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T19:23:39.045Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T20:32:23.980Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T20:32:26.853Z
+REVIEW approve by antigravity/gemini-3.1-pro at 5731c38eb8631144c9ed65c1e79affe5653e8011, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T11:11:15.229Z pavi item.created
+2026-10-07T11:11:15.615Z pavi item.dispatched
+2026-10-07T11:11:24.643Z opencode/glm-5.3 item.claimed
+2026-10-07T11:11:34.784Z opencode/glm-5.3 fork.created
+2026-10-07T11:30:35.899Z opencode/glm-5.3 item.released
+2026-10-07T11:31:07.175Z opencode/glm-5.3 item.claimed
+2026-10-07T11:57:05.563Z opencode/glm-5.3 push.observed
+2026-10-07T11:59:06.239Z opencode/glm-5.3 evidence.observed
+2026-10-07T11:59:08.604Z opencode/glm-5.3 evidence.observed
+2026-10-07T11:59:09.445Z opencode/glm-5.3 item.submitted
+2026-10-07T13:21:53.450Z pavi land.lease
+2026-10-07T13:22:05.495Z pavi land.merge
+2026-10-07T13:22:43.863Z pavi item.released
+2026-10-07T13:22:43.863Z pavi item.dispatched
+2026-10-07T13:23:07.781Z opencode/glm-5.3 item.claimed
+2026-10-07T13:30:57.266Z opencode/glm-5.3 push.observed
+2026-10-07T13:32:52.523Z opencode/glm-5.3 evidence.observed
+2026-10-07T13:32:55.413Z opencode/glm-5.3 evidence.observed
+2026-10-07T17:49:47.513Z pavi land.lease
+2026-10-07T17:49:51.768Z pavi land.merge
+2026-10-07T17:50:29.199Z pavi item.released
+2026-10-07T17:50:29.199Z pavi item.dispatched
+2026-10-07T17:50:30.071Z opencode/glm-5.3 item.claimed
+2026-10-07T18:26:01.106Z opencode/glm-5.3 push.observed
+2026-10-07T18:28:37.626Z opencode/glm-5.3 evidence.observed
+2026-10-07T18:28:42.449Z opencode/glm-5.3 evidence.observed
+2026-10-07T18:28:43.658Z opencode/glm-5.3 item.submitted
+2026-10-07T19:11:12.153Z pavi land.lease
+2026-10-07T19:11:22.536Z pavi land.merge
+2026-10-07T19:11:36.383Z pavi item.released
+2026-10-07T19:11:36.383Z pavi item.dispatched
+2026-10-07T19:11:41.774Z opencode/glm-5.3 item.claimed
+2026-10-07T19:19:53.053Z opencode/glm-5.3 push.observed
+2026-10-07T19:23:35.615Z opencode/glm-5.3 evidence.observed
+2026-10-07T19:23:39.638Z opencode/glm-5.3 evidence.observed
+2026-10-07T19:23:40.588Z opencode/glm-5.3 item.submitted
+2026-10-07T20:29:30.114Z pavi land.lease
+2026-10-07T20:29:31.288Z pavi land.merge
+2026-10-07T20:29:39.928Z pavi land.regenerate
+2026-10-07T20:29:41.985Z pavi land.push
+2026-10-07T20:32:24.647Z opencode/glm-5.3 evidence.observed
+2026-10-07T20:32:27.663Z opencode/glm-5.3 evidence.observed
+2026-10-07T20:32:28.225Z pavi land.check
+2026-10-07T20:32:28.654Z opencode/glm-5.3 item.submitted
+2026-10-07T20:32:28.961Z pavi land.submit
+2026-10-07T20:32:29.184Z pavi review.requested
+2026-10-07T20:32:58.976Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T20:40:45.839Z antigravity/gemini-3.1-pro review.released
+2026-10-07T20:41:16.854Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T20:48:45.664Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T20:48:50.306Z pavi land.review
+2026-10-07T20:48:51.109Z pavi item.accepted
+2026-10-07T20:48:51.249Z pavi land.accept
