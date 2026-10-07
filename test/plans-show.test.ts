@@ -142,10 +142,32 @@ test("plan show says what main head the branch last took, main's head now, and a
   assert.ok(running.some((l) => l.startsWith("A refresh from main at 11111111 is being merged by atelier/integrator")));
   const failed = lines({ taken: M0, main: M1, last: { mainHead: M1, state: "failed", by: "atelier/orchestrator", at: AT, endedAt: AT, reason: "merging main conflicted:\nCONFLICT in docs/using-atelier.md", kind: "conflict" }, running: false });
   assert.ok(failed.includes("The branch last took main at 00000000; main is now at 11111111."), "a failed head is not offered again on the behind line");
-  assert.ok(failed.includes("The refresh from main at 11111111 failed at 2026-10-06 12:00 UTC (a merge conflict; charged to no part): merging main conflicted: CONFLICT in docs/using-atelier.md. It is not tried again for that head; parts are dispatched without it. Run it again: atelier plan refresh t1 --project demo"), failed.join("\n"));
+  assert.ok(failed.includes("The refresh from main at 11111111 failed at 2026-10-06 12:00 UTC (a merge conflict; charged to no part): merging main conflicted: CONFLICT in docs/using-atelier.md. It is not tried again for that head. Parts are dispatched without it. Run it again: atelier plan refresh t1 --project demo, or have a part resolve it: atelier plan refresh t1 --resolve --project demo"), failed.join("\n"));
   const done = lines({ taken: M1, main: M1, last: { mainHead: M1, state: "refreshed", by: "atelier/orchestrator", at: AT, endedAt: AT, mergeCommit: R }, running: false });
   assert.ok(done.includes("Refreshed from main at 11111111 at 2026-10-06 12:00 UTC, as 22222222."));
   // A plan not approved, or closed, says nothing of main.
   assert.ok(!planText({ ...proposed, refresh: { taken: M0, main: M1, last: null, running: false } }, "demo").includes("main is now at"));
   assert.ok(!lines({ taken: M0, main: M1, last: null, running: false }, { item: { ...item, state: "merged" } }).some((l) => l.includes("main is now at")));
+});
+
+// A merge-main part the Ledger added for a conflicted refresh is listed like
+// any part, marked as added by Atelier for that main head and outside the
+// approved plan, and the failed refresh names it as what resolves it.
+test("plan show lists a merge-main part as added by Atelier for main at its head, and the failed refresh names it", () => {
+  const M0 = "0".repeat(40), M1 = "1".repeat(40);
+  const merging = part("t5", "merge-main-11111111", {
+    title: "Merge main at 11111111 into the plan's branch", scope: ["src/diagrams.ts"], route: route("merge-main-11111111", "codex/gpt-6-astra"),
+    dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", by: "atelier/orchestrator", at: AT, note: "", job: "merge-main", head: M1 },
+    added: { mainHead: M1, by: "atelier/orchestrator", at: AT },
+  });
+  const failed = { mainHead: M1, state: "failed" as const, by: "atelier/orchestrator", at: AT, endedAt: AT, reason: "merging main conflicted: CONFLICT (content): Merge conflict in src/diagrams.ts", kind: "conflict" };
+  const text = planText({ ...building, parts: [...building.parts, merging], refresh: { taken: M0, main: M1, last: failed, running: false } }, "demo").split("\n");
+  assert.ok(text.includes("  t5  merge-main-11111111  queued for codex/gpt-6-astra  Merge main at 11111111 into the plan's branch"), text.join("\n"));
+  assert.ok(text.includes("      added by Atelier for main at 11111111, after the refresh conflicted, at 2026-10-06 12:00 UTC; not in the approved plan. No other part is dispatched until it is integrated"), text.join("\n"));
+  assert.ok(text.includes("      scope src/diagrams.ts; depends on nothing"));
+  assert.ok(text.some((l) => l.startsWith("The refresh from main at 11111111 failed") && l.endsWith("It is not tried again for that head. Part t5 (merge-main-11111111) resolves it and goes before every other part.")), text.join("\n"));
+  // One the owner asked for says so; a part the approved plan holds carries no such line.
+  const asked = planText({ ...building, parts: [{ ...merging, added: { mainHead: M1, by: "owner", at: AT } }] }, "demo").split("\n");
+  assert.ok(asked.some((l) => l.startsWith("      added by Atelier for main at 11111111, at owner's request")));
+  assert.ok(!planText(building, "demo").includes("added by Atelier"));
 });

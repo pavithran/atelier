@@ -31,6 +31,9 @@ export interface PlanPartView {
   integration: { head: string; mergeCommit: string } | null;  // recorded when the part became integrated
   integrationFailure?: IntegrationFailure | null;  // the part's latest failed integration, if any
   blocked?: { reason: string; by: string } | null;  // while blocked: why, and who blocked it
+  // Set for a part the Ledger added after approval, outside the approved
+  // document: the main head it merges, who added it and when.
+  added?: { mainHead: string; by: string; at: string } | null;
 }
 
 export interface PlanView {
@@ -101,6 +104,15 @@ function integrationFailureLine(p: PlanPartView): string | null {
   return `integration failed at ${when(f.at)} (${what}; ${chargesBuilder(f.kind) ? "charged to the builder" : "not charged to the builder"}): ${cut(flat(f.reason) || "no reason given", 500)}`;
 }
 
+// A part the Ledger added: for which main head, by whom, and that it goes
+// before every other part.
+function addedLine(p: PlanPartView): string | null {
+  const a = p.added;
+  if (!a) return null;
+  const who = a.by === "atelier/orchestrator" ? "after the refresh conflicted" : `at ${a.by}'s request`;
+  return `added by Atelier for main at ${a.mainHead.slice(0, 8)}, ${who}, at ${when(a.at)}; not in the approved plan. No other part is dispatched until it is integrated`;
+}
+
 function routeLines(route: PartRoute | undefined | null, preview: boolean): string[] {
   if (!route) return [];
   const lead = preview ? "would be built by" : "builder";
@@ -141,7 +153,7 @@ export function planText(v: PlanView, project: string): string {
     for (const p of v.parts) {
       lines.push(`  ${p.id}  ${p.key}  ${partState(p, v.parts)}  ${flat(p.title)}`);
       const deps = p.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`);
-      const detail = [`scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
+      const detail = [addedLine(p), `scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
       for (const line of detail) if (line) lines.push(`      ${line}`);
     }
   } else if (v.plan) {
@@ -189,7 +201,11 @@ function refreshLines(v: PlanView, flag: string): string[] {
     lines.push(`A refresh from main at ${s(last.mainHead)} is ${r.running ? "being merged by atelier/integrator" : "queued for atelier/integrator"}, asked by ${last.by} at ${when(last.at)}; parts wait for it before they are dispatched.`);
   } else if (last?.state === "failed") {
     const what = last.kind === "conflict" ? "a merge conflict" : last.kind === "checks" ? "failing checks" : last.kind ? `kind ${flat(last.kind)}` : "kind not recorded";
-    lines.push(`The refresh from main at ${s(last.mainHead)} failed at ${when(last.endedAt ?? last.at)} (${what}; charged to no part): ${cut(flat(last.reason ?? "") || "no reason given", 500)}. It is not tried again for that head; parts are dispatched without it. Run it again: ${again}`);
+    const resolving = v.parts.find((p) => p.added?.mainHead === last.mainHead);
+    const next = resolving
+      ? `Part ${resolving.id} (${resolving.key}) resolves it and goes before every other part.`
+      : `Parts are dispatched without it. Run it again: ${again}, or have a part resolve it: ${again.replace(`refresh ${v.item.id}`, `refresh ${v.item.id} --resolve`)}`;
+    lines.push(`The refresh from main at ${s(last.mainHead)} failed at ${when(last.endedAt ?? last.at)} (${what}; charged to no part): ${cut(flat(last.reason ?? "") || "no reason given", 500)}. It is not tried again for that head. ${next}`);
   } else if (last?.state === "refreshed") {
     lines.push(`Refreshed from main at ${s(last.mainHead)} at ${when(last.endedAt ?? last.at)}${last.mergeCommit ? `, as ${s(last.mergeCommit)}` : "; the branch already held it"}.`);
   }

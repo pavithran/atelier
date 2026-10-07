@@ -50,6 +50,7 @@ async function fixture(t) {
     else if (req.method === "POST" && /^\/api\/projects\/proj\/items\/t2\/plan\/(reroute|retry)$/.test(p)) data = approvedView;
     else if (req.method === "POST" && p === "/api/projects/proj/items/t3/plan/reroute") data = { ...approvedView, parts: [{ ...partView, id: "t3", state: "submitted", dispatch: null }] };
     else if (req.method === "POST" && p === "/api/projects/proj/items/t4/plan/reroute") data = { ...approvedView, parts: [{ ...partView, id: "t4", state: "blocked", dispatch: null, blocked: { reason: "the owner holds it", by: "owner" } }] };
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/refresh" && body?.resolve === true) data = { ...approvedView, item, refresh: { taken: "0".repeat(40), main: "1".repeat(40), last: null, running: false }, parts: [partView, { ...partView, id: "t6", key: "merge-main-11111111", dispatch: { ...dispatch, job: "merge-main", head: "1".repeat(40) }, added: { mainHead: "1".repeat(40), by: "owner", at: AT } }] };
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/refresh") data = { ...approvedView, item: { ...item, dispatch: { ...dispatch, agent: "atelier", model: "integrator", by: "owner", job: "refresh", head: "1".repeat(40) } }, refresh: { taken: "0".repeat(40), main: "1".repeat(40), last: { mainHead: "1".repeat(40), state: "dispatched", by: "owner", at: AT }, running: false } };
     else if (req.method === "POST" && p === "/api/projects/proj/items/t5/plan/refresh") { status = 409; data = { error: "up_to_date", detail: "t5's branch already holds main's head 11111111; there is nothing to refresh" }; }
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/stop") data = { ...approvedView, item: { ...item, state: "abandoned" }, parts: [{ ...partView, state: "abandoned" }] };
@@ -202,4 +203,22 @@ test("plan refresh asks the server as the owner and says what is queued; a refus
   assert.notEqual(held.status, 0);
   assert.match(held.stderr, /already holds main's head 11111111/);
   assert.equal(f.requests.length, 2, "the flag is refused before anything is sent");
+});
+
+test("plan refresh --resolve asks the server to add the merge-main part, with --to as its builder, and says what is queued", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["plan", "refresh", "t1", "--resolve", "--to", "zcode/glm-5.3"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests, [{ method: "POST", path: "/api/projects/proj/items/t1/plan/refresh", actor: "owner", body: { resolve: true, to: "zcode/glm-5.3" } }]);
+  assert.equal(r.stdout.split("\n")[0], "t1 has part t6 (merge-main-11111111) to merge main at 11111111 into its branch: queued for zcode/glm-5.3. Its builder resolves the conflicts; no other part is dispatched until it is integrated.");
+  const bare = await f.run(["plan", "refresh", "t1", "--resolve"]);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.deepEqual(f.requests[1].body, { resolve: true });
+  // --to is refused without --resolve, and a malformed one before anything is sent.
+  for (const argv of [["plan", "refresh", "t1", "--to", "zcode/glm-5.3"], ["plan", "refresh", "t1", "--resolve", "--to", "glm"]]) {
+    const refused = await f.run(argv);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /--to/);
+  }
+  assert.equal(f.requests.length, 2);
 });

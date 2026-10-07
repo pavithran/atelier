@@ -1239,19 +1239,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // branch's first-parent line and its parents include the part's head.
       const partKey = String(body.part ?? "");
       const mergeCommit = String(body.mergeCommit ?? "");
-      const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
+      const { plan, part, integrationHead, mainHead } = await L.integrationTarget(id, partKey);
       if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409);
       if (!part.head) throw new RuleError("no_head", `part ${partKey} has no verified head`, 409);
       using repo = await env.ARTIFACTS.get(plan.fork);
       const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
       const reasons = verifyIntegration({ log, integrationHead: integrationHead ?? plan.base ?? "", partHead: part.head, mergeCommit });
       if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409);
+      // A merge-main part's integration puts its main head on the plan's
+      // branch when the merge commit holds it, which is read from the branch.
+      const holdsMain = mainHead ? (await holdsCommit(env, plan.fork, mergeCommit, mainHead)).holds === true : false;
       // The integration may let the tick dispatch a part that depends on it,
       // and the tick refreshes the branch first when main has moved, so main's
       // head is read now for it to compare.
       const main = await mainHeadOf(env, L);
       if (main) await L.noteMainHead(main);
-      return json(await L.integratePart(id, actor, partKey, mergeCommit, true));
+      return json(await L.integratePart(id, actor, partKey, mergeCommit, true, holdsMain));
     }
     case "refreshed": {
       // The integrator reports a refresh: main's head merged into the plan's
@@ -1445,8 +1448,12 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       return json(await L.planView(id));
     case "refresh": {
       // The owner asks the integrator to merge main's head into the plan's
-      // branch (docs/orchestrator.md, section 5). Main's head is read from
-      // the baseline, and whether the branch already holds it from the plan's fork.
+      // branch (docs/orchestrator.md, section 5), or, with `resolve`, adds
+      // the merge-main part for it, built by `to` when named. Main's head is
+      // read from the baseline, and whether the branch already holds it from
+      // the plan's fork.
+      if (body.resolve !== undefined && typeof body.resolve !== "boolean") throw new RuleError("bad_resolve", "resolve must be true or false", 400);
+      if (body.to !== undefined && body.resolve !== true) throw new RuleError("bad_to", "to names the builder of the part plan refresh --resolve adds; give it with resolve", 400);
       const p = await L.project();
       const main = await headOf(env, p.repo);
       if (!main) throw new RuleError("empty", "the baseline has no commits", 409);
@@ -1454,7 +1461,8 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       const plan = await L.item(id);
       const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
       const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
-      await L.planRefresh(id, actor, main, holds);
+      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to);
+      else await L.planRefresh(id, actor, main, holds);
       return json(await L.planView(id, null, main));
     }
     case "stop": {
