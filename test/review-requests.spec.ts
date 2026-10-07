@@ -385,3 +385,34 @@ it("a named reviewer who later contributes is passed over and the plan picks aga
   expect(await routedReviewer(L, partId)).toBe(reviewer);
   expect(builder).not.toBe(reviewer);
 });
+
+// t230: the review claim carries a read token for the branch the item merges
+// into, so the review job can diff from the merge base: a part's is its
+// plan's integration branch (the plan's fork), any other item's the baseline.
+it("the review claim route names the plan's branch as a part's merge target", async () => {
+  const { default: worker } = await import("../src/index.ts");
+  const name = "review-claim-target";
+  const L = await setup(name);
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  const { id, partId } = await approved(L);
+  await L.setFork(id, "plan-fork", H0, "owner");
+  await submitPart(L, partId, "a".repeat(40));
+  const asked: string[] = [];
+  const ARTIFACTS = {
+    get: async (repo: string) => ({
+      info: async () => ({ remote: `https://git.test/${repo}`, defaultBranch: "main" }),
+      createToken: async () => { asked.push(repo); return { plaintext: `token-${repo}`, id: "id", expiresAt: "soon" }; },
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts;
+  const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${partId}/review-claim`, {
+    method: "POST",
+    headers: { authorization: "Bearer review-claim-token", "x-atelier-actor": GPT, "x-atelier-runner": "home:studio", "content-type": "application/json" },
+    body: "{}",
+  }), { ...env, ATELIER_TOKEN: "review-claim-token", ARTIFACTS } as typeof env);
+  expect(res.status).toBe(200);
+  const claim = await res.json() as { readToken: { remote: string }; target: { remote: string; token: string; branch: string } };
+  expect(claim.readToken.remote).toBe(`https://git.test/fork-${partId}`);
+  expect(claim.target).toEqual({ remote: "https://git.test/plan-fork", token: "token-plan-fork", branch: "main" });
+  expect(asked).toEqual([`fork-${partId}`, "plan-fork"]);
+});
