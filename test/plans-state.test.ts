@@ -278,3 +278,10 @@ test("a task's merge-main dispatch goes only to a runner that offers merge-main-
   assert.ok(assign(d, { ...old, runner: "home:new", jobs: [...old.jobs, "merge-main-task"] }));
   assert.match(unoffered(d, [{ ...old, at: new Date().toISOString() }]) ?? "", /home:old offers no merge-main-task job/);
 });
+
+test("a runner offering exactly merge-main-task takes a task's merge-main job, as its own loop names it", () => {
+  const d = makeDispatch({ to: "home", agent: "codex", model: "gpt-6-astra", job: "merge-main", head: "1".repeat(40) }, ORCHESTRATOR, AT);
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  assert.ok(assign(d, { runner: "home:merges", kind: "home", agents, jobs: ["merge-main-task"] }));
+  assert.equal(unoffered(d, [{ runner: "home:merges", kind: "home", agents, jobs: ["merge-main-task"], at: new Date().toISOString() }]), null);
+});
