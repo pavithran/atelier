@@ -60,6 +60,37 @@ it("a claim on a dispatched task is refused without the right runner header", as
   expect((await claim("opencode/glm-5.3-flash", "laptop")).status).toBe(400);
 });
 
+// t235: a runner that died mid-build leaves its claim behind; the queue
+// offers that claim back to the same runner alone, so the process that takes
+// over re-claims its own and finishes the work. Another runner, another
+// actor's assignment and the owner's queue listing all leave it alone.
+it("the queue offers a runner the claim its dead run left held, to it alone", async () => {
+  await project("routes-held");
+  const created = await (await call("POST", "/projects/routes-held/items", "owner", { title: "Build", scope: ["a/**"] })).json() as { id: string };
+  // No agent named, so the offer's own choice of agent takes the claim.
+  await call("POST", `/projects/routes-held/items/${created.id}/dispatch`, "owner", { to: "home" });
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-held"));
+  const model = "Qwen3-Coder-Next-4bit:studio-code";
+  const actor = `opencode/${model}`;
+  await L.claim(created.id, actor, { runner: "home:mbp", kind: "home" });
+  await L.setFork(created.id, "routes-held--t1", "0".repeat(40), actor);
+
+  const offered = (body: unknown) => call("POST", "/queue", "owner", body).then((r) => r.json());
+  const mine = await offered({ runner: "home:mbp", agents: [{ agent: "opencode", models: [model] }] }) as { project: string; item: { id: string; state: string; owner: string }; actor: string }[];
+  expect(mine.find((q) => q.project === "routes-held" && q.item.id === created.id))
+    .toMatchObject({ actor, item: { state: "claimed", owner: actor } });
+
+  const other = await offered({ runner: "home:mbp-2", agents: [{ agent: "opencode", models: [model] }] }) as { project: string; item: { id: string } }[];
+  expect(other.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
+  // An offer whose assignment would name another actor cannot take the claim
+  // over (claim refuses another's holder), so it is not offered at all.
+  const rerouted = await offered({ runner: "home:mbp", agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "opencode", models: [model] }] }) as { project: string; item: { id: string } }[];
+  expect(rerouted.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
+  // The owner's queue listing counts waiting work, not claims held of it.
+  const all = await (await call("GET", "/queue", "owner")).json() as { project: string; item: { id: string } }[];
+  expect(all.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
+});
+
 it("the model pool: anyone signed in reads it, only the owner changes it, a runner reports status", async () => {
   const api = (method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}) =>
     worker.fetch(new Request(`https://atelier.test/api/models${path}`, {

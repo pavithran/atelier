@@ -7,7 +7,7 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
@@ -723,17 +723,28 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
       try {
+        // The runner's own held jobs come first (heldJobs, t235): a run that
+        // died mid-build leaves its claim behind, and the process that takes
+        // over settles it — finishing the commits the dead run made — before
+        // it starts new work.
+        const held = offer ? (await ledgerOf(env, p).heldJobs(offer.runner)).map((item) => ({ project: p.name, item })) : [];
         const waiting = (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item }));
         const reviews = (await ledgerOf(env, p).reviewWaiting()).map((item) => ({ project: p.name, item }));
-        return [...waiting, ...reviews];
+        return [...held, ...waiting, ...reviews];
       }
       catch { unreadable.push(p.name); return []; }
     }));
-    const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
+    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // the claim a dead run left behind is settled before new work starts.
+    const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
-          return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
+          // A held job is offered only as the claim it already is: the
+          // assignment must name its holder, or the re-claim would be refused
+          // as another's claim (claim guards the runner name; assign the actor).
+          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1542,6 +1553,12 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
         : [];
     }),
   };
+}
+
+// Whether an item coming off the queue is a claim a runner already holds, as
+// heldJobs lists it: the queue offers it back to its holder alone.
+function isHeld(item: Item): boolean {
+  return item.state === "claimed" && !!item.owner;
 }
 
 async function inbox(env: Env, token?: AgentToken) {
