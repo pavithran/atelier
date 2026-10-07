@@ -32,6 +32,11 @@ export interface Dispatch {
   part?: string;
   head?: string;
   partId?: string;
+  // For a part sent back because its integration conflicted with the plan's
+  // branch: the plan branch's head, which the runner merges into the part's
+  // workspace before the builder starts. Only a runner that offers the
+  // "merge-plan" job takes such a dispatch.
+  planHead?: string;
 }
 
 // What a runner says it can run when it asks for work. `jobs` names the
@@ -112,6 +117,7 @@ export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
   }
   if (d.to !== "any" && d.to !== offer.kind) return null;
   if (d.job && !(offer.jobs ?? []).includes(d.job)) return null;
+  if (d.planHead && !(offer.jobs ?? []).includes("merge-plan")) return null;
   for (const { agent, models } of offer.agents) {
     if (d.agent && agent !== d.agent) continue;
     const usable = models.filter((m) => claimable(agent, m));
