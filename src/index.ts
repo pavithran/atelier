@@ -866,12 +866,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // One landing at a time per project (atelier land, t187): GET reads who
   // holds the lease; POST takes it for one task, refusing while another live
   // task's landing holds it and naming a lapsed lease it took over,
-  // { item, renew: true } is the holder's heartbeat, and { cancel: true }
-  // releases it, answering which task held it since when.
+  // { item, renew: true } is the holder's heartbeat, and { cancel: true, item }
+  // releases that task's lease, answering which task held it since when, and
+  // leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
     if (m === "GET") return json({ lease: await L.readProjectLanding() });
     requireOwner(env, actor);
-    if (body.cancel === true) return json(await L.cancelProjectLanding(actor));
+    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
   }

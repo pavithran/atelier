@@ -96,7 +96,11 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       // lease not renewed for the expiry is taken over and named as expired.
       const now = new Date().toISOString();
       if (req.method === "GET") answer = { lease: box.lease };
-      else if (body.cancel === true) { answer = { held: !!box.lease, lease: box.lease }; box.lease = null; }
+      else if (body.cancel === true) {
+        if (!body.item) return fail(400, "bad_item", "a cancel names the task whose landing lease it releases");
+        if (box.lease && box.lease.item !== body.item) return fail(409, "landing_lease", `the landing lease is held for ${box.lease.item}, not ${body.item}: ${box.lease.holder} has been landing ${box.lease.item} since ${box.lease.at.slice(0, 16).replace("T", " ")} UTC, and its lease is left alone. Free it with atelier land ${box.lease.item} --release-lease`);
+        answer = { held: !!box.lease, lease: box.lease }; box.lease = null;
+      }
       else if (body.renew === true) {
         if (box.renewFails) return fail(503, "unavailable", "the ledger could not be reached");
         if (!box.lease || box.lease.item !== body.item) return fail(409, "no_lease", `the landing lease is held for ${box.lease?.item ?? "nobody"}, not ${body.item}`);
@@ -413,7 +417,7 @@ test("--release-lease frees the lease and says which task held it since when; no
   assert.match(freed.output, /Released the landing lease of proj: owner held it for t1 since 2026-10-06 09:30 UTC/);
   assert.equal(f.box.lease, null);
   // The lease alone was touched: no version check, no step recorded, nothing landed.
-  assert.deepEqual(f.box.requests.map((x) => [x.method, x.path]), [["GET", "/api/projects/proj/landing-lease"], ["POST", "/api/projects/proj/landing-lease"]]);
+  assert.deepEqual(f.box.requests.map((x) => [x.method, x.path, x.body]), [["GET", "/api/projects/proj/landing-lease", {}], ["POST", "/api/projects/proj/landing-lease", { cancel: true, item: "t1" }]]);
   const mixed = await f.run(f.checkout, "land", "t1", "--release-lease", "--dry-run");
   assert.equal(mixed.status, 1); assert.match(mixed.output, /does nothing else; give it alone/);
 });
@@ -506,4 +510,27 @@ test("a refused renewal stops the heartbeat and is said once, and the lost lease
   await landing.done;
   assert.equal(f.box.lease?.item, "t2");
   assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
+});
+
+test("a landing whose lease lapsed and was taken over releases nothing of the landing that took it", async (t) => {
+  const f = await landFixture(t);
+  // t1's landing waits for a review while its lease is renewed; then its
+  // renewals stop reaching the server and t2's landing takes the lease over.
+  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
+  await until(() => f.box.review.pending, 15_000, "the review request");
+  f.box.renewFails = true;
+  const taken = new Date().toISOString();
+  f.box.lease = { item: "t2", holder: "owner", at: taken, renewedAt: taken };
+  // t1's landing ends on a signal, as a killed one would: its release names
+  // t1, so the server leaves t2's lease where it is.
+  landing.child.kill("SIGTERM");
+  await landing.done;
+  assert.deepEqual(f.posts("/landing-lease").filter((x) => x.body.cancel === true).map((x) => x.body), [{ cancel: true, item: "t1" }]);
+  assert.deepEqual(f.box.lease, { item: "t2", holder: "owner", at: taken, renewedAt: taken });
+  assert.match(landing.output(), /the landing lease could not be released/);
+  // --release-lease aimed at t1 refuses too, naming t2's landing, and leaves the lease.
+  const r = await f.run(f.checkout, "land", "t1", "--release-lease");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /held for t2, not t1: owner has been landing t2 since .*atelier land t2 --release-lease/);
+  assert.deepEqual(f.box.lease, { item: "t2", holder: "owner", at: taken, renewedAt: taken });
 });

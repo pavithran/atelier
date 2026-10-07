@@ -74,7 +74,7 @@ it("the project's landing lease holds one landing, names who holds it and since 
   await refusal(L.beginProjectLanding(b, "owner"), "landing_lease", new RegExp(`^owner has been landing ${a} since \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC; one landing runs at a time`));
   // The same task takes its own lease again, to resume after a stop.
   await L.beginProjectLanding(a, "owner");
-  await L.cancelProjectLanding("owner");
+  await L.cancelProjectLanding(a, "owner");
   await L.beginProjectLanding(b, "owner");
   // A lease whose task has closed no longer guards anything.
   await L.abandon(b, "owner", "not wanted", null);
@@ -114,11 +114,18 @@ it("a lease lapses when not renewed for the expiry: the holder renews it, the ne
   expect((await L.readProjectLanding())!).toMatchObject({ item: b });
   // A lapsed lease can no longer be renewed by the task that lost it.
   await refusal(L.renewProjectLanding(a, "owner"), "no_lease", new RegExp(`held for ${b}, not ${a}`));
-  // The cancel answers which task held the lease since when; a second one, nothing.
-  const cancelled = await L.cancelProjectLanding("owner");
+  // A cancel from the landing that lost the lease, or aimed at it, leaves
+  // the lease that took it over, naming whose it is; a cancel naming no
+  // task is refused.
+  await refusal(L.cancelProjectLanding(a, "owner"), "landing_lease", new RegExp(`^the landing lease is held for ${b}, not ${a}: owner has been landing ${b} since .*atelier land ${b} --release-lease`));
+  await refusal(L.cancelProjectLanding("", "owner"), "bad_item", /names the task whose landing lease it releases/);
+  expect((await L.readProjectLanding())!).toMatchObject({ item: b });
+  // The cancel for the holder answers which task held the lease since when;
+  // a second one, nothing.
+  const cancelled = await L.cancelProjectLanding(b, "owner");
   expect(cancelled.held).toBe(true);
   expect(cancelled.lease).toMatchObject({ item: b, holder: "owner" });
-  expect(await L.cancelProjectLanding("owner")).toEqual({ held: false, lease: null });
+  expect(await L.cancelProjectLanding(b, "owner")).toEqual({ held: false, lease: null });
   await refusal(L.renewProjectLanding(b, "owner"), "no_lease", /no landing lease is held/);
 });
 
@@ -136,7 +143,10 @@ it("the landing-lease route takes, renews and cancels the lease for the owner", 
   const renewed = await post({ item: a, renew: true });
   expect(renewed.status).toBe(200);
   expect(await renewed.json()).toMatchObject({ lease: { item: a, holder: "owner" } });
-  const cancelled = await post({ cancel: true });
+  const other = await post({ cancel: true, item: "t99" });
+  expect(other.status).toBe(409);
+  expect(await L.readProjectLanding()).toMatchObject({ item: a });
+  const cancelled = await post({ cancel: true, item: a });
   expect(await cancelled.json()).toMatchObject({ held: true, lease: { item: a } });
   expect(await L.readProjectLanding()).toBeNull();
 });

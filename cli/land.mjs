@@ -68,8 +68,9 @@ export async function runLand(io) {
     const { lease } = await request("GET", leasePath);
     if (!lease) { print(`No landing lease is held in ${name}; nothing to release.`); return; }
     if (lease.item !== id) die(`the landing lease in ${name} is held for ${lease.item}, not ${id}: ${lease.holder} has been landing ${lease.item} since ${since(lease)}. Free it with atelier land ${lease.item} --release-lease`);
-    await request("POST", leasePath, { cancel: true });
-    print(`Released the landing lease of ${name}: ${lease.holder} held it for ${id} since ${since(lease)}. Another task may land.`);
+    // The cancel names the task, so the server frees ${id}'s lease alone.
+    const { lease: freed } = await request("POST", leasePath, { cancel: true, item: id });
+    print(`Released the landing lease of ${name}: ${(freed ?? lease).holder} held it for ${id} since ${since(freed ?? lease)}. Another task may land.`);
     return;
   }
 
@@ -150,7 +151,9 @@ export async function runLand(io) {
     if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     if (!leased) return;
     leased = false;
-    try { await request("POST", leasePath, { cancel: true }); }
+    // The cancel names this task: a lease that lapsed and was taken over by
+    // another landing is that landing's now, and the server leaves it.
+    try { await request("POST", leasePath, { cancel: true, item: id }); }
     catch (error) { print(`Warning: the landing lease could not be released; a later landing of ${id} takes it over, and it lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes: ${error.message}`); }
   };
   // A signal releases the lease, then ends the command with the signal's
