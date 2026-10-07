@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { LIMITS, LOOP, ORCHESTRATOR, RULES, TERMS } from "../src/how-data.ts";
+import { LIMITS, LOOP, ORCHESTRATOR, RULES, TERMS, USING_WELL, USING_WELL_DOC } from "../src/how-data.ts";
 import { HELP_FORMS } from "../src/usage.ts";
 import { LAYERS_CAPTION, LAYERS_LABEL, PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_LABEL, PLAN_FLOW_RETURNS, layersDiagram } from "../src/diagrams.ts";
 
@@ -114,6 +114,7 @@ test("the page text uses no dash as punctuation, and says each step, term and ru
     ...RULES.flatMap((r) => [r.title, r.enforced, r.why]),
     ...LIMITS,
     ...ORCHESTRATOR.flatMap((p) => [p.name, p.stage, p.what]),
+    ...USING_WELL.map((a) => a.point),
   ];
   for (const t of text) assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
   for (const list of [LOOP.map((s) => s.name), TERMS.map((t) => t.term), RULES.map((r) => r.title)]) assert.equal(new Set(list).size, list.length);
@@ -195,6 +196,26 @@ test("the layers diagram shows a goal entering as a plan and the runner's jobs",
   assert.ok(svg.includes(">build, plan and review jobs</text>"), "the home runner node names its jobs");
   assert.ok(svg.includes(">holds each plan and dispatches its parts and jobs</text>"), "the Ledger node holds the plan");
   for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
+});
+
+// The Using Atelier well section restates the owner's guide. Each point
+// carries a phrase that must stand in the point and in the guide, so a
+// rewrite of either that drops it fails here instead of leaving the page
+// saying something the guide no longer does.
+test("each point of Using Atelier well names something in docs/using-atelier.md", () => {
+  assert.equal(USING_WELL_DOC, "docs/using-atelier.md");
+  assert.ok(existsSync(join(root, USING_WELL_DOC)), `${USING_WELL_DOC} does not exist`);
+  const guide = read(USING_WELL_DOC);
+  assert.ok(USING_WELL.length >= 3, "the section has too few points to be a guide");
+  for (const { point, from } of USING_WELL) {
+    assert.ok(from.trim().length >= 8, `"${from}" is too short to tie a point to the guide`);
+    assert.ok(point.includes(from), `the point "${point.slice(0, 40)}…" does not say "${from}"`);
+    assert.ok(guide.includes(from), `"${from}" is not in ${USING_WELL_DOC}; the point has drifted from the guide`);
+  }
+  // Fewer words than the guide: each point is a few sentences, not a copy of a section.
+  for (const { point } of USING_WELL) assert.ok(point.length <= 400, `a point is too long to be a summary: ${point.slice(0, 40)}…`);
+  const froms = USING_WELL.map((a) => a.from);
+  assert.equal(new Set(froms).size, froms.length, "two points lean on the same phrase");
 });
 
 test("each diagram label is short enough for its box at the drawn size", () => {

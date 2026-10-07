@@ -3,7 +3,7 @@
 // the command reference is drawn from src/usage.ts, which the CLI prints from.
 
 import how from "./how.css";
-import { ORCHESTRATOR, LIMITS, LOOP, LOOP_CAPTION, LOOP_LABEL, LOOP_RETURN, RULES, TERMS, type Lane } from "./how-data.ts";
+import { ORCHESTRATOR, LIMITS, LOOP, LOOP_CAPTION, LOOP_LABEL, LOOP_RETURN, RULES, TERMS, USING_WELL, USING_WELL_DOC, type Lane } from "./how-data.ts";
 import { HELP_GROUPS, guideText } from "./usage.ts";
 import { REPO_URL, escapeText as e, publicPage } from "./ui";
 import { layersFigure, planFlowFigure } from "./diagrams.ts";
@@ -103,6 +103,13 @@ ${planFlowFigure()}
 <ul class="how-status">${ORCHESTRATOR.map((p) => `<li><span class="tag ${p.built ? "go" : "ask"}">${p.built ? "Built" : "Not built yet"}</span><div><h3>${e(p.name)} <span class="meta">${e(p.stage)}</span></h3><p>${md(p.what)}</p></div></li>`).join("")}</ul>`;
 }
 
+// The owner's guide in short; the file in the repository says each point in full.
+function usingWell(): string {
+  return `
+<p>The project owner makes three kinds of decision: what to do, whether a plan's split is right, and whether finished work is accepted. These points, from <a href="${REPO_URL}/blob/main/${USING_WELL_DOC}">${e(USING_WELL_DOC)}</a> in the repository, are about making them well and leaving the rest to the system.</p>
+<ul class="how-limits">${USING_WELL.map((a) => `<li>${md(a.point)}</li>`).join("")}</ul>`;
+}
+
 // The command reference is most of the page's bytes, so each group arrives
 // closed in a details element: the page opens at its explanation, and a
 // reader opens the group they need.
@@ -116,10 +123,10 @@ ${groups}
 }
 
 export function renderHow(): string {
-  const sections: [string, string][] = [["Terms", terms()], ["Where it runs", where()], ["The loop", loop()], ["Rules", rules()], ["The orchestrator", orchestrator()], ["Commands", commands()]];
+  const sections: [string, string][] = [["Terms", terms()], ["Where it runs", where()], ["The loop", loop()], ["Rules", rules()], ["The orchestrator", orchestrator()], ["Using Atelier well", usingWell()], ["Commands", commands()]];
   return publicPage({
     title: "How it works · Atelier",
-    description: "What Atelier is, the loop from task to merge, the rules it enforces and why, which parts of the orchestrator are built, and every command.",
+    description: "What Atelier is, the loop from task to merge, the rules it enforces and why, which parts of the orchestrator are built, how to use it well, and every command.",
     brand: "/",
     nav: [["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
     mainClass: "page-width how",
