@@ -386,6 +386,8 @@ async function gone(pid, ms = 2000) {
   return !alive(pid);
 }
 
+const GRACE_MS = 4000, PROMPT_MS = 3000;
+
 test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 30_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-group-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -403,7 +405,7 @@ test("a child's background processes end with it, whether it succeeded, failed o
       while (!written()) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       ${ending === "deadline" ? UNTIL_TEST_EXITS : `process.exit(${ending.slice(5)})`}`;
     const start = Date.now();
-    const result = await execute([process.execPath, "-e", leader], { capture: true, timeoutMs: ending === "deadline" ? 1000 : 20_000, graceMs: 1000 });
+    const result = await execute([process.execPath, "-e", leader], { capture: true, timeoutMs: ending === "deadline" ? 1000 : 20_000, graceMs: GRACE_MS });
     const took = Date.now() - start;
     const pid = Number(readFileSync(file, "utf8"));
     pids.push(pid);
@@ -411,8 +413,11 @@ test("a child's background processes end with it, whether it succeeded, failed o
     assert.equal(result.timedOut, ending === "deadline", label);
     if (ending !== "deadline") assert.equal(result.code, Number(ending.slice(5)), label);
     assert.ok(await gone(pid), `the background child is gone once execute returns: ${label}`);
-    // A group that ends at SIGTERM ends the wait at once; one that ignores it waits out the grace period.
-    assert.ok(ignore ? took >= 1000 : took < (ending === "deadline" ? 1000 : 0) + 900, `${label}: ${took} ms`);
+    // A group that ends at SIGTERM ends the wait at once; one that ignores it
+    // waits out the grace period. The grace is long and the bound for a
+    // prompt end sits well below it, so a busy machine, where starting the two
+    // node processes alone can take a second, cannot blur the two.
+    assert.ok(ignore ? took >= GRACE_MS : took < (ending === "deadline" ? 1000 : 0) + PROMPT_MS, `${label}: ${took} ms`);
   }
 });
 

@@ -34,7 +34,7 @@ step() { local o; o=$("$@" 2>&1) || { echo "$t: $1 $2 failed:"; echo "$o" | tail
 step atelier push
 checked=$(atelier check 2>&1); code=$?
 out=$(echo "$checked" | grep -E "PASS|FAIL"); echo "$out"
-{ [ $code -eq 0 ] && echo "$out" | grep -q PASS && ! echo "$out" | grep -q FAIL; } || { echo "$t: CHECK FAILED"; echo "$checked" | tail -3; exit 2; }
+{ [ $code -eq 0 ] && echo "$out" | grep -q PASS && ! echo "$out" | grep -q FAIL; } || { echo "$t: CHECK FAILED"; echo "$checked" | tail -25; exit 2; }
 step atelier submit --summary "Merged with main; checks pass."
 # The head the reviewer reads, which the review and the acceptance name.
 head=$(git rev-parse HEAD) || exit 7

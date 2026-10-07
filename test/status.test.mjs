@@ -92,6 +92,36 @@ test("a pair seen from both sides is printed once", () => {
   assert.ok(out.includes("    t1 and t2 name overlapping paths"));
 });
 
+test("an overlap whose reason names no pair stays a plain decision, so nothing the server says is lost", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" }), item("t2", "claimed", { owner: "codex/gpt-6" })],
+    inbox: [
+      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
+      entry("t7", "overlap", { reason: "its paths are shared with other live work" }),
+    ],
+  }]).split("\n");
+  assert.ok(out.includes("    t1 and t2 name overlapping paths"), "the pair still stands under its heading");
+  const wait = out.indexOf("  Waiting for you");
+  const said = out.indexOf("    t7  overlap  Task t7");
+  assert.ok(said > wait, "the entry stands with the owner's decisions");
+  assert.ok(out.includes("      its paths are shared with other live work"), "its reason is shown");
+  assert.ok(!out.some((l) => l.includes("next:")), "an overlap still offers no command");
+});
+
+test("a project whose only entries are overlaps says nothing waits on the owner, then lists the scopes", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "open"), item("t2", "open")],
+    inbox: [entry("t1", "overlap", { reason: "scope overlaps t2 (unowned)" })],
+  }]).split("\n");
+  assert.ok(!out.includes("  Nothing waiting."), "the bare idle line is gone");
+  const idle = out.indexOf("  Nothing waiting on you.");
+  const heading = out.indexOf("  Overlapping scopes");
+  const pair = out.indexOf("    t1 and t2 name overlapping paths");
+  assert.ok(idle > -1 && idle < heading && heading < pair, "the idle line, the heading, then the scopes");
+});
+
 test("--json carries the sorted pairs, each once, beside an unchanged inbox", () => {
   const read = statusJson([{
     name: "demo",

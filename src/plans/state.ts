@@ -66,6 +66,10 @@ export interface PlanApproval {
   pool: ModelEntry[];
 }
 
+// A reviewer the plan tick picked for a part in place of `from`, the reviewer
+// routed before, with the reason the routed one could not review and when.
+export interface ReviewerChange { actor: string; from: string | null; reason: string; at: string }
+
 // A plan's record, kept under the meta key plan:tP. Proposals are kept apart,
 // in the plans table, one row each, never changed.
 export interface PlanRecord {
@@ -77,6 +81,10 @@ export interface PlanRecord {
   blocked: string | null;              // why the plan is blocked; null when it is not
   approval: PlanApproval | null;
   reroutes: Record<string, string>;    // part key to the actor the owner rerouted it to
+  // Part key to the reviewer the plan tick picked in place of the routed one,
+  // because the routed reviewer had become a contributor or was not of
+  // another family than every contributor. Absent in records made before.
+  reviewers?: Record<string, ReviewerChange>;
   completedAt?: string;                // when every part had merged
   // The plan branch's integration head (docs/orchestrator.md, section 5): the
   // merge commit of its latest recorded integration or refresh, or null when

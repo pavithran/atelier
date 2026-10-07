@@ -46,6 +46,9 @@ export interface PartRoute {
   reviewer: Choice | null;
   excluded: Choice[];        // pool actors that may not build this part, with the rules they failed
   unrouted: string | null;   // why the part has no builder or no reviewer; null when routed
+  // Set when the plan tick replaced the reviewer routed at approval: who was
+  // routed and why that reviewer could no longer review the part.
+  reviewerChange?: { from: string | null; reason: string; at: string };
 }
 
 // A size M part needs this much context, or a window the registry does not know.
