@@ -60,6 +60,45 @@ it("a claim on a dispatched task is refused without the right runner header", as
   expect((await claim("opencode/glm-5.3-flash", "laptop")).status).toBe(400);
 });
 
+it("a merge-main dispatch names main's head from the baseline, and needs one when it cannot be read", async () => {
+  await project("routes-merge-main");
+  const created = await (await call("POST", "/projects/routes-merge-main/items", "owner", { title: "Conflicted", scope: ["docs/**"] })).json() as { id: string };
+  const path = `/projects/routes-merge-main/items/${created.id}/dispatch`;
+  const M = "5".repeat(40), H0 = "0".repeat(40);
+
+  // A stand-in Artifacts: the baseline's HEAD is main's head (headOf reads
+  // the first log entry); a repository it does not know answers nothing.
+  const artifacts = (head: string | null): Artifacts => ({
+    get: async () => ({
+      log: async () => (head ? [{ hash: head }] : []),
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts);
+  const post = (body: unknown, art: Artifacts) =>
+    worker.fetch(new Request(`https://atelier.test/api${path}`, {
+      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: art } as typeof env);
+
+  // The task has no workspace yet: main's head is read first, and a baseline
+  // that answers nothing refuses the headless form asking for one.
+  const unreadable = await post({ job: "merge-main" }, artifacts(null));
+  expect([unreadable.status, ((await unreadable.json()) as { error: string }).error]).toEqual([503, "bad_head"]);
+  const bare = await post({ job: "merge-main", head: M }, artifacts(M));
+  expect([bare.status, ((await bare.json()) as { error: string }).error]).toEqual([409, "no_fork"]);
+
+  const ledger = env.LEDGER.get(env.LEDGER.idFromName("project:routes-merge-main"));
+  await ledger.claim(created.id, "claude-code/opus-5.5", null, true);
+  await ledger.setFork(created.id, "routes-merge-main--fork", H0, "claude-code/opus-5.5");
+  await ledger.release(created.id, "claude-code/opus-5.5", "built");
+  // With no head named, the route reads main's head from the baseline and
+  // the dispatch carries it, ready for a runner that offers the job.
+  const res = await post({ job: "merge-main" }, artifacts(M));
+  expect(res.status).toBe(200);
+  const sent = await res.json() as { dispatch: { job: string; head: string } | null };
+  expect(sent.dispatch).toMatchObject({ job: "merge-main", head: M, task: true });
+});
+
 // A runner's offer is what it can run, recorded as it asks the queue for
 // work (t240): the owner reads the offers back to see when a dispatch names
 // a model or a job no live runner offers, which can never be claimed.
