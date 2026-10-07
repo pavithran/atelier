@@ -1326,7 +1326,12 @@ function routeLines(route: PartRoute | null | undefined, preview: boolean): stri
   const lines: string[] = [];
   if (route.builder) lines.push(`${lead} ${route.builder.actor}: ${route.builder.reasons[0] ?? ""}`);
   if (route.alternates.length) lines.push(`alternates ${route.alternates.map((a) => a.actor).join(", ")}`);
-  if (route.reviewer) lines.push(`reviewer ${route.reviewer.actor}, of another family`);
+  if (route.reviewer) {
+    // A reviewer the plan picked in place of the routed one says whom it
+    // replaced and why.
+    const change = route.reviewerChange;
+    lines.push(`reviewer ${route.reviewer.actor}, of another family${change ? `, in place of ${change.from ?? "no reviewer"}: ${change.reason}` : ""}`);
+  }
   if (route.unrouted) lines.push(`unrouted: ${route.unrouted}`);
   return lines;
 }
