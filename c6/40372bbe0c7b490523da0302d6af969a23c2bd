@@ -1,0 +1,31 @@
+atelier atelier/t220 "Version safety (audit 2026-10-06, later list): ROUTE_LEVEL rises whenever the meaning of an existing route the CLI relies on changes, not only for new routes (say so where the constant is defined, and in docs/orchestrating.md); the home runner checks the server's route level at start and refuses, naming both levels, when the server is older than its CLI"
+accepted head 9be34bd803c82f59b313e173bf9ec12ef2d9e913
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-07T02:27:29.335Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-07T02:27:33.221Z
+REVIEW approve by antigravity/gemini-3.1-pro at 9be34bd803c82f59b313e173bf9ec12ef2d9e913, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T00:04:51.753Z pavi item.created
+2026-10-07T01:01:39.588Z pavi item.dispatched
+2026-10-07T01:34:18.930Z opencode/deepseek-v4-pro item.claimed
+2026-10-07T01:34:24.620Z opencode/deepseek-v4-pro fork.created
+2026-10-07T01:49:51.716Z opencode/deepseek-v4-pro push.observed
+2026-10-07T01:52:18.503Z opencode/deepseek-v4-pro evidence.observed
+2026-10-07T01:52:24.379Z opencode/deepseek-v4-pro evidence.observed
+2026-10-07T01:52:25.377Z opencode/deepseek-v4-pro item.submitted
+2026-10-07T02:22:41.229Z pavi land.lease
+2026-10-07T02:22:43.414Z pavi land.merge
+2026-10-07T02:24:52.413Z pavi land.lease
+2026-10-07T02:24:53.615Z pavi land.merge
+2026-10-07T02:25:01.696Z pavi land.regenerate
+2026-10-07T02:25:06.051Z opencode/deepseek-v4-pro push.observed
+2026-10-07T02:25:06.255Z pavi land.push
+2026-10-07T02:27:30.326Z opencode/deepseek-v4-pro evidence.observed
+2026-10-07T02:27:33.570Z opencode/deepseek-v4-pro evidence.observed
+2026-10-07T02:27:34.138Z pavi land.check
+2026-10-07T02:27:34.583Z opencode/deepseek-v4-pro item.submitted
+2026-10-07T02:27:34.836Z pavi land.submit
+2026-10-07T02:27:35.015Z pavi review.requested
+2026-10-07T02:28:39.409Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T02:32:53.253Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T02:32:57.659Z pavi land.review
+2026-10-07T02:32:58.270Z pavi item.accepted
+2026-10-07T02:32:58.419Z pavi land.accept
