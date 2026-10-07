@@ -8,7 +8,7 @@ import { pushActors, type Evidence, type Item, type ProjectPolicy } from "../src
 import { BRIEF_LIMITS, reviewBrief, type BriefInput } from "../src/review/brief.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
-import { parseVerdict, REPLY_FORMAT, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
+import { DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
 
 const H0 = "0".repeat(40);
 const H1 = "a".repeat(40);
@@ -571,8 +571,8 @@ test("reviewBrief: a re-review carries the earlier findings and says the builder
     "Round 1, at aaaaaaaa: codex/gpt-6-astra rejected.",
     "```",
     "note: One blocker.",
-    "blocking src/review/needed.ts:88 A lapsed claim is never retried.",
-    "follow-up README.md Mention t39.",
+    "finding 1: blocking src/review/needed.ts:88 A lapsed claim is never retried.",
+    "finding 2: follow-up README.md Mention t39.",
     "```",
     "",
     "Round 1, at aaaaaaaa: the project owner approved.",
@@ -612,4 +612,63 @@ test("reviewBrief: an item outside a plan, with no diff and no summary", () => {
   const unbased = brief({ need, plan: null, diff: null, events: [], item: item({ base: null }) });
   assert.ok(unbased.includes("Base: not recorded"));
   assert.ok(unbased.includes("The diff is not included here. Read it in your clone."));
+});
+
+test("reviewBrief: states the project's review bar, or the default, before the reply format, for a part and for a task", () => {
+  const rules = (text: string) => text.slice(text.indexOf("## Rules for blocking"));
+  // A part's brief, and a task's outside a plan, with no bar set: the default.
+  const task = { need: required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), plan: null };
+  for (const text of [brief(), brief({ bar: null }), brief(task)]) {
+    assert.ok(rules(text).startsWith(`## Rules for blocking\n\nThe project's review bar, which says what may block:\n${DEFAULT_REVIEW_BAR}\n`));
+    assert.ok(text.endsWith(`## Reply format\n\n${REPLY_FORMAT}`));
+  }
+  assert.match(DEFAULT_REVIEW_BAR, /^Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to\./);
+  // The project's own bar replaces the default in both.
+  const bar = "Block only for data loss.";
+  for (const text of [brief({ bar }), brief({ ...task, bar })]) {
+    assert.ok(rules(text).includes(`which says what may block:\n${bar}\n`));
+    assert.ok(!text.includes(DEFAULT_REVIEW_BAR));
+    assert.ok(text.includes("A finding is blocking only when the review bar says it may block."));
+  }
+});
+
+test("reviewBrief: from round 2, earlier findings carry the owner's verdicts, and a refuted one is repeated only with new evidence", () => {
+  const findings: Finding[] = [blocker, { file: "src/rules.ts", line: 12, severity: "follow-up", text: "Rename x." }];
+  const GEMINI = "opencode/gemini-3.1-pro";
+  const need = required({ reviews: [review(GEMINI, false, H1, { at: "2026-10-05T11:00:00.000Z", note: "One blocker.", findings })] });
+  const refuted = event(20, OWNER, "review.finding", { head: H1, index: 1, verdict: "refuted", note: "needed.ts:140 retries a lapsed claim.", by: GEMINI, finding: blocker });
+  // An older verdict on the same finding is replaced by the newer one.
+  const older = event(15, OWNER, "review.finding", { head: H1, index: 1, verdict: "confirmed", note: "", by: GEMINI, finding: blocker });
+  // A verdict on another reviewer's review, or on a finding that is not this one, is not shown.
+  const other = event(21, OWNER, "review.finding", { head: H1, index: 2, verdict: "fixed", note: "", by: "codex/gpt-6-astra", finding: findings[1] });
+  const text = brief({ need, events: [submitted(H2, "Reworked."), refuted, older, other] });
+  assert.ok(text.includes([
+    "Round 1, at aaaaaaaa: opencode/gemini-3.1-pro rejected.",
+    "```",
+    "note: One blocker.",
+    "finding 1: blocking src/review/needed.ts:88 A lapsed claim is never retried.",
+    "finding 2: follow-up src/rules.ts:12 Rename x.",
+    "```",
+    "The project owner's verdicts on these findings:",
+    "- finding 1: refuted, noting `needed.ts:140 retries a lapsed claim.`",
+  ].join("\n")), text);
+  assert.ok(!text.includes("- finding 2:"));
+  assert.ok(text.includes("A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code"));
+  // The rule sits with the bar, before the reply format.
+  assert.ok(text.indexOf("A finding the owner refuted") > text.indexOf("## Rules for blocking"));
+  // An approval at the head under review that does not suffice (the
+  // builder's own family) is an earlier review too, with its verdicts.
+  const followUp: Finding = { file: "src/rules.ts", line: null, severity: "follow-up", text: "Add a test." };
+  const SAME = "opencode/glm-5.2";
+  const here = required({ reviews: [review(SAME, true, H2, { note: "Fine.", findings: [followUp] })] });
+  const atHead = brief({ need: here, events: [event(30, OWNER, "review.finding", { head: H2, index: 1, verdict: "refuted", note: "Covered by test/rules.test.ts.", by: SAME, finding: followUp })] });
+  assert.ok(atHead.includes("At bbbbbbbb (this head): opencode/glm-5.2 approved."), atHead);
+  assert.ok(atHead.includes("- finding 1: refuted, noting `Covered by test/rules.test.ts.`"));
+});
+
+test("reviewBrief: round 1 lists no earlier findings, verdicts or the rule on refuted findings", () => {
+  const text = brief({ events: [submitted(H2, "First."), event(20, OWNER, "review.finding", { head: H1, index: 1, verdict: "refuted", note: "No.", by: GLM, finding: blocker })] });
+  assert.ok(!text.includes("## Earlier reviews"));
+  assert.ok(!text.includes("verdicts on these findings"));
+  assert.ok(!text.includes("refuted"));
 });

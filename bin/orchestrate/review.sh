@@ -8,15 +8,17 @@
 # (family openai). Writes OUTBASE.prompt.md, OUTBASE.json and OUTBASE.md, the
 # answer, in the reply format of src/review/verdict.ts (VERDICT, SUMMARY and
 # FINDING lines).
-# REVIEW_BAR overrides what may block.
+# REVIEW_BAR overrides what may block; unset, the bar is Atelier's default.
 set -eu
 source "${0:A:h}/lib.sh"
 ws=${1:A} out=${2:A} ctx=${3:A} model=${4:-gemini-3.1-pro-high}
 project=$(project_of "$ws")
 main=${MAIN_REPO:-$(checkout_of "$project")}
-bar=${REVIEW_BAR:-"reject only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; anything else is non-blocking. A claim in a commit message that the code does not support is a correctness defect. Decisions the project owner made are not defects."}
-# The reply format is Atelier's own (src/review/verdict.ts), the one the
-# runner asks for, so land.sh can read the answer with the same parser.
+# The default bar and the reply format are Atelier's own
+# (src/review/verdict.ts), the ones the runner's review brief states, so the
+# two reviews block on the same defects and land.sh can read the answer with
+# the same parser.
+bar=${REVIEW_BAR:-$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { DEFAULT_REVIEW_BAR } from "./src/review/verdict.ts"; process.stdout.write(DEFAULT_REVIEW_BAR)')}
 format=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { REPLY_FORMAT } from "./src/review/verdict.ts"; process.stdout.write(REPLY_FORMAT)')
 case $model in
   gemini*) who="gemini-3.1-pro" ;;

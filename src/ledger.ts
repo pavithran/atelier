@@ -52,8 +52,10 @@ export interface LedgerEvent {
 }
 
 // What a review claim returns: the part, the head under review, the review
-// need (null when it no longer holds), the plan account for the brief, and
-// the part's events for the builder's summary (docs/orchestrator.md, section 4).
+// need (null when it no longer holds), the plan account for the brief, the
+// part's events for the builder's summary and the owner's verdicts on earlier
+// findings (docs/orchestrator.md, section 4), and the project's review bar,
+// null when it sets none and the brief states the default.
 export interface ReviewClaim {
   item: Item;
   head: string;
@@ -61,6 +63,7 @@ export interface ReviewClaim {
   plan: { goal: string; part: PlanPart } | null;
   events: LedgerEvent[];
   owner: string;
+  reviewBar: string | null;
 }
 
 export interface ProjectRecord {
@@ -115,6 +118,8 @@ export interface ProjectInit {
   // The command that regenerates the project's fixtures in a task's workspace
   // after it merges main; null clears it (see ProjectPolicy.regenerate).
   regenerate?: string | null;
+  // What may block a review; null clears it (see ProjectPolicy.reviewBar).
+  reviewBar?: string | null;
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -227,6 +232,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
+  const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -242,6 +248,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(shipRuns.length ? { shipRuns } : {}),
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
+      ...(reviewBar ? { reviewBar } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -1593,11 +1600,7 @@ export class Ledger extends DurableObject<Env> {
     const rows = id
       ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`, id, below, limit).toArray()
       : this.sql.exec(`SELECT * FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?`, below, limit).toArray();
-    return rows.map((r) => ({
-      seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
-      ...(r.proved === 1 ? { proved: true as const } : {}),
-      actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
-    }));
+    return rows.map(eventOf);
   }
 
   // Who holds what, without titles, scopes or paths: safe to hand to a
@@ -2427,8 +2430,8 @@ export class Ledger extends DurableObject<Env> {
       const slash = reviewer.indexOf("/");
       const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
       const brief = reviewBrief({
-        need, item: p, events: this.events(p.id),
-        plan: { goal: plan.goal, part }, diff: null, owner: this.owner,
+        need, item: p, events: this.briefEvents(p.id),
+        plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
       });
       const briefHash = briefFingerprint(brief);
       this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state) VALUES (?, ?, ?, ?, 'open')`,
@@ -2523,8 +2526,9 @@ export class Ledger extends DurableObject<Env> {
     const record = item.plan ? this.planRecord(item.plan) : null;
     const plan = record?.approval ? this.approvedPlan(item.plan!, record.approval.hash) : null;
     const part = plan?.parts.find((x) => x.key === item.partKey) ?? null;
+    const policy = this.project().policy;
     const need = reviewNeeded({
-      item, part: item.kind === "part", policy: this.project().policy,
+      item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
       requests: [], wanted: !!row.wanted, now: new Date(at), owner: this.owner,
     });
@@ -2534,8 +2538,19 @@ export class Ledger extends DurableObject<Env> {
       item, head,
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
-      events: this.events(itemId), owner: this.owner,
+      events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null,
     };
+  }
+
+  // The events a review brief reads: the item's latest, for the builder's
+  // summary, and every verdict the owner recorded on a finding of it, however
+  // old, so a later round shows each one.
+  private briefEvents(id: string): LedgerEvent[] {
+    const latest = this.events(id);
+    const oldest = latest.length ? latest[latest.length - 1].seq : Number.MAX_SAFE_INTEGER;
+    const older = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' AND seq < ? ORDER BY seq DESC`, id, oldest).toArray()
+      .map(eventOf);
+    return [...latest, ...older];
   }
 
   // A review request for a submitted item the gate needs reviewed, asked for
@@ -2915,6 +2930,15 @@ export class Ledger extends DurableObject<Env> {
 }
 
 function toEvent(r: Row): LedgerEvent {
+  return {
+    seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
+    ...(r.proved === 1 ? { proved: true as const } : {}),
+    actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
+  };
+}
+
+// An events row as the Ledger returns it.
+function eventOf(r: Row): LedgerEvent {
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),

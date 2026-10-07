@@ -702,6 +702,16 @@ protected paths (with the defaults), and everything not named keeps its value.
 `atelier init --reset` rebuilds the policy from the options given and the
 defaults, as a first init does; the project's title and creation date are kept.
 
+`atelier init --review-bar TEXT` records what may block a review, at most
+1,000 characters, with line breaks and control characters read as spaces.
+Every review brief a runner serves, for a task or a plan's part, states it
+before the reply format. Unset, or after `--review-bar ""`, the brief states
+the default bar: block only for a correctness, security or data-loss defect
+that the change introduces, or fails to fix while claiming to; a claim in a
+commit message that the code does not support is a correctness defect;
+decisions the project owner made are not defects; everything else is a
+follow-up.
+
 When the checkout is already registered locally, `init` reuses its registered
 name, even if the folder has a different name. A different `--name NAME` is
 refused. `atelier init --name NAME --rename-local` changes only that local
@@ -1258,7 +1268,10 @@ atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --
 `atelier defect` traces a defect to the revision an item was accepted at;
 the item itself does not change. `atelier finding` records a verdict on one
 finding of a review, at the head the review was made at and the finding's
-position in its findings, one based. A run ends without a result the ledger
+position in its findings, one based. A later review of the task shows the
+reviewer each earlier finding, numbered as `--index` counts it, with the
+owner's verdict and note, and says that a refuted finding is repeated only
+with new evidence that the owner's answer is wrong, quoting the code. A run ends without a result the ledger
 saw when it stalls, times out or is refused, or when the harness stops
 early, stops at a permission, designs something a task already had, or
 leaves a merge incomplete. The runner reports a run through `POST /api/runs`
