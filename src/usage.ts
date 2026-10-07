@@ -56,7 +56,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   ], [
     { form: "claim ID --as H/M [--runner home:NAME]", about: "Takes ownership of a task, forks the baseline into the task's workspace, mints a write token for the claimant alone, clones the workspace and records the project's branch as the one it pushes to. Claiming again refreshes the token and that branch, saying when the branch changed. `--runner` names the runner when a runner claims a dispatched task." },
     { form: "finish [--sandbox] [--summary T]", about: "Run in the claimed workspace: pushes, runs the required checks and submits, only if they pass and the workspace has not changed meanwhile. `--sandbox` runs the checks in a Cloudflare container. `done` is `finish` with a required summary." },
-    { form: "push [--force]", about: "Pushes the workspace to the task's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease." },
+    { form: "push [--force | --rollback]", about: "Pushes the workspace to the task's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease. `--rollback` returns the fork to an earlier commit of the recorded history, as the plan integrator does after a failed integration." },
     { form: "update", about: "Rebases the workspace onto whatever has merged to the baseline since the fork, then names the next step, `atelier push --force`, whose lease refuses to overwrite anything pushed since the workspace last fetched." },
     { form: "check [--sandbox] [--merged] [-- CMD]", about: "Runs each required check, or the command after `--`, in a clean clone of exactly the head Artifacts holds, measures which paths changed since the baseline, and records each result as Observed. `--sandbox` runs them in a Cloudflare container instead. `--merged` runs them on the would-be merge, the head merged with main as main is now, in a temporary merge commit that is never pushed; the result is recorded against both revisions, shown beside the merge preview, and goes stale when either moves. A local check runs with the caller's file access, so it can read their files and Keychain and reach the network; it is given only the environment variables toolchains need, and Atelier's tokens are redacted from its output before upload. Run untrusted code with `--sandbox`." },
     { form: "report [ID] \"what you verified and how\" [--item ID] [--project P]", about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the task named, else on the workspace's task; in a workspace, another task's id needs `--item ID`. It is shown and never counted as a check." },
@@ -74,7 +74,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "read-token ID", about: "Reads a token for the task's own fork, with its head and base, for a job that clones it outside a task or a review." },
     { form: "base-token ID", about: "Reads a token for the repository the task is measured against: the plan's fork for a part, the baseline otherwise." },
     { form: "integrated ID --part KEY --merge-commit SHA", about: "The integrator reports a verified merge of one part onto the plan's branch; the server checks the commit against the branch before recording it." },
-    { form: "integration-failed ID --part KEY --reason TEXT", about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason." },
+    { form: "integration-failed ID --part KEY --reason TEXT [--kind conflict|checks]", about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason. `--kind` says the failure was the part's own, a merge conflict or failing checks, which charges its builder an attempt; without it the builder is charged nothing." },
   ]] },
   { name: "Owner", lines: [[
     { form: "accept ID [--head SHA] [--override-review REASON] [--note TEXT]", about: "The project owner accepts the task at its current head; `--head` names that head, and any other is refused. `--note` keeps the owner's word on the acceptance with it in the ledger. It is refused unless the gate is clear. When the change still lacks its independent review because no reviewer qualifies, `--override-review` overrides that review and accepts: the reason is required, the override is recorded as an event of its own, never as a review, and the task page and the inbox show it with its reason." },
@@ -286,7 +286,10 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     example: 'atelier finish --summary "The parser takes the new form"',
   },
   push: {
-    flags: { "--force": "after atelier update: pushes the rebased head, with a lease on the head Atelier recorded" },
+    flags: {
+      "--force": "after atelier update: pushes the rebased head, with a lease on the head Atelier recorded",
+      "--rollback": "returns the fork to the workspace's HEAD, an earlier commit of the recorded history, dropping what was recorded after it, with a lease on the recorded head; the plan integrator's rollback",
+    },
     example: "atelier push",
   },
   update: { example: "atelier update" },
@@ -380,6 +383,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     flags: {
       "--part KEY": "the part whose merge failed; required",
       "--reason TEXT": "why the merge failed; sent to the part's builder with the rework",
+      "--kind conflict|checks": "the part's own failure, a merge conflict or failing checks, which charges its builder an attempt",
     },
     example: 'atelier integration-failed t3 --part t4 --reason "Conflict in src/api.ts" --project demo',
   },
