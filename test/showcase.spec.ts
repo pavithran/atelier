@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import layout from "../src/layout.css";
 import { HELP_GROUPS } from "../src/usage.ts";
-import { buildStory } from "../src/graph.ts";
+import { buildStory, type Story } from "../src/graph.ts";
 import { buildImported } from "../src/import/history.ts";
 import { renderShowcase, type ShownProject } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
@@ -235,4 +235,67 @@ it("the showcase is held for a minute at most by the zone and by browsers, and s
     expect(body).toContain("on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.");
     expect(body).not.toContain("or, where the project allows it, on the agent");
   }
+});
+
+// Audit 2026-10-06, split out of t219 as t276: a commit hash drawn on an
+// anonymised project's graph or pages could be searched in a public
+// repository and name the project, so an anonymised story carries none, while
+// a project shown named still names its revisions.
+it("an anonymised project's commit hashes never reach the showcase or the sign-in page; a named project's still do", async () => {
+  const hashed = async (name: string, base: string, head: string, merge: string) => {
+    const record = { name, repo: name, title: `${name} title`, policy: { checks: [], protected: [] }, createdAt: time };
+    await L(name).setProject(record, "owner");
+    await I().registerProject(record);
+    const l = L(name);
+    await l.newItem("Ship the fix", [], "owner");
+    await l.claim("t1", "codex/gpt-6");
+    await l.setFork("t1", `${name}--t1`, base, "codex/gpt-6");
+    await l.recordPush("t1", "codex/gpt-6", head, head);
+    await l.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6", at: time, changedPaths: ["src/a.ts"] });
+    await l.submit("t1", "codex/gpt-6");
+    await l.accept("t1", "owner", head);
+    await l.merged("t1", "owner", merge, true, head);
+  };
+  await hashed("hush-hash", "1".repeat(40), "e7a1c0de".repeat(5), "c0ffee42".repeat(5));
+  await hashed("named-hash", "2".repeat(40), "5eedba5e".repeat(5), "dec0ded5".repeat(5));
+  await I().setShowcase("hush-hash", "anonymous");
+  await I().setShowcase("named-hash", "named");
+  const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
+  expect(body).toContain("5eedba5e");    // a named project's revisions stay named
+  expect(body).toContain("dec0ded5");
+  expect(body).not.toContain("e7a1c0de"); // an anonymised project's hashes are gone
+  expect(body).not.toContain("c0ffee42");
+  // The sign-in page draws the same anonymised activity behind its form.
+  const login = await (await worker.fetch(new Request("https://atelier.test/login"), testEnv)).text();
+  expect(login).not.toContain("e7a1c0de");
+  expect(login).not.toContain("c0ffee42");
+});
+
+it("an anonymised story carries no commit hash in its beads, moments or drawing; a redacted named one keeps them", () => {
+  const at = (seq: number) => `2026-10-05T10:0${seq}:00.000Z`;
+  const H = "e7a1c0de".repeat(5), M = "c0ffee42".repeat(5);
+  const evs = [
+    { seq: 1, at: at(1), actor: "pavi", kind: "item.created", itemId: "t1", data: {} },
+    { seq: 2, at: at(2), actor: "codex/gpt-6", kind: "item.claimed", itemId: "t1", data: {} },
+    { seq: 3, at: at(3), actor: "codex/gpt-6", kind: "push.observed", itemId: "t1", data: { head: H } },
+    { seq: 4, at: at(4), actor: "codex/gpt-6", kind: "item.submitted", itemId: "t1", data: { head: H } },
+    { seq: 5, at: at(5), actor: "pavi", kind: "item.accepted", itemId: "t1", data: { head: H } },
+    { seq: 6, at: at(6), actor: "pavi", kind: "item.merged", itemId: "t1", data: { mergeCommit: M } },
+  ];
+  const items = [{ id: "t1", title: "Ship the fix", state: "merged" }];
+  const card = (s: Story, mode: "named" | "anonymous"): ShownProject =>
+    ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: time }, mode, story: s });
+  const anon = buildStory("hush", items as never, evs as never, "pavi", false, "An iOS app", { redact: true, anon: true });
+  const anonHtml = renderShowcase([anon], anon.tally, "pavi", "PAVI", false, new Map(), [card(anon, "anonymous")]);
+  for (const hash of [H.slice(0, 8), M.slice(0, 8)]) {
+    expect(anon.threads.flatMap((th) => th.beads.map((b) => b.label)).join(" "), hash).not.toContain(hash);
+    expect(anon.moments.map((m) => m.text).join(" "), hash).not.toContain(hash);
+    expect(anonHtml, hash).not.toContain(hash);
+  }
+  expect(anonHtml).not.toContain("merged as");
+  // Redacted but named, the revisions stay named: only the anonymised form drops them.
+  const named = buildStory("named-tool", items as never, evs as never, "pavi", false, "Named Tool", { redact: true });
+  const namedHtml = renderShowcase([named], named.tally, "pavi", "PAVI", false, new Map(), [card(named, "named")]);
+  expect(namedHtml).toContain(H.slice(0, 8));
+  expect(namedHtml).toContain(M.slice(0, 8));
 });
