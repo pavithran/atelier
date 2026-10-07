@@ -1,0 +1,31 @@
+atelier atelier/t226 "A plan ticks only after a change to the plan or one of its parts, so a deploy that changes tick logic, a refused review claim, or a lapsed claim leaves the plan idle until something else changes (t197 waited with a review routed to a contributor until the owner repeated a reroute, 2026-10-07): tick each plan on an alarm (every few minutes while it builds), and after a review claim is refused"
+accepted head 290b24221ef93bcbe496f943dcd884f0dcc7ee80
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T04:23:15.457Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T04:23:18.834Z
+REVIEW approve by antigravity/gemini-3.1-pro at 290b24221ef93bcbe496f943dcd884f0dcc7ee80, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T02:25:28.586Z pavi item.created
+2026-10-07T02:41:30.792Z pavi item.dispatched
+2026-10-07T02:41:35.968Z opencode/glm-5.3 item.claimed
+2026-10-07T02:41:46.219Z opencode/glm-5.3 fork.created
+2026-10-07T03:00:02.707Z opencode/glm-5.3 push.observed
+2026-10-07T03:02:25.711Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:02:30.822Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:02:31.948Z opencode/glm-5.3 item.submitted
+2026-10-07T03:43:36.969Z pavi land.lease
+2026-10-07T03:43:48.472Z pavi land.merge
+2026-10-07T04:20:53.978Z pavi land.lease
+2026-10-07T04:20:56.842Z pavi land.merge
+2026-10-07T04:21:05.112Z pavi land.regenerate
+2026-10-07T04:21:07.571Z opencode/glm-5.3 push.observed
+2026-10-07T04:21:07.677Z pavi land.push
+2026-10-07T04:23:16.444Z opencode/glm-5.3 evidence.observed
+2026-10-07T04:23:18.990Z opencode/glm-5.3 evidence.observed
+2026-10-07T04:23:19.575Z pavi land.check
+2026-10-07T04:23:19.942Z opencode/glm-5.3 item.submitted
+2026-10-07T04:23:20.112Z pavi land.submit
+2026-10-07T04:23:20.204Z pavi review.requested
+2026-10-07T04:29:14.698Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T04:33:23.500Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T04:33:24.838Z pavi land.review
+2026-10-07T04:33:25.374Z pavi item.accepted
+2026-10-07T04:33:25.472Z pavi land.accept
