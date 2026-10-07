@@ -244,7 +244,7 @@ export function describe(d: Dispatch): string {
 // An offer as the server holds it (putRunnerOffer): what a runner can run
 // and when it last asked for work with that offer.
 export interface SeenOffer extends RunnerOffer {
-  at: string;   // ISO time the runner last polled the queue with this offer
+  at: string;   // ISO time the runner last polled the queue with this offer, to within OFFER_REFRESH_MS
 }
 
 // How long after its last ask an offer still counts as live. A runner asks
@@ -254,6 +254,12 @@ export interface SeenOffer extends RunnerOffer {
 // that may follow. An offer older than this says its runner stopped, and
 // counts for no more than one never made.
 export const OFFER_LIVE_MS = 2 * 60 * 60 * 1000;
+
+// How often a runner's unchanged offer is written again as it polls
+// (askQueue in src/ledger.ts): a changed offer is written at once, an
+// unchanged one at most once in this window, so its `at` lags the last ask
+// by less than this, far inside OFFER_LIVE_MS.
+export const OFFER_REFRESH_MS = 60 * 1000;
 
 export function liveOffers(offers: readonly SeenOffer[], now = new Date()): SeenOffer[] {
   const until = now.getTime() - OFFER_LIVE_MS;
