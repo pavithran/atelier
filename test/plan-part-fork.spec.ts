@@ -37,7 +37,9 @@ type L = ReturnType<typeof ledger>;
 
 // A stand-in Artifacts: each repository's head by name, forks copying it,
 // deletes removing it, and a missing repository refused as the binding does.
-function artifacts(heads: Map<string, string>) {
+// A log reads back from its ref, or the head, along `parents`, the one
+// history every repository here shares.
+function artifacts(heads: Map<string, string>, parents = new Map<string, string>()) {
   const calls = { forks: [] as string[], deletes: [] as string[] };
   const missing = (name: string) => Object.assign(new Error(`repo not found: ${name}`), { code: "NOT_FOUND" });
   const ARTIFACTS = {
@@ -47,7 +49,11 @@ function artifacts(heads: Map<string, string>) {
         info: async () => ({ remote: `https://git.test/${name}.git`, defaultBranch: "main" }),
         createToken: async () => ({ plaintext: "token", id: `id-${name}-${calls.forks.length}`, expiresAt: "soon" }),
         revokeToken: async () => true,
-        log: async () => [{ hash: heads.get(name), parents: [] }],
+        log: async ({ ref }: { ref?: string } = {}) => {
+          const page = [];
+          for (let at: string | undefined = ref ?? heads.get(name); at; at = parents.get(at)) page.push({ hash: at, parents: parents.has(at) ? [parents.get(at)] : [] });
+          return page;
+        },
         fork: async (to: string) => {
           if (heads.has(to)) throw Object.assign(new Error(`repo already exists: ${to}`), { code: "ALREADY_EXISTS" });
           calls.forks.push(to);
@@ -62,10 +68,31 @@ function artifacts(heads: Map<string, string>) {
   return { ARTIFACTS, calls };
 }
 
-function claim(name: string, id: string, actor: string, ARTIFACTS: Artifacts) {
+function claim(name: string, id: string, actor: string, ARTIFACTS: Artifacts, LEDGER = env.LEDGER) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/claim`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS, LEDGER } as typeof env);
+}
+
+// The Ledger binding with its next moveFork failing, as a transient error
+// between the Worker and the Ledger would, after the fork was made again.
+function failingMove() {
+  let failures = 1;
+  return {
+    idFromName: (n: string) => env.LEDGER.idFromName(n),
+    get: (id: DurableObjectId) => {
+      const stub = env.LEDGER.get(id);
+      return new Proxy(stub, {
+        get(target, key) {
+          if (key === "moveFork" && failures > 0) {
+            failures--;
+            return async () => { throw new Error("Network connection lost."); };
+          }
+          return Reflect.get(target, key);
+        },
+      });
+    },
+  } as unknown as typeof env.LEDGER;
 }
 
 const observed = (itemId: string, head: string, path: string): Evidence => ({
@@ -91,7 +118,8 @@ async function setup(name: string, bCommits: boolean) {
   const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
   const [a, b] = [parts[0].id, parts[1].id];
   const heads = new Map([[record.repo, H0], [planFork, H0]]);
-  const art = artifacts(heads);
+  const parents = new Map<string, string>();
+  const art = artifacts(heads, parents);
   const bFork = `${name}--${b}`;
 
   const builderB = actorOf(await L.item(b));
@@ -117,12 +145,13 @@ async function setup(name: string, bCommits: boolean) {
   await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
   await L.release(item.id, INTEGRATOR, "part integrated");
   heads.set(planFork, MA);
+  parents.set(MA, H0);
   art.calls.forks.length = 0;
 
   const again = await L.item(b);
   expect(again.state).toBe("open");
   expect(again.dispatch).not.toBeNull();
-  return { L, b, bFork, heads, art, builder: actorOf(again) };
+  return { L, b, bFork, heads, parents, art, builder: actorOf(again) };
 }
 
 const moves = async (L: L, id: string) => ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "fork.moved");
@@ -184,4 +213,32 @@ it("a part first dispatched, and one claimed again while the plan's branch has n
   expect(heads.get(bFork)).toBe(MA);
   expect(await L.item(b)).toMatchObject({ base: MA, head: MA });
   expect((await moves(L, b)).length).toBe(1);
+});
+
+it("a move that forked again but failed to record the new base is finished by the next claim", async () => {
+  const name = "pf-unrecorded-move";
+  const { L, b, bFork, heads, art, builder } = await setup(name, false);
+  expect((await claim(name, b, builder, art.ARTIFACTS, failingMove())).status).toBe(500);
+  // The fork was made again at the branch's head; the Ledger still has H0.
+  expect(heads.get(bFork)).toBe(MA);
+  expect(await L.item(b)).toMatchObject({ base: H0, head: H0 });
+  const next = actorOf(await L.item(b));
+  art.calls.forks.length = 0, art.calls.deletes.length = 0;
+  expect((await claim(name, b, next, art.ARTIFACTS)).status).toBe(200);
+  expect(art.calls).toEqual({ forks: [], deletes: [] });
+  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: next, state: "claimed" });
+  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: H0, base: MA }]);
+});
+
+it("a fork left at an earlier head of the plan's branch is forked again at its head", async () => {
+  const name = "pf-unrecorded-behind";
+  const { L, b, bFork, heads, parents, art, builder } = await setup(name, false);
+  const MB = "4".repeat(40);
+  heads.set(bFork, MA);
+  heads.set(`fork-${(await L.item(b)).plan}`, MB);
+  parents.set(MB, MA);
+  expect((await claim(name, b, builder, art.ARTIFACTS)).status).toBe(200);
+  expect(heads.get(bFork)).toBe(MB);
+  expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork] });
+  expect(await L.item(b)).toMatchObject({ base: MB, head: MB });
 });
