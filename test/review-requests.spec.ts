@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
+import type { SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
@@ -205,6 +206,51 @@ it("a review with only follow-up findings does not rework the part, and the revi
   await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Fine", findings: [{ file: "src/a/x.ts", line: null, severity: "follow-up", text: "Add a test." }], at: new Date().toISOString() });
   expect((await L.item(partId)).state).toBe("submitted");
   expect((await L.reviewsFor(partId))[0].findings).toHaveLength(1);
+});
+
+// t240: a rejection whose every blocking finding the owner has refuted no
+// longer blocks another review at that head, so the second opinion needs no
+// cosmetic new commit. Until every blocking finding is refuted, it still
+// blocks: the builder reworks it before another review.
+it("a rejection the owner has fully refuted is reviewed again at the same head without a new commit", async () => {
+  const { reviewBrief } = await import("../src/review/brief.ts");
+  const L = await setup("review-refuted-rejection");
+  const { partId } = await approved(L);
+  const builder = await submitPart(L, partId, "a".repeat(40));
+  const head = "a".repeat(40);
+  const reviewer1 = await routedReviewer(L, partId);
+  await L.claimReview(partId, reviewer1, RUNNER);
+  await L.addReview({
+    itemId: partId, by: reviewer1, head, approve: false, note: "Two blockers.",
+    findings: [blocker(), { file: "src/a/y.ts", line: 4, severity: "blocking" as const, text: "It drops a row." }],
+    at: new Date().toISOString(),
+  });
+  // The part went back to its builder; the owner refutes one of the two
+  // blocking findings, and the builder submits the same head again.
+  expect((await L.item(partId)).state).toBe("open");
+  await L.addFinding(partId, "owner", head, 1, "refuted", "src/a/x.ts:9 writes the row before it deletes.");
+  await L.claim(partId, builder, RUNNER);
+  await L.submit(partId, builder);
+  // One blocker still stands, so no second review is asked at this head.
+  expect(await reviewWaiting(L)).toEqual([]);
+  // The owner refutes the second blocking finding too: the next tick asks for
+  // the review again at the same head, of the same reviewer first, round 2.
+  await L.addFinding(partId, "owner", head, 2, "refuted", "src/a/y.ts:12 keeps the row.");
+  await L.addEvidence(observed(partId, head));
+  expect(await routedReviewer(L, partId)).toBe(reviewer1);
+  expect((await events(L, partId)).filter((e) => e.kind === "review.requested")[0]).toMatchObject({
+    actor: "atelier/orchestrator", data: { head, reviewer: reviewer1, round: 2 },
+  });
+  const round2 = await L.claimReview(partId, reviewer1, RUNNER) as unknown as ReviewClaim;
+  expect(round2.need!.round).toBe(2);
+  expect(round2.need!.kind).toBe("re-review");
+  const brief2 = reviewBrief({ need: round2.need!, item: round2.item, events: round2.events, plan: round2.plan, owner: round2.owner, bar: round2.reviewBar });
+  expect(brief2).toContain("This is review round 2. A model rejected this head, and the project owner refuted every blocking finding of that rejection, so it is reviewed again rather than reworked.");
+  expect(brief2).toContain("Round 1, at aaaaaaaa (this head)");
+  expect(brief2).toContain("The project owner's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`\n- finding 2: refuted, noting `src/a/y.ts:12 keeps the row.`");
+  // The second opinion approves at the same head, and the request is answered.
+  await L.addReview({ itemId: partId, by: reviewer1, head, approve: true, note: "Both findings were refuted; approving.", at: new Date().toISOString() });
+  expect(await reviewWaiting(L)).toEqual([]);
 });
 
 // A plan's routed reviewer can become a contributor after approval, by
@@ -579,4 +625,39 @@ it("a review claim carries the project's review bar and the owner's verdicts on 
   const claim = await plain.claimReview(other, await routedReviewer(plain, other), RUNNER) as unknown as ReviewClaim;
   expect(claim.reviewBar).toBeNull();
   expect(reviewBrief({ need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, owner: claim.owner, bar: claim.reviewBar })).toContain(`which says what may block:\n${DEFAULT_REVIEW_BAR}\n`);
+});
+
+// A review routed to a model no live runner offers can never be claimed,
+// however long it waits (t197's part t210 reviewed 2026-10-07): plan show
+// says so, judged against the runner offers the Worker reads for the view,
+// rather than reading as merely not claimed yet.
+it("plan show says a routed review no live runner offers can never be claimed, and names when it is", async () => {
+  const L = await setup("review-unoffered");
+  const { id, partId } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const reviewer = await routedReviewer(L, partId);   // codex/gpt-6-astra
+  const at = new Date().toISOString();
+  const shown = async (offers: SeenOffer[] | null) => planText(await L.planView(id, null, null, offers) as unknown as PlanView, "review-unoffered");
+  // Offers read with the view: none offering the routed reviewer for review.
+  const dead = await shown([
+    { runner: "home:mbp", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at },
+  ]);
+  expect(dead).toContain(`review of aaaaaaaa asked of ${reviewer}; the request is open, and no live runner can take it: home:mbp offers review as opencode/glm-5.3`);
+  expect(dead).toContain(`it will not be claimed until a runner that offers ${reviewer} for the review job asks for work; name another reviewer: atelier plan reroute ${partId} --to H/M --project review-unoffered`);
+  // A live runner offering the reviewer reads as merely open.
+  const open = await shown([
+    { runner: "home:mbp", kind: "home", jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at },
+  ]);
+  expect(open).toContain(`review of aaaaaaaa asked of ${reviewer}; the request is open`);
+  expect(open).not.toContain("no live runner");
+  // No offers read with the view: the request is said, not judged.
+  const unread = await shown(null);
+  expect(unread).toContain(`review of aaaaaaaa asked of ${reviewer}; the request is open`);
+  expect(unread).not.toContain("no live runner");
+  // Once claimed, the request names when.
+  await L.claimReview(partId, reviewer, RUNNER);
+  const claimed = await shown(null);
+  expect(claimed).toMatch(new RegExp(`review of aaaaaaaa asked of ${reviewer.replace("/", "\\/")}, claimed at 20\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC`));
+  expect(claimed).not.toContain("the request is open");
 });
