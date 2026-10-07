@@ -1689,7 +1689,7 @@ ${framing}${openScope}
       ${view.reports.map((r) => `<p>${tag("Reported")} ${e(r.claim)} <span class="meta">${e(r.by)}</span></p>`).join("")}</details>`
     : "";
   const reviews = latestReviews(d.reviews, item.head).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
-    <p>${e(r.note || "No note provided.")}</p><p class="meta">${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
+    <p>${e(r.note || "No note provided.")}</p><p class="meta">${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   const overrideNote = overridden
     ? `<div class="review-note">${tag("Review overridden", "ask")}

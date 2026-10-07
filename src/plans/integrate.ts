@@ -173,6 +173,35 @@ export function verifyIntegration(claim: IntegrationClaim): string[] {
   return reasons;
 }
 
+export interface RefreshClaim {
+  log: readonly LogCommit[];  // the plan branch's log, newest first; log[0] is its head
+  integrationHead: string;    // the plan branch's integration head before this refresh
+  mainHead: string;           // the main head the refresh was dispatched to merge
+  mergeCommit: string;        // the commit the integrator reports
+}
+
+// Whether a refresh the integrator reports holds, as verifyIntegration asks
+// of an integration: the merge commit is on the plan branch's first-parent
+// line, its first parent is the integration head and its second is the main
+// head the refresh was dispatched for, and it has exactly those two parents.
+// Recorded, it becomes the integration head that later parts fork from and
+// later integrations sit on. Returns the reasons it fails; empty when it holds.
+export function verifyRefresh(claim: RefreshClaim): string[] {
+  const { log, integrationHead, mainHead, mergeCommit } = claim;
+  if (!HASH.test(mergeCommit)) return ["the merge commit is not a full commit hash"];
+  const commit = log.find((c) => c.hash === mergeCommit);
+  if (!commit) return [`${short(mergeCommit)} is not in the plan branch's log`];
+  const reasons: string[] = [];
+  const merge = short(mergeCommit), count = commit.parents.length;
+  if (!firstParentLine(log).has(mergeCommit)) reasons.push(`${merge} is not on the plan branch's first-parent line`);
+  if (commit.parents[0] !== integrationHead) {
+    reasons.push(`${merge}'s first parent is ${count ? short(commit.parents[0]) : "missing"}, not the plan's integration head ${short(integrationHead)}`);
+  }
+  if (commit.parents[1] !== mainHead) reasons.push(`${merge}'s second parent is ${count > 1 ? short(commit.parents[1]) : "missing"}, not main's head ${short(mainHead)}, which the refresh was dispatched to merge`);
+  if (count !== 2) reasons.push(`${merge} has ${count} parent${count === 1 ? "" : "s"}; a refresh merges main's head alone, so it has two`);
+  return reasons;
+}
+
 // The plan's required checks at the merge commit, read as gate() reads
 // evidence: each must be observed passing there. The integrator runs them
 // before it reports, and the Ledger records the integration only on this
@@ -229,8 +258,8 @@ export interface PlanGateInput {
 
 // Whether the owner may accept a plan for main. It is gate() for the plan
 // item, so the plan's required checks must be observed passing at its
-// branch's head and the plan's own reviews count as for any item, with these
-// blockers added:
+// branch's head, the plan must be submitted, and a rejection recorded on the
+// plan item at its head blocks, with these blockers added:
 //   every part is integrated, merged or abandoned. The owner may abandon a
 //     part of a blocked plan; it brings nothing to the branch, but a part that
 //     depends on it can never land, and that part blocks;
@@ -241,16 +270,22 @@ export interface PlanGateInput {
 //   at least one part is integrated, or the plan brings nothing to main;
 //   the plan's head is its integration head, so the branch holds the recorded
 //     integrations and nothing pushed beside them.
-// The plan item's own gate counts reviews as for any item, so the owner's
-// approval is not its independent review either; when the plan's change
-// needs one and no reviewer qualifies, the owner's override recorded on the
-// plan item stands in for it, as gate() reads it. The owner accepts the plan
-// through this gate and lands it under the landing lease, as atelier merge
-// tP --head H does for any item. An accepted plan is checked again as
-// accept() does, with its state passed as submitted.
+// When the plan's head is its integration head, every commit on the branch
+// is an integration of a reviewed part or a refresh that merged main's head
+// (both recorded as the integration head by the Ledger), so the parts'
+// reviews are the plan's review: the plan item needs no independent review
+// of its own, and the integrator, whose merges are its only pushes, is not
+// compared with any reviewer. A plan whose head is anything else is gated as
+// any item is, and needs an independent review of its own where its change
+// does, which the integrator's unrecognised family leaves to the owner's
+// override. The owner accepts the plan through this gate and lands it under
+// the landing lease, as atelier merge tP --head H does for any item. An
+// accepted plan is checked again as accept() does, with its state passed as
+// submitted.
 export function planGate(input: PlanGateInput): Gate {
   const { plan, parts, integrationHead, policy, evidence, reviews, owner = DEFAULT_OWNER } = input;
-  const g = gate(plan, policy, evidence, reviews.filter((r) => r.itemId === plan.id), owner);
+  const atIntegration = !!plan.head && plan.head === integrationHead;
+  const g = gate(plan, policy, evidence, reviews.filter((r) => r.itemId === plan.id), owner, { reviewHeld: atIntegration });
   const blockers = [...g.blockers];
   for (const part of parts) {
     if (part.state === "merged") continue;
@@ -267,8 +302,16 @@ export function planGate(input: PlanGateInput): Gate {
     else blockers.push(...reviewBlockers(part, part.integration.head, reviews, policy, owner));
   }
   if (!parts.some((part) => part.state === "integrated")) blockers.push("no part is integrated; the plan brings nothing to main");
-  if (plan.head && plan.head !== integrationHead) {
+  if (plan.head && !atIntegration) {
     blockers.push(`the plan's head ${short(plan.head)} is not its integration head ${integrationHead ? short(integrationHead) : "(none recorded)"}; the branch has commits no integration recorded`);
   }
   return { ...g, ready: blockers.length === 0, blockers };
+}
+
+// The merge base predictConflict measures from: the plan-branch head the
+// part's last rework merged, when the part's head holds it and the plan
+// branch's top is not known to be held (not held, or the bounded search ran
+// out), else the part's fork point.
+export function mergeBaseFor(topHeld: boolean | null, planHead: string | null | undefined, partBase: string, planHeadHeld: boolean | null): string {
+  return topHeld !== true && planHead && planHead !== partBase && planHeadHeld === true ? planHead : partBase;
 }

@@ -24,11 +24,28 @@ A task moves through five hands:
    tests is shown and never counted.
 4. **A reviewer from another model family** than everyone who worked on the
    task reads the diff and approves or rejects with findings.
+   A project with a review tier (`atelier init --review-tier H/M,H/M`)
+   has a protected change's review asked of a tier model of another family
+   first, and that one review serves both. Only when the gate's reviewer is
+   outside the tier does one tier model that did not build the change
+   review it as well, at the same time, whatever its family: its rejection
+   sends the change back like any rejection, its approval never stands in
+   for the cross-family review, and a landing never waits for it.
 5. **The owner** accepts that exact revision and merges it into the
    registered checkout with `atelier merge`.
 
-Several builders can work at once, each on its own task and fork. Landing is
-the part that must not run in parallel.
+Several builders can work at once, each on its own task and fork, except on
+the project's core files: the queue does not start two pieces of work whose
+scopes overlap in one. Name them with `atelier init --core GLOB`, once per
+glob (for Atelier: `cli/runner.mjs`, `src/ledger.ts`,
+`src/dispatch/rules.ts`, the files where a dozen tasks built at once left
+half the landings on merge conflicts). A dispatch whose scope overlaps a
+live item's (claimed, submitted or accepted) within a core file waits in the
+queue until that item merges or is abandoned; `atelier status` names the item
+it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
+overlap is known to be harmless. Parts of one plan never hold each other,
+since the plan orders overlapping parts already. Landing is the part that
+must not run in parallel.
 
 ## Starting cold
 
@@ -44,7 +61,8 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
 3. Check that main type-checks and that the deployed server holds main's
    routes.
 4. Read the owner's standing decisions where the project keeps them, and
-   the review bar in force.
+   the review bar in force (`atelier init` prints it; every review brief
+   states it).
 
 Then pick up where the record says the work stands, not where a summary
 says it does.
@@ -112,6 +130,11 @@ So land one task at a time, in this order:
 3. Get the independent review at that head. An approval is bound to the
    revision it read; any later push, a merge of main included, needs a new
    one.
+   Where the project has a tier, the server asks a qualifying tier model
+   for this review first, and it serves as the tier review too. A
+   `--reviewer` outside the tier gets a separate tier review alongside;
+   `atelier land` waits only for the independent review, stops on a tier
+   rejection, and the acceptance withdraws a tier request still open.
 4. Accept and merge at once, before anything else lands.
 5. Run the type check on main after every merge, and the full suite before
    pushing main to its own remotes.
@@ -153,7 +176,8 @@ owner it read as a defect. The other half were real, and some were serious.
   quietly, and never let a reviewer overrule the owner's decision.
 - Record the verdict on each finding (`atelier finding`, task t186). Which
   reviewers are right, and how often, is the most useful thing Atelier can
-  measure about them.
+  measure about them. The next review brief shows each verdict and its note,
+  so put the file and line that answer a refuted finding in the note.
 
 ## Keeping the record honest
 
