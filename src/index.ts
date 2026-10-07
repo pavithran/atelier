@@ -9,7 +9,7 @@ import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalTe
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -525,6 +525,18 @@ function approvalArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's review bar, as every review brief states it: one paragraph,
+// its controls and runs of white space each read as one space. Null or ""
+// clears it, and the briefs state the default bar again.
+function reviewBarArg(value: unknown): string | null {
+  if (value !== null && typeof value !== "string") {
+    throw new RuleError("bad_review_bar", "the review bar is text saying what may block a review, or \"\" to clear it", 400);
+  }
+  const text = (value ?? "").replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim();
+  assertLength(text, REVIEW_BAR_MAX, "the review bar");
+  return text || null;
+}
+
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
@@ -785,6 +797,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           : typeof body.regenerate === "string" && body.regenerate.trim() ? body.regenerate
             : (() => { throw new RuleError("bad_regenerate", "regenerate must be the command that regenerates the project's fixtures, or \"\" to clear it", 400); })(),
       } : {}),
+      // What may block a review, stated in every review brief: text, or
+      // null or "" to clear it and state the default bar.
+      ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
