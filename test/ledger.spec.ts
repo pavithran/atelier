@@ -473,6 +473,7 @@ it("the owner can dispatch a held task, which releases its holder and queues it 
   const L = await setup("dispatch-held");
   const item = await L.newItem("Rework me", ["docs/**"], "owner");
   await L.claim(item.id, A);
+  await L.setFork(item.id, "dispatch-held--t1", H0, A);
   await L.recordPush(item.id, A, H1, null);
   await L.submit(item.id, A);
   await L.addReview(review(item.id, B, H1, false));
