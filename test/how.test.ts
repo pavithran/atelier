@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { LIMITS, LOOP, ORCHESTRATOR, RULES, TERMS } from "../src/how-data.ts";
 import { HELP_FORMS } from "../src/usage.ts";
+import { PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_LABEL, PLAN_FLOW_RETURNS } from "../src/diagrams.ts";
 
 // The How it works page states what the code does. These tests tie its
 // statements to the code, so that a change which makes one untrue fails here
@@ -115,6 +116,61 @@ test("the page text uses no dash as punctuation, and says each step, term and ru
   ];
   for (const t of text) assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
   for (const list of [LOOP.map((s) => s.name), TERMS.map((t) => t.term), RULES.map((r) => r.title)]) assert.equal(new Set(list).size, list.length);
+});
+
+// The plan flow on /how (src/diagrams.ts) draws steps the code takes. Each
+// claim it makes is tied here to the code that makes it true.
+test("the plan flow draws what the code does, from goal to merge", () => {
+  const steps = PLAN_FLOW.map((s) => `${s.name}: ${s.sub.join(" ")}`);
+  const says = (name: string, text: string) => assert.ok(steps.find((s) => s.startsWith(`${name}:`))?.includes(text), `the plan flow's ${name} step no longer says "${text}"`);
+  const runner = read("cli/runner.mjs"), ledger = read("src/ledger.ts");
+  // A plan job on a home runner: runPlanTask posts the plan document.
+  assert.ok(HELP_FORMS.some((form) => form.startsWith("plan ")), "atelier plan is gone from the help");
+  says("Plan", "home runner takes the plan job");
+  assert.match(runner, /export async function runPlanTask\(/);
+  assert.match(runner, /\["build", "plan", \.\.\.\(config\.jobs/, "a home runner no longer offers plan jobs");
+  // Approval by hash, then routing to a builder, alternates and a reviewer of another family.
+  says("Approve the plan", "by the hash");
+  assert.match(read("src/plans/route.ts"), /export function routeParts\(/);
+  says("Route the parts", "routeParts names a builder, two alternates");
+  // Dispatch once dependencies land, two live at a time.
+  const phase = read("src/plans/phase.ts");
+  assert.match(phase, /input\.maxParallel \?\? 2/, "the tick no longer keeps two parts live by default");
+  assert.match(phase, /part\.dependsOn\.every\(\(dep\) => settled\(states\.get\(dep\)\)\)/, "the tick no longer waits for a part's dependencies");
+  says("Dispatch build jobs", "two parts live at a time");
+  // A review request once the checks pass and the paths are measured; a review job serves it.
+  assert.match(read("src/review/needed.ts"), /every required check is observed passing at its\s*\/\/ head, its changed paths are measured/);
+  assert.match(runner, /export async function runReview\(/);
+  says("Review", "runReview");
+  // Rework on blocking findings, and on a failed integration.
+  assert.match(ledger, /f\.severity === "blocking"\)\) \{\s*this\.reworkPart/);
+  assert.match(phase, /case "review\.rework":/);
+  assert.match(phase, /case "integration\.failed":/);
+  assert.match(PLAN_FLOW_RETURNS.rework, /blocking findings/);
+  // The integrator merges, runs the plan's checks, rolls back on failure and submits the plan.
+  assert.match(runner, /export async function runIntegrate\(/);
+  assert.match(runner, /merges it onto the\s*\/\/ plan's branch with --no-ff, pushes, runs the plan's checks/);
+  assert.match(runner, /rolls the branch back to its previous head/);
+  assert.match(runner, /if \(result\.allIntegrated\) \{\s*await io\.cli\(\["submit", item\.id/);
+  says("Integrate", "atelier runner --integrate");
+  says("Submit the plan", "once every part is integrated");
+  // An integrated part has landed for the parts that depend on it.
+  assert.match(read("src/plans/integrate.ts"), /export const LANDED: readonly PartState\[\] = \["integrated", "merged"\]/);
+  assert.equal(PLAN_FLOW[0].lane, "owner");
+  assert.equal(PLAN_FLOW.at(-1)!.name, "Accept and merge");
+  assert.equal(PLAN_FLOW.filter((s) => s.lane === "owner").length, 3, "the owner acts three times, as the caption says");
+  assert.match(PLAN_FLOW_CAPTION, /The owner acts three times/);
+});
+
+test("the plan flow's text fits its boxes and lanes at the drawn size", () => {
+  for (const s of PLAN_FLOW) {
+    assert.ok(s.name.length <= 24, `"${s.name}" is too long for its box`);
+    for (const line of s.sub) assert.ok(line.length <= 44, `${s.name}: "${line}" is too long for a 272 unit box`);
+  }
+  for (const note of Object.values(PLAN_FLOW_RETURNS)) assert.ok(note.length <= 50, `"${note}" is too long for its lane`);
+  for (const t of [PLAN_FLOW_LABEL, PLAN_FLOW_CAPTION, ...Object.values(PLAN_FLOW_RETURNS), ...PLAN_FLOW.flatMap((s) => [s.name, ...s.sub])]) {
+    assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
+  }
 });
 
 test("each diagram label is short enough for its box at the drawn size", () => {
