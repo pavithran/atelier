@@ -3024,30 +3024,75 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The owner's atelier plan refresh: dispatches the refresh job for main's
-  // head as the Worker read it (and noted first with noteMainHead). Refused for a plan not approved, or not
-  // building any more (submitted, accepted, merged or stopped); while the
-  // plan item's integrate or refresh job is queued or held; and when the
-  // branch already holds main's head, which the Worker found (`holds`).
-  planRefresh(id: string, actor: string, mainHead: string, holds: boolean): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner refreshes a plan's branch", 403);
+  // head as the Worker read it (and noted first with noteMainHead). Refused
+  // for a plan not approved or closed; while the plan item's integrate or
+  // refresh job is queued or held; and when the branch already holds main's
+  // head, which the Worker found (`holds`). A plan submitted or accepted is
+  // withdrawn to building first (reopenPlan), with `token`, the
+  // integrator's write token id, which the caller has revoked.
+  planRefresh(id: string, actor: string, mainHead: string, holds: boolean, token?: string | null): Item {
+    const { plan, record, reopening } = this.refreshAllowed(id, actor, mainHead, holds);
+    const at = new Date().toISOString();
+    if (reopening) this.reopenPlan(plan, actor, at, token, "the project owner asked for a refresh");
+    this.dispatchRefresh(id, record, mainHead, actor, at, "the project owner asked for a refresh");
+    return this.item(id);
+  }
+
+  // Whether the owner's plan refresh, or with `resolve` its --resolve, would
+  // be made, asked alone so the caller can revoke the integrator's write
+  // token first: it throws the refusal, and answers true when the plan is
+  // submitted or accepted and would be withdrawn to building.
+  checkPlanRefresh(id: string, actor: string, mainHead: string, holds: boolean, resolve: boolean, to: unknown): boolean {
+    return (resolve ? this.resolveAllowed(id, actor, mainHead, holds, to) : this.refreshAllowed(id, actor, mainHead, holds)).reopening;
+  }
+
+  // The refusals a refresh and a --resolve share. A submitted or accepted
+  // plan is refreshed by withdrawing it to building (`reopening`), unless
+  // its landing lease is held: a merge holding the lease may already be on
+  // the baseline, so it is cancelled first.
+  private refreshScope(id: string, actor: string, what: string): { plan: Item; record: PlanRecord; reopening: boolean } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the project owner ${what}`, 403);
     const plan = this.planItem(id);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
     const record = this.planRecord(id);
-    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved; its branch is refreshed only once the plan is building`, 409);
-    if (plan.state === "submitted" || plan.state === "accepted") {
-      throw new RuleError("not_building", `${id} is ${plan.state}: every part is integrated, and the owner lands the branch with atelier merge ${id}, which merges it with main`, 409);
+    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved; its branch takes main only once the plan is building`, 409);
+    const reopening = plan.state === "submitted" || plan.state === "accepted";
+    const landing = reopening ? this.landing(id) : null;
+    if (landing) {
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot go back to building. Cancel that merge with atelier merge ${id} --cancel, then run this again`, 409);
     }
+    return { plan, record, reopening };
+  }
+
+  private refreshAllowed(id: string, actor: string, mainHead: string, holds: boolean): { plan: Item; record: PlanRecord; reopening: boolean } {
+    const scope = this.refreshScope(id, actor, "refreshes a plan's branch");
+    const { plan, record, reopening } = scope;
     const job = plan.dispatch?.job;
-    if (plan.owner || job === "integrate" || job === "refresh" || record.refresh?.state === "dispatched") {
-      const what = plan.owner ? `${plan.owner} holds ${id}` : job === "integrate" ? `${id}'s integrate job for part ${plan.dispatch?.part} is queued` : `a refresh from main at ${(record.refresh?.mainHead ?? "").slice(0, 8)} is queued`;
+    const held = !!plan.owner && !reopening;
+    if (held || job === "integrate" || job === "refresh" || record.refresh?.state === "dispatched") {
+      const what = held ? `${plan.owner} holds ${id}` : job === "integrate" ? `${id}'s integrate job for part ${plan.dispatch?.part} is queued` : `a refresh from main at ${(record.refresh?.mainHead ?? "").slice(0, 8)} is queued`;
       throw new RuleError("job_in_flight", `${what}; run atelier plan refresh again once it is done`, 409);
     }
     if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
     if (holds) {
       throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to refresh`, 409);
     }
-    this.dispatchRefresh(id, record, mainHead, actor, new Date().toISOString(), "the project owner asked for a refresh");
-    return this.item(id);
+    return scope;
+  }
+
+  // A submitted or accepted plan whose branch must take main goes back to
+  // building: the integrator's hold and its write token (`token`, revoked by
+  // the caller), the submission and any acceptance end, logged as
+  // plan.reopened. The refresh or merge-main part that follows takes main,
+  // and the integrator submits the plan again once every part is integrated
+  // on a branch that holds it.
+  private reopenPlan(plan: Item, actor: string, at: string, token: string | null | undefined, reason: string): void {
+    this.dropToken(plan.id, token);
+    this.update(plan.id, { state: "open", owner: null, accepted_head: null }, at);
+    this.log(plan.id, actor, "plan.reopened", {
+      from: plan.state, head: plan.head, holder: plan.owner, reason,
+      ...(plan.state === "accepted" ? { acceptedHead: plan.acceptedHead } : {}),
+    }, at);
   }
 
   // What the Worker needs to verify a refresh: the plan item, its
@@ -3077,7 +3122,10 @@ export class Ledger extends DurableObject<Env> {
   // commit the branch already held main's head and the integration head
   // stays. The refresh job clears. The Worker has verified the merge
   // against the plan branch's log and passes `verified: true`.
-  refreshed(id: string, actor: string, mainHead: string, mergeCommit: string | null, verified: boolean): Item {
+  // `allIntegrated` says every part is integrated or landed, as after an
+  // integration, as when a plan withdrawn to take main (reopenPlan) has
+  // taken it; the integrator then submits the plan rather than releasing it.
+  refreshed(id: string, actor: string, mainHead: string, mergeCommit: string | null, verified: boolean): { item: Item; allIntegrated: boolean; parts: string[] } {
     const { record, refresh } = this.reportedRefresh(id, actor, mainHead, "");
     if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the plan's branch", 409);
     const at = new Date().toISOString();
@@ -3088,7 +3136,10 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     this.log(id, actor, "plan.refreshed", { mainHead, mergeCommit }, at);
     this.afterPlanChange(id);
-    return this.item(id);
+    const parts = this.planParts(id);
+    const landed = (s: string) => s === "integrated" || s === "merged" || s === "abandoned";
+    const allIntegrated = parts.some((p) => p.state === "integrated") && parts.every((p) => landed(p.state));
+    return { item: this.item(id), allIntegrated, parts: parts.filter((p) => p.state === "integrated").map((p) => p.partKey!) };
   }
 
   // A refresh that conflicted or failed the plan's checks, after the
@@ -3139,19 +3190,22 @@ export class Ledger extends DurableObject<Env> {
   // The owner's atelier plan refresh --resolve: adds the merge-main part for
   // main's head as the Worker read it, without trying a clean refresh first,
   // with `to` as its builder when named. Refused as a refresh is for a plan
-  // not approved or not building, while a refresh is in flight (its outcome
-  // may add the part itself), when the branch already holds main's head
+  // not approved or closed, while a refresh is in flight (its outcome may
+  // add the part itself), when the branch already holds main's head
   // (`holds`), when the part for this head exists, and while another
-  // merge-main part is not yet integrated.
-  async planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown): Promise<Item> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner resolves a plan's branch with main", 403);
-    const plan = this.planItem(id);
-    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
-    const record = this.planRecord(id);
-    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved; its branch takes main only once the plan is building`, 409);
-    if (plan.state === "submitted" || plan.state === "accepted") {
-      throw new RuleError("not_building", `${id} is ${plan.state}: every part is integrated, and the owner lands the branch with atelier merge ${id}, which merges it with main`, 409);
-    }
+  // merge-main part is not yet integrated. A submitted or accepted plan is
+  // withdrawn to building first, as a refresh withdraws it.
+  async planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown, token?: string | null): Promise<Item> {
+    const { plan, record, reopening, builder } = this.resolveAllowed(id, actor, mainHead, holds, to);
+    const at = new Date().toISOString();
+    if (reopening) this.reopenPlan(plan, actor, at, token, "the project owner asked to resolve main into the branch");
+    await this.addMergeMain(id, record, mainHead, mergeMainScope("", record.scope), actor, at, "the project owner asked to resolve main into the branch", builder);
+    this.afterPlanChange(id);
+    return this.item(id);
+  }
+
+  private resolveAllowed(id: string, actor: string, mainHead: string, holds: boolean, to: unknown): { plan: Item; record: PlanRecord; reopening: boolean; builder: string | null } {
+    const { plan, record, reopening } = this.refreshScope(id, actor, "resolves a plan's branch with main");
     if (record.refresh?.state === "dispatched") {
       throw new RuleError("job_in_flight", `a refresh from main at ${record.refresh.mainHead.slice(0, 8)} is queued; if it conflicts, the plan adds the part to resolve it itself`, 409);
     }
@@ -3166,10 +3220,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const open = (record.added ?? []).map((a) => parts.find((p) => p.id === a.id)).find((p) => p && p.state !== "integrated" && p.state !== "merged" && p.state !== "abandoned");
     if (open) throw new RuleError("merge_open", `${open.id} (${open.partKey}) is merging main into the branch and is ${open.state}; resolve that one first, or abandon it with atelier abandon ${open.id}`, 409);
-    const at = new Date().toISOString();
-    await this.addMergeMain(id, record, mainHead, mergeMainScope("", record.scope), actor, at, "the project owner asked to resolve main into the branch", builder);
-    this.afterPlanChange(id);
-    return this.item(id);
+    return { plan, record, reopening, builder };
   }
 
   // Before approval: once the planner has let the plan go twice without a
