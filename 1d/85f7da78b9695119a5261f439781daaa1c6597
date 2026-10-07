@@ -1,0 +1,29 @@
+atelier atelier/t242 "A plan's own merge to main does not update the Ledger's record of main's head (setMainHead is skipped for plan items in src/ledger.ts), so other plans in flight notice that move only at their next integration. Record it for other plans, but keep a plan from refreshing against its own merge. Gemini's follow-up on t233, refiled on current main because t234 was built before t233 and t238 rewrote this code (2026-10-07)"
+accepted head ac58bb2e060b363e1f078a90886f3e1be5cd5558
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T10:06:56.806Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T10:06:59.564Z
+REVIEW approve by antigravity/gemini-3.1-pro at ac58bb2e060b363e1f078a90886f3e1be5cd5558, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T09:43:40.441Z pavi item.created
+2026-10-07T09:43:41.192Z pavi item.dispatched
+2026-10-07T09:43:48.756Z opencode/glm-5.3 item.claimed
+2026-10-07T09:43:57.346Z opencode/glm-5.3 fork.created
+2026-10-07T10:00:18.901Z opencode/glm-5.3 push.observed
+2026-10-07T10:02:18.994Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:02:26.771Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:02:27.863Z opencode/glm-5.3 item.submitted
+2026-10-07T10:04:14.285Z pavi land.lease
+2026-10-07T10:04:16.352Z pavi land.merge
+2026-10-07T10:04:24.516Z pavi land.regenerate
+2026-10-07T10:04:26.803Z opencode/glm-5.3 push.observed
+2026-10-07T10:04:26.913Z pavi land.push
+2026-10-07T10:06:57.389Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:06:59.691Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:07:00.135Z pavi land.check
+2026-10-07T10:07:00.479Z opencode/glm-5.3 item.submitted
+2026-10-07T10:07:00.637Z pavi land.submit
+2026-10-07T10:07:00.737Z pavi review.requested
+2026-10-07T10:07:52.298Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T10:11:23.315Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T10:11:27.242Z pavi land.review
+2026-10-07T10:11:27.765Z pavi item.accepted
+2026-10-07T10:11:27.851Z pavi land.accept
