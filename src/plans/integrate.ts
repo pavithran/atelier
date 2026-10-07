@@ -173,6 +173,35 @@ export function verifyIntegration(claim: IntegrationClaim): string[] {
   return reasons;
 }
 
+export interface RefreshClaim {
+  log: readonly LogCommit[];  // the plan branch's log, newest first; log[0] is its head
+  integrationHead: string;    // the plan branch's integration head before this refresh
+  mainHead: string;           // the main head the refresh was dispatched to merge
+  mergeCommit: string;        // the commit the integrator reports
+}
+
+// Whether a refresh the integrator reports holds, as verifyIntegration asks
+// of an integration: the merge commit is on the plan branch's first-parent
+// line, its first parent is the integration head and its second is the main
+// head the refresh was dispatched for, and it has exactly those two parents.
+// Recorded, it becomes the integration head that later parts fork from and
+// later integrations sit on. Returns the reasons it fails; empty when it holds.
+export function verifyRefresh(claim: RefreshClaim): string[] {
+  const { log, integrationHead, mainHead, mergeCommit } = claim;
+  if (!HASH.test(mergeCommit)) return ["the merge commit is not a full commit hash"];
+  const commit = log.find((c) => c.hash === mergeCommit);
+  if (!commit) return [`${short(mergeCommit)} is not in the plan branch's log`];
+  const reasons: string[] = [];
+  const merge = short(mergeCommit), count = commit.parents.length;
+  if (!firstParentLine(log).has(mergeCommit)) reasons.push(`${merge} is not on the plan branch's first-parent line`);
+  if (commit.parents[0] !== integrationHead) {
+    reasons.push(`${merge}'s first parent is ${count ? short(commit.parents[0]) : "missing"}, not the plan's integration head ${short(integrationHead)}`);
+  }
+  if (commit.parents[1] !== mainHead) reasons.push(`${merge}'s second parent is ${count > 1 ? short(commit.parents[1]) : "missing"}, not main's head ${short(mainHead)}, which the refresh was dispatched to merge`);
+  if (count !== 2) reasons.push(`${merge} has ${count} parent${count === 1 ? "" : "s"}; a refresh merges main's head alone, so it has two`);
+  return reasons;
+}
+
 // The plan's required checks at the merge commit, read as gate() reads
 // evidence: each must be observed passing there. The integrator runs them
 // before it reports, and the Ledger records the integration only on this
