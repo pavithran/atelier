@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReview, runRunner, commandFor } from "../cli/runner.mjs";
+import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
 
 // The review job (docs/orchestrator.md, section 4, build step 10) driven
 // through the same stand-in io the other runner tests use: the server answers
@@ -257,4 +258,111 @@ test("an interrupted review releases the request through the real CLI helper", a
     },
   });
   assert.deepEqual(releases, [{ signal: undefined, step: "cleanup" }]);
+});
+
+// t230, with real git: the review diff runs from the merge base of the head
+// and the branch the item merges into, never from the fork point, so commits
+// the task merged in from that branch are not shown as its own. `target` is
+// the bare repository the claim's target token reads; `fork` is the task's.
+function reviewRepos(t) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-git-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.test", ...args], { cwd, encoding: "utf8" }).trim();
+  const commit = (cwd, file, text) => { writeFileSync(join(cwd, file), text); git(cwd, "add", "."); git(cwd, "commit", "--quiet", "-m", file); return git(cwd, "rev-parse", "HEAD"); };
+  const target = join(dir, "target.git"), fork = join(dir, "fork.git"), work = join(dir, "work");
+  git(dir, "init", "--quiet", "--bare", "-b", "main", target);
+  git(dir, "init", "--quiet", "--bare", "-b", "main", fork);
+  git(dir, "clone", "--quiet", target, work);
+  return { dir, git, commit, target, fork, work };
+}
+
+// Serves one review through the runner with the real git helpers, answering
+// the claim with `claim`, and returns the diff the reviewer read and its brief.
+async function serveReview(t, dir, claim) {
+  const reviewer = { agent: "codex", models: ["gpt-6-astra"], command: ["reviewer", "{brief_file}", "{diff_file}", "{verdict_file}", "{model}"] };
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ agents: [reviewer], jobs: ["review"] }));
+  const args = { _: ["runner"], multi: {}, name: "home:studio", config: path, once: true };
+  const task = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" };
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const seen = {}, posted = [];
+  await runRunner(args, {
+    workspacePath: () => join(dir, "t21"), wait: async () => {}, queue: async () => [task],
+    async executeChild(argv, options) {
+      if (argv[0] === "git") return execute(argv, options);
+      if (argv[0] === "reviewer") {
+        seen.brief = readFileSync(argv[1], "utf8");
+        seen.diff = readFileSync(argv[2], "utf8");
+        writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.");
+        return { code: 0 };
+      }
+      posted.push(argv[2]);
+      return { code: 0, output: argv[2] === "review-claim" ? JSON.stringify(claim) : "{}" };
+    },
+  });
+  assert.ok(posted.includes("review"), `the verdict is posted: ${posted.join(", ")}`);
+  return seen;
+}
+
+const changed = (diff) => [...diff.matchAll(/^diff --git a\/(\S+)/gm)].map((m) => m[1]);
+
+function claimFor(item, head, target) {
+  return {
+    ...claimed, item: { ...claimed.item, ...item, head }, head, need: { ...claimed.need, head }, plan: null,
+    readToken: { remote: item.fork, token: "read-token", defaultBranch: "main" },
+    ...(target ? { target } : {}),
+  };
+}
+
+test("a review of a task that merged main after its fork reads only the task's own change", async (t) => {
+  const { dir, git, commit, target, fork, work } = reviewRepos(t);
+  const forkPoint = commit(work, "base.txt", "base\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  git(work, "checkout", "--quiet", "-b", "task");
+  commit(work, "task.txt", "the task's change\n");
+  // Main moves on after the fork, and the task merges it in.
+  git(work, "checkout", "--quiet", "main");
+  commit(work, "main.txt", "main's newer change\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  git(work, "checkout", "--quiet", "task");
+  git(work, "merge", "--quiet", "--no-edit", "main");
+  const head = git(work, "rev-parse", "HEAD");
+  git(work, "push", "--quiet", fork, "HEAD:main");
+  const mergeBase = git(work, "rev-parse", "main");
+
+  const seen = await serveReview(t, dir, claimFor({ base: forkPoint, fork }, head, { remote: target, token: "base-token", branch: "main" }));
+  assert.deepEqual(changed(seen.diff), ["task.txt"], "main's newer commit is not shown as the task's");
+  assert.ok(seen.brief.includes(`Base: ${mergeBase}, the merge base of the head and \`main\``), "the brief names the merge base");
+  assert.ok(seen.brief.includes(`git diff ${mergeBase} ${head}`));
+
+  // A claim that names no branch falls back to the fork point, and the brief says so.
+  const fallback = await serveReview(t, dir, claimFor({ base: forkPoint, fork }, head, null));
+  assert.deepEqual(changed(fallback.diff), ["main.txt", "task.txt"]);
+  assert.ok(fallback.brief.includes(`Base: ${forkPoint}, the fork point. The merge base with the branch the task merges into could not be found`));
+});
+
+test("a part's review diffs against its plan's branch, not main", async (t) => {
+  const { dir, git, commit, target, fork, work } = reviewRepos(t);
+  // `target` is the plan's integration branch: main's commit, then an
+  // earlier part's work that main does not have.
+  commit(work, "base.txt", "base\n");
+  const main = git(work, "rev-parse", "HEAD");
+  const forkPoint = commit(work, "earlier-part.txt", "an earlier part\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  git(work, "checkout", "--quiet", "-b", "part");
+  commit(work, "part.txt", "this part's change\n");
+  // Another part is integrated after this one forked, and this part merges the plan's branch.
+  git(work, "checkout", "--quiet", "main");
+  commit(work, "other-part.txt", "another part\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  git(work, "checkout", "--quiet", "part");
+  git(work, "merge", "--quiet", "--no-edit", "main");
+  const head = git(work, "rev-parse", "HEAD");
+  git(work, "push", "--quiet", fork, "HEAD:main");
+
+  const seen = await serveReview(t, dir, claimFor({ base: forkPoint, fork, kind: "part" }, head, { remote: target, token: "base-token", branch: "main" }));
+  assert.deepEqual(changed(seen.diff), ["part.txt"], "neither the plan's earlier work nor the other part is shown as this part's");
+  // From the project's main, the diff would also hold both other parts' work.
+  assert.deepEqual(git(work, "diff", "--name-only", git(work, "merge-base", main, head), head).split("\n"), ["earlier-part.txt", "other-part.txt", "part.txt"]);
 });

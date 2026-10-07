@@ -9,7 +9,7 @@ import type { Brief, Verdict } from "../brief.ts";
 import type { Dispatch } from "../dispatch/rules.ts";
 import type { Item, ItemState } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
-import type { Attempt, PlanPhase } from "./phase.ts";
+import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
 import type { PartRoute } from "./route.ts";
 import type { Plan } from "./schema.ts";
 import type { PlanLimits } from "./state.ts";
@@ -29,6 +29,8 @@ export interface PlanPartView {
   attempts: Attempt[];            // counted from the owner's latest reroute or retry
   gate: { ready: boolean; blockers: string[] } | null;  // while submitted or accepted
   integration: { head: string; mergeCommit: string } | null;  // recorded when the part became integrated
+  integrationFailure?: IntegrationFailure | null;  // the part's latest failed integration, if any
+  blocked?: { reason: string; by: string } | null;  // while blocked: why, and who blocked it
 }
 
 export interface PlanView {
@@ -46,6 +48,8 @@ export interface PlanView {
   parts: PlanPartView[];
   preview: PartRoute[] | null;    // before approval: the routing an approval would fix now
   integration: { integrationHead: string | null };  // the plan branch's integration head; null when none is recorded
+  harnessFailure: string | null;  // the release note when the harness failed, shown while the plan waits for the planner
+  pastDeadline: boolean;          // an approved plan past its deadline, whose block only stop can lift
 }
 
 const flat = (text: string) => text.replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim();
@@ -71,6 +75,7 @@ function partState(p: PlanPartView, parts: PlanPartView[]): string {
 // exists, with the command that makes it: a part reaches main by its own
 // acceptance and merge.
 function ownerStep(p: PlanPartView, flag: string): string | null {
+  if (p.state === "blocked" && p.blocked) return `blocked by ${p.blocked.by}: ${flat(p.blocked.reason)}`;
   if (p.state === "accepted") return `accepted at ${p.acceptedHead?.slice(0, 8)}; land it: atelier merge ${p.id} ${flag}`;
   if (p.state !== "submitted" || !p.gate) return null;
   if (p.gate.ready) return `ready for you: atelier merge ${p.id} --head ${p.head} ${flag}`;
@@ -81,6 +86,15 @@ function attemptsLine(attempts: Attempt[]): string | null {
   if (!attempts.length) return null;
   const words = { "give-up": "released with no commit", failed: "released after a failed finish", finished: "finished" } as const;
   return `attempts: ${attempts.map((a) => `${a.actor} ${words[a.outcome]}`).join("; ")}`;
+}
+
+// A part's latest failed integration, while it has not been integrated
+// since: why it failed, and whether its builder was charged an attempt.
+function integrationFailureLine(p: PlanPartView): string | null {
+  const f = p.integrationFailure;
+  if (!f || p.state === "integrated" || p.state === "merged" || p.state === "abandoned") return null;
+  const what = f.kind === "conflict" ? "a merge conflict" : f.kind === "checks" ? "failing checks" : f.kind ? `kind ${flat(f.kind)}` : "kind not recorded";
+  return `integration failed at ${when(f.at)} (${what}; ${chargesBuilder(f.kind) ? "charged to the builder" : "not charged to the builder"}): ${cut(flat(f.reason) || "no reason given", 500)}`;
 }
 
 function routeLines(route: PartRoute | undefined | null, preview: boolean): string[] {
@@ -113,6 +127,7 @@ export function planText(v: PlanView, project: string): string {
     lines.push(v.proposal && v.plan
       ? `Proposal ${v.proposal.count}, by ${v.proposal.by} at ${when(v.proposal.at)}: ${count(v.plan.parts.length, "part")}. Hash: ${v.proposal.hash}`
       : "No valid proposal yet.");
+    if (v.harnessFailure) lines.push(flat(v.harnessFailure));
   } else {
     lines.push(`Approved by ${a.by} at ${when(a.at)}, ${a.allowPaid ? "paid models allowed" : "no paid models"}. Hash: ${a.hash}`);
     lines.push(`Limits: ${a.limits.maxParallel} parts live at once, ${a.limits.attempts} attempts a part, deadline ${when(a.deadline)}. Part dispatches: ${a.jobsUsed} of ${a.limits.maxJobs}.`);
@@ -122,7 +137,7 @@ export function planText(v: PlanView, project: string): string {
     for (const p of v.parts) {
       lines.push(`  ${p.id}  ${p.key}  ${partState(p, v.parts)}  ${flat(p.title)}`);
       const deps = p.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`);
-      const detail = [`scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), attemptsLine(p.attempts), ownerStep(p, flag)];
+      const detail = [`scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
       for (const line of detail) if (line) lines.push(`      ${line}`);
     }
   } else if (v.plan) {
@@ -152,10 +167,17 @@ function nextSteps(v: PlanView, flag: string): string[] {
   if (v.item.state === "merged") return ["The plan is complete: each part has merged or was abandoned. Nothing waits."];
   if (v.item.state === "abandoned") return ["The plan is stopped. Nothing waits."];
   if (v.blocked && v.approval) {
+    if (v.pastDeadline) {
+      return [
+        "The plan is blocked until you decide:",
+        `  close the plan and its open parts: atelier plan stop ${id} ${flag}`,
+      ];
+    }
     return [
       "The plan is blocked until you decide:",
       `  count a part's attempts afresh: atelier plan retry tN ${flag}`,
       `  name who builds a part: atelier plan reroute tN --to H/M ${flag}`,
+      `  name who reviews a submitted or blocked part: atelier plan reroute tN --to H/M ${flag}`,
       `  give a part up: atelier abandon tN ${flag}`,
       `  close the plan and its open parts: atelier plan stop ${id} ${flag}`,
     ];
@@ -188,7 +210,7 @@ function nextSteps(v: PlanView, flag: string): string[] {
     const parts = v.parts.filter((p) => p.state === "integrated").map((p) => p.key);
     return [`The plan is integrated (${parts.length ? list(parts) : "no part"}); accept and land it: atelier merge ${id} --head ${v.item.head} ${flag}`];
   }
-  const yours = v.parts.filter((p) => p.state === "accepted" || (p.state === "submitted" && p.gate !== null));
+  const yours = v.parts.filter((p) => p.state === "accepted" || p.state === "blocked" || (p.state === "submitted" && p.gate !== null));
   return yours.length
     ? [`${count(yours.length, "part")} wait${yours.length === 1 ? "s" : ""} on you; each line above gives its command.`]
     : ["The parts are being built. Nothing waits on you."];

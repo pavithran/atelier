@@ -72,20 +72,25 @@ test("the default planner is the first model for research work that is not refus
   assert.deepEqual(pickPlanner([], [], policy), { actor: null, reasons: ["the model pool is empty"], passedOver: [] });
 });
 
-test("the planner's attempts count claims released without a valid proposal, from the plan's latest request", () => {
+test("the planner's attempts count only proposals posted and refused, from the plan's latest request", () => {
   const claimed = (seq: number) => event(seq, "item.claimed");
   const released = (seq: number) => event(seq, "item.released");
   const invalid = (seq: number, errors: string[]) => event(seq, "plan.invalid", "t1", "claude-code/opus-5.5", { errors });
   assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4)]), { failed: 1, lastErrors: ["e1"] });
-  const twice = [event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), released(6)];
-  assert.deepEqual(plannerAttempts(twice), { failed: 2, lastErrors: [] });
-  assert.equal(plannerBlock(plannerAttempts(twice)), "the planner gave no valid plan in 2 attempts");
+  // A release in which no proposal was refused (a harness that failed, an
+  // interrupt or an infrastructure failure) fails no attempt.
+  assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), released(3)]), { failed: 0, lastErrors: [] });
+  assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), released(6)]), { failed: 1, lastErrors: ["e1"] });
+  // Two refused proposals block the plan; the errors are the last refusal's.
+  const twice = [event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), invalid(6, ["e2"]), released(7)];
+  assert.deepEqual(plannerAttempts(twice), { failed: 2, lastErrors: ["e2"] });
+  assert.equal(plannerBlock(plannerAttempts(twice)), "the planner gave no valid plan in 2 attempts; its last proposal's errors: e2");
   const errors = ["a", "b", "c", "d", "e"];
   assert.equal(plannerBlock({ failed: 2, lastErrors: errors }), "the planner gave no valid plan in 2 attempts; its last proposal's errors: a; b; c; and 2 more");
   assert.equal(plannerBlock({ failed: 1, lastErrors: errors }), null);
   // A revise, reroute or retry, or a valid proposal, starts the count again.
   for (const kind of ["plan.revised", "plan.rerouted", "plan.retried", "plan.proposed"]) {
-    assert.equal(plannerAttempts([...twice, event(7, kind)]).failed, 0, kind);
+    assert.equal(plannerAttempts([...twice, event(8, kind)]).failed, 0, kind);
   }
   // The release that ends a claim in which a valid proposal was posted is no failure.
   assert.equal(plannerAttempts([claimed(1), event(2, "plan.proposed"), released(3)]).failed, 0);
@@ -119,7 +124,7 @@ test("a plan's inbox entries: approve-plan for an answered proposal, plan-blocke
   });
   const plan = { id: "t1", title: "Ship", state: "open" as const };
   const proposal = { hash: "a".repeat(64), parts: 2 };
-  const one = (change: object) => planInboxEntries([{ project: "p", plan, record: record(), proposal, answered: true, ...change }]);
+  const one = (change: object, now = AT) => planInboxEntries([{ project: "p", plan, record: record(), proposal, answered: true, ...change }], now);
   assert.deepEqual(one({}).map((e) => [e.kind, e.weight]), [["approve-plan", 95]]);
   assert.match(one({})[0].reason, /^the planner proposed 2 parts, aaaaaaaaaaaa\. Read atelier plan show t1 --project p, then approve that hash/);
   assert.deepEqual(one({ answered: false }), []);
@@ -129,6 +134,9 @@ test("a plan's inbox entries: approve-plan for an answered proposal, plan-blocke
   assert.match(blocked[0].reason, /approve the last valid proposal \(aaaaaaaaaaaa\), revise it, retry or reroute the planner, or stop the plan$/);
   const approval = { hash: proposal.hash, at: AT, by: "owner", allowPaid: false, limits: limitsFor(2, false), deadline: AT, parts: [], routes: [] };
   assert.match(one({ record: record({ approval, blocked: "part a has reached 3 attempts" }) })[0].reason, /retry or reroute a part, abandon a part, or stop the plan$/);
+  // A deadline block can only be stopped, since the deadline is fixed at approval.
+  const late = { hash: proposal.hash, at: "2026-10-01T12:00:00.000Z", by: "owner", allowPaid: false, limits: limitsFor(2, false), deadline: "2026-10-02T12:00:00.000Z", parts: [], routes: [] };
+  assert.match(one({ record: record({ approval: late, blocked: "the deadline 2026-10-02T12:00:00.000Z passed" }) })[0].reason, /stop the plan$/);
   assert.deepEqual(one({ record: record({ approval }) }), []);
   assert.deepEqual(one({ plan: { ...plan, state: "abandoned" }, record: record({ blocked: "x" }) }), []);
 });

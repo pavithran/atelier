@@ -1,9 +1,11 @@
 import { env } from "cloudflare:workers";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
+import { REVIEW_CLAIM_TIMEOUT_MS } from "../src/review/needed.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
 // Automatic cross-family review on the Ledger (docs/orchestrator.md, section 4,
@@ -147,7 +149,7 @@ it("a rejection with a blocker sends the part back with the findings, then an al
   const L = await setup("review-rework");
   const { id, partId } = await approved(L);
   const route = (await L.planView(id)).parts[0].route!;
-  const builder = route.builder!.actor, alternate = route.alternates[0].actor;
+  const builder = route.builder!.actor;
 
   // Round 1: the routed builder submits; the review rejects with a blocker.
   const head1 = "a".repeat(40);
@@ -173,7 +175,9 @@ it("a rejection with a blocker sends the part back with the findings, then an al
   const reviewer2 = await routedReviewer(L, partId);
   await L.claimReview(partId, reviewer2, RUNNER);
   await L.addReview({ itemId: partId, by: reviewer2, head: head2, approve: false, note: "Still broken.", findings: [blocker()], at: new Date().toISOString() });
-  // After two rounds the alternate builder takes over.
+  // After two rounds an alternate builder takes over: the first that reviewed none of the rounds.
+  const alternate = route.alternates.map((a) => a.actor).find((a) => a !== reviewer1 && a !== reviewer2)!;
+  expect(alternate).toBeDefined();
   expect((await L.item(partId)).dispatch).toMatchObject({ agent: alternate.split("/")[0], model: alternate.split("/")[1] });
 
   // Round 3: the alternate submits; the review rejects again, and the plan blocks.
@@ -283,8 +287,253 @@ it("a part with no eligible reviewer left is blocked with what the owner can do"
   const item = await L.item(partId);
   expect(item.state).toBe("blocked");
   expect(item.blocked).toMatchObject({ by: "atelier/orchestrator", from: "submitted" });
-  expect(item.blocked!.reason).toMatch(/^no eligible reviewer remains for part a\. .*atelier models add.*atelier plan stop t\d+/);
+  expect(item.blocked!.reason).toMatch(new RegExp(`^no eligible reviewer remains for part a\\. .*atelier plan reroute ${partId} --to H/M`));
   expect(await reviewWaiting(L)).toEqual([]);
   // The part is blocked, not the plan, so its other parts' work would go on.
   expect((await L.planView(id)).blocked).toBeNull();
+});
+
+// The plan's tick no longer waits for a change to the plan or one of its
+// parts: a deploy that changed the tick's logic, a refused review claim or a
+// lapsed one each tick the plan (t226, found on t197, 2026-10-07). These
+// tests hold the world still between the event and the tick, as production
+// left it: a claim's age is moved by hand, and a contributor's claim is
+// inserted as the event the routes would also have written, held back
+// because each of those routes runs the tick being tested.
+
+// Ages this part's claimed review request past the claim timeout, as the
+// two hours would have passed.
+async function ageClaim(L: L, partId: string) {
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(
+      `UPDATE review_requests SET claimedAt = ? WHERE item = ? AND state = 'claimed'`,
+      new Date(Date.now() - REVIEW_CLAIM_TIMEOUT_MS - 3_600_000).toISOString(), partId,
+    );
+  });
+}
+
+// The part's routed reviewer becomes a contributor, as on t197: it claimed
+// the part before another model built and submitted it. The routes that
+// would record that claim also run the tick, so the event is written here
+// alone, leaving the open request routed to a contributor with nothing
+// ticking — the idle state each trigger below repairs.
+async function routedToContributor(L: L, partId: string, reviewer: string, head: string) {
+  await submitPart(L, partId, head);
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(
+      `INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, 'item.claimed', '{}')`,
+      partId, new Date().toISOString(), reviewer,
+    );
+  });
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+}
+
+it("a claim refused for a contributor ticks the plan, which withdraws the request and asks another", async () => {
+  const L = await setup("review-refused-contributor");
+  const { id, partId } = await approved(L);
+  const { reviewer, third } = await routing(L, partId);
+  await routedToContributor(L, partId, reviewer, "a".repeat(40));
+  // The reviewer's runner claims the review it is routed for and is refused
+  // — and the tick the refusal runs withdraws the request and asks the third
+  // family, instead of leaving the plan idle as on t197.
+  await refusal(L.claimReview(partId, reviewer, RUNNER), "self_review", /contributed to .* and cannot review it/);
+  expect(await routedReviewer(L, partId)).toBe(third);
+  const withdrawn = (await events(L, partId)).filter((e) => e.kind === "review.withdrawn");
+  expect(withdrawn).toEqual([expect.objectContaining({ data: { head: "a".repeat(40), reviewer, reason: `${reviewer} contributed to it, and nobody reviews their own work` } })]);
+  expect((await L.planView(id)).parts[0].route!.reviewerChange).toMatchObject({ from: reviewer, reason: expect.stringMatching(/contributed to it/) });
+  expect((await L.claimReview(partId, third, RUNNER) as unknown as ReviewClaim).head).toBe("a".repeat(40));
+});
+
+it("a claim refused because it lapsed ticks the plan, which asks the review again", async () => {
+  const L = await setup("review-refused-lapse");
+  const { partId } = await approved(L);
+  const { reviewer, third } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  await L.claimReview(partId, reviewer, RUNNER);
+  await ageClaim(L, partId);
+  // The reviewer's runner tries its claim again: no request is open, so the
+  // claim is refused — and the tick the refusal runs asks the review again
+  // of a reviewer whose claim did not lapse, instead of leaving the plan idle.
+  await refusal(L.claimReview(partId, reviewer, RUNNER), "no_review", /no open review request/);
+  expect(await routedReviewer(L, partId)).toBe(third);
+  expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["claimed", "open"]);
+  // The new request is claimable by the reviewer it names, not the lapsed one.
+  expect((await L.claimReview(partId, third, RUNNER) as unknown as ReviewClaim).head).toBe(head);
+});
+
+it("a claimed review's lapse is alarmed, and the alarm asks it again of another reviewer", async () => {
+  const L = await setup("review-lapse");
+  const { id, partId } = await approved(L);
+  const { reviewer, third } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  const deadline = Date.parse((await L.planView(id)).approval!.deadline);
+  // The plan's alarm stood at its deadline; the claim moves it to the claim's
+  // lapse, sooner than any deadline.
+  await L.claimReview(partId, reviewer, RUNNER);
+  const held = await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => state.storage.getAlarm());
+  expect(held!).toBeGreaterThan(Date.now() + REVIEW_CLAIM_TIMEOUT_MS - 60_000);
+  expect(held!).toBeLessThan(Date.now() + REVIEW_CLAIM_TIMEOUT_MS + 60_000);
+  expect(held!).toBeLessThan(deadline + 1000);
+  // The claim lapses, and the alarm fires: the tick asks the review again,
+  // passing the lapsed reviewer over, and the plan is not left waiting.
+  await ageClaim(L, partId);
+  expect(await runDurableObjectAlarm(L)).toBe(true);
+  expect(await routedReviewer(L, partId)).toBe(third);
+  expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["claimed", "open"]);
+  // The alarm is set again for the deadline alone: a lapse already passed
+  // fires nothing more.
+  const after = await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => state.storage.getAlarm());
+  expect(after).toBe(deadline + 1000);
+});
+
+it("a deploy ticks every open plan once, re-judging a review routed to a contributor", async () => {
+  const L = await setup("review-deploy");
+  const { id, partId } = await approved(L);
+  const { reviewer, third } = await routing(L, partId);
+  await routedToContributor(L, partId, reviewer, "a".repeat(40));
+  // A deploy that names no commit ticks nothing; one that does ticks the plan.
+  await runInDurableObject(L, (l: Ledger) => l.retickDeployed(null));
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  await runInDurableObject(L, (l: Ledger) => l.retickDeployed("a1b2c3d4"));
+  expect(await routedReviewer(L, partId)).toBe(third);
+  const withdrawn = (await events(L, partId)).filter((e) => e.kind === "review.withdrawn");
+  expect(withdrawn).toHaveLength(1);
+  expect(String(withdrawn[0].data.reason)).toMatch(/contributed to it/);
+  expect((await L.planView(id)).parts[0].route!.reviewerChange).toMatchObject({ from: reviewer, reason: expect.stringMatching(/contributed to it/) });
+  // The same deploy again ticks nothing: the request stands as it is.
+  await runInDurableObject(L, (l: Ledger) => l.retickDeployed("a1b2c3d4"));
+  expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+});
+
+// The owner's way back for a part no reviewer in the frozen pool can review
+// (t224): plan reroute names a reviewer for a submitted or blocked part, in
+// the pool or not, so a model added after approval can review it.
+const GEMINI = "antigravity/gemini-3.1-pro";
+
+// A part whose builder's pushes name a model of every family in the pool, so
+// the plan blocks it for want of a reviewer.
+async function blockedForReviewer(L: L) {
+  const { id, partId, builder } = await approved(L);
+  const others = [OPUS, GPT, GLM].filter((a) => a !== builder);
+  const head = "a".repeat(40);
+  await L.claim(partId, builder, RUNNER);
+  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.recordPush(partId, builder, head, head, false, { holdsRecorded: true, rebasedFrom: null }, others.map((actor, n) => ({ commit: String(n).repeat(40), actor })));
+  await L.addEvidence(observed(partId, head));
+  await L.submit(partId, builder);
+  expect((await L.item(partId)).state).toBe("blocked");
+  return { id, partId, builder, head };
+}
+
+it("a part blocked for want of a reviewer is unblocked by naming one outside the pool, which is asked to review it", async () => {
+  const L = await setup("review-reroute-blocked");
+  const { id, partId, head } = await blockedForReviewer(L);
+  const routed = (await L.planView(id)).parts[0].route!.reviewer!.actor;
+  const shown = planText(await L.planView(id) as unknown as PlanView, "review-reroute-blocked");
+  expect(shown).toMatch(new RegExp(`blocked by atelier/orchestrator: no eligible reviewer remains for part a\\..*atelier plan reroute ${partId} --to H/M`));
+  expect(shown).toContain("1 part waits on you");
+  const attemptsBefore = (await L.planView(id)).parts[0].attempts;
+
+  const item = await L.reroutePlan(partId, "owner", GEMINI);
+  // The plan's block is lifted and the review is asked of the named model.
+  expect(item.state).toBe("submitted");
+  expect(item.blocked).toBeUndefined();
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "antigravity", model: "gemini-3.1-pro" }]);
+  const log = await events(L, partId);
+  expect(log.find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ actor: "owner", data: { from: routed, to: GEMINI, reason: "named by the project owner" } });
+  expect(log.find((e) => e.kind === "item.unblocked")).toMatchObject({ actor: "owner", data: { to: "submitted" } });
+  // Naming a reviewer is not a builder's reroute: the attempts stand.
+  expect(log.some((e) => e.kind === "plan.rerouted")).toBe(false);
+  const view = await L.planView(id);
+  expect(view.parts[0].attempts).toEqual(attemptsBefore);
+  expect(view.parts[0].route!.reviewer).toEqual({ actor: GEMINI, reasons: [`Named by the project owner in place of ${routed}`] });
+  expect(planText(view as unknown as PlanView, "review-reroute-blocked")).toContain(`reviewer ${GEMINI}, of another family, in place of ${routed}: named by the project owner`);
+  // The named reviewer claims the review, and its approval counts.
+  expect((await L.claimReview(partId, GEMINI, RUNNER) as unknown as ReviewClaim).head).toBe(head);
+  await L.addReview({ itemId: partId, by: GEMINI, head, approve: true, note: "Looks good", at: new Date().toISOString() });
+  await L.accept(partId, "owner");
+  expect((await L.item(partId)).state).toBe("accepted");
+});
+
+it("naming a reviewer is refused for a contributor's family, the owner, another's live claim, and anyone but the owner", async () => {
+  const L = await setup("review-reroute-refused");
+  const { partId, builder } = await blockedForReviewer(L);
+  await refusal(L.reroutePlan(partId, "owner", builder), "not_independent", /cannot review .*contributed to it/);
+  await refusal(L.reroutePlan(partId, "owner", "claude-code/sonnet-5.5"), "not_independent", /not of another family than every contributor/);
+  await refusal(L.reroutePlan(partId, "owner", "owner"), "bad_actor", /name the reviewer as harness\/model/);
+  await refusal(L.reroutePlan(partId, GEMINI, GEMINI), "not_project_owner", /only the project owner/);
+  expect((await L.item(partId)).state).toBe("blocked");
+  // Once the named reviewer has claimed the review, another name waits for it.
+  await L.reroutePlan(partId, "owner", GEMINI);
+  await L.claimReview(partId, GEMINI, RUNNER);
+  await refusal(L.reroutePlan(partId, "owner", "antigravity/gemini-3.1-flash"), "review_claimed", new RegExp(`${GEMINI} is reviewing ${partId} now`));
+});
+
+it("naming a reviewer for a submitted part withdraws the open request and asks the named one", async () => {
+  const L = await setup("review-reroute-submitted");
+  const { partId } = await approved(L);
+  const { reviewer, third } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  await L.reroutePlan(partId, "owner", third);
+  expect(await routedReviewer(L, partId)).toBe(third);
+  expect((await events(L, partId)).filter((e) => e.kind === "review.withdrawn")).toEqual([
+    expect.objectContaining({ actor: "owner", data: { head, reviewer, reason: `the project owner named ${third} to review it` } }),
+  ]);
+  expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+});
+
+it("a named reviewer who later contributes is passed over and the plan picks again", async () => {
+  const L = await setup("review-reroute-contributes");
+  const { partId } = await approved(L);
+  const { builder, reviewer, third } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  await L.reroutePlan(partId, "owner", third);
+  // The builder lets the part go; the named reviewer builds it instead.
+  await L.release(partId, "owner", "stalled");
+  await L.reroutePlan(partId, "owner", third);
+  await L.claim(partId, third, RUNNER);
+  await L.submit(partId, third);
+  // Neither the builder's family nor the named one's may review; the routed
+  // reviewer, of the remaining family, is asked.
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  expect(builder).not.toBe(reviewer);
+});
+
+// t230: the review claim carries a read token for the branch the item merges
+// into, so the review job can diff from the merge base: a part's is its
+// plan's integration branch (the plan's fork), any other item's the baseline.
+it("the review claim route names the plan's branch as a part's merge target", async () => {
+  const { default: worker } = await import("../src/index.ts");
+  const name = "review-claim-target";
+  const L = await setup(name);
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  const { id, partId } = await approved(L);
+  await L.setFork(id, "plan-fork", H0, "owner");
+  await submitPart(L, partId, "a".repeat(40));
+  const asked: string[] = [];
+  const ARTIFACTS = {
+    get: async (repo: string) => ({
+      info: async () => ({ remote: `https://git.test/${repo}`, defaultBranch: "main" }),
+      createToken: async () => { asked.push(repo); return { plaintext: `token-${repo}`, id: "id", expiresAt: "soon" }; },
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts;
+  const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${partId}/review-claim`, {
+    method: "POST",
+    headers: { authorization: "Bearer review-claim-token", "x-atelier-actor": GPT, "x-atelier-runner": "home:studio", "content-type": "application/json" },
+    body: "{}",
+  }), { ...env, ATELIER_TOKEN: "review-claim-token", ARTIFACTS } as typeof env);
+  expect(res.status).toBe(200);
+  const claim = await res.json() as { readToken: { remote: string }; target: { remote: string; token: string; branch: string } };
+  expect(claim.readToken.remote).toBe(`https://git.test/fork-${partId}`);
+  expect(claim.target).toEqual({ remote: "https://git.test/plan-fork", token: "token-plan-fork", branch: "main" });
+  expect(asked).toEqual([`fork-${partId}`, "plan-fork"]);
 });

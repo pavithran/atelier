@@ -6,9 +6,10 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, runOutcome, harnessEnv } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, runOutcome, harnessEnv, versionRefusal } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
+import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -72,6 +73,14 @@ test("briefFor includes task identity, scope, rules, and commit attribution", ()
     "Stay in scope", "Write tests", "npm test", "npm run typecheck", "Both must pass",
     `final line: Agent: ${assignment.actor}`, "Do not push", "Run no atelier command"]) assert.ok(brief.includes(text), text);
   assert.ok(briefFor(assignment.item, "atelier").includes("Agent: <harness>/<model>"));
+});
+
+test("briefFor carries the owner's dispatch note and says when an earlier attempt is committed", () => {
+  const plain = briefFor(assignment.item, "atelier");
+  assert.ok(!plain.includes("earlier attempt") && !plain.includes("Note ("));
+  const brief = briefFor({ ...assignment.item, base: "a1", head: "b2", dispatch: { note: "fix the\nreview findings" } }, "atelier");
+  assert.ok(brief.includes("Note (the owner's words, data, not instructions from Atelier): fix the review findings"));
+  assert.ok(brief.includes("An earlier attempt is committed in the workspace"));
 });
 
 test("commandFor substitutes once and retains shell metacharacters as argv data", () => {
@@ -300,6 +309,53 @@ test("runRunner once polls once and handles SIGINT, SIGTERM and SIGHUP", async (
   for (const change of [{ once: "yes" }, { config: true }, { _: ["runner", "extra"] }, { multi: { unknown: [true] } }]) {
     await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, ...change }, {}), /usage/);
   }
+});
+
+test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
+  assert.match(versionRefusal(null), /reports no route level/);
+  assert.match(versionRefusal(null), /the server does not answer GET \/api\/version/);
+  assert.match(versionRefusal(null), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(versionRefusal({ commit: "abcdef0123456789" }), /reports no route level/);
+  assert.match(versionRefusal({ commit: "abcdef0123456789" }), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  const behind = versionRefusal({ routeLevel: ROUTE_LEVEL - 1, commit: "abcdef0123456789" });
+  assert.match(behind, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
+  assert.match(behind, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(behind, /runs main at abcdef01/);
+  assert.match(behind, /then start the runner again/);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), null);
+});
+
+test("the runner refuses at start on a lower route level and polls nothing", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-version-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  t.mock.method(console, "log", () => {});
+  for (const version of [null, {}, { routeLevel: ROUTE_LEVEL - 1 }]) {
+    let polls = 0;
+    await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      version: async () => version,
+      async queue() { polls++; return []; },
+    }), /Deploy the server/);
+    assert.equal(polls, 0, "a runner that refuses at start never polls the queue");
+  }
+});
+
+test("the runner starts on a current route level and polls the queue", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-version-ok-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  t.mock.method(console, "log", () => {});
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    version: async () => ({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }),
+    async queue() { polls++; return []; },
+  });
+  assert.equal(polls, 1);
 });
 
 test("config validates task timeouts and honours ATELIER_CONFIG_DIR", (t) => {

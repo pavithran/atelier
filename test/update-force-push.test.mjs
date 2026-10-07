@@ -183,3 +183,34 @@ test("a claim that finds the workspace and the fork diverged stops and names the
   assert.equal(again.status, 0, again.stderr);
   assert.doesNotMatch(again.stdout, /behind|lacks/);
 });
+
+// The plan integrator's rollback: the workspace is reset to an earlier commit
+// of the recorded history, and push --rollback returns the fork there and
+// declares the head it replaces, which push --force refuses to do.
+test("push --rollback returns the fork to an earlier recorded commit and declares the head it replaces", (t) => {
+  const f = fixture(t);
+  f.git(f.workspace, "fetch", "-q", "origin");
+  f.git(f.workspace, "reset", "-q", "--hard", f.h1);
+  const forced = f.run(["push", "--force"]);
+  assert.notEqual(forced.status, 0, "push --force dropped a recorded commit");
+  const r = f.run(["push", "--rollback"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(f.forkMain(), f.h1);
+  assert.deepEqual(f.pushes(), [{ head: f.h1, rebasedFrom: f.h2 }]);
+});
+
+test("push --rollback refuses a head that is not an ancestor of the recorded one, or is the recorded one", (t) => {
+  const f = fixture(t);
+  f.git(f.workspace, "fetch", "-q", "origin");
+  f.git(f.workspace, "reset", "-q", "--hard", f.h2);
+  const same = f.run(["push", "--rollback"]);
+  assert.notEqual(same.status, 0);
+  assert.match(same.stderr, /is at the recorded head/);
+  f.git(f.workspace, "reset", "-q", "--hard", f.h1);
+  f.commit(f.workspace, "side.txt", "A: a side commit");
+  const side = f.run(["push", "--rollback"]);
+  assert.notEqual(side.status, 0);
+  assert.match(side.stderr, /is not an ancestor of the recorded head/);
+  assert.equal(f.forkMain(), f.h2, "the fork's branch was overwritten");
+  assert.deepEqual(f.pushes(), []);
+});
