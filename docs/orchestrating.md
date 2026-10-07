@@ -120,9 +120,13 @@ So land one task at a time, in this order:
 never land at once, and records how long each took.
 
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
-project's own checkout, a merge that adds a route the CLI calls breaks every
-check until the server has it too. Deploy after such merges, before landing
-the next task.
+project's own checkout, a merge that adds a route the CLI calls, or changes
+the meaning of a route the CLI already calls, breaks every check until the
+server has the new behaviour too. Each such merge raises `ROUTE_LEVEL`
+(`src/route-level.ts`) by one, and `atelier land` and the home runner refuse
+to run against a server whose level is lower, naming both levels and saying
+to deploy. Deploy after such merges, before landing the next task or
+starting a runner.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests

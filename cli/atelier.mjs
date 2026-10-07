@@ -1610,6 +1610,19 @@ const commands = {
     try {
       await runRunner(args, {
         workspacePath,
+        // The server's route level against the CLI's, checked once at start:
+        // a server behind this CLI would fail the runner's calls one by one.
+        // A server that cannot be read is refused as land refuses it, with
+        // the same "does not answer" message (GET /api/version is public).
+        async version(signal) {
+          try {
+            const res = await fetch(server() + "/api/version", { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+            if (!res.ok) return null;
+            return await res.json();
+          } catch {
+            return null;
+          }
+        },
         async queue(offer, signal) {
           await resolveTokenActor();
           const res = await fetch(server() + "/api/queue", {
