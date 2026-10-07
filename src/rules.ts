@@ -145,6 +145,11 @@ export interface Review {
   recordedBy?: string;
   proved?: boolean;
   claimed?: boolean;
+  // Set when the review answered a tier review request (ProjectPolicy.reviewTier):
+  // a second opinion from the project's top review tier beside the gate's
+  // review. Its rejection blocks as any rejection does; its approval is never
+  // the independent review the gate counts (independentApproval).
+  tier?: boolean;
 }
 
 export type ChangeClass = "direct" | "coordinated" | "protected";
@@ -185,6 +190,11 @@ export interface ProjectPolicy {
   // What may block a review, as every review brief states it; absent, the
   // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
   reviewBar?: string;
+  // The project's top review tier, as harness/model actors (`atelier init
+  // --review-tier`): every protected change that gets its gate review also
+  // gets a tier review from one of these that did not build it, whatever its
+  // family. Absent or empty, no tier review is asked for.
+  reviewTier?: string[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
@@ -551,9 +561,10 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // that no contributor shares (familyRefusal); a coordinated change in a
 // governed project needs any other agent. In a protected change, a review
 // the owner token recorded in a model's name counts only when it answers a
-// review request that model claimed for that head (unprovedReview).
+// review request that model claimed for that head (unprovedReview). A tier
+// review's approval never is: the tier reviews beside the gate, not for it.
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
-  if (!r.approve || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
+  if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
   if (contributors.some((actor) => sameActor(r.by, actor))) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
@@ -1032,7 +1043,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
     }
   }
   const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
-  for (const r of rejected) blockers.push(`rejected by ${r.by}: ${r.note || "no note"}`);
+  for (const r of rejected) blockers.push(`rejected by ${r.by}${r.tier ? " (tier review)" : ""}: ${r.note || "no note"}`);
   // Scope is matched as written: a path in another letter case is reported
   // outside it, which shows the variant rather than hiding it.
   const outOfScope = item.scope.length ? changed.filter((p) => !matchesAny(p, item.scope)) : [];

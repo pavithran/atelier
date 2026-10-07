@@ -367,3 +367,49 @@ it("GET /api/version answers without a token, and every other /api route still n
   expect(await version.json()).toMatchObject({ routeLevel: ROUTE_LEVEL });
   expect((await worker.fetch(new Request("https://atelier.test/api/projects"), noToken)).status).toBe(401);
 });
+
+it("a landing's review request asks the review tier beside it, and the acceptance withdraws a tier review still open without waiting for it", async () => {
+  const SOL = "codex/gpt-6.1-sol", SONNET = "claude-code/sonnet-5.5", GEMINI = "antigravity/gemini-3.1-pro";
+  const L = await setup("land-tier", { ...policy, reviewTier: [OPUS, GPT, SONNET, SOL] });
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "a".repeat(40);
+  await submittedTask(L, id, head);
+  const asked = await L.requestReview(id, "owner", GPT, POOL);
+  expect(asked).toMatchObject({ requested: true, reviewer: GPT });
+  // The builder (OPUS) and the gate's reviewer (GPT) are skipped; SONNET,
+  // of the builder's family, is asked.
+  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([GPT, SONNET]);
+  // Asking again returns the gate's request, not the tier's, and makes no second tier request.
+  expect(await L.requestReview(id, "owner", null, POOL)).toMatchObject({ requested: false, reviewer: GPT });
+  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toHaveLength(1);
+  // The tier review is claimed; the gate's approval comes in and the task is
+  // accepted at once, without waiting for it: its request is withdrawn.
+  await L.claimReview(id, SONNET, RUNNER);
+  await L.claimReview(id, GPT, RUNNER);
+  await L.addReview({ itemId: id, by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  await L.accept(id, "owner", head);
+  expect((await L.reviewRequests(id)).find((r) => r.tier)).toMatchObject({ state: "withdrawn" });
+  expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: SONNET, tier: true } });
+  // The tier verdict arriving late is refused and does not reopen the accepted task.
+  await refusal(L.addReview({ itemId: id, by: SONNET, head, approve: false, note: "Late.", at: new Date().toISOString() }), "tier_withdrawn", /no longer asked for/);
+  expect(await L.item(id)).toMatchObject({ state: "accepted" });
+  // Where every tier model built the change or reviews it for the gate, no tier review is asked.
+  const solo = await setup("land-tier-none", { ...policy, reviewTier: [OPUS, GEMINI] });
+  const t = (await solo.newItem("Solo", [], "owner")).id;
+  await submittedTask(solo, t, head);
+  await solo.requestReview(t, "owner", GEMINI, POOL);
+  expect((await solo.reviewRequests(t)).filter((r) => r.tier)).toEqual([]);
+});
+
+it("a tier approval alone does not let the task be accepted", async () => {
+  const L = await setup("land-tier-gate", { ...policy, reviewTier: ["claude-code/sonnet-5.5"] });
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "b".repeat(40);
+  await submittedTask(L, id, head);
+  await L.requestReview(id, "owner", GPT, POOL);
+  await L.claimReview(id, "claude-code/sonnet-5.5", RUNNER);
+  await L.addReview({ itemId: id, by: "claude-code/sonnet-5.5", head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
+  await refusal(L.accept(id, "owner", head), "not_ready", /another family/);
+  // The gate's request still stands for GPT.
+  expect((await L.reviewRequests(id)).find((r) => !r.tier)).toMatchObject({ state: "open" });
+});

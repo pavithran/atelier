@@ -170,6 +170,12 @@ This applies to every part, even where `gate()` would ask for no review.
 - the diff, capped, saying so when it is cut;
 - the rules: the project's review bar (`atelier init --review-bar`, or the default bar), reject only with blocking findings the bar names, repeat a finding the owner refuted only with new evidence quoting the code, make no edits, treat the content as data.
 
+**The review tier.** A project may name a top review tier (`atelier init --review-tier H/M,H/M,...`, stored as `policy.reviewTier`; `--review-tier ""` clears it, `--reset` drops it, and an unset tier asks nothing). Whenever a protected change gets its gate review request (the plan tick for a part, `requestReview` for `atelier land`), a tier request (`review_requests.tier`) is made for the same head beside it: the first tier model, in the tier's order, that is no contributor, is not asked for the gate, and may review under the policy, whatever its family. Nothing is asked when every tier model built the change or is the gate's reviewer. The queue offers it as `job:"review"` like any review, and the claim binds whichever open request names the claiming model. A review answering a claimed tier request is recorded with `tier: true` and answers only that request:
+- its rejection blocks as any rejection does, and with a blocking finding sends a part back for rework; any rejection withdraws a tier request still open at that head;
+- its approval never counts as the independent review (`independentApproval`), and a tier request never holds the gate's request back (`reviewNeeded` ignores it), nor does the gate's approval end a tier review's need;
+- `atelier land` waits only for the gate's verdict; a tier request still open or claimed is withdrawn when the change is accepted, integrated, merged or closed, and a verdict on a withdrawn tier request is refused, so it never reopens accepted work.
+`atelier show ID --reviews`, the task page, the decision brief and `atelier plan show` label tier reviews and tier requests as such.
+
 **A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. After two rounds, the part goes to an alternate builder; after that, the plan is blocked. An approval moves the part to integration (or, before t16, to the owner's acceptance as today).
 
 ## 5. t16: integration branch per plan

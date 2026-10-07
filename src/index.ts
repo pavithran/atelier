@@ -7,9 +7,9 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence, type Item } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -538,6 +538,24 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's review tier (src/review/tier.ts) as init sends it: a list
+// of harness/model actors, or one string of them separated by commas. Blank
+// entries are dropped and repeats kept once, in the owner's order; an empty
+// list clears the tier.
+function parseReviewTier(value: unknown): string[] {
+  const raw = typeof value === "string" ? value.split(",") : value;
+  if (!Array.isArray(raw) || !raw.every((a) => typeof a === "string")) {
+    throw new RuleError("bad_review_tier", "the review tier is a list of harness/model actors, such as claude-code/opus-5.5,codex/gpt-6.1-sol, or \"\" to clear it", 400);
+  }
+  const out: string[] = [];
+  for (const entry of raw.map((a) => a.trim()).filter(Boolean)) {
+    if (!validActor(entry) || !entry.includes("/")) throw new RuleError("bad_review_tier", `"${entry}" is not harness/model; the review tier lists actors such as claude-code/opus-5.5`, 400);
+    if (!out.some((a) => sameActor(a, entry))) out.push(entry);
+  }
+  if (out.length > REVIEW_TIER_MAX) throw new RuleError("too_long", `the review tier lists at most ${REVIEW_TIER_MAX} models`, 400);
+  return out;
+}
+
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
@@ -890,6 +908,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The top review tier: harness/model actors, or [] or "" to clear it.
+      ...(has("reviewTier") ? { reviewTier: body.reviewTier === null ? [] : parseReviewTier(body.reviewTier) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),

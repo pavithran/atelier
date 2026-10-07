@@ -603,7 +603,7 @@ export async function runReview(assignment, config, name, io) {
     const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
     if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
     await io.cli(argv);
-    io.log(`reviewed: ${parsed.verdict}`);
+    io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${parsed.verdict}`);
     return { phase: "reviewed", verdict: parsed.verdict };
   } catch (error) {
     io.log(`failed: ${error.message}`);

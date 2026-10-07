@@ -22,7 +22,10 @@ import { unoffered } from "../src/dispatch/rules.ts";
 // process so a failure can still release the lease and record the step. It
 // asks the server for the independent review the gate needs, or the one the
 // owner names with --reviewer whether or not the gate needs it, and waits
-// for the verdict, then accepts and merges. Every step, its duration and the
+// for the verdict, then accepts and merges. It waits for the gate's review
+// only: a tier review the server asks beside it (src/review/tier.ts) stops
+// the landing when it rejects, never holds it, and the server withdraws a
+// tier request still open when the task is accepted. Every step, its duration and the
 // commits that came from main are recorded on the ledger as land.* events
 // (t186 reads them for the integration cost), and the server must be at this
 // CLI's route level or newer, or the landing refuses before it starts,
@@ -650,8 +653,9 @@ export async function runLand(io) {
         // what would change it; a review of t210 routed to fable-5.1 once sat
         // queued for hours this way (plan t197, 2026-10-07).
         let busyLine = null;
+        const tierSeen = new Set();
         const explainWait = async (d) => {
-          const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
+          const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && !e.data?.tier && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
           if (claimed) return;
           let offers = null;
           try { offers = await request("GET", "/runners"); } catch { /* without the offers the wait is explained as before */ }
@@ -678,11 +682,20 @@ export async function runLand(io) {
           // guard first and a verdict that arrived meanwhile is not taken.
           guardLease();
           const d = await request("GET", itemPath);
-          const verdict = (d.reviews ?? []).filter((v) => v.head === head && Date.parse(v.at) >= Date.parse(since)).at(-1);
+          // The landing waits for the gate's review alone. A tier review
+          // (src/review/tier.ts) beside it is a second opinion: its approval
+          // never satisfies the gate, so it is said and the wait goes on; its
+          // rejection sends the task back as any rejection does.
+          const fresh = (d.reviews ?? []).filter((v) => v.head === head && Date.parse(v.at) >= Date.parse(since));
+          for (const v of fresh.filter((v) => v.tier && v.approve && !tierSeen.has(`${v.by}\n${v.at}`))) {
+            tierSeen.add(`${v.by}\n${v.at}`);
+            print(`${v.by} approved ${id} at ${short(head)} as its tier review; the landing still waits for the gate's review.`);
+          }
+          const verdict = fresh.filter((v) => !(v.tier && v.approve)).at(-1);
           if (verdict) {
             if (!verdict.approve) {
               await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
-              throw new StepError(`${verdict.by} rejected ${id} at ${short(head)}: ${verdict.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
+              throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${verdict.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
             }
             print(`${verdict.by} approved ${id} at ${short(head)}.`);
             await record("review", Date.now() - t0, { verdict: "approve", reviewer: verdict.by, resolvedBy: verdict.by });
