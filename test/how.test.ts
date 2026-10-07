@@ -76,6 +76,14 @@ test("the review code is called by the ledger and the runner, and the page says 
   for (const said of ["review request", "runReview", "cli/agy-review.mjs", "routeParts", "integration branch", "atelier runner --integrate", "atelier land", "landing lease"]) {
     assert.ok(prose.includes(said), `the orchestrator section no longer says "${said}"`);
   }
+  // Two claims the prose must not overstate: a home runner's offer always
+  // holds build and plan (offerFrom in cli/runner.mjs adds them to whatever
+  // the config lists), and only a rejection with blocking findings sends a
+  // part back (reworkPart in src/ledger.ts).
+  assert.match(read("cli/runner.mjs"), /\["build", "plan", \.\.\.\(config\.jobs/, "the runner no longer offers build and plan jobs by default");
+  assert.ok(prose.includes("Every home runner offers build and plan jobs"), "the orchestrator section no longer says every home runner offers build and plan jobs");
+  assert.match(read("src/ledger.ts"), /f\.severity === "blocking"\)\) \{\s*this\.reworkPart/, "the ledger no longer reworks a part on blocking findings alone");
+  assert.ok(prose.includes("A rejection with blocking findings sends the part back"), "the orchestrator section no longer says which rejections send a part back");
   const command = ORCHESTRATOR.find((p) => p.name === "Plan routes and command")!;
   assert.equal(HELP_FORMS.some((form) => form.split(" ")[0] === "plan"), command.built, "the help and the page disagree on whether atelier plan exists");
   const land = ORCHESTRATOR.find((p) => p.name === "Landing a single task")!;
