@@ -203,6 +203,10 @@ export async function runLand(io) {
     const no = (message) => { if (throwing) throw new StepError(message + heldNote); refuse(message); };
     const d = await request("GET", itemPath);
     if (["merged", "abandoned"].includes(d.item.state)) no(`${id} is ${d.item.state}; there is nothing to land.`);
+    // A plan's branch holds only the integrator's recorded integrations and
+    // refreshes; the merge of main a landing makes would put a commit beside
+    // them, and planGate refuses a plan whose head is not its integration head.
+    if (d.item.kind === "plan") no(`${id} is a plan, which atelier land does not land: a plan lands with atelier merge ${id} --head INTEGRATION_HEAD, the integration head atelier plan show ${id} prints, and a plan branch that is behind main takes main through atelier plan refresh ${id}.`);
     if (d.item.state === "accepted") no(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
     if (!existsSync(join(dir, ".git"))) no(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one.`);
     const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
