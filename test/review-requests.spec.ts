@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
+import { planText, type PlanView } from "../src/plans/show.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
 // Automatic cross-family review on the Ledger (docs/orchestrator.md, section 4,
@@ -200,4 +201,90 @@ it("a review with only follow-up findings does not rework the part, and the revi
   await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Fine", findings: [{ file: "src/a/x.ts", line: null, severity: "follow-up", text: "Add a test." }], at: new Date().toISOString() });
   expect((await L.item(partId)).state).toBe("submitted");
   expect((await L.reviewsFor(partId))[0].findings).toHaveLength(1);
+});
+
+// A plan's routed reviewer can become a contributor after approval, by
+// claiming the part, as on plan t197 where part t209's reviewer had claimed it
+// and stalled before another model built it. The review is then asked of the
+// next eligible reviewer, and the routing says who and why.
+
+// The plan's routed builder and reviewer for its one part, and the third
+// model of the pool, of another family than both.
+async function routing(L: L, id: string) {
+  const route = (await L.planView(id)).parts[0].route!;
+  const builder = route.builder!.actor, reviewer = route.reviewer!.actor;
+  const third = [OPUS, GPT, GLM].find((a) => a !== builder && a !== reviewer)!;
+  return { builder, reviewer, third };
+}
+
+// The owner reroutes the open part to `actor`, which claims it and lets it go
+// without pushing: a claim alone makes it a contributor.
+async function claimAndStall(L: L, partId: string, actor: string) {
+  await L.reroutePlan(partId, "owner", actor);
+  await L.claim(partId, actor, RUNNER);
+  await L.release(partId, actor, "stalled");
+}
+
+it("a part whose routed reviewer claimed it is reviewed by another eligible reviewer, with the reason on its routing", async () => {
+  const L = await setup("review-repick");
+  const { id, partId } = await approved(L);
+  const { builder, reviewer, third } = await routing(L, partId);
+  await claimAndStall(L, partId, reviewer);
+  await L.reroutePlan(partId, "owner", builder);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  // The review goes to the model of a third family, not the routed reviewer.
+  expect(await routedReviewer(L, partId)).toBe(third);
+  const changed = (await events(L, partId)).find((e) => e.kind === "plan.reviewer_changed");
+  expect(changed).toMatchObject({ actor: "atelier/orchestrator", data: { from: reviewer, to: third } });
+  expect(String(changed!.data.reason)).toMatch(/contributed to it/);
+  // The part's routing names the reviewer asked, whom it replaced and why.
+  const view = await L.planView(id);
+  expect(view.parts[0].route!.reviewer!.actor).toBe(third);
+  expect(view.parts[0].route!.reviewerChange).toMatchObject({ from: reviewer, reason: expect.stringMatching(/contributed to it/) });
+  expect(planText(view as unknown as PlanView, "review-repick")).toContain(`reviewer ${third}, of another family, in place of ${reviewer}: ${reviewer} contributed to it`);
+  // The new reviewer can claim the review; the old one is refused as a contributor.
+  await refusal(L.claimReview(partId, reviewer, RUNNER), "self_review", /contributed/);
+  expect((await L.claimReview(partId, third, RUNNER) as unknown as ReviewClaim).head).toBe(head);
+});
+
+it("a request open for a reviewer who then contributes is withdrawn and asked again of an eligible one", async () => {
+  const L = await setup("review-rewithdraw");
+  const { partId } = await approved(L);
+  const { reviewer, third } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  expect(await routedReviewer(L, partId)).toBe(reviewer);
+  // The builder lets the part go; the owner reroutes it to the reviewer the
+  // open request names, which claims it and submits the same head.
+  await L.release(partId, "owner", "stalled");
+  await L.reroutePlan(partId, "owner", reviewer);
+  await L.claim(partId, reviewer, RUNNER);
+  await L.submit(partId, reviewer);
+  // The open request is withdrawn and the review asked of the third family.
+  expect(await routedReviewer(L, partId)).toBe(third);
+  const withdrawn = (await events(L, partId)).filter((e) => e.kind === "review.withdrawn");
+  expect(withdrawn).toEqual([expect.objectContaining({ data: { head, reviewer, reason: `${reviewer} contributed to it, and nobody reviews their own work` } })]);
+  expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+});
+
+it("a part with no eligible reviewer left is blocked with what the owner can do", async () => {
+  const L = await setup("review-noreviewer");
+  const { id, partId, builder } = await approved(L);
+  const others = [OPUS, GPT, GLM].filter((a) => a !== builder);
+  // The builder pushes commits whose Agent lines name a model of each other
+  // family in the pool, so every family has contributed.
+  const head = "a".repeat(40);
+  await L.claim(partId, builder, RUNNER);
+  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.recordPush(partId, builder, head, head, false, { holdsRecorded: true, rebasedFrom: null }, others.map((actor, n) => ({ commit: String(n).repeat(40), actor })));
+  await L.addEvidence(observed(partId, head));
+  await L.submit(partId, builder);
+  const item = await L.item(partId);
+  expect(item.state).toBe("blocked");
+  expect(item.blocked).toMatchObject({ by: "atelier/orchestrator", from: "submitted" });
+  expect(item.blocked!.reason).toMatch(/^no eligible reviewer remains for part a\. .*atelier models add.*atelier plan stop t\d+/);
+  expect(await reviewWaiting(L)).toEqual([]);
+  // The part is blocked, not the plan, so its other parts' work would go on.
+  expect((await L.planView(id)).blocked).toBeNull();
 });

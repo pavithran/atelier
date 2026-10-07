@@ -6,7 +6,8 @@
 // Every part is reviewed, even where gate() asks for none. An item outside a
 // plan is reviewed only when the gate needs an independent review of its
 // change class, and only until the gate has one or the owner's override
-// stands in for it.
+// stands in for it, unless the owner asked for the review (`wanted`): then
+// only what stops the gate from proceeding at all ends the need.
 
 import {
   changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, matchesAny,
@@ -41,9 +42,10 @@ export const REVIEW_CLAIM_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 // findings and the same reviewer is asked first.
 export type ReviewKind = "review" | "re-review";
 
-// Why the review is required: every part of a plan, or, for an item outside
-// a plan, the gate's requirement for its change class.
-export type ReviewBasis = "part" | "protected" | "coordinated";
+// Why the review is required: every part of a plan, for an item outside a
+// plan the gate's requirement for its change class, or the owner's own
+// request for a named reviewer where the gate needs none.
+export type ReviewBasis = "part" | "protected" | "coordinated" | "requested";
 
 export interface ReviewRequired {
   needed: true;
@@ -75,6 +77,7 @@ export interface NeedInput {
   evidence: readonly Evidence[];
   reviews: readonly ReviewRecord[];            // every review of the item, at any head
   requests?: readonly ReviewRequestView[];
+  wanted?: boolean;                            // the owner asked for this review, so a gate that needs none does not end the need
   now: Date;
   owner?: string;
 }
@@ -104,7 +107,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     return no(`${kind} changes are not allowed by this project's execution policy, and a review cannot make the change acceptable`);
   }
   const basis: ReviewBasis | null = input.part ? "part" : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
-  if (!basis) {
+  if (!basis && !input.wanted) {
     return no(kind === "direct"
       ? "a direct change needs no review"
       : "a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed");
@@ -124,7 +127,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   if (basis === "part") {
     const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner));
     if (independent) return no(`${independent.by}, of another family than every contributor, approved ${short(head)}`);
-  } else {
+  } else if (!input.wanted) {
     const g = gate(item, policy, [...input.evidence], reviews, owner);
     if (g.overridden) return no(`the project owner overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
     if (!g.needsAssessor) {
@@ -169,13 +172,15 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     ? `every part is reviewed by another model family, and this ${kind} change has no such approval at ${short(head)}`
     : basis === "protected"
       ? `a protected change needs an independent review, and none is recorded at ${short(head)}`
-      : `this project's execution policy needs another agent's review of a coordinated change, and none is recorded at ${short(head)}`;
+      : basis === "coordinated"
+        ? `this project's execution policy needs another agent's review of a coordinated change, and none is recorded at ${short(head)}`
+        : `the project owner asked for a review of ${short(head)}, whether or not the gate needs one`;
   return {
     needed: true,
     reason: last ? `${why}; round ${round}, after ${last.by} rejected ${short(last.head)}` : why,
     head,
     kind: round > 1 ? "re-review" : "review",
-    basis,
+    basis: basis ?? "requested",
     changeClass: kind,
     changedPaths: [...view.changedPaths],
     // Scope is matched as written, as gate() matches it.
