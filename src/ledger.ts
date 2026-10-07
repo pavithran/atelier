@@ -1571,7 +1571,7 @@ export class Ledger extends DurableObject<Env> {
       reasons = pick.reasons;
     }
     const at = new Date().toISOString();
-    const d = this.planDispatch(chosen, text, actor, at);
+    const d = this.planDispatch(chosen, actor, at);
     const id = this.insertItem(planTitle(text), scope, actor, at, { kind: "plan" }, { goal: text });
     this.savePlanRecord(id, { goal: text, scope, planner: chosen, plannerReasons: reasons, createdAt: at, blocked: null, approval: null, reroutes: {} });
     this.writeDispatch(id, d);
@@ -1745,7 +1745,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "plan") {
       const { record } = this.planningPlan(id, actor, "reroute");
       const planner = namedActor(to, policy, "planner", this.owner);
-      this.planDispatch(planner, record.goal, actor, at);
+      this.planDispatch(planner, actor, at);
       this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner }, at);
       record.planner = planner;
       record.plannerReasons = ["Rerouted by the project owner"];
@@ -1964,16 +1964,17 @@ export class Ledger extends DurableObject<Env> {
   // planner, and a block on the planner is lifted, since its attempts now
   // count from this request.
   private askPlanner(id: string, record: PlanRecord, by: string, at: string): void {
-    this.writeDispatch(id, this.planDispatch(record.planner, record.goal, by, at));
+    this.writeDispatch(id, this.planDispatch(record.planner, by, at));
     this.savePlanRecord(id, record);
     this.setBlocked(id, record, null);
   }
 
   // The plan job's dispatch: to a home runner, for the planner's harness and
-  // model, with the goal as its note.
-  private planDispatch(planner: string, goal: string, by: string, at: string): Dispatch {
+  // model. The full goal belongs to the plan record and its job brief, not
+  // the short dispatch note.
+  private planDispatch(planner: string, by: string, at: string): Dispatch {
     const slash = planner.indexOf("/");
-    return { ...makeDispatch({ to: "home", agent: planner.slice(0, slash), model: planner.slice(slash + 1), note: goal }, by, at), job: "plan" };
+    return { ...makeDispatch({ to: "home", agent: planner.slice(0, slash), model: planner.slice(slash + 1), note: "Read the goal in the plan brief and propose a plan." }, by, at), job: "plan" };
   }
 
   private writeDispatch(id: string, d: Dispatch, extra: Record<string, unknown> = {}): void {
