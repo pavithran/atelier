@@ -14,7 +14,8 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // project's fixtures when its policy declares how, then pushes and runs the
 // required checks through the CLI's own commands, each as a child process so
 // a failure can still release the lease and record the step. It asks the
-// server for the independent review the gate needs and waits for the verdict,
+// server for the independent review the gate needs, or the one the owner names
+// with --reviewer whether or not the gate needs it, and waits for the verdict,
 // then accepts and merges. Every step, its duration and the commits that came
 // from main are recorded on the ledger as land.* events (t186 reads them for
 // the integration cost), and the server must be at this CLI's route level or
@@ -275,9 +276,13 @@ export async function runLand(io) {
       await release();
       return;
     } else {
-      const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer } : {});
+      // A named reviewer is a review the owner asks for, so the server makes
+      // the request even where the gate needs none, and refuses, with its
+      // reason, where the gate cannot proceed at all.
+      const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
+      if (!ask.needed && reviewer) throw new StepError(`the server made no review request for ${reviewer} (${ask.reason}); ${id} stays submitted`);
       if (!ask.needed) {
-        print(`No independent review is needed (${ask.reason}); accepting.`);
+        print(`No review was requested: ${ask.reason}. The gate decides whether ${id} can be accepted.`);
         await record("review", Date.now() - t0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) });
       } else {
         const head = ask.head, since = ask.at;

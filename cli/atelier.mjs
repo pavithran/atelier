@@ -576,6 +576,19 @@ async function resolveTokenActor() {
 }
 
 async function call(method, path, body, as, extra = {}) {
+  try { return await request(method, path, body, as, extra); } catch (error) { if (error instanceof RequestError) die(error.message, error.code); throw error; }
+}
+
+// A request the server refused or could not answer: the message `call`
+// prints and the exit code it ends with.
+class RequestError extends Error {
+  constructor(message, code) { super(message); this.code = code; }
+}
+
+// `call` without ending the command: a failure throws a RequestError, so a
+// caller can retry it or name the step that failed.
+async function request(method, path, body, as, extra = {}) {
+  const die = (message, code = 1) => { throw new RequestError(message, code); };
   if (path !== "/config") await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
@@ -777,20 +790,52 @@ function mergeWithMain(dir, id) {
 // secret in `secrets` redacted. The output is redacted whole, before anything
 // cuts its tail, so no part of a secret survives at the cut, and the hash is
 // of the redacted text, the text a reader of the evidence is shown.
-async function runCheck(cmd, dir, secrets) {
+// The check leads a process group of its own. When its shell exits, when its
+// time limit passes or when its output overruns, every process left in the
+// group (a test runner's worker, a watcher, anything started with &) gets
+// SIGTERM, then SIGKILL after `graceMs`, and the result comes back only once
+// the group is gone, so nothing the check started still writes in the clone
+// when it is removed. A process that leaves the group (setsid) is beyond this.
+async function runCheck(cmd, dir, secrets, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await new Promise((done) => {
-    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS });
-    writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: child.pid }));
-    let stdout = "", stderr = "", error, bytes = 0;
+    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), detached: true });
+    const pid = child.pid;
+    checkGroup = pid;
+    const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM");
+    process.once("SIGINT", onInt).once("SIGTERM", onTerm);
+    writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid }));
+    let stdout = "", stderr = "", error, bytes = 0, closed, ending = false, ended = !pid;
+    // A signal to every process in the group; false once none is left.
+    const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
+    const finish = () => {
+      if (!closed || !ended) return;
+      clearTimeout(deadline);
+      if (checkGroup === pid) checkGroup = undefined;
+      process.off("SIGINT", onInt).off("SIGTERM", onTerm);
+      done({ ...closed, stdout, stderr, error: error ?? (closed.signal ? new Error(`check terminated by ${closed.signal}`) : undefined) });
+    };
+    const end = () => {
+      if (ending || ended) return;
+      ending = true;
+      const until = Date.now() + graceMs;
+      const wait = () => {
+        if (!send(0)) { ended = true; return finish(); }
+        if (Date.now() >= until) { send("SIGKILL"); ended = true; return finish(); }
+        setTimeout(wait, 50);
+      };
+      send("SIGTERM");
+      wait();
+    };
+    const deadline = setTimeout(() => { error ??= new Error(`check exceeded its time limit of ${Math.round(CHECK_TIMEOUT_MS / 1000)} s`); end(); }, CHECK_TIMEOUT_MS);
     const append = (key, chunk) => {
       if (error) return;
       bytes += Buffer.byteLength(chunk);
       if (key === "stdout") stdout += chunk; else stderr += chunk;
       if (bytes > 64 * 1024 * 1024) {
         error = new Error("check output exceeds 64 MiB");
-        child.kill();
+        end();
         stdout = stdout.slice(-32 * 1024 * 1024);
         stderr = stderr.slice(-32 * 1024 * 1024);
       }
@@ -798,11 +843,49 @@ async function runCheck(cmd, dir, secrets) {
     child.stdout.setEncoding("utf8").on("data", (s) => append("stdout", s));
     child.stderr.setEncoding("utf8").on("data", (s) => append("stderr", s));
     child.on("error", (e) => { error = e; });
-    child.on("close", (status, signal) => done({ status, stdout, stderr, error: error ?? (signal ? new Error(`check terminated by ${signal}`) : undefined) }));
+    // A process left in the group can hold the output pipes open, so the
+    // group is ended when the shell exits, not when the pipes close.
+    child.on("exit", end);
+    child.on("close", (status, signal) => { closed = { status, signal }; finish(); });
   });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, secrets);
   return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
+}
+
+// The process group of the check running now. It is not the terminal's
+// foreground group, so an interrupt of this command does not reach it: this
+// process ends it on the way out instead.
+let checkGroup;
+process.on("exit", () => { if (checkGroup) { try { process.kill(-checkGroup, "SIGKILL"); } catch { /* The group has ended. */ } } });
+const interrupted = (sig) => () => process.exit(128 + osConstants.signals[sig]);
+
+// Posts one check's result. A server that cannot answer (no connection, a
+// 5xx, 408 or 429) is asked once more; a failure then ends the command with
+// the step named, and the clone is removed on the way out.
+async function postEvidence(path, body, as) {
+  const step = `posting the result of \`${body.claim}\``;
+  for (let attempt = 1; ; attempt++) {
+    try { return await request("POST", path, body, as); }
+    catch (error) {
+      if (!(error instanceof RequestError)) die(`${step} failed: ${error.message}`, 4);
+      if (error.code === 4 && attempt === 1) { process.stderr.write(`atelier: ${step} failed (${error.message}); trying once more\n`); await new Promise((r) => setTimeout(r, 1000)); continue; }
+      die(`${step} failed: ${error.message}`, error.code);
+    }
+  }
+}
+
+// Removes a check's clone and its record. The removal is retried, since a
+// process can still be letting go of a file in it (ENOTEMPTY, EBUSY), and a
+// removal that still fails is a warning naming the folder, never a failure of
+// the checks: `atelier gc` collects what is left.
+function removeClone(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    rmSync(markerPath(dir), { force: true });
+  } catch (error) {
+    process.stderr.write(`atelier: warning: the check's clone ${dir} could not be removed (${error.code ?? error.message}); atelier gc --apply removes it later\n`);
+  }
 }
 
 // ── ControlPlane ───────────────────────────────────────────────────────────
@@ -2031,6 +2114,10 @@ const commands = {
     // (docs/orchestrator.md, section 5).
     const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+    // The clone goes however this command ends: below once the checks are
+    // recorded, or on the way out when a step ends the command first.
+    const cleanup = () => removeClone(dir);
+    process.once("exit", cleanup);
     const policy = d.policy;
     // What a check could print and this command would then upload: the API
     // token, the read tokens for the fork and the baseline, and the write
@@ -2048,7 +2135,7 @@ const commands = {
         // run. It is recorded as not applicable, which the Worker accepts only
         // when the paths it measures itself show the same.
         if (!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false) {
-          const n = await call("POST", `${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
+          const n = await postEvidence(`${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
           const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
           if (row) recorded = row.changedPaths;
           console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
@@ -2060,7 +2147,7 @@ const commands = {
         // still records one. The list printed below is the one the Worker
         // recorded, which is the one the gate reads; this clone's is shown only
         // when the reply carries none. A merged check measures no paths.
-        const d = await call("POST", `${I(name, id)}/evidence`, {
+        const d = await postEvidence(`${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
           ...(mainHead ? { merged: true, mainHead } : {}),
@@ -2071,8 +2158,8 @@ const commands = {
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(markerPath(dir), { force: true });
+      process.off("exit", cleanup);
+      cleanup();
     }
     const paths = recorded === undefined ? changed : recorded;
     if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
@@ -2139,8 +2226,7 @@ const commands = {
       process.stdout.write(git(["diff", "--stat", mb, "HEAD"], { cwd: dir }) + "\n\n");
       process.stdout.write(git(["diff", mb, "HEAD"], { cwd: dir }) + "\n");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(markerPath(dir), { force: true });
+      removeClone(dir);
     }
   },
 
