@@ -10,6 +10,13 @@
 // model with the fewest parts of the plan so far, then the fewest in its
 // family, so one model is never the whole plan when others are as good.
 // Reviewers spread the same way. A better score still wins outright.
+//
+// A reviewer is routed only to a model a live runner offers for the review
+// job (offering in src/dispatch/rules.ts), because the queue offers a
+// review to such a runner alone; a model only a build runner offers would
+// sit unclaimed however long the review waited (the t210 case, 2026-10-07).
+// When no runner is live the pool stands and the choice says so with a
+// warning.
 
 import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
@@ -18,6 +25,7 @@ import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type Task
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
 import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
+import { offering, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
 // What the owner knows about a tool's usage limits, keyed by actor
@@ -38,6 +46,7 @@ export interface RouteInput {
   availability?: Readonly<Record<string, Availability>>;
   profiles?: readonly ModelProfile[];     // the registry's evidence and context windows; MODEL_PROFILES by default
   reliability?: Reliability;              // each model's record across every project; orders equal scores only
+  offers?: readonly SeenOffer[] | null;   // the runner offers the Worker read, so a reviewer is routed only to a model a live runner offers for the review job; null when none were read
 }
 
 export interface Choice { actor: string; reasons: string[] }
@@ -146,6 +155,8 @@ interface Context {
   tiebreaks: Map<string, Tiebreak>;
   availability: Map<string, { key: string; value: Availability }>;
   governed: boolean;
+  offered: Offering | null;   // what the live runners offer for the review job; null when none were read or no runner is live
+  offersRead: boolean;        // whether the caller read runner offers at all
 }
 
 // One pool actor judged for one part: the rules it passed, for the reasons
@@ -158,6 +169,7 @@ interface Verdict {
   passed: string[];
   build: string[];
   review: string[];
+  reviewOffer: string | null;   // the runners offering it for the review job, when offers were read and a runner is live
 }
 
 function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Context): Verdict {
@@ -193,9 +205,21 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   const refusal = claimRefusal(actor, ctx.input.policy);
   const build = refusal ? [...both, refusal] : [...both];
   const review = ctx.governed && !hasRole(actor, ctx.input.policy, "assessor") ? [...both, `${actor} needs an available agent with the assessor role`] : [...both];
+  // The offer the review job asks of a runner: a review is claimed only by
+  // a runner that offers the job and can claim as the model, so a reviewer
+  // no live runner so offers would wait forever, whatever runner names the
+  // model for other work (the t210 case, 2026-10-07). The rule binds only
+  // where offers were read and a runner is live; otherwise the pool stands
+  // and the reviewer's reasons say so in routePart.
+  let reviewOffer: string | null = null;
+  if (ctx.offered) {
+    const runners = ctx.offered.actors.get(actor.toLowerCase());
+    if (runners) reviewOffer = `Offered for the review job by ${[...new Set(runners)].join(", ")}`;
+    else review.push(`no live runner offers ${actor} for the review job: ${ctx.offered.instead.join("; ")}`);
+  }
   // The family as the gate reads it, by modelKey, so a profile suffix never
   // makes a reviewer look like another family than the builder.
-  return { actor, family: familyOf(modelKey(actor)), candidate, passed, build, review };
+  return { actor, family: familyOf(modelKey(actor)), candidate, passed, build, review, reviewOffer };
 }
 
 function choice(verdict: Verdict, lead: string[], role: string, ctx: Context): Choice {
@@ -287,9 +311,22 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   }
   reviews.add(reviewer.pick);
   const family = `Another family (${reviewer.pick.family}) than the builder's (${builder.family})`;
-  const reviewing = choice(reviewer.pick, reviewer.lead ? [`${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}`] : [`${family}; the first such model in rank order`], "assessor", ctx);
+  const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; the first such model in rank order`];
+  // What the runner offers said of the reviewer: the runners that offer it
+  // for the review job, or, offers read but no runner live, the warning
+  // that the pool stood in for them, since the review cannot be claimed
+  // until such a runner asks for work.
+  if (reviewer.pick.reviewOffer) said.push(reviewer.pick.reviewOffer);
+  else if (ctx.offersRead) said.push(`No runner is live; routed from the pool, and the review waits until a runner that offers ${reviewer.pick.actor} for the review job asks for work`);
+  const reviewing = choice(reviewer.pick, said, "assessor", ctx);
   return { key: part.key, builder: chosen, alternates, reviewer: reviewing, excluded, unrouted: null };
 }
+
+// The dispatch a review request carries (reviewTick in src/ledger.ts): a
+// home runner that offers the review job. Routing asks the offers what
+// such a runner would take, so a reviewer is routed only to a model one
+// lists, which is the claim's own rule applied ahead of the claim.
+const REVIEW_JOB: Pick<Dispatch, "to" | "job"> = { to: "home", job: "review" };
 
 export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
   const pool = [...input.pool];
@@ -301,6 +338,8 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     tiebreaks: input.reliability ? tiebreaksFor(pool, input.reliability) : new Map(),
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
     governed: input.policy.agents !== undefined,
+    offered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
+    offersRead: input.offers != null,
   };
   // Parts route in plan order; each sees how many parts the earlier ones gave each model.
   const builds = new Load(), reviews = new Load();

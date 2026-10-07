@@ -1306,7 +1306,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", mainHead);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
       }
-      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null));
+      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null, await index(env).runnerOffers()));
     }
     case "integration-failed": {
       // The integrator reports a failed merge. The Worker checks the branch was
@@ -1449,7 +1449,10 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
   switch (sub) {
     case "approve": {
       if (body.allowPaid !== undefined && typeof body.allowPaid !== "boolean") throw new RuleError("bad_allow_paid", "allowPaid must be true or false", 400);
-      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models());
+      // The runner offers come with the pool, so the routing an approval
+      // fixes counts a reviewer only when a live runner offers it for the
+      // review job (routeParts in src/plans/route.ts).
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers());
       return json(await L.planView(id));
     }
     case "revise":
@@ -1476,7 +1479,7 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       const plan = await L.item(id);
       const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
       const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
-      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to);
+      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, await index(env).runnerOffers());
       else await L.planRefresh(id, actor, main, holds);
       return json(await L.planView(id, null, main));
     }

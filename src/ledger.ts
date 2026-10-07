@@ -1824,12 +1824,15 @@ export class Ledger extends DurableObject<Env> {
 
   // The owner approves the newest valid proposal by its hash, once. Each
   // part's routing is computed now and fixed (routeParts), with the limits
-  // and the deadline. A part that no model can build, or that no model of
+  // and the deadline; the runner offers the Worker read come with the pool,
+  // so a reviewer is routed only to a model a live runner offers for the
+  // review job, and when no runner is live the pool stands and the routing
+  // says so. A part that no model can build, or that no model of
   // another family can review, refuses the approval: approving it would only
   // block the plan. The part items are created in plan order, the tick
   // dispatches what may start, all in one transaction, and the alarm is set
   // for the deadline.
-  async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[]): Promise<{ item: Item; parts: Item[] }> {
+  async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[], offers: readonly SeenOffer[] | null = null): Promise<{ item: Item; parts: Item[] }> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner approves a plan", 403);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
@@ -1845,7 +1848,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("stale_plan", `${hash.slice(0, 12)} is not ${id}'s newest proposal, which is ${newest.hash}; read it with atelier plan show ${id}, then approve that hash`, 409);
     }
     const policy = this.project().policy;
-    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid });
+    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers });
     const unrouted = routes.filter((r) => r.unrouted !== null);
     if (unrouted.length) {
       const why = unrouted.map((r) => `part ${r.key} has no ${r.builder ? "reviewer" : "builder"}: ${r.unrouted}`).join("; ");
@@ -2075,7 +2078,7 @@ export class Ledger extends DurableObject<Env> {
           added: added && { mainHead: added.mainHead, by: added.by, at: added.at },
         };
       }),
-      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
+      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers }) : null,
       // The runner offers this view was read with, for the same judgement.
       ...(offers !== null ? { offers } : {}),
       // The plan branch's integration head (docs/orchestrator.md, section 5).
@@ -2923,8 +2926,9 @@ export class Ledger extends DurableObject<Env> {
   // integrator rolled the branch back. It is the plan's, not a part's: no
   // builder is charged. It is recorded as the plan's latest refresh, so the
   // tick does not dispatch it again for the same main head and plan show
-  // gives the reason; the refresh job clears.
-  refreshFailed(id: string, actor: string, mainHead: string, reason: string, kind: string | null): Item {
+  // gives the reason; the refresh job clears. The runner offers the Worker
+  // read come with it, for the merge-main part a conflict adds.
+  refreshFailed(id: string, actor: string, mainHead: string, reason: string, kind: string | null, offers: readonly SeenOffer[] | null = null): Item {
     const { record, refresh } = this.reportedRefresh(id, actor, mainHead, " failure");
     const at = new Date().toISOString();
     const why = reason.slice(0, 500);
@@ -2932,7 +2936,7 @@ export class Ledger extends DurableObject<Env> {
     this.savePlanRecord(id, record);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     this.log(id, actor, "plan.refresh_failed", { mainHead, reason: why, ...(kind ? { kind } : {}) }, at);
-    if (kind === "conflict") this.addMergeMain(id, record, mainHead, mergeMainScope(why, record.scope), ORCHESTRATOR, at, `the refresh from main at ${mainHead.slice(0, 8)} conflicted`);
+    if (kind === "conflict") this.addMergeMain(id, record, mainHead, mergeMainScope(why, record.scope), ORCHESTRATOR, at, `the refresh from main at ${mainHead.slice(0, 8)} conflicted`, null, offers);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -2940,19 +2944,20 @@ export class Ledger extends DurableObject<Env> {
   // Adds the merge-main part for `mainHead` to an approved plan, once per
   // main head: its item, made by `by`, and its routing, computed now from the
   // pool fixed at approval for the plan's allowPaid, as approval routes a
-  // part. The owner's `to` is preferred as its builder, and named as its
+  // part, judged against the runner offers the Worker read the same way. The
+  // owner's `to` is preferred as its builder, and named as its
   // reroute when routing cannot choose it. A part no model can build or
   // review is added unrouted, and the tick blocks the plan for it as for any
   // part, until the owner reroutes it. The approved document and hash do not
   // change; the record lists the part as added (PlanRecord.added).
-  private addMergeMain(id: string, record: PlanRecord, mainHead: string, scope: string[], by: string, at: string, reason: string, to: string | null = null): string | null {
+  private addMergeMain(id: string, record: PlanRecord, mainHead: string, scope: string[], by: string, at: string, reason: string, to: string | null = null, offers: readonly SeenOffer[] | null = null): string | null {
     const approval = record.approval!;
     const key = mergeMainKey(mainHead);
     if (addedPart(record, key) || this.planParts(id).some((p) => p.partKey === key)) return null;
     const spec = mergeMainPart(mainHead, scope);
     const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the project owner with plan refresh --resolve" } } : spec;
     const [route] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
-      pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid,
+      pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers,
     });
     const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [] },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });
@@ -2970,7 +2975,7 @@ export class Ledger extends DurableObject<Env> {
   // may add the part itself), when the branch already holds main's head
   // (`holds`), when the part for this head exists, and while another
   // merge-main part is not yet integrated.
-  planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown): Item {
+  planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown, offers: readonly SeenOffer[] | null = null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner resolves a plan's branch with main", 403);
     const plan = this.planItem(id);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
@@ -2994,7 +2999,7 @@ export class Ledger extends DurableObject<Env> {
     const open = (record.added ?? []).map((a) => parts.find((p) => p.id === a.id)).find((p) => p && p.state !== "integrated" && p.state !== "merged" && p.state !== "abandoned");
     if (open) throw new RuleError("merge_open", `${open.id} (${open.partKey}) is merging main into the branch and is ${open.state}; resolve that one first, or abandon it with atelier abandon ${open.id}`, 409);
     const at = new Date().toISOString();
-    this.addMergeMain(id, record, mainHead, mergeMainScope("", record.scope), actor, at, "the project owner asked to resolve main into the branch", builder);
+    this.addMergeMain(id, record, mainHead, mergeMainScope("", record.scope), actor, at, "the project owner asked to resolve main into the branch", builder, offers);
     this.afterPlanChange(id);
     return this.item(id);
   }

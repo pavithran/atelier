@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { SeenOffer } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { paidPerToken, routeParts, SIZE_M_CONTEXT, type PartRoute, type RouteInput } from "../src/plans/route.ts";
@@ -186,6 +187,47 @@ test("a paused actor gets nothing and a reserved one only the kinds of work name
   assert.equal(own.builder!.actor, "codex/gpt-6-astra");
   has(own.builder, /Available \(availability of Codex\/GPT-6-Astra\)/);
   assert.deepEqual(own.excluded, [{ actor: "claude-code/opus-5.5", reasons: ["reserved for nothing (availability of claude-code/opus-5.5); this part is feature work"] }]);
+});
+
+// A reviewer is routed only to a model a live runner offers for the review
+// job (offering in src/dispatch/rules.ts), because the queue offers a
+// review to such a runner alone: a model only a build runner offers would
+// sit unclaimed however long the review waited (t197's part t210, the t250
+// case of 2026-10-07). When no runner is live the pool stands and the
+// reviewer's reasons say so with a warning; builders are not bound by the
+// review job's offer.
+test("a reviewer is routed only to a model a live runner offers for the review job", () => {
+  // routing asks the offers as of now, so a live offer carries a fresh ask.
+  const seen = (runner: string, over: Partial<SeenOffer> = {}): SeenOffer => ({ runner, kind: "home", agents: [], at: new Date().toISOString(), ...over });
+  // A live build runner names opus but offers no review job: the review
+  // would wait forever on it, so the part is unrouted and says why.
+  const buildOnly = one([opus, gpt], { offers: [seen("home:mbp", { jobs: ["build", "plan"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }] })] });
+  assert.equal(buildOnly.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(buildOnly.reviewer, null);
+  assert.equal(buildOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5 for the review job: home:mbp offers no review job)");
+  // A cloud runner offering the model is not a home review runner either.
+  const cloud = one([opus, gpt], { offers: [seen("cloud:far", { kind: "cloud", jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }] })] });
+  assert.equal(cloud.reviewer, null);
+  assert.match(cloud.unrouted!, /no live runner offers claude-code\/opus-5\.5 for the review job: cloud:far is a cloud runner, not a home one/);
+  // A live runner offering review under another cross-family model routes
+  // the reviewer to it alone, its reasons naming the runner, and the build
+  // side is untouched by the review job's offer.
+  const offered = one([opus, sonnet, gpt], { offers: [seen("home:studio", { jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }] })] });
+  assert.equal(offered.builder!.actor, "codex/gpt-6-astra");
+  assert.deepEqual(actors(offered.alternates), ["claude-code/opus-5.5", "claude-code/sonnet-5.5"]);
+  assert.equal(offered.reviewer!.actor, "claude-code/sonnet-5.5");
+  has(offered.reviewer, /Offered for the review job by home:studio/);
+  assert.ok(!offered.reviewer!.reasons.some((reason) => reason.startsWith("No runner is live")));
+  // Offers read but no runner live: the pool stands, with the warning that
+  // the review waits for a runner that offers the reviewer.
+  const noneLive = one([opus, gpt], { offers: [] });
+  assert.equal(noneLive.unrouted, null);
+  assert.equal(noneLive.reviewer!.actor, "claude-code/opus-5.5");
+  has(noneLive.reviewer, /No runner is live; routed from the pool, and the review waits until a runner that offers claude-code\/opus-5\.5 for the review job asks for work/);
+  // Offers not read at all: routing is as it was, with nothing said of runners.
+  const unread = one([opus, gpt], { offers: null });
+  assert.equal(unread.reviewer!.actor, "claude-code/opus-5.5");
+  assert.ok(!unread.reviewer!.reasons.some((reason) => /runner/i.test(reason)));
 });
 
 test("a part no model can take is unrouted with the reason, never silently", () => {
