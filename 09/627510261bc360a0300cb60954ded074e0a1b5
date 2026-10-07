@@ -1,0 +1,24 @@
+atelier atelier/t261 "A plan in a protected project can never be accepted: planGate runs the ordinary gate on the plan item, whose contributors include atelier/integrator (the integrator's pushes), a reserved actor of no recognised family, and familyRefusal fails every reviewer when any contributor's family is unrecognised; so plan t197, with every part reviewed by another family and integrated, was refused 'needs approval from a model of another family than every contributor' even after gpt-oss-120b approved it (2026-10-07). Also, atelier land on a plan item merges main into the plan's branch, which planGate then refuses (head is not the integration head). Fix: when the plan's head is its integration head, every commit on the branch is a recorded integration of a reviewed part (or a recorded refresh), so the plan item needs no review of its own beyond its parts' (atelier/integrator's merge commits are not contributions); an owner-resolved or unrecorded commit on the branch still needs one. atelier land on a plan item refuses and points at atelier merge PLAN --head INTEGRATION_HEAD (a stale branch takes main by plan refresh)"
+accepted head b29a3d71642310e3b98577d4711178f6e07cc880
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T16:13:13.204Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T16:13:16.376Z
+REVIEW approve by antigravity/gemini-3.1-pro at b29a3d71642310e3b98577d4711178f6e07cc880, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T16:00:29.514Z pavi item.created
+2026-10-07T16:00:45.026Z claude-code/opus-5.5 item.claimed
+2026-10-07T16:01:05.056Z claude-code/opus-5.5 fork.created
+2026-10-07T16:10:34.204Z pavi land.lease
+2026-10-07T16:10:35.773Z pavi land.merge
+2026-10-07T16:10:44.526Z pavi land.regenerate
+2026-10-07T16:10:47.136Z claude-code/opus-5.5 push.observed
+2026-10-07T16:10:47.308Z pavi land.push
+2026-10-07T16:13:14.105Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:13:16.899Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:13:17.405Z pavi land.check
+2026-10-07T16:13:17.841Z claude-code/opus-5.5 item.submitted
+2026-10-07T16:13:18.155Z pavi land.submit
+2026-10-07T16:13:18.333Z pavi review.requested
+2026-10-07T16:13:35.623Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T16:17:55.019Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T16:17:58.638Z pavi land.review
+2026-10-07T16:17:59.635Z pavi item.accepted
+2026-10-07T16:17:59.780Z pavi land.accept
