@@ -1,0 +1,24 @@
+atelier atelier/t288 "After t287's deploy (2026-10-07) the Analytics Engine SQL API answers 422 'unable to find type of column: "timestamp"' because atelier_metrics has no data point yet; readGateway reports that as a failure, and both the Models page and atelier runner --usage then hide the last pull's result, so whether the gateway exists cannot be seen. Read a never-written dataset as no calls, and show the last pull (and gaps) also when the figures cannot be read"
+accepted head 4eab9fee7ac9a2276ca24f2b65615f2f9c7866ca
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T22:00:28.707Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T22:00:31.447Z
+REVIEW approve by antigravity/gemini-3.1-pro at 4eab9fee7ac9a2276ca24f2b65615f2f9c7866ca, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T21:54:02.893Z pavi item.created
+2026-10-07T21:54:03.401Z claude-code/opus-5.5 item.claimed
+2026-10-07T21:54:17.106Z claude-code/opus-5.5 fork.created
+2026-10-07T21:57:36.725Z pavi land.lease
+2026-10-07T21:57:38.501Z pavi land.merge
+2026-10-07T21:57:46.033Z pavi land.regenerate
+2026-10-07T21:57:48.446Z claude-code/opus-5.5 push.observed
+2026-10-07T21:57:48.604Z pavi land.push
+2026-10-07T22:00:29.302Z claude-code/opus-5.5 evidence.observed
+2026-10-07T22:00:31.781Z claude-code/opus-5.5 evidence.observed
+2026-10-07T22:00:32.340Z pavi land.check
+2026-10-07T22:00:32.759Z claude-code/opus-5.5 item.submitted
+2026-10-07T22:00:33.039Z pavi land.submit
+2026-10-07T22:00:33.205Z pavi review.requested
+2026-10-07T22:00:50.750Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T22:04:09.382Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T22:04:14.217Z pavi land.review
+2026-10-07T22:04:15.058Z pavi item.accepted
+2026-10-07T22:04:15.191Z pavi land.accept
