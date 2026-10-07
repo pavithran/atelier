@@ -1312,6 +1312,18 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409);
     }
+    // A merge publishes to the baseline, the one thing the project's landing
+    // lease guards (t232): while another task's landing is live on it, the
+    // merge is refused, so a landing that lost its lease (its Mac slept past
+    // the expiry, and a queued landing took the lease over) cannot merge
+    // beside the landing that holds it now, whatever its CLI missed. A lease
+    // held for this task is its own landing's, and one that lapsed, or whose
+    // task has closed, guards nothing, exactly as beginProjectLanding judges.
+    const held = this.projectLanding();
+    if (held && held.item !== id && this.landingLive(held, new Date().toISOString())) {
+      const since = held.at.slice(0, 16).replace("T", " ");
+      throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project, so ${id} cannot merge beside it. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or free the lease with atelier land ${held.item} --release-lease, then atelier merge ${id} again`, 409);
+    }
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify({ head, at: Date.now() }));
     return item;
   }
@@ -1322,9 +1334,13 @@ export class Ledger extends DurableObject<Env> {
   // the heartbeat of atelier land), and a lease not renewed for
   // LANDING_LEASE_EXPIRY_MS is treated as free, so a landing killed without
   // releasing it (t214) blocks nobody for longer than that: the next landing
-  // takes it over and is told whose lease lapsed. A later land of the same
-  // task takes its own lease over to resume, and a lease whose task has
-  // closed no longer guards anything, so another landing may take it.
+  // takes it over and is told whose lease lapsed. The guard reaches the merge
+  // itself (beginLanding, t232): a merge is refused while another task's
+  // landing is live on the lease, so a landing that lost it without noticing
+  // (its Mac slept through the takeover) cannot merge beside its successor.
+  // A later land of the same task takes its own lease over to resume, and a
+  // lease whose task has closed no longer guards anything, so another
+  // landing may take it.
   private projectLanding(): LandingLease | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'landing-lease'`).toArray()[0];
     return row ? JSON.parse(row.value as string) : null;

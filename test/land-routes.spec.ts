@@ -151,6 +151,42 @@ it("the landing-lease route takes, renews and cancels the lease for the owner", 
   expect(await L.readProjectLanding()).toBeNull();
 });
 
+it("a merge is refused while another task's landing holds the project's lease, and goes on once the lease no longer guards it (t232)", async () => {
+  const L = await setup("land-merge-race");
+  const a = (await L.newItem("Landing", [], "owner")).id;
+  const b = (await L.newItem("Beside it", [], "owner")).id;
+  const aHead = "9".repeat(40), bHead = "e".repeat(40);
+  await submittedTask(L, a, aHead, ["docs/a.md"]);
+  await submittedTask(L, b, bHead, ["docs/b.md"]);
+  await L.accept(a, "owner", aHead);
+  await L.accept(b, "owner", bHead);
+  // With no landing in progress, a merge begins (and is set back here).
+  await L.beginLanding(b, "owner", bHead);
+  await L.cancelLanding(b, "owner");
+  // a's landing holds the project's lease: b cannot merge beside it, and
+  // b's acceptance stands untouched.
+  await L.beginProjectLanding(a, "owner");
+  await refusal(L.beginLanding(b, "owner", bHead), "landing_lease", new RegExp(`^owner has been landing ${a} since .*one landing runs at a time in this project, so ${b} cannot merge beside it.*then atelier merge ${b} again$`));
+  expect(await L.item(b)).toMatchObject({ state: "accepted", acceptedHead: bHead });
+  // The lease lapsed (a's landing slept, t232): it guards nothing, so the
+  // merge goes on (and is set back here).
+  const held = (await L.readProjectLanding())!;
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-lease'`, JSON.stringify({ ...held, renewedAt: new Date(Date.now() - LANDING_LEASE_EXPIRY_MS).toISOString() }));
+  });
+  await L.beginLanding(b, "owner", bHead);
+  await L.cancelLanding(b, "owner");
+  // Renewed within the expiry again, the lease refuses b once more; the
+  // task whose landing holds it merges under it, and once that task has
+  // merged, the lease no longer guards anything and b's merge goes on.
+  await L.beginProjectLanding(a, "owner");
+  await refusal(L.beginLanding(b, "owner", bHead), "landing_lease", new RegExp(`has been landing ${a} since`));
+  await L.beginLanding(a, "owner", aHead);
+  expect(await L.merged(a, "owner", "f".repeat(40), true, aHead)).toMatchObject({ state: "merged" });
+  await L.beginLanding(b, "owner", bHead);
+  expect(await L.merged(b, "owner", "7".repeat(40), true, bHead)).toMatchObject({ state: "merged" });
+});
+
 it("a submitted task with a protected change gets a review request, named or picked, that a verdict answers", async () => {
   const L = await setup("land-review");
   const id = (await L.newItem("Landing", [], "owner")).id;
