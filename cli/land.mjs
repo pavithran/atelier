@@ -202,9 +202,9 @@ export async function runLand(io) {
   // keeps the process alive on its own (unref), and a renewal the server
   // refuses says the lease is no longer this landing's, which is reported
   // once rather than retried.
-  let leased = false, heartbeat = null, takenOverBy = null;
+  let leased = false, beating = false, takenOverBy = null;
   const release = async () => {
-    if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+    beating = false;
     if (!leased) return;
     leased = false;
     // The cancel names this task: a lease that lapsed, or whose task has
@@ -305,7 +305,7 @@ export async function runLand(io) {
     // `why` is the server's word on the refusal, kept for the guard's error;
     // the warning names the loss in the heartbeat's own phrase, said once.
     const loseLease = (why) => {
-      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+      beating = false;
       leased = false;
       lostLease = why;
     };
@@ -332,21 +332,32 @@ export async function runLand(io) {
         print(`Warning: the landing lease could not be renewed before this step (${error.message}); the merge asks the server again itself.`);
       }
     };
-    heartbeat = setInterval(async () => {
+    // One beat at a time: each beat waits for its renewal's answer before
+    // scheduling the next, so beats never overlap, and a heartbeat that has
+    // stopped — the landing ended, or lost the lease — sends no further
+    // renewal, whatever a slow beat was still answering when it stopped.
+    const beat = async () => {
+      if (!beating) return;
       try {
         await request("POST", leasePath, { item: id, renew: true });
         if (renewFailing) { renewFailing = false; print("The landing lease is renewed again."); }
       } catch (error) {
         if (error.status >= 400 && error.status < 500) {
+          // Said once, even where a slow beat's refusal lands after the loss
+          // was already learned (a guard, or the renewal before publishing).
+          const said = lostLease !== null;
           loseLease(error.message);
-          print(`Warning: the landing lease is no longer ${id}'s (${error.message}); this landing stops when the step it runs ends, and accepts and merges nothing. Run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
+          if (!said) print(`Warning: the landing lease is no longer ${id}'s (${error.message}); this landing stops when the step it runs ends, and accepts and merges nothing. Run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
         } else if (!renewFailing) {
           renewFailing = true;
           print(`Warning: the landing lease could not be renewed (${error.message}); trying again every ${Math.round(LEASE_RENEW_MS / 1000)}s. It lapses after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes without a renewal.`);
         }
       }
-    }, LEASE_RENEW_MS);
-    heartbeat.unref();
+      if (beating) { const next = setTimeout(beat, LEASE_RENEW_MS); next.unref(); }
+    };
+    beating = true;
+    const firstBeat = setTimeout(beat, LEASE_RENEW_MS);
+    firstBeat.unref();
     await record("lease", Date.now() - t0);
 
     // Merge main into the workspace, no-ff, so the task carries main's
