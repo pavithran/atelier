@@ -7,7 +7,7 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
@@ -556,6 +556,61 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
   return baseRepoOf(item, baselineRepo, planFork);
 }
 
+// A part whose fork holds nothing beyond the commit it forked from starts
+// from its plan branch's head when that branch has moved since, so its
+// builder sees every part integrated since (docs/orchestrator.md, section 5).
+// Artifacts cannot move a repository's branch, so the fork is deleted and
+// forked again from the plan's fork under the same name, which keeps the
+// workspace's remote, and the Ledger records the new head as the part's base
+// and head. A fork with a head of its own, in the Ledger or in Artifacts, is
+// left as it is; a fork found missing, which a move that did not finish
+// leaves, is forked again. A move that forked again but failed to record it
+// leaves a fork whose head is a later commit of the plan's branch than the
+// recorded base: that head is on the plan's branch and holds the base, so
+// the fork holds nothing of its own, and the move is finished, by recording
+// it when it is the branch's head and by forking again otherwise. A head
+// the search cannot place on the plan's branch within MOVE_BUDGET is taken
+// for the builder's own and kept. The fork's head is read again just before
+// it is deleted, and a head that changed in between, as a push would, is
+// kept. True when the fork was moved: the repository and every token it had
+// are gone. A move that only records the head returns false: the fork and
+// its tokens stand.
+const MOVE_BUDGET = { commits: 500, reads: 5 };
+async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean): Promise<boolean> {
+  if (item.kind !== "part" || !item.plan || !item.fork) return false;
+  if (item.head && item.head !== item.base) return false;
+  const planFork = (await L.item(item.plan)).fork;
+  if (!planFork) return false;
+  const planHead = await headOf(env, planFork);
+  if (!planHead || planHead === item.base) return false;
+  const forkHead = async () => {
+    try {
+      return await headOf(env, item.fork!);
+    } catch (err) {
+      if (!/NOT_FOUND|not found/i.test(codeOf(err))) throw err;
+      return null;
+    }
+  };
+  const observed = await forkHead();
+  if (observed && observed !== item.base) {
+    const onBranch = (await holdsCommit(env, planFork, planHead, observed, MOVE_BUDGET)).holds === true
+      && (!item.base || (await holdsCommit(env, planFork, observed, item.base, MOVE_BUDGET)).holds === true);
+    if (!onBranch) return false;
+    if (observed === planHead) {
+      await L.moveFork(item.id, actor, item.fork, item.base, observed, proved);
+      return false;
+    }
+  }
+  if ((await forkHead()) !== observed) return false;
+  await env.ARTIFACTS.delete(item.fork);
+  using plan = await env.ARTIFACTS.get(planFork);
+  await plan.fork(item.fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
+  const base = await headOf(env, item.fork);
+  if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
+  await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
+  return true;
+}
+
 // Main's head as the baseline holds it now, for the Ledger, which cannot read
 // Artifacts; null when the baseline cannot be read, so a view still renders.
 async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<string | null> {
@@ -1018,7 +1073,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
       const p = await L.project();
-      let fork = item.fork;
+      let fork = item.fork, moved = false;
       if (needsFork) {
         // Forks are named after the key, like the baseline, whatever the project is called now.
         fork = repoName(ref.key, id);
@@ -1032,6 +1087,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
           throw err;
         }
+      } else {
+        // A part with nothing of its own starts again from the plan's branch.
+        // A failed move gives up a claim this call took; a holder claiming
+        // again keeps the item and can retry.
+        try {
+          moved = await movePartFork(env, L, item, p, actor, !!c.token);
+        } catch (err) {
+          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          throw err;
+        }
       }
       // Re-claiming rotates the token: one live write token per item, ever.
       // If the old one cannot be revoked, the claim fails before a new one
@@ -1041,8 +1106,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // re-claiming, or the claimer of an item nobody holds, gets here, and
       // `replaces` is the token this claim takes over.
       // The workspace and the baseline are both given the project's branch:
-      // the fork's HEAD names it, and headOf reads HEAD.
-      await revoke(env, fork, replaces);
+      // the fork's HEAD names it, and headOf reads HEAD. A moved fork took
+      // its tokens with the repository it replaced.
+      if (!moved) await revoke(env, fork, replaces);
       const branch = await projectBranch(env, p);
       const w = await mint(env, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see

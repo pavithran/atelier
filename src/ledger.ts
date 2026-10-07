@@ -954,6 +954,21 @@ export class Ledger extends DurableObject<Env> {
     if (base && this.item(id).kind === "plan") this.setMainHead(base, at);
   }
 
+  // A part's fork forked again from its plan's branch at `base`, as the
+  // claim route does for a part whose fork holds nothing beyond the commit
+  // it forked from (docs/orchestrator.md, section 5). The Ledger takes it
+  // only from the part's holder, for the fork and base the Worker read, and
+  // while no head of its own is recorded; the new base is its head.
+  moveFork(id: string, actor: string, fork: string, from: string | null, base: string, proved = false): void {
+    const at = new Date().toISOString();
+    const item = this.item(id);
+    if (item.kind !== "part" || item.owner !== actor || item.fork !== fork || item.base !== from || (item.head && item.head !== item.base)) {
+      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to the plan's branch; claim it again`, 409);
+    }
+    this.update(id, { base, head: base }, at);
+    this.log(id, actor, "fork.moved", { fork, from, base }, at, proved);
+  }
+
   // The worker has already read the fork's head from Artifacts; what is logged
   // here is what Atelier saw, not what the agent said it pushed.
   // An accepted task can still take a new revision, as when its merge
