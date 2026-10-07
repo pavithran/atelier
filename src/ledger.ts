@@ -2600,8 +2600,17 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "part" && item.state === "open" && !item.dispatch) {
       throw new RuleError("not_dispatched", `${item.id} is a part of plan ${item.plan}, which dispatches it once the parts it depends on have merged; it is not dispatched now. See atelier plan show ${item.plan}`, 409);
     }
-    if (item.kind === "plan" && this.planRecord(item.id).approval) {
-      throw new RuleError("plan_approved", `${item.id} is an approved plan, and its parts carry the work; see atelier plan show ${item.id}`, 409);
+    if (item.kind === "plan") {
+      if (this.planRecord(item.id).approval) {
+        throw new RuleError("plan_approved", `${item.id} is an approved plan, and its parts carry the work; see atelier plan show ${item.id}`, 409);
+      }
+      // A plan item's only work is its plan job. Once a valid proposal clears
+      // that dispatch (postPlan) the plan waits for the owner, so no eligible
+      // actor claims the plan item by hand: only the plan job's dispatch lets
+      // the routed planner claim it.
+      if (item.dispatch?.job !== "plan") {
+        throw new RuleError("not_dispatched", `${item.id}'s plan job has left the queue, so it cannot be claimed by hand; it waits for the owner's decision. See atelier plan show ${item.id}`, 409);
+      }
     }
   }
 

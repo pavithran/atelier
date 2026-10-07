@@ -187,6 +187,23 @@ it("approval is refused while the planner still holds its claim, so no write tok
   expect(parts).toHaveLength(1);
 });
 
+it("after the plan job leaves the queue, no eligible actor claims the plan item by hand", async () => {
+  const L = await setup("plan-claim-by-hand");
+  const { id } = await proposed(L, doc(part("a")));
+  // The plan job has left the queue (postPlan cleared the dispatch), and the
+  // item is open and held by nobody. Only the plan job's dispatch lets the
+  // routed planner claim it, so a hand claim by any eligible actor is refused.
+  await refusal(L.claim(id, GPT, RUNNER), "not_dispatched", /plan job has left the queue/);
+  await refusal(L.claim(id, GPT), "not_dispatched", /plan job has left the queue/);
+  expect((await L.item(id)).owner).toBeNull();
+  // The owner asking the planner again re-queues the plan job, which is then
+  // claimable by the routed planner as before.
+  await L.revisePlan(id, "owner", "split it differently");
+  expect((await L.item(id)).dispatch).toMatchObject({ job: "plan", agent: "claude-code" });
+  await L.claim(id, PLANNER, RUNNER);
+  expect((await L.item(id)).owner).toBe(PLANNER);
+});
+
 it("an invalid proposal gets the planner one more attempt, then blocks the plan until the owner decides", async () => {
   const L = await setup("plan-invalid");
   const { item } = await L.newPlan("Ship it", [], "owner", PLANNER, []);

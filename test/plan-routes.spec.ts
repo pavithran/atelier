@@ -109,6 +109,10 @@ it("the holder posts its plan through the route, and an invalid one is a 422 tha
   const view = await (await call("GET", `/projects/${name}/items/${id}/plan`, "owner")).json() as PlanView;
   expect(view).toMatchObject({ phase: "proposed", proposal: { hash, count: 1, answered: true }, plan: { parts: [{ key: "a" }, { key: "b" }] } });
   expect(view.preview?.map((r) => [r.key, r.unrouted])).toEqual([["a", null], ["b", null]]);
+  // The plan view is the owner's alone: a non-owner actor with the owner
+  // token is refused, not left to the agent-route allowlist.
+  const notOwner = await call("GET", `/projects/${name}/items/${id}/plan`, "codex/gpt-6-astra");
+  expect([notOwner.status, ((await notOwner.json()) as { error: string }).error]).toEqual([403, "not_project_owner"]);
   // The plan item's brief is the plan's, and an agent may read and relay it.
   const brief = await (await call("GET", `/projects/${name}/items/${id}/brief`, null, undefined, planner)).json() as { title: string; decided: string; recommendation: { verdict: string } };
   expect(brief).toMatchObject({ title: "Ship the feature", decided: `Approve plan ${id}'s split of: Ship the feature`, recommendation: { verdict: "decide" } });
