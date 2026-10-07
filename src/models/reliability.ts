@@ -28,7 +28,7 @@ import { matchesAny, modelKey, pushAuthors, RuleError, sameActor, validActor } f
 import { TEXT_CONTROLS } from "../text.ts";
 import { SERVED, servedActor, servedBy } from "./served.ts";
 
-export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge"] as const;
+export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "harness_failed", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 export const RUN_ROLES = ["build", "plan", "review"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
@@ -90,8 +90,9 @@ interface KindBin {
 // A run that ended without a result the ledger could record, as the runner
 // that ran it reports it: the harness made nothing and stopped (stalled),
 // ran past its time limit (timed-out), or the harness or its provider
-// refused the run (refused). A review run that ends this way is a review
-// that never reached a verdict.
+// refused the run (refused). A plan job whose harness failed before posting a
+// plan is harness_failed, not refused. A review run that ends this way is a
+// review that never reached a verdict.
 export interface RunReport {
   actor: string;            // harness/model, the agent the runner ran
   role: RunRole;
@@ -148,7 +149,7 @@ export interface ModelReliability {
 export type Reliability = ReadonlyMap<string, ModelReliability>;
 export interface ProjectEvents { project: string; events: readonly LedgerEvent[] }
 
-const emptyRuns = (): Record<RunOutcome, number> => ({ stalled: 0, "timed-out": 0, refused: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+const emptyRuns = (): Record<RunOutcome, number> => ({ stalled: 0, "timed-out": 0, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
 
 const empty = (model: string): ModelReliability => ({
   model, family: familyOf(model), actors: [], projects: [],
