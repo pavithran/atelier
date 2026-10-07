@@ -157,6 +157,29 @@ export const LIMITS: string[] = [
   "The merge happens on the owner's machine. Artifacts can be read through its binding but written only by a git push with a write token, so Atelier merges in git in the owner's checkout and pushes the result.",
 ];
 
+// The owner's guide, docs/using-atelier.md, in fewer words. Each point
+// carries a phrase or command that appears verbatim both in the point and in
+// the guide, so test/how.test.ts fails when the two drift apart.
+export const USING_WELL_DOC = "docs/using-atelier.md";
+
+export interface Advice {
+  point: string;
+  // Found verbatim in the point and in USING_WELL_DOC.
+  from: string;
+}
+
+export const USING_WELL: Advice[] = [
+  { from: "atelier status", point: "Start with `atelier status`. It lists, for every project, what needs the owner: a plan to approve, work to accept, failing checks, a change outside its scope. When nothing waits, there is nothing to do." },
+  { from: "what should be true afterwards", point: "Something with several parts becomes a plan, `atelier plan \"goal\"`; one clear change becomes a task, `atelier new \"title\"`. A good goal or title says what should be true afterwards, names the files it may touch, and asks that every claim match the code." },
+  { from: "Keep scopes narrow", point: "Keep scopes narrow. Two live tasks whose scopes overlap usually conflict when the second lands, and `atelier status` lists such pairs." },
+  { from: "atelier plan show", point: "Read a plan before approving it, with `atelier plan show`: the parts sensible and ordered, each routed to a model you want doing it, nothing contradicting what you asked. Then approve once, by the hash of its newest proposal." },
+  { from: "never overridden quietly", point: "Accept deliberately. Look at the gate, the reviewer's findings and the scope flag. A finding is a claim about the code and can be wrong: have a wrong one answered with the file and line that show it, never overridden quietly." },
+  { from: "`atelier land` never overrides a review", point: "Land one task with `atelier land ID --reviewer H/M`, which merges main, checks, submits, waits for the independent review, then accepts and merges. `atelier land` never overrides a review; an override while accepting takes a reason and is recorded where everyone can see it." },
+  { from: "file anything odd as a task", point: "Let a session act for you. Say a standing decision plainly, so it is recorded in the skill's `decisions.md` and every later session follows it, and ask it to file anything odd as a task rather than work around it quietly." },
+  { from: "Watch three numbers", point: "Watch three numbers: spend on pay-per-use models against the daily limit, the plan windows of the subscription tools, and each model's record on the Models page when choosing who builds." },
+  { from: "ask what task it becomes", point: "Run one home runner per machine, deploy between landings, and do not edit inside an agent's workspace while its agent runs. When something breaks, ask what task it becomes, not only how to get past it." },
+];
+
 export interface Part {
   name: string;
   // Where the design puts it: docs/orchestrator.md, section 8.
