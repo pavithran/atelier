@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { checkEnv } from "./check-env.mjs";
@@ -23,6 +23,18 @@ import { unoffered } from "../src/dispatch/rules.ts";
 // from main are recorded on the ledger as land.* events (t186 reads them for
 // the integration cost), and the server must be at this CLI's route level or
 // newer, or the landing refuses before it starts, saying to deploy.
+//
+// The merged route level keeps meaning one set of routes (t248): two tasks
+// that each raise it from one base merge cleanly to the number they share
+// (t238 and t240 both set 8, 2026-10-07; t233 and t236 both set 6 earlier,
+// caught by hand), and the number then names the routes of either side
+// alone while the merged CLI calls both. After merging main the landing
+// therefore compares src/route-level.ts at the task's fork point, at the
+// task's head before the merge and at main's head, and where each side
+// raised it from the fork point, raises the merged level to main's plus
+// the task's own raise, commits that as its own commit and says to deploy
+// before the next landing, so each number keeps naming the routes of the
+// CLI that reports it.
 //
 // The lease never strands the project (t214): a landing renews it every
 // LEASE_RENEW_MS while it runs, the server treats a lease not renewed for
@@ -166,7 +178,7 @@ export async function runLand(io) {
   if (dryRun) {
     print(`Dry run: atelier land ${id} in ${name} would:`);
     print(`  1. ${waitingOn ? `wait behind ${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)}), then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name})`);
-    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files`);
+    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files; where main and the task each raised the route level (src/route-level.ts) from one base, raise the merged level past both`);
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
     print(`  4. push the merged head to ${id}'s fork`);
     print(`  5. run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of the pushed head`);
@@ -368,12 +380,13 @@ export async function runLand(io) {
     const base = await request("POST", `${itemPath}/base-token`, { scope: "read" });
     git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
     const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
-    let fromMain = [], mergedIn = false, settled = null, settledConflicts = [];
+    let fromMain = [], mergedIn = false, settled = null, settledConflicts = [], routeLevel = null;
     if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
       print(`main at ${short(mainHead)} is already merged into ${id}'s workspace.`);
     } else {
       const forkPoint = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
       fromMain = git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir }).split("\n").filter(Boolean);
+      const taskHead = git(["rev-parse", "HEAD"], { cwd: dir });
       const r = git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
       if (r.status !== 0) {
         const conflicts = git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
@@ -427,10 +440,36 @@ export async function runLand(io) {
             : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
         }
       }
+      // Where main and the task each raised the route level from the fork
+      // point, the merge was clean at the number they share — both sides
+      // wrote the same line — so the merged tree carries both sides' routes
+      // under a number that names either side's alone (t248). The merged
+      // level is compared at the fork point, at the task's head before the
+      // merge and at main's head, and raised to main's plus the task's own
+      // raise, its own commit, so the number the merged CLI reports keeps
+      // meaning the routes it calls. A repo with no src/route-level.ts, or
+      // one whose level no side raised, merges as it always did.
+      const levelAt = (rev) => {
+        const shown = git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
+        const found = /export const ROUTE_LEVEL = (\d+);/.exec(shown.stdout ?? "");
+        return found ? Number(found[1]) : null;
+      };
+      const baseLevel = levelAt(forkPoint), taskLevel = levelAt(taskHead), mainLevel = levelAt(mainHead), mergedLevel = levelAt("HEAD");
+      if (baseLevel !== null && taskLevel > baseLevel && mainLevel > baseLevel && mergedLevel !== null) {
+        const rightLevel = mainLevel + (taskLevel - baseLevel);
+        if (mergedLevel < rightLevel) {
+          const levelFile = join(dir, "src", "route-level.ts");
+          writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
+          git(["add", "--", "src/route-level.ts"], { cwd: dir });
+          git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
+          routeLevel = { base: baseLevel, main: mainLevel, task: taskLevel, was: mergedLevel, set: rightLevel };
+          print(`main and ${id} each raised the route level from ${baseLevel} (main to ${mainLevel}, ${id} to ${taskLevel}), and the merge left it at ${mergedLevel}: the merged CLI calls both sides' routes, so the level is raised to ${rightLevel}. Deploy the server from a checkout at route level ${rightLevel} or newer (npm run deploy, which records the commit it deploys) before the next landing or runner.`);
+        }
+      }
       mergedIn = true;
       print(`Merged main at ${short(mainHead)} into ${id}'s workspace (${fromMain.length} commit${fromMain.length === 1 ? "" : "s"} from main).`);
     }
-    await record("merge", Date.now() - t0, { fromMain, ...(settled ? { conflicts: settledConflicts, resolvedBy: settled } : {}), ...(mergedIn ? {} : { skipped: true }) });
+    await record("merge", Date.now() - t0, { fromMain, ...(routeLevel ? { routeLevel } : {}), ...(settled ? { conflicts: settledConflicts, resolvedBy: settled } : {}), ...(mergedIn ? {} : { skipped: true }) });
 
     // The project's fixtures, regenerated now that both lines sit in one
     // tree, so the checks below see fixtures current with them. The command
