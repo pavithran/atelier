@@ -22,7 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
-import { assertEligible, checkApplies, pathCollisions } from "../src/rules.ts";
+import { assertEligible, checkApplies, pathCollisions, recordedText } from "../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -36,6 +36,7 @@ import { collectCache, markerPath } from "./gc.mjs";
 import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
+import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
 import { planText } from "../src/plans/show.ts";
@@ -216,7 +217,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
@@ -226,10 +227,10 @@ export const FLAGS = {
   block: {},
   unblock: {},
   ls: { all: true, json: true },
-  show: { json: true },
+  show: { reviews: true, json: true },
   start: { runner: false },
   claim: { runner: false },
-  push: { force: true },
+  push: { force: true, rollback: true },
   update: {},
   check: { sandbox: true, merged: true },
   gc: { "dry-run": true, apply: true },
@@ -242,11 +243,13 @@ export const FLAGS = {
   "read-token": {},
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
-  "integration-failed": { part: false, reason: false },
+  "integration-failed": { part: false, reason: false, kind: false },
+  refreshed: { "main-head": false, "merge-commit": false },
+  "refresh-failed": { "main-head": false, reason: false, kind: false },
   handoff: { to: false, note: false },
   release: { note: false },
-  accept: { head: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
-  abandon: { note: false },
+  accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
+  abandon: { note: false, "delivered-by": false },
   defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
   finding: { head: false, index: false, verdict: '--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed', note: false },
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
@@ -256,16 +259,16 @@ export const FLAGS = {
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
-  land: { reviewer: false, "no-review": true, "dry-run": true },
+  land: { reviewer: false, "no-review": true, "dry-run": true, wait: true, "release-lease": true },
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
   ship: { "dry-run": true, push: true },
-  dispatch:{ to: false, agent: false, model: false, note: false },
+  dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false },
   undispatch: {},
   queue: {},
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
-  plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false },
+  plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false, resolve: true },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
   models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
   showcase: { named: true, anonymous: true },
@@ -279,7 +282,7 @@ export const FLAGS = {
 };
 const REST = new Set(["check"]);
 // The flags each plan subcommand takes; "" is a new plan's.
-const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], stop: ["note"], post: [] };
+const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: ["resolve", "to"], stop: ["note"], post: [] };
 const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
 
 export function parseArgs(argv, switches = SWITCHES) {
@@ -575,6 +578,19 @@ async function resolveTokenActor() {
 }
 
 async function call(method, path, body, as, extra = {}) {
+  try { return await request(method, path, body, as, extra); } catch (error) { if (error instanceof RequestError) die(error.message, error.code); throw error; }
+}
+
+// A request the server refused or could not answer: the message `call`
+// prints and the exit code it ends with.
+class RequestError extends Error {
+  constructor(message, code) { super(message); this.code = code; }
+}
+
+// `call` without ending the command: a failure throws a RequestError, so a
+// caller can retry it or name the step that failed.
+async function request(method, path, body, as, extra = {}) {
+  const die = (message, code = 1) => { throw new RequestError(message, code); };
   if (path !== "/config") await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
@@ -776,20 +792,52 @@ function mergeWithMain(dir, id) {
 // secret in `secrets` redacted. The output is redacted whole, before anything
 // cuts its tail, so no part of a secret survives at the cut, and the hash is
 // of the redacted text, the text a reader of the evidence is shown.
-async function runCheck(cmd, dir, secrets) {
+// The check leads a process group of its own. When its shell exits, when its
+// time limit passes or when its output overruns, every process left in the
+// group (a test runner's worker, a watcher, anything started with &) gets
+// SIGTERM, then SIGKILL after `graceMs`, and the result comes back only once
+// the group is gone, so nothing the check started still writes in the clone
+// when it is removed. A process that leaves the group (setsid) is beyond this.
+async function runCheck(cmd, dir, secrets, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await new Promise((done) => {
-    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS });
-    writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: child.pid }));
-    let stdout = "", stderr = "", error, bytes = 0;
+    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), detached: true });
+    const pid = child.pid;
+    checkGroup = pid;
+    const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM");
+    process.once("SIGINT", onInt).once("SIGTERM", onTerm);
+    writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid }));
+    let stdout = "", stderr = "", error, bytes = 0, closed, ending = false, ended = !pid;
+    // A signal to every process in the group; false once none is left.
+    const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
+    const finish = () => {
+      if (!closed || !ended) return;
+      clearTimeout(deadline);
+      if (checkGroup === pid) checkGroup = undefined;
+      process.off("SIGINT", onInt).off("SIGTERM", onTerm);
+      done({ ...closed, stdout, stderr, error: error ?? (closed.signal ? new Error(`check terminated by ${closed.signal}`) : undefined) });
+    };
+    const end = () => {
+      if (ending || ended) return;
+      ending = true;
+      const until = Date.now() + graceMs;
+      const wait = () => {
+        if (!send(0)) { ended = true; return finish(); }
+        if (Date.now() >= until) { send("SIGKILL"); ended = true; return finish(); }
+        setTimeout(wait, 50);
+      };
+      send("SIGTERM");
+      wait();
+    };
+    const deadline = setTimeout(() => { error ??= new Error(`check exceeded its time limit of ${Math.round(CHECK_TIMEOUT_MS / 1000)} s`); end(); }, CHECK_TIMEOUT_MS);
     const append = (key, chunk) => {
       if (error) return;
       bytes += Buffer.byteLength(chunk);
       if (key === "stdout") stdout += chunk; else stderr += chunk;
       if (bytes > 64 * 1024 * 1024) {
         error = new Error("check output exceeds 64 MiB");
-        child.kill();
+        end();
         stdout = stdout.slice(-32 * 1024 * 1024);
         stderr = stderr.slice(-32 * 1024 * 1024);
       }
@@ -797,11 +845,49 @@ async function runCheck(cmd, dir, secrets) {
     child.stdout.setEncoding("utf8").on("data", (s) => append("stdout", s));
     child.stderr.setEncoding("utf8").on("data", (s) => append("stderr", s));
     child.on("error", (e) => { error = e; });
-    child.on("close", (status, signal) => done({ status, stdout, stderr, error: error ?? (signal ? new Error(`check terminated by ${signal}`) : undefined) }));
+    // A process left in the group can hold the output pipes open, so the
+    // group is ended when the shell exits, not when the pipes close.
+    child.on("exit", end);
+    child.on("close", (status, signal) => { closed = { status, signal }; finish(); });
   });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, secrets);
   return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
+}
+
+// The process group of the check running now. It is not the terminal's
+// foreground group, so an interrupt of this command does not reach it: this
+// process ends it on the way out instead.
+let checkGroup;
+process.on("exit", () => { if (checkGroup) { try { process.kill(-checkGroup, "SIGKILL"); } catch { /* The group has ended. */ } } });
+const interrupted = (sig) => () => process.exit(128 + osConstants.signals[sig]);
+
+// Posts one check's result. A server that cannot answer (no connection, a
+// 5xx, 408 or 429) is asked once more; a failure then ends the command with
+// the step named, and the clone is removed on the way out.
+async function postEvidence(path, body, as) {
+  const step = `posting the result of \`${body.claim}\``;
+  for (let attempt = 1; ; attempt++) {
+    try { return await request("POST", path, body, as); }
+    catch (error) {
+      if (!(error instanceof RequestError)) die(`${step} failed: ${error.message}`, 4);
+      if (error.code === 4 && attempt === 1) { process.stderr.write(`atelier: ${step} failed (${error.message}); trying once more\n`); await new Promise((r) => setTimeout(r, 1000)); continue; }
+      die(`${step} failed: ${error.message}`, error.code);
+    }
+  }
+}
+
+// Removes a check's clone and its record. The removal is retried, since a
+// process can still be letting go of a file in it (ENOTEMPTY, EBUSY), and a
+// removal that still fails is a warning naming the folder, never a failure of
+// the checks: `atelier gc` collects what is left.
+function removeClone(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    rmSync(markerPath(dir), { force: true });
+  } catch (error) {
+    process.stderr.write(`atelier: warning: the check's clone ${dir} could not be removed (${error.code ?? error.message}); atelier gc --apply removes it later\n`);
+  }
 }
 
 // ── ControlPlane ───────────────────────────────────────────────────────────
@@ -1043,6 +1129,29 @@ export function formatBrief(project, id, brief, origin) {
     ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief), ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
+}
+
+// Every review, newest first: the order `show --reviews` prints them and its
+// JSON carries them, so the review that decides the current head leads.
+const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompare(a.at));
+
+// Each review of a task, at each head it was made at, in full: who reviewed,
+// the verdict, when, how it was recorded, the whole note and every finding.
+// The brief above sums the reviews at the current head into one line and cuts
+// the newest rejection's note to it; this is the record a session reads to
+// learn why a review rejected the task (t173). One flattened line per field,
+// so no note or finding can pose as a line of Atelier's own.
+export function formatReviews(reviews, owner = OWNER) {
+  const ordered = newestReviews(reviews);
+  if (!ordered.length) return "No reviews are recorded.";
+  const lines = ["Reviews:"];
+  for (const r of ordered) {
+    const recorded = recordedText(r, owner);
+    lines.push(`  ${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
+    lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
+    for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+  }
+  return lines.join("\n");
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
@@ -1526,6 +1635,19 @@ const commands = {
     try {
       await runRunner(args, {
         workspacePath,
+        // The server's route level against the CLI's, checked once at start:
+        // a server behind this CLI would fail the runner's calls one by one.
+        // A server that cannot be read is refused as land refuses it, with
+        // the same "does not answer" message (GET /api/version is public).
+        async version(signal) {
+          try {
+            const res = await fetch(server() + "/api/version", { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+            if (!res.ok) return null;
+            return await res.json();
+          } catch {
+            return null;
+          }
+        },
         async queue(offer, signal) {
           await resolveTokenActor();
           const res = await fetch(server() + "/api/queue", {
@@ -1738,6 +1860,9 @@ const commands = {
       // The command that regenerates the project's fixtures after a task
       // merges main (atelier land); omitted keeps it, "" clears it.
       ...(args.regenerate !== undefined ? { regenerate: args.regenerate } : {}),
+      // What may block a review, stated in every review brief; omitted keeps
+      // it, "" restores the default bar.
+      ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
       approval: args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title }),
@@ -1793,6 +1918,9 @@ const commands = {
     if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
     console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
     if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
+    console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks only for a correctness, security or data-loss defect"}`);
+    // A server older than the review bar ignores it and answers without one.
+    if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
@@ -1907,9 +2035,16 @@ const commands = {
   },
 
   async show() {
-    const name = project(), id = itemArg();
-    const brief = await call("GET", `${I(name, id)}/brief`, undefined, await actor(OWNER));
-    console.log(args.json ? JSON.stringify(brief, null, 2) : formatBrief(name, id, brief, server()));
+    const name = project(), id = itemArg(), as = await actor(OWNER);
+    const brief = await call("GET", `${I(name, id)}/brief`, undefined, as);
+    // The brief sums the reviews at the current head into one line and carries
+    // none of their findings. The item's own record holds every review at
+    // every head; --reviews prints it in full and --json carries it, so a
+    // session can read why a review rejected the task (t173).
+    const d = args.reviews || args.json ? await call("GET", I(name, id), undefined, as) : null;
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
+    const text = formatBrief(name, id, brief, server());
+    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
   },
 
   async start() {
@@ -1956,9 +2091,22 @@ const commands = {
     // merge itself. The push then declares the head it rebased from, so the
     // Ledger can tell this rewrite from one it must refuse (recordPush in
     // src/ledger.ts).
+    // --rollback returns the fork to an earlier commit of the history Atelier
+    // recorded, dropping what was recorded after it, as the plan integrator
+    // does when a merged part fails the plan's checks: HEAD must be an
+    // ancestor of the recorded head, and the push declares the head it
+    // replaces, under the same lease as --force.
     let rebasedFrom = null, known = null;
     const lease = [];
-    if (args.force === true) {
+    if (args.rollback === true) {
+      known = (await call("GET", I(name, id), undefined, as)).item.head;
+      if (!known) die(`nothing is recorded for ${id} yet; there is nothing to roll back`);
+      if (!hasCommit(known)) die(`Atelier recorded ${id}'s head as ${short(known)}, which this workspace does not hold; nothing was pushed`);
+      if (head === known) die(`${id}'s workspace is at the recorded head ${short(known)}; reset it to the commit to roll back to first. Nothing was pushed.`);
+      if (!holds(head, known)) die(`push --rollback returns ${id} to a commit of its recorded history, and ${short(head)} is not an ancestor of the recorded head ${short(known)}. Nothing was pushed.`);
+      rebasedFrom = known;
+      lease.push(`--force-with-lease=${branch}:${known}`);
+    } else if (args.force === true) {
       known = (await call("GET", I(name, id), undefined, as)).item.head;
       if (!known) die(`nothing is recorded for ${id} yet; push without --force`);
       if (!hasCommit(known)) die(`Atelier recorded ${id}'s head as ${short(known)}, which this workspace does not hold; run atelier update to take what the fork holds, then push again`);
@@ -2030,6 +2178,10 @@ const commands = {
     // (docs/orchestrator.md, section 5).
     const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
     const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+    // The clone goes however this command ends: below once the checks are
+    // recorded, or on the way out when a step ends the command first.
+    const cleanup = () => removeClone(dir);
+    process.once("exit", cleanup);
     const policy = d.policy;
     // What a check could print and this command would then upload: the API
     // token, the read tokens for the fork and the baseline, and the write
@@ -2047,7 +2199,7 @@ const commands = {
         // run. It is recorded as not applicable, which the Worker accepts only
         // when the paths it measures itself show the same.
         if (!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false) {
-          const n = await call("POST", `${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
+          const n = await postEvidence(`${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
           const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
           if (row) recorded = row.changedPaths;
           console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
@@ -2059,7 +2211,7 @@ const commands = {
         // still records one. The list printed below is the one the Worker
         // recorded, which is the one the gate reads; this clone's is shown only
         // when the reply carries none. A merged check measures no paths.
-        const d = await call("POST", `${I(name, id)}/evidence`, {
+        const d = await postEvidence(`${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
           ...(mainHead ? { merged: true, mainHead } : {}),
@@ -2070,8 +2222,8 @@ const commands = {
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(markerPath(dir), { force: true });
+      process.off("exit", cleanup);
+      cleanup();
     }
     const paths = recorded === undefined ? changed : recorded;
     if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
@@ -2138,8 +2290,7 @@ const commands = {
       process.stdout.write(git(["diff", "--stat", mb, "HEAD"], { cwd: dir }) + "\n\n");
       process.stdout.write(git(["diff", mb, "HEAD"], { cwd: dir }) + "\n");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(markerPath(dir), { force: true });
+      removeClone(dir);
     }
   },
 
@@ -2192,8 +2343,27 @@ const commands = {
 
   async "integration-failed"() {
     const name = project(), id = itemArg(), as = await actor();
-    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT");
-    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "" }, as);
+    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT [--kind conflict|checks]");
+    if (args.kind !== undefined && args.kind !== "conflict" && args.kind !== "checks") die("--kind is conflict or checks");
+    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "", ...(args.kind ? { kind: args.kind } : {}) }, as);
+    console.log(JSON.stringify(r));
+  },
+
+  // The integrator's reports on a refresh of the plan's branch with main's
+  // head (docs/orchestrator.md, section 5). The server verifies the merge.
+  async refreshed() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args["main-head"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["main-head"])) die("usage: atelier refreshed tP --main-head SHA [--merge-commit SHA]; --main-head needs the full hash of the main head merged");
+    if (args["merge-commit"] !== undefined && (typeof args["merge-commit"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["merge-commit"]))) die("--merge-commit needs the full merge commit hash");
+    const r = await call("POST", `${I(name, id)}/refreshed`, { mainHead: args["main-head"], ...(args["merge-commit"] ? { mergeCommit: args["merge-commit"] } : {}) }, as);
+    console.log(JSON.stringify(r));
+  },
+
+  async "refresh-failed"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args["main-head"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["main-head"])) die("usage: atelier refresh-failed tP --main-head SHA --reason TEXT [--kind conflict|checks]");
+    if (args.kind !== undefined && args.kind !== "conflict" && args.kind !== "checks") die("--kind is conflict or checks");
+    const r = await call("POST", `${I(name, id)}/refresh-failed`, { mainHead: args["main-head"], reason: args.reason ?? "", ...(args.kind ? { kind: args.kind } : {}) }, as);
     console.log(JSON.stringify(r));
   },
 
@@ -2216,7 +2386,7 @@ const commands = {
   async accept() {
     const name = project(), id = itemArg(), reason = overrideArg("accept ID");
     const d = await call("GET", I(name,id), undefined, OWNER);
-    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {})}, OWNER);
+    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {}), ...(typeof args.note === "string" ? { note: args.note } : {})}, OWNER);
     console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
   },
 
@@ -2226,7 +2396,7 @@ const commands = {
   async abandon() {
     const name = project(), id = itemArg();
     const { item: before } = await call("GET", I(name, id), undefined, OWNER);
-    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
+    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "", ...(typeof args["delivered-by"] === "string" ? { deliveredBy: args["delivered-by"] } : {}) }, OWNER);
     console.log(before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`);
   },
 
@@ -2589,7 +2759,8 @@ const commands = {
       // A refusal ends the command here with the server's reason; the local
       // merge commit is kept for reconciliation.
       await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
-      const note=[`atelier ${name}/${id} "${item.title}"`,`accepted head ${item.acceptedHead}`,...view.map(e=>`${e.grade.toUpperCase()} ${e.passed===true?'pass ':e.passed===false?'FAIL ':''}${e.claim} — ${e.by} ${e.at}`),...reviews.map(r=>`REVIEW ${r.approve?'approve':'reject'} — ${r.by}: ${r.note}`),...(item.reviewOverride?.head===item.acceptedHead?[`REVIEW OVERRIDDEN — ${item.reviewOverride.by}: ${item.reviewOverride.reason}`]:[]),...d.events.slice().reverse().map(e=>`${e.at} ${e.actor} ${e.kind}`)].join('\n');
+      // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
+      const note=provenanceNote({name,id,item,view,reviews,events:d.events});
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
       if(remoteNotes){
@@ -2646,7 +2817,9 @@ const commands = {
       } catch (error) { throw new Error(`server request failed: ${error.message}`); }
       let data;
       try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
-      if (!res.ok) throw new Error(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`);
+      // The status rides on the error, so a landing can tell a refusal
+      // (the server answered, and said no) from a failure to reach it.
+      if (!res.ok) throw Object.assign(new Error(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`), { status: res.status });
       return data;
     };
     // A git runner that throws rather than dies, for the same reason. With
@@ -2758,11 +2931,25 @@ const commands = {
     console.log(`${name}: each merge now pushes refs/notes/atelier to ${remote}. The merged branch is never pushed.`);
   },
 
-  // The project owner queues an open task for a kind of runner.
+  // The project owner queues an open task for a kind of runner. A held task
+  // (claimed, or submitted and perhaps rejected) is released and queued in
+  // the same step, keeping its workspace and commits for the next builder.
+  // --job merge-main sends a task whose landing conflicted with main back to
+  // its builder (t243): the runner claims it, merges main at the named head
+  // into its workspace and leaves the conflicts for the builder to resolve
+  // and commit, where a plain rework would reset the workspace to a head
+  // that cannot reach main.
   async dispatch() {
     const name = project(), id = itemArg();
-    const item = await call("POST", `${I(name, id)}/dispatch`, { to: args.to, agent: args.agent, model: args.model, note: args.note }, OWNER);
+    if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
+    if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
+    const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}) };
+    const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
     const d = item.dispatch;
+    if (d.job === "merge-main") {
+      console.log(`${id} goes back to its builder to merge main at ${d.head.slice(0, 8)} into its workspace and resolve the conflicts: a runner that offers the merge-main job claims it, merges main there and leaves the conflicts for the harness to resolve and commit${d.agent ? ` (built by ${d.agent}${d.model ? ` with ${d.model}` : ""})` : ""}. Then run atelier land ${id} again.`);
+      return;
+    }
     console.log(`${id} is waiting for ${d.to === "any" ? "any runner" : `a ${d.to} runner`}${d.agent ? `, ${d.agent}` : ""}${d.model ? ` with ${d.model}` : ""}.`);
   },
 
@@ -2783,7 +2970,7 @@ const commands = {
     if (!queued.length) return console.log("Nothing is waiting for a runner.");
     for (const { project, item } of queued) {
       const d = item.dispatch;
-      console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}  ${item.title}`);
+      console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
     }
   },
 
@@ -2811,7 +2998,10 @@ const commands = {
       return;
     }
     const id = words[1];
-    if (!id || words.length > (sub === "post" ? 3 : 2)) die(COMMAND_USAGE.plan);
+    if (!id) die(COMMAND_USAGE.plan);
+    if (words.length > (sub === "post" ? 3 : 2)) {
+      die(`"${words.join(" ")}" reads as ${form} with too many words; ${form} takes ${sub === "post" ? "an id and a file" : "one id"}. If that phrase is the goal, quote it: atelier plan "${words.join(" ")}"`);
+    }
     if (sub === "show") {
       const view = await call("GET", `${I(name, id)}/plan`, undefined, await actor(OWNER));
       return console.log(args.json ? JSON.stringify(view, null, 2) : planText(view, name));
@@ -2844,6 +3034,12 @@ const commands = {
       if (typeof args.to !== "string" || !args.to.trim()) die(`--to needs harness/model: atelier plan reroute ${id} --to claude-code/opus-5.5`);
       const view = await call("POST", `${I(name, id)}/plan/reroute`, { to: args.to }, OWNER);
       const part = view.parts.find((p) => p.id === id);
+      // Only an open part's builder is rerouted, so a part submitted or
+      // blocked now had its reviewer named.
+      if (part && (part.state === "submitted" || part.state === "blocked")) {
+        console.log(`${id} is reviewed by ${args.to.trim()} from now on; ${part.state === "blocked" ? `it is still blocked: ${flat(part.blocked?.reason ?? "")}` : "the plan asks it for the next review the part needs"}.`);
+        return;
+      }
       console.log(part ? `${id} is built by ${args.to} from now on; ${part.dispatch && part.state === "open" ? "it is queued for it" : `it is ${part.state}, and the plan dispatches it when it may start`}.` : `${id}'s planner is now ${view.planner}, and the plan job is queued for it.`);
       return;
     }
@@ -2851,6 +3047,25 @@ const commands = {
       const view = await call("POST", `${I(name, id)}/plan/retry`, {}, OWNER);
       const part = view.parts.find((p) => p.id === id);
       console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
+      return;
+    }
+    if (sub === "refresh" && args.resolve === true) {
+      if (args.to !== undefined && (typeof args.to !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(args.to.trim()))) die(`--to needs harness/model: atelier plan refresh ${id} --resolve --to claude-code/opus-5.5`);
+      const view = await call("POST", `${I(name, id)}/plan/refresh`, { resolve: true, ...(args.to !== undefined ? { to: args.to.trim() } : {}) }, OWNER);
+      const main = view.refresh?.main ?? "";
+      const part = view.parts.find((p) => p.added?.mainHead === main);
+      const who = part?.dispatch && part.state === "open" ? `queued for ${part.dispatch.agent}/${part.dispatch.model}` : part ? `${part.state}, and the plan dispatches it before any other part` : "added";
+      console.log(`${view.item.id} has part ${part ? `${part.id} (${part.key})` : "merge-main"} to merge main at ${main.slice(0, 8)} into its branch: ${who}. Its builder resolves the conflicts; no other part is dispatched until it is integrated.`);
+      console.log(`Follow it with atelier plan show ${view.item.id} ${flag}`);
+      return;
+    }
+    if (sub === "refresh") {
+      if (args.to !== undefined) die(`--to names the builder of the part --resolve adds: atelier plan refresh ${id} --resolve --to H/M`);
+      const view = await call("POST", `${I(name, id)}/plan/refresh`, {}, OWNER);
+      const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
+      const taken = view.refresh?.taken;
+      console.log(`${view.item.id}'s refresh from main at ${main.slice(0, 8)} is queued for atelier/integrator${taken ? `; the branch last took main at ${taken.slice(0, 8)}` : ""}. A runner started with --integrate merges it; parts wait for it before they are dispatched.`);
+      console.log(`Follow it with atelier plan show ${view.item.id} ${flag}`);
       return;
     }
     if (sub === "stop") {
@@ -2992,12 +3207,21 @@ const commands = {
     const known = await call("GET", "/projects", undefined, OWNER);
     const chosen = known;
     const inbox = await call("GET", "/inbox", undefined, OWNER);
+    // The runner queue and the offers each runner last asked with, so the
+    // waiting section can say when a queued job — a review routed to a model
+    // no live runner offers, say — can never be claimed, not merely waits
+    // (t240), and the Runners section can list what each offers (t246).
+    // Either read failing leaves the listing as it was.
+    const [queue, offers] = await Promise.all([
+      request("GET", "/queue", undefined, OWNER).catch(() => null),
+      request("GET", "/runners", undefined, OWNER).catch(() => null),
+    ]);
     const views = await Promise.all(chosen.map(async (p) => {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views));
+    console.log(formatStatus(views, { queue, offers }));
   },
 
   async open() {

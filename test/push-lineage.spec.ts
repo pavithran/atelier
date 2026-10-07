@@ -126,7 +126,9 @@ it("the push route reads the fork's history: a fast-forward passes, a rewrite ne
   reads.log = 0;
   expect((await push(name, { head: M }, bindings)).status).toBe(200);
   expect((await L.item("t1")).head).toBe(M);
-  expect(reads).toEqual({ log: 3, commits: 0 });
+  // headOf, the two chains of the walk, and the base's line, where the
+  // reading of the pushed commits' Agent lines stops (t215).
+  expect(reads).toEqual({ log: 4, commits: 0 });
   expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
 });
 
@@ -155,8 +157,10 @@ it("the walk continues past a log page: a recorded head deeper than one page, or
   reads.log = 0;
   expect((await push(name, { head: tip }, bindings)).status).toBe(200);
   expect((await L.item("t1")).head).toBe(tip);
-  // headOf reads one page; the walk reads the first page, then the next from its last commit's first parent.
-  expect(reads).toEqual({ log: 3, commits: 0 });
+  // headOf reads one page; the walk reads the first page, then the next from
+  // its last commit's first parent; then the base's line, where the reading
+  // of the pushed commits' Agent lines stops (t215).
+  expect(reads).toEqual({ log: 4, commits: 0 });
   expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
   // A merge whose first parent stands on H0 alone and whose second parent
   // heads 1500 commits on the tip: the chain behind the second parent is
@@ -167,7 +171,8 @@ it("the walk continues past a log page: a recorded head deeper than one page, or
   reads.log = 0;
   expect((await push(name, { head: M }, bindings)).status).toBe(200);
   expect((await L.item("t1")).head).toBe(M);
-  expect(reads).toEqual({ log: 4, commits: 0 });
+  // One more read than the walk's, for the base's line (t215).
+  expect(reads).toEqual({ log: 5, commits: 0 });
   expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
 });
 

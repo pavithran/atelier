@@ -34,7 +34,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, stateLabel, modelOf, modelKey,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -541,7 +541,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
     ["Planned", `${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope.`, `${plural(t.planned, "task")} planned`, "var(--main-line)"],
     ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
     ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
-    ["Checked", "The project's checks run on a clean copy of the exact revision: in a Cloudflare container, or, where the project allows it, on the agent's machine.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
+    ["Checked", "The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
     ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
     ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
     ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
@@ -726,7 +726,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   const opts = (values: readonly string[]) => values.map((v) => `<option>${e(v)}</option>`).join("");
   return page("Models", `<div class="page-width">
   <header><h1>Models</h1><p class="lead">${plural(entries.length, "model")} in the pool. The runner on your machine checks each one and reports what it found.</p>
-  <p class="meta">Each model's record counts the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? `; ${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted` : ""}.</p></header>
+  <p class="meta">Each model's record counts all ${window.events.toLocaleString("en")} events of every project${window.unread.length ? `; ${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted` : ""}.</p></header>
   ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
   ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
@@ -848,7 +848,7 @@ function comparisonTable(rows: ModelReliability[]): string {
 export function reliabilitySection(models: Reliability, ownerName: string | null, window: { events: number; unread: string[] }): string {
   const who = ownerName || "the owner";
   const rows = [...models.values()];
-  const lead = `Each model's record across the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. A finding the owner adjudicated measures the reviewer's precision: kept means confirmed or marked fixed, refuted means the code already did what it asked. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
+  const lead = `Each model's record across all ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. A finding the owner adjudicated measures the reviewer's precision: kept means confirmed or marked fixed, refuted means the code already did what it asked. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
   return `<section class="reliability" aria-label="Reliability by model">
   <h2 class="section-title">Reliability by model · ${rows.length}</h2>
   <p class="meta">${lead}</p>
@@ -1326,7 +1326,12 @@ function routeLines(route: PartRoute | null | undefined, preview: boolean): stri
   const lines: string[] = [];
   if (route.builder) lines.push(`${lead} ${route.builder.actor}: ${route.builder.reasons[0] ?? ""}`);
   if (route.alternates.length) lines.push(`alternates ${route.alternates.map((a) => a.actor).join(", ")}`);
-  if (route.reviewer) lines.push(`reviewer ${route.reviewer.actor}, of another family`);
+  if (route.reviewer) {
+    // A reviewer the plan picked in place of the routed one says whom it
+    // replaced and why.
+    const change = route.reviewerChange;
+    lines.push(`reviewer ${route.reviewer.actor}, of another family${change ? `, in place of ${change.from ?? "no reviewer"}: ${change.reason}` : ""}`);
+  }
   if (route.unrouted) lines.push(`unrouted: ${route.unrouted}`);
   return lines;
 }
@@ -1684,7 +1689,7 @@ ${framing}${openScope}
       ${view.reports.map((r) => `<p>${tag("Reported")} ${e(r.claim)} <span class="meta">${e(r.by)}</span></p>`).join("")}</details>`
     : "";
   const reviews = latestReviews(d.reviews, item.head).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
-    <p>${e(r.note || "No note provided.")}</p><p class="meta">${e(r.by)} · ${when(r.at)}</p></div>`).join("");
+    <p>${e(r.note || "No note provided.")}</p><p class="meta">${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   const overrideNote = overridden
     ? `<div class="review-note">${tag("Review overridden", "ask")}

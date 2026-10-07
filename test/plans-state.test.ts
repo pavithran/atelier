@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, type Dispatch } from "../src/dispatch/rules.ts";
+import { assign, makeDispatch, OFFER_LIVE_MS, unoffered, type Dispatch } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
   cleanGoal, completion, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries, plannerAttempts,
-  plannerBlock, planTitle, tickEvents, waitingParts, type PlanRecord,
+  plannerBlock, planTitle, refreshDecision, tickEvents, waitingParts, type PlanRecord, type PlanRefresh,
+  addedPart, conflictPaths, maxJobsOf, mergeMainKey, mergeMainPart, mergeMainScope, planWithAdded, routesOf,
 } from "../src/plans/state.ts";
+import { parsePlan } from "../src/plans/schema.ts";
 import { assertEligible, inboxFor, overlappingLive, parseRuleError, samePlan, type Item, type ProjectPolicy } from "../src/rules.ts";
 
 // The pure half of the plan ledger (src/plans/state.ts) and the rules the
@@ -70,22 +72,48 @@ test("the default planner is the first model for research work that is not refus
   const governed: ProjectPolicy = { ...policy, agents: { claude: { available: true, eligible_roles: ["planner"] } } };
   assert.equal(pickPlanner([opus, gpt], record, governed).actor, "claude-code/opus-5.5");
   assert.deepEqual(pickPlanner([], [], policy), { actor: null, reasons: ["the model pool is empty"], passedOver: [] });
+  // The default planner is one a live runner offers: the plan job would wait
+  // for a runner that never asks for a model it does not offer. gpt-6-astra
+  // ranks first on its observed pass but is not offered, so it is passed over
+  // with the reason and the next offered model plans.
+  const now = Date.now();
+  const offered = pickPlanner([opus, gpt, refused, paid], record, policy, undefined,
+    [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now).toISOString() }]);
+  assert.equal(offered.actor, "claude-code/opus-5.5");
+  assert.deepEqual(offered.passedOver.map((c) => [c.actor, c.reasons[c.reasons.length - 1]]), [
+    ["codex/gpt-6-astra", "no live runner offers codex/gpt-6-astra, so no runner could claim the plan job"],
+    // The refused model fails its status and the offer rule both; either alone keeps it from planning.
+    ["zcode/glm-5.3", "no live runner offers zcode/glm-5.3, so no runner could claim the plan job"],
+  ]);
+  const noneOffered = pickPlanner([opus, gpt], record, policy, undefined, []);
+  assert.equal(noneOffered.actor, null);
+  assert.match(noneOffered.reasons[0], /^no model in the pool may plan: /);
+  assert.match(noneOffered.reasons[0], /claude-code\/opus-5\.5 \(no live runner offers claude-code\/opus-5\.5, so no runner could claim the plan job\)/);
+  assert.match(noneOffered.reasons[0], /codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim the plan job\)/);
+  // A stale offer plans nothing.
+  const stale = [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now - OFFER_LIVE_MS - 60_000).toISOString() }];
+  assert.equal(pickPlanner([opus, gpt], record, policy, undefined, stale).actor, null);
 });
 
-test("the planner's attempts count claims released without a valid proposal, from the plan's latest request", () => {
+test("the planner's attempts count only proposals posted and refused, from the plan's latest request", () => {
   const claimed = (seq: number) => event(seq, "item.claimed");
   const released = (seq: number) => event(seq, "item.released");
   const invalid = (seq: number, errors: string[]) => event(seq, "plan.invalid", "t1", "claude-code/opus-5.5", { errors });
   assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4)]), { failed: 1, lastErrors: ["e1"] });
-  const twice = [event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), released(6)];
-  assert.deepEqual(plannerAttempts(twice), { failed: 2, lastErrors: [] });
-  assert.equal(plannerBlock(plannerAttempts(twice)), "the planner gave no valid plan in 2 attempts");
+  // A release in which no proposal was refused (a harness that failed, an
+  // interrupt or an infrastructure failure) fails no attempt.
+  assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), released(3)]), { failed: 0, lastErrors: [] });
+  assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), released(6)]), { failed: 1, lastErrors: ["e1"] });
+  // Two refused proposals block the plan; the errors are the last refusal's.
+  const twice = [event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), invalid(6, ["e2"]), released(7)];
+  assert.deepEqual(plannerAttempts(twice), { failed: 2, lastErrors: ["e2"] });
+  assert.equal(plannerBlock(plannerAttempts(twice)), "the planner gave no valid plan in 2 attempts; its last proposal's errors: e2");
   const errors = ["a", "b", "c", "d", "e"];
   assert.equal(plannerBlock({ failed: 2, lastErrors: errors }), "the planner gave no valid plan in 2 attempts; its last proposal's errors: a; b; c; and 2 more");
   assert.equal(plannerBlock({ failed: 1, lastErrors: errors }), null);
   // A revise, reroute or retry, or a valid proposal, starts the count again.
   for (const kind of ["plan.revised", "plan.rerouted", "plan.retried", "plan.proposed"]) {
-    assert.equal(plannerAttempts([...twice, event(7, kind)]).failed, 0, kind);
+    assert.equal(plannerAttempts([...twice, event(8, kind)]).failed, 0, kind);
   }
   // The release that ends a claim in which a valid proposal was posted is no failure.
   assert.equal(plannerAttempts([claimed(1), event(2, "plan.proposed"), released(3)]).failed, 0);
@@ -119,7 +147,7 @@ test("a plan's inbox entries: approve-plan for an answered proposal, plan-blocke
   });
   const plan = { id: "t1", title: "Ship", state: "open" as const };
   const proposal = { hash: "a".repeat(64), parts: 2 };
-  const one = (change: object) => planInboxEntries([{ project: "p", plan, record: record(), proposal, answered: true, ...change }]);
+  const one = (change: object, now = AT) => planInboxEntries([{ project: "p", plan, record: record(), proposal, answered: true, ...change }], now);
   assert.deepEqual(one({}).map((e) => [e.kind, e.weight]), [["approve-plan", 95]]);
   assert.match(one({})[0].reason, /^the planner proposed 2 parts, aaaaaaaaaaaa\. Read atelier plan show t1 --project p, then approve that hash/);
   assert.deepEqual(one({ answered: false }), []);
@@ -129,6 +157,9 @@ test("a plan's inbox entries: approve-plan for an answered proposal, plan-blocke
   assert.match(blocked[0].reason, /approve the last valid proposal \(aaaaaaaaaaaa\), revise it, retry or reroute the planner, or stop the plan$/);
   const approval = { hash: proposal.hash, at: AT, by: "owner", allowPaid: false, limits: limitsFor(2, false), deadline: AT, parts: [], routes: [] };
   assert.match(one({ record: record({ approval, blocked: "part a has reached 3 attempts" }) })[0].reason, /retry or reroute a part, abandon a part, or stop the plan$/);
+  // A deadline block can only be stopped, since the deadline is fixed at approval.
+  const late = { hash: proposal.hash, at: "2026-10-01T12:00:00.000Z", by: "owner", allowPaid: false, limits: limitsFor(2, false), deadline: "2026-10-02T12:00:00.000Z", parts: [], routes: [] };
+  assert.match(one({ record: record({ approval: late, blocked: "the deadline 2026-10-02T12:00:00.000Z passed" }) })[0].reason, /stop the plan$/);
   assert.deepEqual(one({ record: record({ approval }) }), []);
   assert.deepEqual(one({ plan: { ...plan, state: "abandoned" }, record: record({ blocked: "x" }) }), []);
 });
@@ -161,4 +192,89 @@ test("a plan job is offered only to a runner that says it runs plan jobs", () =>
   assert.deepEqual(assign(d, { ...offer, jobs: ["plan"] }), { agent: "claude-code", model: "opus-5.5", actor: "claude-code/opus-5.5" });
   const { job: _, ...build } = d;
   assert.deepEqual(assign(build, offer), { agent: "claude-code", model: "opus-5.5", actor: "claude-code/opus-5.5" });
+});
+
+// Whether the tick refreshes a plan's branch before it dispatches a part:
+// once per main head, never while a refresh is in flight, and never again
+// for a head whose refresh failed.
+test("refreshDecision dispatches a refresh once per main head, waits on one in flight, and does not retry a failed one", () => {
+  const M0 = "0".repeat(40), M1 = "1".repeat(40), M2 = "2".repeat(40);
+  const last = (mainHead: string, state: PlanRefresh["state"]): PlanRefresh => ({ mainHead, state, by: ORCHESTRATOR, at: AT });
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: null, busy: false }), "dispatch");
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: null, busy: true }), "wait", "an integration holds the plan item; parts wait for it to free");
+  assert.equal(refreshDecision({ main: M1, taken: M1, last: null, busy: false }), "none");
+  assert.equal(refreshDecision({ main: null, taken: M0, last: null, busy: false }), "none", "main's head is not known");
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: last(M1, "dispatched"), busy: true }), "wait");
+  assert.equal(refreshDecision({ main: M0, taken: M0, last: last(M1, "dispatched"), busy: false }), "wait", "a refresh in flight is waited on whatever main is");
+  assert.equal(refreshDecision({ main: M1, taken: M0, last: last(M1, "failed"), busy: false }), "none", "a failed refresh is not tried again for the same head");
+  assert.equal(refreshDecision({ main: M2, taken: M0, last: last(M1, "failed"), busy: false }), "dispatch", "a new main head is tried");
+});
+
+// A merge-main part: its key and spec from the main head, its scope from the
+// conflicting paths a refresh's failure names, and how the plan's document,
+// routing and dispatch limit take in the parts the Ledger added, leaving the
+// approved document as it was.
+test("a merge-main part is keyed and scoped from the main head and the conflict, and joins the plan beside its approved document", () => {
+  const M = "abcdef0123456789".repeat(2) + "abcdef01";
+  assert.equal(mergeMainKey(M), "merge-main-abcdef01");
+  const reason = "merging main conflicted: Auto-merging src/a.ts\nCONFLICT (content): Merge conflict in src/diagrams.ts\nCONFLICT (modify/delete): docs/x.md deleted in HEAD and modified in 1234.\nCONFLICT (content): Merge conflict in src/diagrams.ts";
+  assert.deepEqual(conflictPaths(reason), ["src/diagrams.ts", "docs/x.md"]);
+  assert.deepEqual(conflictPaths("merging main conflicted"), []);
+  // Paths with spaces, from lines joined by newlines and by single spaces.
+  const spaced = "merging main conflicted: Auto-merging docs/a b.md\nCONFLICT (content): Merge conflict in docs/a b.md\nCONFLICT (modify/delete): my dir/x y.ts deleted in HEAD and modified in 1234.\nAutomatic merge failed; fix conflicts and then commit the result.";
+  assert.deepEqual(conflictPaths(spaced), ["docs/a b.md", "my dir/x y.ts"]);
+  assert.deepEqual(conflictPaths(spaced.replace(/\n/g, " ")), ["docs/a b.md", "my dir/x y.ts"]);
+  assert.deepEqual(conflictPaths("merging main conflicted: Auto-merging src/diagrams.ts CONFLICT (content): Merge conflict in src/diagrams.ts Auto-merging src/how-data.ts Automatic merge failed; fix conflicts and then commit the result."), ["src/diagrams.ts"]);
+  assert.deepEqual(mergeMainScope(reason, ["src/**"]), ["src/diagrams.ts", "docs/x.md"]);
+  assert.deepEqual(mergeMainScope("no paths", ["src/**"]), ["src/**"]);
+  assert.deepEqual(mergeMainScope("no paths", []), ["**"]);
+  const seven = Array.from({ length: 7 }, (_, i) => `CONFLICT (content): Merge conflict in f${i}`).join("\n");
+  assert.deepEqual(mergeMainScope(seven, ["src/**"]), ["src/**"], "more paths than a part's scope holds fall back to the plan's");
+  const spec = mergeMainPart(M, ["src/diagrams.ts"]);
+  assert.equal(spec.title, "Merge main at abcdef01 into the plan's branch");
+  assert.deepEqual([spec.key, spec.dependsOn, spec.scope, spec.taskKind], ["merge-main-abcdef01", [], ["src/diagrams.ts"], "refactor"]);
+  // The spec is a valid part, as the plan schema reads one.
+  const parsed = parsePlan({ schema: "atelier.plan.v1", goal: "g", parts: [spec] });
+  assert.ok(parsed.ok, JSON.stringify(parsed));
+  const approved = { schema: "atelier.plan.v1" as const, goal: "g", parts: [{ ...spec, key: "a", title: "a" }] };
+  const route = { key: spec.key, builder: null, alternates: [], reviewer: null, excluded: [], unrouted: "none" };
+  const record = {
+    approval: { limits: limitsFor(1, false), routes: [{ ...route, key: "a" }] }, reroutes: {},
+    added: [{ id: "t9", part: spec, route, mainHead: M, by: ORCHESTRATOR, at: AT, reason: "conflicted" }],
+  } as unknown as PlanRecord;
+  assert.deepEqual(planWithAdded(approved, record).parts.map((p) => p.key), ["a", "merge-main-abcdef01"]);
+  assert.deepEqual(approved.parts.map((p) => p.key), ["a"], "the approved document is not changed");
+  assert.equal(planWithAdded(approved, { added: [] }), approved);
+  assert.deepEqual(routesOf(record).map((r) => r.key), ["a", "merge-main-abcdef01"]);
+  assert.equal(maxJobsOf(record), 8, "an added part brings as many part dispatches as an approved one");
+  assert.equal(addedPart(record, "merge-main-abcdef01")?.id, "t9");
+  assert.equal(addedPart(record, "a"), null);
+});
+
+test("a merge-main dispatch goes only to a runner that offers the merge-main job, under the routed builder", () => {
+  const d: Dispatch = { to: "home", agent: "codex", model: "gpt-6-astra", by: ORCHESTRATOR, at: AT, note: "", job: "merge-main", head: "1".repeat(40) };
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  assert.equal(assign(d, { runner: "home:old", kind: "home", agents, jobs: ["build", "plan"] }), null);
+  assert.deepEqual(assign(d, { runner: "home:new", kind: "home", agents, jobs: ["build", "plan", "merge-main"] }), { agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" });
+});
+
+test("a dispatch naming a plan head to merge goes only to a runner that offers the merge-plan job", () => {
+  const d: Dispatch = { to: "home", agent: "codex", model: "gpt-6-astra", by: ORCHESTRATOR, at: AT, note: "", planHead: "2".repeat(40) };
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  assert.equal(assign(d, { runner: "home:old", kind: "home", agents, jobs: ["build", "plan", "merge-main"] }), null);
+  assert.deepEqual(assign(d, { runner: "home:new", kind: "home", agents, jobs: ["build", "plan", "merge-main", "merge-plan"] }), { agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" });
+  const both: Dispatch = { ...d, job: "merge-main", head: "1".repeat(40) };
+  assert.equal(assign(both, { runner: "home:mid", kind: "home", agents, jobs: ["build", "merge-main"] }), null);
+  assert.ok(assign(both, { runner: "home:new", kind: "home", agents, jobs: ["build", "merge-main", "merge-plan"] }));
+});
+
+test("a task's merge-main dispatch goes only to a runner that offers merge-main-task, and unoffered names that job", () => {
+  const d = makeDispatch({ to: "home", agent: "codex", model: "gpt-6-astra", job: "merge-main", head: "1".repeat(40) }, ORCHESTRATOR, AT);
+  assert.equal(d.task, true);
+  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
+  // A runner from before t243 offers merge-main but refuses a task's job.
+  const old = { runner: "home:old", kind: "home" as const, agents, jobs: ["build", "plan", "merge-main", "merge-plan"] };
+  assert.equal(assign(d, old), null);
+  assert.ok(assign(d, { ...old, runner: "home:new", jobs: [...old.jobs, "merge-main-task"] }));
+  assert.match(unoffered(d, [{ ...old, at: new Date().toISOString() }]) ?? "", /home:old offers no merge-main-task job/);
 });
