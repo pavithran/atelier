@@ -207,6 +207,51 @@ it("a review with only follow-up findings does not rework the part, and the revi
   expect((await L.reviewsFor(partId))[0].findings).toHaveLength(1);
 });
 
+// t240: a rejection whose every blocking finding the owner has refuted no
+// longer blocks another review at that head, so the second opinion needs no
+// cosmetic new commit. Until every blocking finding is refuted, it still
+// blocks: the builder reworks it before another review.
+it("a rejection the owner has fully refuted is reviewed again at the same head without a new commit", async () => {
+  const { reviewBrief } = await import("../src/review/brief.ts");
+  const L = await setup("review-refuted-rejection");
+  const { partId } = await approved(L);
+  const builder = await submitPart(L, partId, "a".repeat(40));
+  const head = "a".repeat(40);
+  const reviewer1 = await routedReviewer(L, partId);
+  await L.claimReview(partId, reviewer1, RUNNER);
+  await L.addReview({
+    itemId: partId, by: reviewer1, head, approve: false, note: "Two blockers.",
+    findings: [blocker(), { file: "src/a/y.ts", line: 4, severity: "blocking" as const, text: "It drops a row." }],
+    at: new Date().toISOString(),
+  });
+  // The part went back to its builder; the owner refutes one of the two
+  // blocking findings, and the builder submits the same head again.
+  expect((await L.item(partId)).state).toBe("open");
+  await L.addFinding(partId, "owner", head, 1, "refuted", "src/a/x.ts:9 writes the row before it deletes.");
+  await L.claim(partId, builder, RUNNER);
+  await L.submit(partId, builder);
+  // One blocker still stands, so no second review is asked at this head.
+  expect(await reviewWaiting(L)).toEqual([]);
+  // The owner refutes the second blocking finding too: the next tick asks for
+  // the review again at the same head, of the same reviewer first, round 2.
+  await L.addFinding(partId, "owner", head, 2, "refuted", "src/a/y.ts:12 keeps the row.");
+  await L.addEvidence(observed(partId, head));
+  expect(await routedReviewer(L, partId)).toBe(reviewer1);
+  expect((await events(L, partId)).filter((e) => e.kind === "review.requested")[0]).toMatchObject({
+    actor: "atelier/orchestrator", data: { head, reviewer: reviewer1, round: 2 },
+  });
+  const round2 = await L.claimReview(partId, reviewer1, RUNNER) as unknown as ReviewClaim;
+  expect(round2.need!.round).toBe(2);
+  expect(round2.need!.kind).toBe("re-review");
+  const brief2 = reviewBrief({ need: round2.need!, item: round2.item, events: round2.events, plan: round2.plan, owner: round2.owner, bar: round2.reviewBar });
+  expect(brief2).toContain("This is review round 2. A model rejected this head, and the project owner refuted every blocking finding of that rejection, so it is reviewed again rather than reworked.");
+  expect(brief2).toContain("Round 1, at aaaaaaaa (this head)");
+  expect(brief2).toContain("The project owner's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`\n- finding 2: refuted, noting `src/a/y.ts:12 keeps the row.`");
+  // The second opinion approves at the same head, and the request is answered.
+  await L.addReview({ itemId: partId, by: reviewer1, head, approve: true, note: "Both findings were refuted; approving.", at: new Date().toISOString() });
+  expect(await reviewWaiting(L)).toEqual([]);
+});
+
 // A plan's routed reviewer can become a contributor after approval, by
 // claiming the part, as on plan t197 where part t209's reviewer had claimed it
 // and stalled before another model built it. The review is then asked of the
