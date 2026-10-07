@@ -939,7 +939,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
-  if (verb === "plan" && parts.length === 5 && m === "GET") return json(await L.planView(id, await index(env).models()));
+  if (verb === "plan" && parts.length === 5 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await L.planView(id, await index(env).models()));
+  }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
