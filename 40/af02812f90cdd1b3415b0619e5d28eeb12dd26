@@ -1,0 +1,30 @@
+atelier atelier/t229 "The integrator (atelier runner --integrate) acts as atelier/integrator and must claim with an agent token bound to that actor (integrator_token: 'claims only through a token bound to it'); started with the owner's token it fails three times and gives up, and nothing says so. bin/orchestrate/README.md's integrator section and the runner's refusal say how: atelier token issue --as atelier/integrator --project P, kept in a file only the account can read and passed as ATELIER_TOKEN (found 2026-10-07)"
+accepted head 8c6a9d2eab6397e84b9d69fd03b8c08f90468ba3
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T07:09:38.356Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T07:09:40.755Z
+REVIEW approve by antigravity/gemini-3.1-pro at 8c6a9d2eab6397e84b9d69fd03b8c08f90468ba3, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T03:18:53.505Z pavi item.created
+2026-10-07T03:19:30.540Z pavi item.dispatched
+2026-10-07T03:19:36.084Z opencode/glm-5.3 item.claimed
+2026-10-07T03:19:47.101Z opencode/glm-5.3 fork.created
+2026-10-07T03:38:38.503Z opencode/glm-5.3 push.observed
+2026-10-07T03:41:30.451Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:41:33.801Z opencode/glm-5.3 evidence.observed
+2026-10-07T07:04:43.717Z pavi land.lease
+2026-10-07T07:04:53.916Z pavi land.merge
+2026-10-07T07:07:47.498Z pavi land.lease
+2026-10-07T07:07:48.142Z pavi land.merge
+2026-10-07T07:07:55.155Z pavi land.regenerate
+2026-10-07T07:07:58.124Z opencode/glm-5.3 push.observed
+2026-10-07T07:07:58.227Z pavi land.push
+2026-10-07T07:09:38.780Z opencode/glm-5.3 evidence.observed
+2026-10-07T07:09:40.909Z opencode/glm-5.3 evidence.observed
+2026-10-07T07:09:41.324Z pavi land.check
+2026-10-07T07:09:41.707Z opencode/glm-5.3 item.submitted
+2026-10-07T07:09:41.883Z pavi land.submit
+2026-10-07T07:09:41.979Z pavi review.requested
+2026-10-07T07:26:46.860Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T08:06:56.896Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T08:06:58.320Z pavi land.review
+2026-10-07T08:06:59.147Z pavi item.accepted
+2026-10-07T08:06:59.254Z pavi land.accept
