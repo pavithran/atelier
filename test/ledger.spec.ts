@@ -489,6 +489,31 @@ it("the owner can dispatch a held task, which releases its holder and queues it 
   expect(needsFork).toBe(false);
 });
 
+it("a merge-main dispatch sends a conflicted landing back to its builder, and needs a workspace to merge into", async () => {
+  const L = await setup("dispatch-merge-main");
+  const M = "5".repeat(40);
+  // No workspace yet: nothing for a builder to merge main into.
+  const bare = await L.newItem("Never built", ["docs/**"], "owner");
+  await refusal(L.dispatch(bare.id, "owner", { job: "merge-main", head: M }), "no_fork", /has no workspace yet, so there is nothing for its builder to merge main into/);
+  await refusal(L.dispatch(bare.id, "owner", { job: "plan" }), "bad_dispatch", /only merge-main is dispatched by hand/);
+
+  // A submitted task whose landing conflicted: the holder is released and
+  // the merge-main job queued in its place, keeping the workspace.
+  const item = await L.newItem("Landed on a conflict", ["docs/**"], "owner");
+  await L.claim(item.id, A);
+  await L.setFork(item.id, "dispatch-merge-main--t2", H0, A);
+  await L.recordPush(item.id, A, H1, null);
+  await L.submit(item.id, A);
+  const queued = await L.dispatch(item.id, "owner", { job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" });
+  expect(queued).toMatchObject({ state: "open", owner: null, head: H1, dispatch: { job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" } });
+  expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
+  const events = (await L.events(item.id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "item.dispatched")?.data).toMatchObject({ job: "merge-main", head: M });
+  // A runner that offers the merge-main job claims it and finds the commits.
+  const { item: claimed } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  expect(claimed).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash", head: H1 });
+});
+
 it("the queue lists the oldest dispatch first and skips tasks that are not open", async () => {
   const L = await setup("dispatch-order");
   const first = await L.newItem("First", ["a/**"], "owner");
