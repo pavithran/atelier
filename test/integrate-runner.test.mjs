@@ -245,6 +245,23 @@ test("runRefresh claims, merges the dispatched main head, pushes with atelier pu
   assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1, "the plan item is released");
 });
 
+test("runRefresh submits the plan item instead of releasing it when the server says every part is integrated", async () => {
+  // A plan put back to building to take main: the refresh is its last step.
+  const { io, calls, logs } = refreshFixture();
+  const cli = io.cli;
+  io.cli = async (argv, cwd) => {
+    if (argv[0] === "refreshed") { calls.push({ argv, cwd }); return JSON.stringify({ allIntegrated: true, parts: ["a", "b"] }); }
+    return cli(argv, cwd);
+  };
+  const state = await runRefresh(refreshJob, config, name, io);
+  assert.equal(state.phase, "refreshed");
+  const submit = calls.find((c) => c.argv?.[0] === "submit");
+  assert.ok(submit, "the plan item is submitted");
+  assert.match(submit.argv[submit.argv.indexOf("--summary") + 1], /^main at cccccccc merged; integrated 2 parts: a, b$/);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the plan item is not released");
+  assert.ok(logs.some((s) => s.includes("submitted for the owner")));
+});
+
 test("runRefresh posts refreshed with no merge commit when the branch already holds main's head", async () => {
   const { io, calls } = refreshFixture({ unchanged: true });
   const state = await runRefresh(refreshJob, config, name, io);
