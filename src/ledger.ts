@@ -1,4 +1,5 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
+import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
 import { type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
@@ -1271,39 +1272,80 @@ export class Ledger extends DurableObject<Env> {
 
   // One landing at a time per project (atelier land, t187): while one land
   // holds this lease no other landing of the project starts, so two sessions
-  // never race main. Like the merge's landing lease it has no expiry; land
-  // releases it when it ends, a later land of the same task takes it over to
-  // resume, and a lease whose task has closed no longer guards anything, so
-  // another landing may take it.
-  private projectLanding(): { item: string; holder: string; at: string } | null {
+  // never race main. The holder renews it while it lands (renewProjectLanding,
+  // the heartbeat of atelier land), and a lease not renewed for
+  // LANDING_LEASE_EXPIRY_MS is treated as free, so a landing killed without
+  // releasing it (t214) blocks nobody for longer than that: the next landing
+  // takes it over and is told whose lease lapsed. A later land of the same
+  // task takes its own lease over to resume, and a lease whose task has
+  // closed no longer guards anything, so another landing may take it.
+  private projectLanding(): LandingLease | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'landing-lease'`).toArray()[0];
     return row ? JSON.parse(row.value as string) : null;
   }
 
-  readProjectLanding(): { item: string; holder: string; at: string } | null {
+  readProjectLanding(): LandingLease | null {
     return this.projectLanding();
   }
 
-  beginProjectLanding(id: string, actor: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
-    const item = this.item(id);
-    const held = this.projectLanding();
-    if (held && held.item !== id) {
-      const holder = this.item(held.item);
-      if (holder.state !== "merged" && holder.state !== "abandoned") {
-        const since = held.at.slice(0, 16).replace("T", " ");
-        throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project. Wait for it to finish, or run atelier land ${held.item} again to finish or release that landing`, 409);
-      }
-    }
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at: new Date().toISOString() }));
-    return item;
+  // Whether a lease still guards the project at `at`: renewed (or taken)
+  // within the expiry, for a task that is still open.
+  private landingLive(held: LandingLease, at: string): boolean {
+    if (landingLeaseLapsed(held, Date.parse(at))) return false;
+    const holder = this.item(held.item);
+    return holder.state !== "merged" && holder.state !== "abandoned";
   }
 
-  cancelProjectLanding(actor: string): { held: boolean } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
+  beginProjectLanding(id: string, actor: string): { item: Item; expired: LandingLease | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    const item = this.item(id);
+    const at = new Date().toISOString();
     const held = this.projectLanding();
+    let expired: LandingLease | null = null;
+    if (held && held.item !== id) {
+      if (this.landingLive(held, at)) {
+        const since = held.at.slice(0, 16).replace("T", " ");
+        throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or atelier land ${held.item} --release-lease to free the lease`, 409);
+      }
+      // A lease that lapsed is reported to the landing that takes it over,
+      // so a killed landing is named rather than silently replaced.
+      if (landingLeaseLapsed(held, Date.parse(at))) expired = held;
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
+    return { item, expired };
+  }
+
+  // The holder's heartbeat: moves the lease's renewal time on, so the lease
+  // stays live through the long steps of a landing. Refused when the lease
+  // is held for another task or by nobody, which tells the landing it no
+  // longer holds the project.
+  renewProjectLanding(id: string, actor: string): LandingLease {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    const at = new Date().toISOString();
+    const held = this.projectLanding();
+    if (!held || held.item !== id) {
+      throw new RuleError("no_lease", held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`, 409);
+    }
+    const renewed = { ...held, renewedAt: at };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify(renewed));
+    return renewed;
+  }
+
+  // Frees the lease held for one task, answering which task held it since
+  // when (null when none did), so atelier land --release-lease can say what
+  // it freed. A lease held for another task is left alone and named: a
+  // landing whose lease lapsed and was taken over must not free the
+  // landing that took it, or two landings would run at once.
+  cancelProjectLanding(id: string, actor: string): { held: boolean; lease: LandingLease | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
+    if (!id) throw new RuleError("bad_item", "a cancel names the task whose landing lease it releases: { cancel: true, item: ID }", 400);
+    const held = this.projectLanding();
+    if (held && held.item !== id) {
+      const since = held.at.slice(0, 16).replace("T", " ");
+      throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409);
+    }
     this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
-    return { held: !!held };
+    return { held: !!held, lease: held };
   }
 
   // One step of a landing (atelier land, t187): what the step was, how long
@@ -1833,6 +1875,12 @@ export class Ledger extends DurableObject<Env> {
     const all = approval ? this.partEvents(item.id) : [];
     const attempts = partAttempts(tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!]))));
     const ids = new Map(parts.map((p) => [p.partKey!, p.id]));
+    // The planner's last release note, when the harness failed before posting
+    // a proposal: plan show tells the owner the harness failed, distinct from
+    // an invalid proposal, which blocks the plan instead.
+    const released = this.events(item.id).find((e) => e.kind === "item.released");
+    const releasedNote = released && typeof released.data.note === "string" ? released.data.note : "";
+    const harnessFailure = releasedNote.startsWith("the harness failed: ") ? releasedNote : null;
     return {
       item,
       phase: planPhase({ proposed: newest !== null, approved: approval !== null, blocked: record.blocked, state: item.state }),
@@ -1861,6 +1909,7 @@ export class Ledger extends DurableObject<Env> {
       preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
       // The plan branch's integration head (docs/orchestrator.md, section 5).
       integration: { integrationHead: record.integrationHead ?? null },
+      harnessFailure,
     };
   }
 
