@@ -14,7 +14,7 @@ import { cleanSummary } from "./brief";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind } from "./dispatch/rules";
+import { assertDispatchable, assertDispatchedClaim, makeDispatch, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -30,7 +30,7 @@ import {
   type PlanRecord, type PlanRefresh,
 } from "./plans/state.ts";
 import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
-import type { PlanView } from "./plans/show.ts";
+import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
@@ -320,6 +320,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS runner_offers (runner TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL, state TEXT NOT NULL,
         owner TEXT, fork TEXT, base TEXT, head TEXT, accepted_head TEXT, token_id TEXT,
@@ -663,6 +664,22 @@ export class Ledger extends DurableObject<Env> {
   // The most recent reports, newest first.
   runs(limit = RUN_REPORTS): RunReport[] {
     return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  // ── runner offers ─────────────────────────────────────────────────────────
+  // What each runner can run, as it last said when it asked the queue for
+  // work, on the index instance beside the model pool: one row per runner,
+  // replaced by each ask. Read back to say when a dispatch names a model or a
+  // job no live runner offers, so a request that can never be claimed is not
+  // mistaken for one merely waiting its turn (unoffered in
+  // src/dispatch/rules.ts).
+
+  putRunnerOffer(offer: RunnerOffer, at: string): void {
+    this.sql.exec(`INSERT OR REPLACE INTO runner_offers (runner, json) VALUES (?, ?)`, offer.runner, JSON.stringify({ ...offer, at }));
+  }
+
+  runnerOffers(): SeenOffer[] {
+    return this.sql.exec(`SELECT json FROM runner_offers ORDER BY runner`).toArray().map((r) => JSON.parse(r.json as string));
   }
 
   // ── project instance ─────────────────────────────────────────────────────
@@ -2003,8 +2020,11 @@ export class Ledger extends DurableObject<Env> {
   // its gate. With the pool, a plan not yet approved also shows the routing
   // an approval would fix now, without paid models. `mainNow` is main's head
   // as the Worker read it for this view, else the head the Ledger last
-  // observed is shown. Nothing here is written.
-  planView(id: string, pool: ModelEntry[] | null = null, mainNow: string | null = null): PlanView {
+  // observed is shown. `offers` are the runner offers the Worker read from
+  // the index, so a part whose review is asked of a model no live runner
+  // offers says so rather than reading as merely unclaimed; null when the
+  // caller read none. Nothing here is written.
+  planView(id: string, pool: ModelEntry[] | null = null, mainNow: string | null = null, offers: SeenOffer[] | null = null): PlanView {
     const asked = this.item(id);
     const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
     if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404);
@@ -2048,6 +2068,7 @@ export class Ledger extends DurableObject<Env> {
           route: route ? rerouted(route, record) : null,
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
+          review: this.partReviewRequest(p.id),
           integration: this.partIntegration(p.id),
           integrationFailure: failures.get(p.partKey!) ?? null,
           blocked: p.state === "blocked" && p.blocked ? { reason: p.blocked.reason, by: p.blocked.by } : null,
@@ -2055,6 +2076,8 @@ export class Ledger extends DurableObject<Env> {
         };
       }),
       preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false }) : null,
+      // The runner offers this view was read with, for the same judgement.
+      ...(offers !== null ? { offers } : {}),
       // The plan branch's integration head (docs/orchestrator.md, section 5).
       integration: { integrationHead: record.integrationHead ?? null },
       // How the branch stands against main, and its latest refresh.
@@ -2492,6 +2515,23 @@ export class Ledger extends DurableObject<Env> {
         const item = this.item(r.item as string);
         return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
       });
+  }
+
+  // The live review request for a part, as planView shows it: the reviewer
+  // asked, the head asked about, and whether a runner claimed it. Null when
+  // the part has no open or claimed request.
+  private partReviewRequest(id: string): PlanPartReview | null {
+    const row = this.sql.exec(`SELECT head, dispatch, state, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, id).toArray()[0];
+    if (!row) return null;
+    const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
+    if (!dispatch.agent || !dispatch.model) return null;
+    return {
+      reviewer: `${dispatch.agent}/${dispatch.model}`,
+      head: row.head as string,
+      state: row.state === "claimed" ? "claimed" : "open",
+      claimedBy: (row.claimedBy as string | null) ?? null,
+      claimedAt: (row.claimedAt as string | null) ?? null,
+    };
   }
 
   // Binds an open review request to one reviewer, atomically, as the claim
