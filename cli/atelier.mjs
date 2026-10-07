@@ -3193,12 +3193,15 @@ const commands = {
     const known = await call("GET", "/projects", undefined, OWNER);
     const chosen = known;
     const inbox = await call("GET", "/inbox", undefined, OWNER);
+    // The runners' recorded offers, for the Runners section; a server without
+    // the route (older than this CLI's route level) leaves the section out.
+    const offers = await request("GET", "/offers", undefined, OWNER).then((r) => r, () => null);
     const views = await Promise.all(chosen.map(async (p) => {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views));
+    console.log(formatStatus(views, offers));
   },
 
   async open() {

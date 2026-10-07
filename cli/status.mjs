@@ -1,6 +1,9 @@
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
-// and inbox holds the entries the Decisions page lists for it.
+// and inbox holds the entries the Decisions page lists for it. `offers`, when
+// the caller passes them, are the runners' recorded offers (GET /offers): each
+// { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
+// the runner last asked.
 
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
@@ -105,7 +108,45 @@ function runnerOf(d) {
   return `${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}`;
 }
 
-export function formatStatus(views) {
+// How long an offer stays live after its runner asked (OFFER_FRESH_MS in
+// src/dispatch/rules.ts): routing picks from the models live runners offer,
+// so a runner that asked longer ago than this offers nothing.
+export const OFFER_FRESH_MS = 5 * 60_000;
+
+export const isLive = (offer, now = Date.now()) => {
+  const at = Date.parse(offer.at);
+  return Number.isFinite(at) && now - at <= OFFER_FRESH_MS;
+};
+
+const ago = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+};
+
+// One runner's line: whether it is live, when it last asked, and the actors
+// it offers, so the owner sees what plan routing could pick from.
+export function runnerLine(offer, now = Date.now()) {
+  const asked = Date.parse(offer.at);
+  const when = Number.isFinite(asked) ? ago(now - asked) : "at an unknown time";
+  const live = isLive(offer, now);
+  const actors = offer.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`));
+  return `${offer.runner}  ${live ? `live, asked ${when}` : `not live, last asked ${when}`}  ${actors.length ? `offers ${actors.join(", ")}` : "offers no model"}${offer.jobs?.length ? `  jobs: ${offer.jobs.join(", ")}` : ""}`;
+}
+
+// The runners section of `atelier status`: one line per recorded offer, live
+// first, so the owner can see why routing passed a model over (no live runner
+// offers it) or what a runner went away from.
+export function formatRunners(offers, now = Date.now()) {
+  const lines = [...offers].sort((a, b) => Number(isLive(b, now)) - Number(isLive(a, now)) || a.runner.localeCompare(b.runner));
+  return ["Runners:", ...lines.map((o) => `  ${runnerLine(o, now)}`)];
+}
+
+export function formatStatus(views, offers = null) {
   if (!views.length) return "No projects.";
   const lines = [];
   for (const v of views) {
@@ -147,5 +188,6 @@ export function formatStatus(views) {
       for (const i of waiting) lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
     }
   }
+  if (offers?.length) lines.push("", ...formatRunners(offers));
   return lines.join("\n");
 }

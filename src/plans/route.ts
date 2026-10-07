@@ -1,9 +1,10 @@
 // Routing a plan's parts: which model builds each part, which two stand in
 // if it fails, and which model of another family reviews it. Atelier
-// computes this from the pool, the registry's evidence and the ledger's
-// track record; the planner may only prefer. Every choice carries its
-// reasons, because the owner reads "why this model?" on the task page, and
-// a part no model can take is returned unrouted with the reason.
+// computes this from the pool, the registry's evidence, the ledger's track
+// record and the offers live runners made; the planner may only prefer.
+// Every choice carries its reasons, because the owner reads "why this
+// model?" on the task page, and a part no model can take is returned
+// unrouted with the reason.
 //
 // Models the ranking cannot tell apart (the same score and tie-breaker, so
 // only the model id orders them) share the plan: each part goes to the tied
@@ -12,6 +13,7 @@
 // Reviewers spread the same way. A better score still wins outright.
 
 import type { LedgerEvent } from "../ledger.ts";
+import { liveOffers, offering, type LiveOffer } from "../dispatch/rules.ts";
 import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
@@ -38,6 +40,12 @@ export interface RouteInput {
   availability?: Readonly<Record<string, Availability>>;
   profiles?: readonly ModelProfile[];     // the registry's evidence and context windows; MODEL_PROFILES by default
   reliability?: Reliability;              // each model's record across every project; orders equal scores only
+  // The offers live runners made, as the index recorded them. A model no
+  // live runner offers cannot build or review, because no runner could claim
+  // its dispatch; a model some runner offers says which. Undefined when no
+  // runner has ever asked — nothing is then known to be offered, so routing
+  // restricts nothing and a project run entirely by hand still routes.
+  offers?: readonly LiveOffer[];
 }
 
 export interface Choice { actor: string; reasons: string[] }
@@ -145,6 +153,7 @@ interface Context {
   record: ModelRecord;
   tiebreaks: Map<string, Tiebreak>;
   availability: Map<string, { key: string; value: Availability }>;
+  offered: Map<string, string[]> | null;   // actors live runners offer; null when no runner has ever asked
   governed: boolean;
 }
 
@@ -183,6 +192,16 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
     if (kinds.includes(part.taskKind)) passed.push(held[0].toUpperCase() + held.slice(1));
     else both.push(held);
   } else passed.push(`Available (availability of ${availability.key})`);
+
+  // A model no live runner offers cannot take the part: its dispatch would
+  // wait in the queue for a runner that never asks for it. The actor is the
+  // name the dispatch would name, so an alias a runner offers does not reach
+  // the pool's id — the claim would be refused anyway.
+  if (ctx.offered) {
+    const runners = ctx.offered.get(actor.toLowerCase());
+    if (runners) passed.push(`Offered by ${runners.join(", ")}`);
+    else both.push(`no live runner offers ${actor}, so no runner could claim its dispatch`);
+  }
 
   const window = candidate.profile.contextWindow;
   if (part.size === "M") {
@@ -300,6 +319,9 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     record: recordFor(pool, input.events),
     tiebreaks: input.reliability ? tiebreaksFor(pool, input.reliability) : new Map(),
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
+    // The live half of the recorded offers, or null when no runner has ever
+    // asked, when nothing is known to be offered and routing restricts nothing.
+    offered: input.offers ? offering(liveOffers(input.offers)) : null,
     governed: input.policy.agents !== undefined,
   };
   // Parts route in plan order; each sees how many parts the earlier ones gave each model.

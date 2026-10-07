@@ -42,6 +42,40 @@ export interface RunnerOffer {
   jobs?: string[];
 }
 
+// A runner's offer as the index last recorded it, with when it asked. Plan
+// routing reads these (src/plans/route.ts): a dispatch no live runner could
+// claim never starts, so a model no live runner offers gets no part.
+export interface LiveOffer extends RunnerOffer { at: string }
+
+// How long an offer stays live after its runner asked. Runners ask every 30
+// seconds, so a runner ten asks behind is gone; five minutes leaves room for
+// a slow ask without routing to the dead.
+export const OFFER_FRESH_MS = 5 * 60_000;
+
+// The offers still live at `now`: those whose runner asked within the window.
+export function liveOffers(recorded: readonly LiveOffer[], now = Date.now()): LiveOffer[] {
+  return recorded.filter((o) => {
+    const at = Date.parse(o.at);
+    return Number.isFinite(at) && now - at <= OFFER_FRESH_MS;
+  });
+}
+
+// Which runners offer each actor, keyed by the name a claim would use
+// (agent/model, lowercased): only claimable pairs count, since those are the
+// names a dispatch may name and a claim accept.
+export function offering(offers: readonly LiveOffer[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const offer of offers) {
+    for (const { agent, models } of offer.agents) {
+      for (const model of models.filter((m) => claimable(agent, m))) {
+        const actor = `${agent}/${model}`.toLowerCase();
+        out.set(actor, [...(out.get(actor) ?? []), offer.runner]);
+      }
+    }
+  }
+  return out;
+}
+
 export interface Assignment {
   agent: string;
   model: string;
