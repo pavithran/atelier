@@ -37,6 +37,7 @@ import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { independenceRefusal } from "./review/independence.ts";
+import { pickTierReviewer } from "./review/tier.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -66,6 +67,7 @@ export interface ReviewClaim {
   events: LedgerEvent[];
   owner: string;
   reviewBar: string | null;
+  tier: boolean;          // the claimed request is a tier review (src/review/tier.ts)
 }
 
 export interface ProjectRecord {
@@ -122,6 +124,8 @@ export interface ProjectInit {
   regenerate?: string | null;
   // What may block a review; null clears it (see ProjectPolicy.reviewBar).
   reviewBar?: string | null;
+  // The top review tier; an empty list clears it (see ProjectPolicy.reviewTier).
+  reviewTier?: string[];
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -247,6 +251,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
+  const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -263,6 +268,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
       ...(reviewBar ? { reviewBar } : {}),
+      ...(reviewTier.length ? { reviewTier: [...reviewTier] } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -397,6 +403,9 @@ export class Ledger extends DurableObject<Env> {
     // which stands even where the gate needs no review; claimReview reads it.
     const requestColumns = this.sql.exec(`PRAGMA table_info(review_requests)`).toArray().map((c) => c.name);
     if (!requestColumns.includes("wanted")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN wanted INTEGER`);
+    // Set on a tier review request (src/review/tier.ts), asked beside the
+    // gate's review; it never holds the gate's request or a landing back.
+    if (!requestColumns.includes("tier")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN tier INTEGER`);
     this.backfillReviewProvenance();
     // A deploy can change the tick's logic, and a plan waiting on nothing
     // the new logic would read sits idle until something else changes; the
@@ -1162,14 +1171,34 @@ export class Ledger extends DurableObject<Env> {
     // owner when the owner token named it. A review answering a request the
     // reviewer claimed at this head was served through the request flow,
     // which the gate counts even when the owner token recorded it.
-    const claims = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed'`, r.itemId, r.head).toArray();
-    const claimed = claims.some((c) => typeof c.claimedBy === "string" && sameActor(c.claimedBy, r.by));
-    r = { ...r, recordedBy: proved ? r.by : this.owner, proved, claimed };
+    const claims = this.sql.exec(`SELECT id, claimedBy, tier FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed'`, r.itemId, r.head).toArray()
+      .filter((c) => typeof c.claimedBy === "string" && sameActor(c.claimedBy, r.by));
+    const claimed = claims.length > 0;
+    // A review answering a tier request this reviewer claimed is a tier
+    // review. One whose tier request was withdrawn, when the change was
+    // accepted or closed, is no longer asked for and is refused, so a late
+    // tier verdict never reopens accepted work.
+    const tierClaim = claims.find((c) => c.tier === 1 && !claims.some((o) => o.tier !== 1));
+    if (!claimed) {
+      const mine = this.sql.exec(`SELECT state, tier, claimedBy FROM review_requests WHERE item = ? AND head = ? AND claimedBy IS NOT NULL ORDER BY id DESC`, r.itemId, r.head).toArray()
+        .filter((c) => sameActor(c.claimedBy as string, r.by));
+      if (mine.length && mine.every((c) => c.tier === 1 && c.state === "withdrawn")) {
+        throw new RuleError("tier_withdrawn", `the tier review of ${r.itemId} at ${r.head.slice(0, 8)} asked of ${r.by} was withdrawn; a tier review never holds a landing, and this one is no longer asked for`, 409);
+      }
+    }
+    r = { ...r, recordedBy: proved ? r.by : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
-    this.answerReviewRequest(r.itemId, r.head, at);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    // A tier review answers its own request; any other answers the gate's
+    // requests at the head and leaves a tier request beside them standing.
+    if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
+    else this.answerReviewRequest(r.itemId, r.head, at);
+    // A rejection sends the change back for rework, so a tier request at the
+    // head no runner has claimed yet is no longer asked for; a claimed one is
+    // left to finish, and its findings join the rework.
+    if (!r.approve) this.withdrawTierRequests(r.itemId, `${r.by} rejected ${r.head.slice(0, 8)}`, at, "open");
     // A rejection with blocking findings sends a part back to its builder for
     // rework (docs/orchestrator.md, section 4). The re-review goes to the same
     // reviewer first, and after two rounds to an alternate builder, which
@@ -1350,6 +1379,7 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
+    this.withdrawTierRequests(id, "the change was accepted; a tier review never holds a landing", at);
     // The policy the acceptance is made under, for the merge guard's
     // comparison with the policy at merge time.
     this.log(id, actor, "item.accepted", {
@@ -1589,6 +1619,7 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
+    this.withdrawTierRequests(id, "the change was merged", at);
     // Main is at the merge now, so the record is made for the plans in
     // flight to compare at their next tick. A plan's own merge closes it
     // first, and nothing refreshes a closed plan, so it never takes its own
@@ -1617,6 +1648,7 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
     this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}) }, at);
+    this.withdrawTierRequests(id, "the task was closed", at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -2077,14 +2109,14 @@ export class Ledger extends DurableObject<Env> {
     const reviewer = namedActor(to, this.project().policy, "assessor", this.owner);
     const refusal = independenceRefusal(reviewer, contributorsOf(item));
     if (refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${item.id}: ${refusal}; name a model of another family than every contributor`, 409);
-    const claimed = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND state = 'claimed'`, item.id).toArray()
+    const claimed = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND state = 'claimed' AND tier IS NULL`, item.id).toArray()
       .map((r) => r.claimedBy as string).find((by) => !sameActor(by, reviewer));
     if (claimed) throw new RuleError("review_claimed", `${claimed} is reviewing ${item.id} now; wait for its verdict, or let its claim lapse, before naming ${reviewer}`, 409);
     const record = this.planRecord(plan.id);
     const key = item.partKey!;
     const route = routesOf(record).find((r) => r.key === key)!;
     const from = rerouted(route, record).reviewer?.actor ?? null;
-    const open = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state = 'open'`, item.id).toArray();
+    const open = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state = 'open' AND tier IS NULL`, item.id).toArray();
     for (const r of open) {
       const d = JSON.parse(r.dispatch as string) as Dispatch;
       const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
@@ -2210,6 +2242,7 @@ export class Ledger extends DurableObject<Env> {
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
           review: this.partReviewRequest(p.id),
+          tierReview: this.partReviewRequest(p.id, true),
           integration: this.partIntegration(p.id),
           integrationFailure: failures.get(p.partKey!) ?? null,
           blocked: p.state === "blocked" && p.blocked ? { reason: p.blocked.reason, by: p.blocked.by } : null,
@@ -2569,14 +2602,18 @@ export class Ledger extends DurableObject<Env> {
       // refused at its claim or not counted by the gate; it is withdrawn so
       // the review is asked again below of one who can give it.
       const contributors = contributorsOf(p);
-      const live = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
+      // A tier request needs no other family, only a reviewer who has not
+      // contributed.
+      const live = this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
       for (const r of live) {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
-        const refusal = asked ? independenceRefusal(asked, contributors) : null;
+        const refusal = !asked ? null
+          : r.tier === 1 ? (contributors.some((c) => sameActor(c, asked)) ? `${asked} contributed to it, and nobody reviews their own work` : null)
+            : independenceRefusal(asked, contributors);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
-        this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal }, at);
+        this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal, ...(r.tier === 1 ? { tier: true } : {}) }, at);
       }
       const part = plan.parts.find((x) => x.key === p.partKey);
       if (!part) continue;
@@ -2632,6 +2669,7 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state) VALUES (?, ?, ?, ?, 'open')`,
         p.id, need.head, JSON.stringify(dispatch), briefHash);
       this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round }, at);
+      this.askTierReview(p, need, reviewer, ORCHESTRATOR, at);
     }
   }
 
@@ -2648,12 +2686,13 @@ export class Ledger extends DurableObject<Env> {
 
   // The review requests for one part, oldest first, as reviewNeeded reads them.
   reviewRequests(item: string): ReviewRequestView[] {
-    return this.sql.exec(`SELECT head, state, claimedBy, claimedAt FROM review_requests WHERE item = ? ORDER BY id`, item).toArray()
+    return this.sql.exec(`SELECT head, state, claimedBy, claimedAt, tier FROM review_requests WHERE item = ? ORDER BY id`, item).toArray()
       .map((r) => ({
         head: r.head as string,
         state: r.state as ReviewRequestView["state"],
         ...(r.claimedBy ? { claimedBy: r.claimedBy as string } : {}),
         ...(r.claimedAt ? { claimedAt: r.claimedAt as string } : {}),
+        ...(r.tier === 1 ? { tier: true } : {}),
       }));
   }
 
@@ -2669,9 +2708,10 @@ export class Ledger extends DurableObject<Env> {
 
   // The live review request for a part, as planView shows it: the reviewer
   // asked, the head asked about, and whether a runner claimed it. Null when
-  // the part has no open or claimed request.
-  private partReviewRequest(id: string): PlanPartReview | null {
-    const row = this.sql.exec(`SELECT head, dispatch, state, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, id).toArray()[0];
+  // the part has no open or claimed request. With `tier`, the live tier
+  // request (src/review/tier.ts) instead of the gate's.
+  private partReviewRequest(id: string, tier = false): PlanPartReview | null {
+    const row = this.sql.exec(`SELECT head, dispatch, state, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND tier IS ${tier ? "1" : "NULL"} ORDER BY id DESC LIMIT 1`, id).toArray()[0];
     if (!row) return null;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
     if (!dispatch.agent || !dispatch.model) return null;
@@ -2708,8 +2748,17 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(itemId);
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (contributorsOf(item).some((c) => sameActor(c, actor))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
-    const row = this.sql.exec(`SELECT id, head, dispatch, wanted FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id LIMIT 1`, itemId).toArray()[0];
+    // The gate's request and a tier request may both be open: the one asked
+    // of this actor is bound, or else the oldest, which refuses below.
+    const rows = this.sql.exec(`SELECT id, head, dispatch, wanted, tier FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id`, itemId).toArray();
+    const askedOf = (r: Row) => {
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      const [h, m] = actor.split("/");
+      return (!d.agent || d.agent === h) && (!d.model || d.model === m);
+    };
+    const row = rows.find(askedOf) ?? rows[0];
     if (!row) throw new RuleError("no_review", `${itemId} has no open review request`, 404);
+    const tier = row.tier === 1;
     const head = row.head as string;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
     if (head !== item.head) {
@@ -2722,7 +2771,7 @@ export class Ledger extends DurableObject<Env> {
     if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
     const at = new Date().toISOString();
     this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner?.runner ?? null, at, row.id);
-    this.log(itemId, actor, "review.claimed", { head, runner: runner.runner }, at, proved);
+    this.log(itemId, actor, "review.claimed", { head, runner: runner.runner, ...(tier ? { tier: true } : {}) }, at, proved);
     // A part's claimed review can lapse (REVIEW_CLAIM_TIMEOUT_MS,
     // reviewNeeded), and when it does, nothing but the alarm ticks the plan
     // unprompted: the alarm is set for the lapse, never later than one
@@ -2742,7 +2791,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
-      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, now: new Date(at), owner: this.owner,
+      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, tier, now: new Date(at), owner: this.owner,
     });
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
@@ -2750,7 +2799,7 @@ export class Ledger extends DurableObject<Env> {
       item, head,
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
-      events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null,
+      events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, tier,
     };
   }
 
@@ -2804,7 +2853,7 @@ export class Ledger extends DurableObject<Env> {
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
-    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
+    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
@@ -2836,6 +2885,7 @@ export class Ledger extends DurableObject<Env> {
     const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted) VALUES (?, ?, ?, ?, 'open', ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null);
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(wanted ? { wanted: true } : {}) }, at, proved);
+    this.askTierReview(item, need, chosen, actor, at, proved);
     return { needed: true, requested: true, reason: need.reason, at, head: need.head, reviewer: chosen };
   }
 
@@ -2845,14 +2895,48 @@ export class Ledger extends DurableObject<Env> {
     const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.requested' ORDER BY seq DESC LIMIT 10`, id).toArray();
     for (const row of rows) {
       const data = JSON.parse(row.data as string);
-      if (data.head === head) return row.at as string;
+      if (data.head === head && !data.tier) return row.at as string;
     }
     return null;
   }
 
-  // Marks the request for a head answered when a review is recorded at it.
+  // Marks the gate's request for a head answered when a review is recorded
+  // at it; a tier request is answered only by its own review.
   private answerReviewRequest(itemId: string, head: string, at: string): void {
-    this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed')`, itemId, head);
+    this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL`, itemId, head);
+  }
+
+  // Asks the project's top review tier (src/review/tier.ts) for one review of
+  // a protected change, beside the gate's request just made for the same
+  // head: from the first tier model that did not build it and is not asked
+  // for the gate, whatever its family. Nothing is asked when the project has
+  // no tier, the change is not protected, a tier request was made for this
+  // head already, or no tier model remains.
+  private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false): void {
+    const policy = this.project().policy;
+    if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
+    if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1`, item.id, need.head).toArray().length) return;
+    const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
+      .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
+      .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));
+    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner));
+    if (!reviewer) return;
+    const slash = reviewer.indexOf("/");
+    const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier) VALUES (?, ?, ?, ?, 'open', 1)`, item.id, need.head, JSON.stringify(dispatch), null);
+    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, tier: true }, at, proved);
+  }
+
+  // Withdraws an item's live tier requests (open ones only, with `only`), so
+  // a tier review never holds a landing: the gate decided, or the change
+  // went back for rework or closed.
+  private withdrawTierRequests(itemId: string, reason: string, at: string, only?: "open"): void {
+    const states = only ? `('open')` : `('open', 'claimed')`;
+    for (const r of this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND tier = 1 AND state IN ${states}`, itemId).toArray()) {
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+      this.log(itemId, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null, reason, tier: true }, at);
+    }
   }
 
   // A reviewer whose harness wrote no valid verdict lets the request go, so
@@ -2939,6 +3023,7 @@ export class Ledger extends DurableObject<Env> {
     const merged = addedPart(record, partKey);
     const takes = merged && holdsMain ? merged.mainHead : null;
     this.update(part.id, { state: "integrated" }, at);
+    this.withdrawTierRequests(part.id, "the part was integrated; a tier review never holds a landing", at);
     this.sql.exec(`UPDATE items SET integration = ? WHERE id = ?`, JSON.stringify({ head: part.head, mergeCommit } as Integration), part.id);
     this.log(part.id, actor, "part.integrated", { head: part.head, mergeCommit, ...(takes ? { mainTaken: takes } : {}) }, at);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
