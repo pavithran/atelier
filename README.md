@@ -962,6 +962,22 @@ else, while it waits. Names are matched and stored in lower case, so
 that made it; after a handoff, the first runner to claim as the new owner
 takes it, and the task's history records which runner that was.
 
+A held task (claimed, or submitted and perhaps rejected) is sent back to a
+runner the same way: its holder is released and the task queued in one step,
+keeping its workspace and commits for the next builder. One job may be
+dispatched by hand, `--job merge-main`: it sends a task whose landing
+conflicted with main back to its builder, as a conflicted plan's refresh
+adds a merge-main part to the plan. The dispatch names the main head the job merges
+— `--head H`, or main's head as the baseline holds it — and a runner that
+offers the merge-main job claims the task, merges main at that head into its
+workspace (clearing the conflicted merge the landing left, which the
+workspace's reset removes) and leaves the conflicts for the harness, whose
+brief says to resolve each keeping both sides' behaviour and claims and
+commit the merge as it stands. Then `atelier land ID` again: main is already
+merged, and the landing picks up from the push. Without this a conflicted
+task dead-ended outside a plan (t234): a plain rework dispatch resets the
+workspace to the task's head, where the builder cannot reach main.
+
 ## Plans
 
 A plan turns one goal into several items. The project owner states the goal
@@ -1489,7 +1505,13 @@ The steps in between:
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
-   `atelier land t9` again picks up from the push.
+   `atelier land t9` again picks up from the push. The conflicts can also go
+   back to the task's builder instead: `atelier dispatch t9 --job merge-main`
+   (naming the holder with `--agent` and `--model`, as the message the
+   landing prints says) sends the task to a runner, whose merge-main job
+   merges main into the workspace again and leaves the conflicts for the
+   builder to resolve and commit; then `atelier land t9` again, with main
+   already merged. See Dispatch.
 3. When the project's policy declares a `regenerate` command
    (`atelier init --regenerate "CMD"`), it runs in the workspace like a check
    runs, and what it changes is committed before the push, so generated

@@ -318,6 +318,14 @@ it("a wanted review is requested for the named reviewer though the gate needs no
   // A rejection at this head stops the gate, and a wanted review is refused with that reason.
   await L.addReview({ itemId: id, by: GPT, head, approve: false, note: "Wrong.", findings: [{ file: "docs/note.md", line: 1, severity: "blocking" as const, text: "It is wrong." }], at: new Date().toISOString() });
   await refusal(L.requestReview(id, "owner", GPT, POOL, true), "review_blocked", /rejected dddddddd/);
+  // t240: once the owner has refuted every blocking finding of that rejection,
+  // the same head is asked for a second opinion rather than refused — no
+  // cosmetic new commit is needed. The re-review goes to the same reviewer
+  // first, as a round-2 review.
+  await L.addFinding(id, "owner", head, 1, "refuted", "docs/note.md:4 already says it.");
+  const again = await L.requestReview(id, "owner", GPT, POOL, true);
+  expect(again).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
+  expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { head, reviewer: GPT, round: 2, via: "land", wanted: true } });
 });
 
 it("after a review claim lapses and a new reviewer is asked, a retry naming that reviewer finds the new request", async () => {
