@@ -67,6 +67,32 @@ test("CLI init records the ship order's commands and approval kinds with the pol
   assert.deepEqual(put.shipKinds, ["deploy"], "push needs an approval only with --push, so it is not a kind the order needs");
 }));
 
+test("CLI init sends the core files given with --core, clears them with --core \"\" or --reset, and keeps them otherwise", () => fixture(({ command, calls }) => {
+  const put = () => JSON.parse(calls().filter((c) => c.method === "PUT").at(-1).body);
+  const given = command(["init", "--core", "src/ledger.ts", "--core", " cli/runner.mjs "]);
+  assert.equal(given.status, 0, given.stderr);
+  assert.deepEqual(put().coreFiles, ["src/ledger.ts", "cli/runner.mjs"]);
+  assert.equal(command(["init", "--title", "T"]).status, 0);
+  assert.equal("coreFiles" in put(), false, "a re-init without --core keeps the recorded core files");
+  assert.equal(command(["init", "--core", ""]).status, 0);
+  assert.deepEqual(put().coreFiles, []);
+  assert.equal(command(["init", "--reset"]).status, 0);
+  assert.deepEqual(put().coreFiles, []);
+  const bare = command(["init", "--core"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them/);
+  const blank = command(["init", "--core", "src/**", "--core", " "]);
+  assert.equal(blank.status, 1);
+  assert.match(blank.stderr, /--core needs a glob/);
+}));
+
+test("CLI dispatch sends the owner's overlap override only with --overlap-ok", () => fixture(({ command, calls }) => {
+  const posts = () => calls().filter((c) => c.method === "POST" && c.url.endsWith("/dispatch")).map((c) => JSON.parse(c.body));
+  command(["dispatch", "t3", "--project", "weblog"]);
+  command(["dispatch", "t3", "--overlap-ok", "--project", "weblog"]);
+  assert.deepEqual(posts().map((b) => b.overlapOk), [undefined, true]);
+}));
+
 test("CLI rename refuses a different name unless it changes only local config", () => fixture(({ command, initial, config, calls }) => {
   const refused = command(["init", "--name", "ikon"]);
   assert.equal(refused.status, 1);

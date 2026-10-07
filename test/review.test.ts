@@ -596,6 +596,27 @@ test("reviewBrief: names what to review, carries the plan, checks and summary, a
   assert.equal(brief(), text);
 });
 
+test("reviewBrief: the task's title and the plan's text are labelled the request, not claims the change makes", () => {
+  // gemini-3.1-pro blocked t240 and t246 (2026-10-07) on phrases of the task's
+  // title ("for the job", "name the runner config entry") read as claims a
+  // commit message had made, while the commits said otherwise. The brief
+  // labels the task's text as the request the change answers, and the rules
+  // for blocking say a claim the code does not support blocks only when a
+  // commit of the change makes it.
+  const text = brief({ item: item({ title: "Pick the reviewer for the job" }) });
+  assert.ok(text.includes("Title, as written for the item. The title asks for the change; it is not a claim the change or its commits make:\n```\nPick the reviewer for the job\n```"), text);
+  assert.ok(text.includes("The plan's text is the request the change answers, not claims the change makes:"), text);
+  const rules = text.slice(text.indexOf("## Rules for blocking"), text.indexOf("## Reply format"));
+  assert.ok(rules.includes("The task's title and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The plan's acceptance criteria bind as criteria, not as claims."), rules);
+  // The fenced text's authors include whoever filed the task, and a task
+  // outside a plan carries the title label and the rule without the plan's.
+  assert.ok(text.includes("written by the plan's author, the owner who filed the task, the builder or earlier reviewers"), text);
+  const task = brief({ need: required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), plan: null });
+  assert.ok(task.includes("it is not a claim the change or its commits make:"), task);
+  assert.ok(task.includes("a phrase of them is not a claim a commit must support"), task);
+  assert.ok(!task.includes("The plan's text is the request"), task);
+});
+
 test("reviewBrief: a re-review carries the earlier findings and says the builder has pushed since", () => {
   const findings: Finding[] = [blocker, { file: "README.md", line: null, severity: "follow-up", text: "Mention t39." }];
   const need = required({ reviews: [

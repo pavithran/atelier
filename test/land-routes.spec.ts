@@ -129,10 +129,70 @@ it("a lease lapses when not renewed for the expiry: the holder renews it, the ne
   await refusal(L.renewProjectLanding(b, "owner"), "no_lease", /no landing lease is held/);
 });
 
-it("the landing-lease route takes, renews and cancels the lease for the owner", async () => {
+it("the lease is handed to the waiting landings in the order they queued, and a waiting landing that stops asking or has closed its task no longer counts (t249)", async () => {
+  const L = await setup("land-lease-queue");
+  const a = (await L.newItem("First", [], "owner")).id;
+  const b = (await L.newItem("Second", [], "owner")).id;
+  const c = (await L.newItem("Third", [], "owner")).id;
+  await L.beginProjectLanding(a, "owner");
+  // b queues, then c: the server keeps them in that order, one row each.
+  const bQueued = await L.queueProjectLanding(b, "owner");
+  expect(bQueued.waiting).toHaveLength(1);
+  expect(bQueued.waiting[0]).toMatchObject({ item: b, holder: "owner" });
+  const bAt = bQueued.waiting[0].at;
+  await L.queueProjectLanding(c, "owner");
+  const rows = await L.readLandingQueue();
+  expect(rows.map((w) => w.item)).toEqual([b, c]);
+  // An ask never takes: the lease stays a's, and the ask answers it.
+  expect(bQueued.lease).toMatchObject({ item: a });
+  expect((await L.queueProjectLanding(b, "owner")).lease).toMatchObject({ item: a });
+  // Asking again refreshes the place, not the turn: b keeps the first row
+  // and its queued time, only its last ask moves on.
+  const refreshed = await L.readLandingQueue();
+  expect(refreshed[0]).toMatchObject({ item: b, at: bAt });
+  expect(Date.parse(refreshed[0].renewedAt!)).toBeGreaterThanOrEqual(Date.parse(bAt));
+  // The lease frees; c's take lands first, however the polls land, and is
+  // refused naming b, which queued first (c's own row is not in its way).
+  await L.cancelProjectLanding(a, "owner");
+  await refusal(L.beginProjectLanding(c, "owner"), "landing_lease", new RegExp(`^owner's landing of ${b} has been waiting for the lease since \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC, first of 1 landing queued for it; landings take the lease in the order they queued, so ${c} cannot take it ahead of them$`));
+  // A landing without a wait behind it cannot jump the queue either.
+  const d = (await L.newItem("Fourth", [], "owner")).id;
+  await refusal(L.beginProjectLanding(d, "owner"), "landing_lease", new RegExp(`^owner's landing of ${b} has been waiting for the lease since .*first of 2 landings queued for it`));
+  // b, first in the queue, takes it; its row leaves with the take and c stays.
+  await L.beginProjectLanding(b, "owner");
+  expect((await L.readLandingQueue()).map((w) => w.item)).toEqual([c]);
+  expect((await L.readProjectLanding())!).toMatchObject({ item: b });
+  // A waiting landing gives its place up: leave drops its row, so the next
+  // take is not queued past it.
+  await L.cancelProjectLanding(b, "owner");
+  await L.queueProjectLanding(c, "owner", true);
+  expect(await L.readLandingQueue()).toEqual([]);
+  await L.beginProjectLanding(d, "owner");
+  // A row whose landing stopped asking for the expiry no longer counts.
+  await L.cancelProjectLanding(d, "owner");
+  await L.queueProjectLanding(c, "owner");
+  const freshRows = await L.readLandingQueue();
+  const stale = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS).toISOString();
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-queue', ?)`, JSON.stringify(freshRows.map((w) => ({ ...w, renewedAt: stale }))));
+  });
+  await L.beginProjectLanding(d, "owner");
+  expect(await L.readLandingQueue()).toEqual([]);
+  // A row whose task has closed no longer counts either: its landing can
+  // never take the lease.
+  await L.cancelProjectLanding(d, "owner");
+  await L.queueProjectLanding(c, "owner");
+  await L.abandon(c, "owner", "not wanted", null);
+  expect(await L.readLandingQueue()).toEqual([]);
+  await refusal(L.queueProjectLanding("t99", "owner"), "no_item", /no item t99/);
+  await refusal(L.queueProjectLanding(b, "someone"), "not_project_owner", /only the project owner lands/);
+});
+
+it("the landing-lease route takes, renews and cancels the lease for the owner, and a waiting landing asks and leaves through it", async () => {
   const project = "land-lease-route";
   const L = await setup(project);
   const a = (await L.newItem("First", [], "owner")).id;
+  const b = (await L.newItem("Second", [], "owner")).id;
   const token = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
     method: "POST", headers: { authorization: "Bearer land-routes-token", "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
@@ -143,6 +203,14 @@ it("the landing-lease route takes, renews and cancels the lease for the owner", 
   const renewed = await post({ item: a, renew: true });
   expect(renewed.status).toBe(200);
   expect(await renewed.json()).toMatchObject({ lease: { item: a, holder: "owner" } });
+  // A waiting landing's ask answers the lease and the queue as the server
+  // sees them, refreshing its place; a leave gives the place up.
+  const asked = await post({ item: b, queued: true });
+  expect(asked.status).toBe(200);
+  expect(await asked.json()).toMatchObject({ lease: { item: a }, waiting: [{ item: b, holder: "owner" }] });
+  const left = await post({ item: b, queued: true, leave: true });
+  expect(await left.json()).toMatchObject({ lease: { item: a }, waiting: [] });
+  expect(await L.readLandingQueue()).toEqual([]);
   const other = await post({ cancel: true, item: "t99" });
   expect(other.status).toBe(409);
   expect(await L.readProjectLanding()).toMatchObject({ item: a });
