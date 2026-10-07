@@ -37,6 +37,12 @@ function relevance(evidence: ModelEvidence, task: Task): string | null {
 // Raw counts favor longer histories; claims and handoffs are neutral. These
 // weights are routing priors, not measured quality. Equal scores go by the
 // reliability tie-breaker, then model id, then actor name.
+// Two candidates the ranking cannot tell apart: the same score and the same
+// reliability tie-breaker, so only the model id and the actor name order them.
+export function tied(a: Candidate, b: Candidate): boolean {
+  return a.score === b.score && a.tiebreak === b.tiebreak;
+}
+
 export function route(task: Task, profiles: readonly ModelProfile[], record: ModelRecord, constraints: Constraints, tiebreaks: ReadonlyMap<string, Tiebreak> = new Map()): Candidate[] {
   const candidates: Candidate[] = [];
   for (const profile of profiles) {

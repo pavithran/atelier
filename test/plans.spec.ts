@@ -186,6 +186,7 @@ it("a newer proposal makes the older hash unapprovable, and after approval nothi
   const second = await L.postPlan(first.id, PLANNER, doc(part("a"), part("b")));
   if (!second.valid) throw new Error("expected a valid proposal");
   expect(second.hash).not.toBe(first.hash);
+  await L.release(first.id, PLANNER, "proposed");
 
   await refusal(L.approvePlan(first.id, "codex/gpt-6-astra", second.hash, false, POOL), "not_project_owner", /only the project owner approves/);
   await refusal(L.approvePlan(first.id, "owner", "abc", false, POOL), "bad_hash", /full hash/);
@@ -209,6 +210,38 @@ it("a newer proposal makes the older hash unapprovable, and after approval nothi
   }
   const approvedEvent = (await events(L, first.id)).find((e) => e.kind === "plan.approved")!;
   expect(approvedEvent).toMatchObject({ actor: "owner", data: { hash: second.hash, parts: { a: "t2", b: "t3" } } });
+});
+
+it("approval is refused while the planner still holds its claim, so no write token outlives the plan", async () => {
+  const L = await setup("plan-approve-held");
+  const { item } = await L.newPlan("Ship it", [], "owner", PLANNER, []);
+  await L.claim(item.id, PLANNER, RUNNER);
+  const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
+  if (!post.valid) throw new Error("expected a valid proposal");
+  // The planner still holds the claim, so approval is refused.
+  await refusal(L.approvePlan(item.id, "owner", post.hash, false, POOL), "planning", /held by claude-code\/opus-5\.5, which is planning now/);
+  expect((await L.item(item.id)).owner).toBe(PLANNER);
+  // Once released, the same hash approves.
+  await L.release(item.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  expect(parts).toHaveLength(1);
+});
+
+it("after the plan job leaves the queue, no eligible actor claims the plan item by hand", async () => {
+  const L = await setup("plan-claim-by-hand");
+  const { id } = await proposed(L, doc(part("a")));
+  // The plan job has left the queue (postPlan cleared the dispatch), and the
+  // item is open and held by nobody. Only the plan job's dispatch lets the
+  // routed planner claim it, so a hand claim by any eligible actor is refused.
+  await refusal(L.claim(id, GPT, RUNNER), "not_dispatched", /plan job has left the queue/);
+  await refusal(L.claim(id, GPT), "not_dispatched", /plan job has left the queue/);
+  expect((await L.item(id)).owner).toBeNull();
+  // The owner asking the planner again re-queues the plan job, which is then
+  // claimable by the routed planner as before.
+  await L.revisePlan(id, "owner", "split it differently");
+  expect((await L.item(id)).dispatch).toMatchObject({ job: "plan", agent: "claude-code" });
+  await L.claim(id, PLANNER, RUNNER);
+  expect((await L.item(id)).owner).toBe(PLANNER);
 });
 
 it("an invalid proposal gets the planner one more attempt, then blocks the plan until the owner decides", async () => {
@@ -331,14 +364,20 @@ it("the alarm blocks a plan past its deadline and takes its parts out of the que
   expect((await events(L, parts.a)).find((e) => e.kind === "item.undispatched")).toMatchObject({
     actor: "atelier/orchestrator", data: { reason: expect.stringMatching(/^the plan is blocked: the deadline/) },
   });
+  // The deadline is fixed at approval, so retry and reroute cannot lift it.
+  await refusal(L.retryPlan(parts.a, "owner"), "plan_deadline", /past its deadline/);
+  await refusal(L.reroutePlan(parts.a, "owner", OPUS), "plan_deadline", /cannot lift it/);
+  expect((await view(L, id)).blocked).toMatch(/^the deadline /);
+  expect(await inbox(L)).toEqual([`${id}:plan-blocked:85`]);
 });
 
 it("parts never appear as accept, assess, failing, scope or stale entries, and overlap within one plan is not flagged", async () => {
   const L = await setup("plan-inbox", { checks: ["npm test"], protected: ["src/secret/**"] });
-  // The planner keeps its claim on the plan item, so the plan item is live too.
   const { item: { id } } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(id, PLANNER, RUNNER);
   const post = await L.postPlan(id, PLANNER, doc(part("a", { scope: ["src/**"] }), part("b", { dependsOn: ["a"] })));
+  // Approval needs the plan item unheld, so the planner releases first.
+  await L.release(id, PLANNER, "proposed");
   const { parts: created } = await L.approvePlan(id, "owner", post.valid ? post.hash : "", false, POOL);
   const parts = { a: created[0].id };
   const d = (await L.item(parts.a)).dispatch!;
@@ -358,14 +397,13 @@ it("parts never appear as accept, assess, failing, scope or stale entries, and o
   await L.addEvidence(observed(parts.a, head));
   expect(await inbox(L)).toEqual([]);
   expect((await view(L, id)).parts[0]).toMatchObject({ state: "submitted", gate: { ready: true, blockers: [] } });
-  // The live plan item and part a overlap within one plan: not flagged. A
-  // task beside the plan whose scope overlaps both is flagged with each.
+  // The live part overlaps a task beside the plan; the open plan item does not.
   const task = await L.newItem("Unrelated", ["src/**"], "owner");
   await L.claim(task.id, GPT);
-  expect(await inbox(L)).toEqual([`${id}:overlap:40`, `${parts.a}:overlap:40`]);
+  expect(await inbox(L)).toEqual([`${parts.a}:overlap:40`]);
   // Accepted, the part asks to be merged.
   await L.accept(parts.a, "owner");
-  expect(await inbox(L)).toEqual([`${parts.a}:merge:90`, `${id}:overlap:40`]);
+  expect(await inbox(L)).toEqual([`${parts.a}:merge:90`]);
 });
 
 it("a plan completes when every part has merged; stopping one closes its open parts", async () => {

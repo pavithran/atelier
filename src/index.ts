@@ -865,12 +865,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
   // One landing at a time per project (atelier land, t187): GET reads who
   // holds the lease; POST takes it for one task, refusing while another live
-  // task's landing holds it, and { cancel: true } releases it.
+  // task's landing holds it and naming a lapsed lease it took over,
+  // { item, renew: true } is the holder's heartbeat, and { cancel: true, item }
+  // releases that task's lease, answering which task held it since when, and
+  // leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
     if (m === "GET") return json({ lease: await L.readProjectLanding() });
     requireOwner(env, actor);
-    if (body.cancel === true) return json(await L.cancelProjectLanding(actor));
-    return json({ item: await L.beginProjectLanding(String(body.item ?? ""), actor) });
+    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
+    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
+    return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -935,7 +939,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
-  if (verb === "plan" && parts.length === 5 && m === "GET") return json(await L.planView(id, await index(env).models()));
+  if (verb === "plan" && parts.length === 5 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await L.planView(id, await index(env).models()));
+  }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
@@ -1154,10 +1161,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-claim": {
       const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
       // The review job clones the part read-only, so the claim also carries a
-      // read token for the fork, as the read-token route mints one.
+      // read token for the fork, as the read-token route mints one. It also
+      // carries a read token for the branch the item merges into (the plan's
+      // integration branch for a part, the baseline's for any other item, as
+      // base-token chooses), so the job can diff from the merge base of the
+      // head and that branch rather than from the fork point, which a merge
+      // of main into the task leaves behind (t230).
       if (claim.item.fork) {
-        const t = await mint(env, claim.item.fork, "read", await projectBranch(env, await L.project()));
-        return json({ ...claim, readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch } });
+        const p = await L.project();
+        const branch = await projectBranch(env, p);
+        const t = await mint(env, claim.item.fork, "read", branch);
+        const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
+        return json({
+          ...claim,
+          readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
+          target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
+        });
       }
       return json(claim);
     }
@@ -1293,11 +1312,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "abandon": {
       requireOwner(env, actor);
       const note = String(body.note ?? "");
+      if (body.deliveredBy !== undefined && (typeof body.deliveredBy !== "string" || !/^t\d+$/.test(body.deliveredBy))) throw new RuleError("bad_delivered_by", "deliveredBy must be a task id such as t5", 400);
+      const deliveredBy = body.deliveredBy as string | undefined;
       const oldToken = await L.tokenId(id);
-      await L.checkAbandon(id, actor, note);
+      await L.checkAbandon(id, actor, note, deliveredBy);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.abandon(id, actor, note, oldToken);
+      const item = await L.abandon(id, actor, note, oldToken, deliveredBy);
       return json(item);
     }
     case "defect": {
@@ -1360,6 +1381,17 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
 // A diff is shown when Artifacts can produce one; the page still renders when it cannot.
 const MODEL_EVENTS = 1000;
 
+// Every event of a project, read a page at a time, newest page first.
+async function allEvents(L: { events(id?: string, limit?: number, before?: number): Promise<unknown> }): Promise<LedgerEvent[]> {
+  const out: LedgerEvent[] = [];
+  for (let before: number | undefined; ;) {
+    const page = (await L.events(undefined, MODEL_EVENTS, before)) as unknown as LedgerEvent[];
+    out.push(...page);
+    if (page.length < MODEL_EVENTS) return out;
+    before = page[page.length - 1].seq;
+  }
+}
+
 // The Models page, and its two forms: add (or replace) an entry, and remove one.
 async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   const { env, req } = c;
@@ -1391,7 +1423,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
 }
 
-// Each model's record is read from every project's most recent events, and
+// Each model's record is read from every event of every project, and
 // its reliability from those and the runners' reports. The pages and the
 // API say how many events, and which projects could not be read.
 async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; events: number; unread: ProjectRecord[] }> {
@@ -1399,10 +1431,10 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
-    try { return { project: p.name, events: (await ledgerOf(env, p).events(undefined, MODEL_EVENTS)) as unknown as LedgerEvent[] }; }
+    try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
-  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: MODEL_EVENTS, unread };
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and

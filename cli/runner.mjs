@@ -9,6 +9,7 @@ import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
+import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -22,6 +23,20 @@ export function offerFrom(config, name) {
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
+
+// Why the runner refuses to start, or null when the server's routes are new
+// enough. The same check atelier land makes (cli/land.mjs): a server behind
+// this CLI's route level would fail the runner's calls one by one, so it
+// refuses here, before the first poll, saying to deploy.
+export function versionRefusal(version) {
+  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
+  const commit = typeof version?.commit === "string" && version.commit ? version.commit.slice(0, 8) : null;
+  const deploy = (why) => `the server ${commit ? `runs main at ${commit}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${ROUTE_LEVEL}: ${why}. Deploy the server from a checkout at route level ${ROUTE_LEVEL} or newer (npm run deploy, which records the commit it deploys), then start the runner again`;
+  if (!version) return deploy("the server does not answer GET /api/version");
+  if (level === null) return deploy("the server is older than route levels");
+  if (level < ROUTE_LEVEL) return deploy("the server's routes are older than the ones this CLI calls");
+  return null;
+}
 
 export function briefFor(item, project) {
   return [
@@ -388,13 +403,16 @@ export async function runReview(assignment, config, name, io) {
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
     await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
     if (io.stopped()) throw new Error("interrupted");
-    const diff = await io.diff(workspace, claimed.item.base, claimed.head);
+    const compare = await reviewBase(io, workspace, claimed);
+    if (io.stopped()) throw new Error("interrupted");
+    if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
+    const diff = await io.diff(workspace, compare.from, claimed.head);
     if (!claimed.need) {
       await release("the review request no longer needs an answer");
       return { phase: "failed", reason: "the review request no longer needs an answer", taskFailure: true };
     }
     const text = reviewBrief({
-      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner,
+      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner, compare,
     });
     brief = await io.brief(workspace, text);
     diffFile = await io.writeDiff(workspace, diff);
@@ -445,6 +463,28 @@ export async function runReview(assignment, config, name, io) {
     if (diffFile) io.removeDiff(diffFile);
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
+  }
+}
+
+// The commit a review diffs from: the merge base of the reviewed head and the
+// branch the item merges into, which the claim names with a read token (the
+// plan's integration branch for a part, the project's main otherwise). A
+// task that merged main after it forked holds main's newer commits, and a
+// diff from its fork point would show them as the task's own; the merge
+// base leaves them out, as git merge-base HEAD main does in
+// bin/orchestrate/review.sh. When the branch cannot be fetched or shares no
+// history with the head, the diff runs from the fork point and the reason is
+// returned, for the brief to say so.
+export async function reviewBase(io, workspace, claimed) {
+  const forkPoint = (fallback) => ({ from: claimed.item.base, fallback });
+  const target = claimed.target;
+  if (!target?.remote || !target?.branch) return forkPoint("the review claim named no branch the task merges into");
+  try {
+    await io.fetch(workspace, target.remote, target.token, target.branch);
+    const from = (await io.mergeBase(workspace, "FETCH_HEAD", claimed.head)).trim();
+    return from ? { from, branch: target.branch } : forkPoint(`the head shares no history with ${target.branch}`);
+  } catch (error) {
+    return forkPoint(`the merge base with ${target.branch} could not be found: ${error.message}`);
   }
 }
 
@@ -569,6 +609,27 @@ export function infrastructureFailureCount(count, state) {
 // harness left it.
 export const planFilePath = (workspace) => join(workspace, ".atelier-plan.json");
 
+// The last non-empty line of a harness's stderr, or of its standard output
+// when stderr is empty, cleaned as the runner cleans task text (controls and
+// invisible separators as spaces, whitespace collapsed). It is the harness's
+// own word on what failed, so a plan job's release note and run report carry it.
+export function lastErrorLine(result) {
+  const text = String(result?.stderr ?? "") || String(result?.output ?? "");
+  const lines = text.replace(/\r/g, "").split("\n").map((line) => oneLine(line).replace(/\s+/g, " ").trim()).filter(Boolean);
+  return (lines.at(-1) ?? "").slice(0, 500);
+}
+
+// A plan job's harness failing is not an invalid proposal: the planner gave
+// the model nothing to refuse. The failure's reason names the harness's last
+// error line, or the fallback when it wrote none, and its detail is that line
+// alone for the run report.
+export function planHarnessFailure(result, fallback) {
+  const detail = lastErrorLine(result) || fallback;
+  const error = new Error(`the harness failed: ${detail}`);
+  error.detail = detail;
+  return error;
+}
+
 // A plan job (docs/orchestrator.md, section 2): the runner claims the plan
 // item as the planner, fetches the planner's brief from the server's
 // job-brief route, and runs the harness with a {plan_file} placeholder
@@ -606,19 +667,22 @@ export async function runPlanTask(assignment, config, name, io) {
     let result;
     taskFailure = true;
     try {
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+      // The plan job's harness output is captured, so a harness that fails
+      // before writing the plan leaves its last error line for the release
+      // note and the run report; a build's harness output still streams.
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env, { capture: true, captureError: true });
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
         catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
       }
     }
-    if (result.timedOut) throw new Error("harness timed out");
+    if (result.timedOut) throw planHarnessFailure(result, "timed out");
     if (io.stopped()) throw new Error("interrupted");
-    if (result.code !== 0) throw new Error(`harness exited ${result.signal ?? result.code}`);
+    if (result.code !== 0) throw planHarnessFailure(result, `exited ${result.signal ?? result.code}`);
     let document;
     try { document = readFileSync(planFile, "utf8"); }
-    catch { throw new Error(`the harness wrote no plan document at ${planFile}`); }
+    catch { throw planHarnessFailure(result, "wrote no plan document"); }
     const posted = await io.postPlan(project, item.id, actor, document);
     if (posted && posted.valid) {
       state = { phase: "submitted", head: posted.hash };
@@ -635,6 +699,7 @@ export async function runPlanTask(assignment, config, name, io) {
     state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
+    if (error.detail) state.detail = error.detail;
     if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
     else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
     else io.log(`failed: ${state.reason}`);
@@ -661,18 +726,20 @@ export async function runPlanTask(assignment, config, name, io) {
 // claim, the workspace, an interrupt, a harness that could not start, or a
 // step after the harness. A harness past its time limit timed out; one that
 // exited cleanly without a new commit stalled; one that exited with an error
-// was refused, by the harness or its provider.
+// was refused, by the harness or its provider; a plan job whose harness
+// failed before posting a plan failed as a harness, not as an invalid proposal.
 export function runOutcome(state) {
   if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
   if (state.reason === "harness timed out") return "timed-out";
   if (state.reason === "harness made no new commit") return "stalled";
   if (/^harness exited /.test(state.reason ?? "")) return "refused";
+  if (/^the harness failed: /.test(state.reason ?? "")) return "harness_failed";
   return null;
 }
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun }) {
+export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -720,7 +787,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
-    harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env }),
+    harness: (argv, cwd, env, { capture = false, captureError = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
     env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to
@@ -728,6 +795,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
+    mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
     // The integrate job's git operations: fetch a head, merge it onto the
     // plan's branch, push, and roll the branch back on a failure.
     fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: gitAuth(token), signal: controller.signal, step: "fetch" }, executeChild),
@@ -742,6 +810,15 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     ...taskIO,
   };
   try {
+    // The home runner refuses at start when the server's routes are older
+    // than the ones it will call, as atelier land does: the server's route
+    // level is checked against the CLI's (src/route-level.ts) before the
+    // first poll, so a runner that would fail its calls one by one stops
+    // here instead, saying to deploy.
+    if (version) {
+      const refusal = versionRefusal(await version(controller.signal));
+      if (refusal) throw new Error(refusal);
+    }
     while (!controller.signal.aborted) {
       let state;
       try {
@@ -772,7 +849,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
             try {
               // The report names the job that ran: a plan, a review, or a build.
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : "build";
-              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
+              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.detail ?? state.reason }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }

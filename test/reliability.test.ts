@@ -143,13 +143,20 @@ test("runs the runners reported: stalled, timed out and refused per model, and r
     run({ actor: "atelier/sandbox" }),
     run({ actor: OWNER }),
   ], OWNER);
-  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
   const glm = one(rel, "glm-5.3");
   assert.deepEqual([glm.runs.refused, glm.unfinishedReviews], [2, 1]);
   assert.deepEqual(glm.actors, ["opencode/GLM-5.3"]);
   // Newest first, with the role, the outcome and the runner's detail.
   assert.deepEqual(glm.runCauses.map((c) => c.note), ["build run refused", "review run refused: Select a model before continuing"]);
   assert.equal(rel.size, 2);
+});
+
+test("a plan harness failure is counted as harness_failed, not refused", () => {
+  const rel = buildReliability([], [run({ outcome: "harness_failed", role: "plan", detail: "the CLI is too old" })], OWNER);
+  const opus = one(rel, "opus-5.5");
+  assert.deepEqual([opus.runs.harness_failed, opus.runs.refused, opus.unfinishedReviews], [1, 0, 0]);
+  assert.deepEqual(opus.runCauses.map((c) => c.note), ["plan run harness_failed: the CLI is too old"]);
 });
 
 test("the tie-breaker is the share of outcomes in a model's favour, one half with no record", () => {
@@ -178,7 +185,7 @@ test("a run report is validated: an agent, a known role and outcome, a task id, 
   for (const [body, why] of [
     [{ actor: "owner", outcome: "stalled" }, /harness\/model/],
     [{ actor: "atelier/sandbox", outcome: "stalled" }, /harness\/model/],
-    [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, early_stop, permission_stop, duplicate_design, incomplete_merge/],
+    [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge/],
     [{ actor: OPUS, outcome: "stalled", role: "integrate" }, /build, plan or review/],
     [{ actor: OPUS, outcome: "stalled", item: "x1" }, /task id/],
     [{ actor: OPUS, outcome: "stalled", project: "a/b" }, /project/],
@@ -355,7 +362,7 @@ test("routing orders equal scores by reliability across projects, and never lets
   const ranked = routeParts(plan, input({ pool: [opus, sonnet, gpt], reliability }))[0];
   assert.equal(ranked.builder!.actor, "claude-code/sonnet-5.5");
   assert.deepEqual(ranked.alternates.map((c) => c.actor), ["codex/gpt-6-astra", "claude-code/opus-5.5"]);
-  assert.match(ranked.builder!.reasons.join("\n"), /equal scores go by reliability across projects, then model id, then actor name/);
+  assert.match(ranked.builder!.reasons.join("\n"), /equal scores spread across the plan's parts, then go by reliability across projects, then model id, then actor name/);
   assert.match(ranked.builder!.reasons.join("\n"), /Reliability across projects: sonnet-5\.5, 1 of 1 approved at first review.*Outcomes in its favour 2, against 0; tie-breaker 0\.75, which orders only equal scores\./);
   // gpt only reviewed: its verdicts are no outcome of its own work.
   assert.match(ranked.alternates[0].reasons.join("\n"), /Reliability across projects: gpt-6-astra, no work reviewed yet, .*as a reviewer 0 of 1 approval contradicted.*Outcomes in its favour 0, against 0; tie-breaker 0\.50/);
