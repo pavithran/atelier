@@ -2150,7 +2150,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "projects"]);
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
@@ -2265,14 +2265,13 @@ export default {
       // never a redirect that funnels stray traffic to the sign-in page.
       // /how serves one public page at exactly that path (above); anything
       // else asked under the name is sent to sign in like the app's own
-      // pages. A project area (/p/…) is judged below by what it names.
+      // pages. Every path under /p/ is sent to sign in alike (below).
       if (!how) {
-        // A project area is a path of the app only while it names a project
-        // something is registered under: a name nothing answers to is an
-        // unknown path and answers 404, while a real project's pages still
-        // send the visitor to sign in.
-        let projectArea = false;
-        if (parts[0] === "p" && parts.length >= 2) projectArea = (await resolveProject(env, parts[1])).registered;
+        // A path under /p/ is answered the same whether or not a project is
+        // registered under the name it holds: the visitor is sent to sign in
+        // either way, so a guessed name learns nothing — a 404 for the rest
+        // would say which names, anonymised or private, are real.
+        const projectArea = parts[0] === "p" && parts.length >= 2;
         const knownUI = parts.length === 0 || projectArea || ["models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
         const open = parts.length === 0 && (await liveShowcase(env).catch(() => [])).length > 0;
