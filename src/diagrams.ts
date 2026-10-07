@@ -28,7 +28,7 @@ const NODES: Node[] = [
   { x: COL[1], y: 32, w: CW, name: "Terminal", sub: "the owner runs atelier" },
   { x: COL[2], y: 32, w: CW, name: "Orchestrator", sub: "a session; starts agents" },
   { x: COL[3], y: 32, w: CW, name: "Home runner", sub: "takes jobs; starts agents" },
-  { x: COL[1], y: 118, w: COL[3] + CW - COL[1], name: "atelier CLI, in the checkout and in each workspace", sub: "the one path to Cloudflare; runs checks in a fresh clone of the pushed head" },
+  { x: COL[1], y: 118, w: COL[3] + CW - COL[1], name: "atelier CLI, in the checkout and in each workspace", sub: "the usual path to Cloudflare; runs checks in a fresh clone of the pushed head" },
   { x: 512, y: 196, w: 300, name: "Workspaces", sub: "one per task: a clone of its fork" },
   { x: COL[0], y: 284, w: CW, name: "opencode", sub: "GLM, DeepSeek, OpenRouter" },
   { x: COL[1], y: 284, w: CW, name: "Antigravity", sub: "Gemini, GPT-OSS" },
@@ -40,7 +40,7 @@ const NODES: Node[] = [
   { x: COL[3], y: 372, w: CW, name: "Anthropic", sub: "Claude plan" },
   { x: 512, y: 460, w: 300, name: "Worker at atelier.zone", sub: "the pages, the API and the gate", cloud: true },
   { x: COL[1], y: 540, w: CW, name: "Durable Objects", sub: "a Ledger per project", cloud: true },
-  { x: COL[2], y: 540, w: CW, name: "Check container", sub: "with --sandbox; internet off", cloud: true },
+  { x: COL[2], y: 540, w: CW, name: "Check container", sub: "npm registry only, read-only", cloud: true },
   { x: COL[3], y: 540, w: CW, name: "Artifacts", sub: "the baseline and task forks", cloud: true },
 ];
 
@@ -71,9 +71,9 @@ const RAILS: string[] = [
   `M${COL[3] + CW} 130H988V562H${COL[3] + CW + 2}`,
 ];
 
-export const LAYERS_LABEL = "Where Atelier runs, in five layers. The owner works through a browser and the terminal, and an orchestrating session or a home runner can act for them; all three act through the atelier CLI, which makes one workspace per task, a clone of the task's fork. An agent works in its own workspace and calls its own model provider. The CLI is the one path to Cloudflare: its API calls reach the Worker and its git pushes reach Artifacts, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, makes each task's fork in Artifacts, and with --sandbox runs checks in a container with the internet off.";
+export const LAYERS_LABEL = "Where Atelier runs, in five layers. The owner works through a browser and the terminal, and an orchestrating session or a home runner can act for them; all three act through the atelier CLI, which makes one workspace per task, a clone of the task's fork. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach Artifacts, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, makes each task's fork in Artifacts, and with --sandbox runs checks in a container that starts with the internet off and reaches only the npm registry, read-only, through a gateway.";
 
-export const LAYERS_CAPTION = "Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach Artifacts. An agent reaches Cloudflare only through the CLI, with a token bound to it whose Git write access covers its own task's fork alone; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them, or with --sandbox in a Cloudflare container. Either way the result is recorded against that head, and the Worker's gate reads it.";
+export const LAYERS_CAPTION = "Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach Artifacts. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's fork alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them, or with --sandbox in a Cloudflare container, which starts with the internet off and reaches only the npm registry, read-only. Either way the result is recorded against that head, and the Worker's gate reads it.";
 
 export function layersDiagram(): string {
   const p: string[] = [];

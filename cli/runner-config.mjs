@@ -88,6 +88,9 @@ export function parseConfig(json) {
       if (placeholders.some((p) => !PLACEHOLDERS.includes(p)) || /[{}]/.test(template.replace(/\{(model|brief_file|workspace|plan_file|diff_file|verdict_file)\}/g, ""))) bad("unknown command placeholder");
       if (!placeholders.includes("model") || !placeholders.includes("brief_file")) bad("command must include {model} and {brief_file}");
       if (/[{}]/.test(entry.command[0])) bad("the executable must not contain placeholders");
+      // A runner that offers reviews may be given one for any of its agents,
+      // and a reviewer's verdict is read from the {verdict_file} it writes.
+      if (jobs?.includes("review") && !placeholders.includes("verdict_file")) bad(`jobs include "review", but ${entry.agent}'s command has no {verdict_file} placeholder, so it could not write a verdict; add one, or take "review" out of jobs`);
     }
     // Optional: the variables of the runner's environment this harness also
     // gets, such as the provider key opencode reads. Atelier's own never.

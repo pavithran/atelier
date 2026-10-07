@@ -162,7 +162,10 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   const imported = await importedAll(env, shown.map((s) => s.project), cutoffs);
   const stories = shown.map((s) => s.story);
   const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), shown.length < entries.length, imported, shown));
-  res.headers.set("cache-control", "public, max-age=60");
+  // The zone and browsers may hold the page for a minute at most, so a
+  // project removed from the showcase disappears within a minute.
+  res.headers.set("cache-control", "public, max-age=60, s-maxage=60");
+  res.headers.set("cdn-cache-control", "max-age=60");
   // A copy the cache refuses is not an error: the page is still served.
   await caches.default.put(key, res.clone()).catch(() => undefined);
   return res;
