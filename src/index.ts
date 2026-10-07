@@ -831,21 +831,27 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
-    // Each ask records what the runner can run (putRunnerOffer), so the
-    // server can say when a dispatch names a model or a job no live runner
-    // offers, instead of letting it wait as though merely unclaimed, and plan
-    // routing picks from the models live runners offer (src/plans/route.ts).
-    if (offer) await index(env).putRunnerOffer(offer, new Date().toISOString());
-    const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
+    // Each step's time in milliseconds goes out in a server-timing header
+    // (index, projects, total), so a slow poll can be measured live.
+    const started = Date.now();
+    // Each ask records what the runner can run (askQueue, which rewrites an
+    // unchanged offer at most once a minute), so the server can say when a
+    // dispatch names a model or a job no live runner offers, instead of
+    // letting it wait as though merely unclaimed, and plan routing picks from
+    // the models live runners offer (src/plans/route.ts). The same call on
+    // the index returns the projects to read.
+    const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    const indexed = Date.now();
     const unreadable: string[] = [];
+    // One call per project reads both its waiting tasks and its open review requests.
     const lists = await Promise.all(projects.map(async (p) => {
       try {
-        const waiting = (await ledgerOf(env, p).waiting()).map((item) => ({ project: p.name, item }));
-        const reviews = (await ledgerOf(env, p).reviewWaiting()).map((item) => ({ project: p.name, item }));
-        return [...waiting, ...reviews];
+        const { waiting, reviews } = await ledgerOf(env, p).queued();
+        return [...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
+    const read = Date.now();
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
@@ -857,6 +863,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
+    res.headers.set("server-timing", `index;dur=${indexed - started}, projects;dur=${read - indexed};desc="${projects.length}", total;dur=${Date.now() - started}`);
     return res;
   }
   // What each runner last said it can run, as the server recorded it when the
