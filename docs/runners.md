@@ -21,7 +21,9 @@ Runners are not sent work. A runner asks for it, describing what it can run,
 with `POST /api/queue` and a body such as
 `{"runner": "home:studio", "agents": [{"agent": "opencode", "models": ["glm-5.3-flash"]}]}`.
 Atelier answers with the waiting tasks it may take, across every project,
-oldest first, each with the name to claim under. The runner then claims
+oldest first, each with the name to claim under; the answer leads with
+the dispatched claims that runner already holds, so a restarted runner takes
+back the jobs a dead run left behind and finishes them. The runner then claims
 through the ordinary atomic claim with the header `X-Atelier-Runner`; a
 dispatched task refuses any claim from a different kind of runner, agent or
 model, and refuses a claim with no runner at all until the owner withdraws
