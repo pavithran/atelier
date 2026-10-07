@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
-import worker, { pullGateway, readGateway } from "../src/index.ts";
+import worker, { GATEWAY_PULL_EVERY_MS, pullGateway, pullGatewayIfDue, readGateway } from "../src/index.ts";
 import { renderModels } from "../src/ui.ts";
 import { MAX_PAGES, PAGE_SIZE, type GatewayView } from "../src/usage/gateway.ts";
 
@@ -176,4 +176,37 @@ it("GET /api/usage carries the gateway's view for atelier runner --usage", async
   expect(res.status).toBe(200);
   const body = (await res.json()) as { gateway: GatewayView };
   expect(body.gateway).toMatchObject({ off: "AI Gateway costs are off: set AI_GATEWAY_TOKEN", days: 7, models: [] });
+});
+
+it("a pull starts at most once per interval, however many ask at once, and a runner's queue poll starts a due one", async () => {
+  const DAY5 = NOW + 5 * 86_400_000;
+  const { dataset } = fakeDataset();
+  const on = { ...env, CF_ACCOUNT_ID: "test-account", AI_GATEWAY_TOKEN: TOKEN, METRICS: dataset } as unknown as Env;
+  const route = logsRoute([raw("01JDUE1", 1, {}, DAY5)]);
+  const results = await Promise.all([pullGatewayIfDue(on, DAY5, route.fetcher), pullGatewayIfDue(on, DAY5, route.fetcher), pullGatewayIfDue(on, DAY5 + 1000, route.fetcher)]);
+  expect(results.filter((r) => r !== null)).toEqual([{ added: 1, error: null }]);
+  expect(route.calls()).toBe(1);
+  expect(await pullGatewayIfDue(on, DAY5 + GATEWAY_PULL_EVERY_MS - 1, route.fetcher)).toBeNull();
+  expect(await pullGatewayIfDue(on, DAY5 + GATEWAY_PULL_EVERY_MS, route.fetcher)).toEqual({ added: 0, error: null });
+
+  // A signed-in runner's poll of the queue starts the due pull in the background.
+  const later = Date.now() + 30 * 86_400_000;
+  vi.useFakeTimers({ now: later, toFake: ["Date"] });
+  const spy = vi.spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({ success: true, errors: [], result: [] })) as typeof fetch);
+  try {
+    const ctx = createExecutionContext();
+    const req = new Request("https://atelier.test/api/queue", { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+      body: JSON.stringify({ runner: "home:test", kind: "home", agents: [], jobs: ["review"] }) });
+    const res = await worker.fetch(req, { ...on, ATELIER_TOKEN: TOKEN } as unknown as Env, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(200);
+    expect(spy.mock.calls.some(([u]) => String(u).includes("/ai-gateway/gateways/atelier/logs"))).toBe(true);
+    // Without a token the poll is refused and starts nothing.
+    spy.mockClear();
+    const ctx2 = createExecutionContext();
+    const refused = await worker.fetch(new Request("https://atelier.test/api/queue", { method: "POST", body: "{}" }), { ...on, ATELIER_TOKEN: TOKEN } as unknown as Env, ctx2);
+    await waitOnExecutionContext(ctx2);
+    expect(refused.status).toBe(401);
+    expect(spy).not.toHaveBeenCalled();
+  } finally { spy.mockRestore(); vi.useRealTimers(); }
 });

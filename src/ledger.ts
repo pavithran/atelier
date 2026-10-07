@@ -705,6 +705,17 @@ export class Ledger extends DurableObject<Env> {
     return row ? JSON.parse(row.value as string) : [];
   }
 
+  // Grants one pull attempt per `everyMs`: true, and the attempt recorded,
+  // when none was granted in the last `everyMs`; false otherwise. The
+  // Durable Object runs one call at a time, so two requests that ask at once
+  // never both pull.
+  claimGatewayPull(now: number, everyMs: number): boolean {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'gateway_pull_claimed'`).toArray()[0];
+    if (row && now - Number(row.value) < everyMs) return false;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('gateway_pull_claimed', ?)`, String(now));
+    return true;
+  }
+
   // Records a pull; the newest log it wrote, when it wrote any, as the next
   // pull's mark; and the gap it left, when it moved the mark past one. Gaps
   // that ended before the window are dropped.
