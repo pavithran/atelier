@@ -33,6 +33,7 @@
 // name a record supplies is cleaned before it is printed or reported
 // (cleanBody).
 
+import { pullReadText } from "../src/usage/gateway.ts";
 import { existsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 
@@ -253,7 +254,10 @@ export function describeGateway(view, safe) {
   }
   for (const g of view.gaps ?? []) lines.push(`  incomplete: at least ${g.atLeast} call${g.atLeast === 1 ? "" : "s"} between ${stamp(Date.parse(g.from))} and ${stamp(Date.parse(g.to))} not read; totals undercount`);
   if (view.pull?.error) lines.push(`  last pull ${stamp(Date.parse(view.pull.at))} failed: ${safe(view.pull.error, 200)}`);
-  else if (view.pull) lines.push(`  logs last pulled ${stamp(Date.parse(view.pull.at))}`);
+  else if (view.pull) {
+    const read = pullReadText(view.pull);
+    lines.push(`  logs last pulled ${stamp(Date.parse(view.pull.at))}${read ? `; ${safe(read, 400)}` : ""}`);
+  }
   return lines;
 }
 

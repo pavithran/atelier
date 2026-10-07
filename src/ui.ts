@@ -22,7 +22,7 @@ import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
-import { duration, type GatewayView } from "./usage/gateway.ts";
+import { duration, type GatewayView, pullReadText } from "./usage/gateway.ts";
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -761,7 +761,7 @@ export function gatewaySection(g: GatewayView): string {
   const pull = g.pull
     ? g.pull.error
       ? `The last pull, ${e(stamp(g.pull.at))}, failed: ${e(g.pull.error)}.`
-      : `Logs last pulled ${e(stamp(g.pull.at))}, ${plural(g.pull.added, "new call")}.`
+      : `Logs last pulled ${e(stamp(g.pull.at))}, ${plural(g.pull.added, "new call")}${pullReadText(g.pull) ? `; ${e(pullReadText(g.pull))}` : ""}.`
     : "No logs pulled yet; the Worker pulls them every five minutes.";
   // When the figures cannot be read, the last pull still says whether the
   // gateway's logs are reachable.
