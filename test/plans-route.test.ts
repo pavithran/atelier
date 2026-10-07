@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
-import type { LiveOffer } from "../src/dispatch/rules.ts";
+import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { paidPerToken, routeParts, SIZE_M_CONTEXT, type PartRoute, type RouteInput } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
@@ -281,7 +281,7 @@ test("routing is deterministic, breaks ties by model id then actor name, and lea
 });
 
 // An offer as the index records it: what a runner asked for, with when.
-const offer = (runner: string, agents: { agent: string; models: string[] }[], at: number): LiveOffer =>
+const offer = (runner: string, agents: { agent: string; models: string[] }[], at: number): SeenOffer =>
   ({ runner, kind: "home", agents, at: new Date(at).toISOString() });
 
 test("routing picks builders, alternates and reviewers only from the models live runners offer", () => {
@@ -310,7 +310,7 @@ test("routing picks builders, alternates and reviewers only from the models live
   assert.deepEqual([routed.builder!.actor, routed.reviewer!.actor, actors(routed.alternates), routed.unrouted], [unconstrained.builder!.actor, unconstrained.reviewer!.actor, actors(unconstrained.alternates), unconstrained.unrouted]);
 
   // A stale offer is no offer: the offer's runner asked too long ago.
-  const stale = one([opus, gpt], { offers: [offer("home:studio", [{ agent: "codex", models: ["gpt-6-astra"] }], now - 6 * 60_000)] });
+  const stale = one([opus, gpt], { offers: [offer("home:studio", [{ agent: "codex", models: ["gpt-6-astra"] }], now - OFFER_LIVE_MS - 60_000)] });
   assert.equal(stale.builder, null);
   assert.match(stale.unrouted!, /^no eligible builder: (claude-code\/opus-5\.5|codex\/gpt-6-astra) \(no live runner offers/);
 

@@ -4,6 +4,7 @@ import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanView } from "../src/plans/show.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
+import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
 
 // Plan routing from the models live runners offer (t246): a runner's ask on
@@ -71,7 +72,7 @@ async function proposed(L: L, plan = doc(part("a"), part("b"))) {
 
 it("until any runner has asked, routing restricts nothing and the default planner is the pool's own order", async () => {
   const L = await setup("plan-offers-hand");
-  expect(await index().offers()).toEqual([]);
+  expect(await index().runnerOffers()).toEqual([]);
   const byRank = await L.newPlan("Ranked", ["src/**"], "owner", null, POOL);
   expect(byRank.reasons[0]).toMatch(/^Rank 1 of 3 in the pool for research work/);
   await L.stopPlan(byRank.item.id, "owner", "done");
@@ -102,16 +103,16 @@ it("a runner's ask is recorded with when it asked, and the owner alone reads the
   await proposed(L, doc(part("a")));
   const ask = await call("POST", "/queue", "owner", { runner: "home:Studio", agents: [{ agent: "zcode", models: ["glm-5.3"] }], jobs: ["build", "review"] });
   expect(ask.status).toBe(200);
-  const offers = await (await call("GET", "/offers", "owner")).json() as { runner: string; kind: string; at: string }[];
+  const offers = await (await call("GET", "/runners", "owner")).json() as { runner: string; kind: string; at: string }[];
   expect(offers).toHaveLength(1);
   expect(offers[0]).toMatchObject({ runner: "home:studio", kind: "home" });
   expect(Date.now() - Date.parse(offers[0].at)).toBeLessThan(60_000);
   // The next ask replaces the runner's row, as a runner's config changes.
   await call("POST", "/queue", "owner", { runner: "home:studio", agents: [{ agent: "codex", models: ["gpt-6-astra"] }] });
-  expect(await index().offers()).toHaveLength(1);
-  // An agent token reaches no offers route: it is the owner's alone.
+  expect(await index().runnerOffers()).toHaveLength(1);
+  // An agent token reaches no runners route: it is the owner's alone.
   const token = await (await call("POST", "/tokens", "owner", { actor: "zcode/glm-5.3", label: "offers" })).json() as { token: string };
-  expect((await call("GET", "/offers", null, undefined, token.token)).status).toBe(403);
+  expect((await call("GET", "/runners", null, undefined, token.token)).status).toBe(403);
 });
 
 it("approval and the preview route only from the models live runners offer", async () => {
@@ -134,7 +135,7 @@ it("approval and the preview route only from the models live runners offer", asy
 
   // A second runner offers the rest of the pool: approval routes, and every
   // builder, alternate and reviewer is a model one of the runners offers.
-  await index().putOffer({
+  await index().putRunnerOffer({
     runner: "home:desk", kind: "home", jobs: ["build", "review"],
     agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }],
   }, new Date().toISOString());
@@ -153,10 +154,10 @@ it("approval and the preview route only from the models live runners offer", asy
 it("a stale offer offers nothing: recorded asks past the window leave nothing to route from", async () => {
   const L = await setup("plan-offers-stale");
   const { id, hash } = await proposed(L, doc(part("a")));
-  const ago = new Date(Date.now() - 6 * 60_000).toISOString();
-  await index().putOffer({ runner: "home:studio", kind: "home", agents: [{ agent: "zcode", models: ["glm-5.3"] }] }, ago);
-  await index().putOffer({ runner: "home:desk", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }] }, ago);
+  const ago = new Date(Date.now() - OFFER_LIVE_MS - 60_000).toISOString();
+  await index().putRunnerOffer({ runner: "home:studio", kind: "home", agents: [{ agent: "zcode", models: ["glm-5.3"] }] }, ago);
+  await index().putRunnerOffer({ runner: "home:desk", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }] }, ago);
   // The asks are recorded, so routing knows what is offered: nothing live.
-  expect(await index().offers()).toHaveLength(2);
+  expect(await index().runnerOffers()).toHaveLength(2);
   await refusal(L.approvePlan(id, "owner", hash, false, POOL), "unrouted", /part a has no builder: no eligible builder: .*no live runner offers.*\. Add models to the pool, or approve with --allow-paid if a paid model would qualify, or start a runner that offers them, then approve again$/);
 });

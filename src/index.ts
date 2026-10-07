@@ -733,19 +733,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
-  // The runners that asked for work, as each one's last offer was recorded
-  // (POST /queue): what plan routing reads when it picks builders and
-  // reviewers, and what `atelier status` shows as offered. The owner token.
-  if (parts[0] === "offers" && parts.length === 1 && m === "GET") {
-    return json(await index(env).offers());
-  }
   // The queue across every project. GET lists it for the owner; a runner POSTs
   // what it can run and gets back the tasks it may claim, with the name to claim under.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
-    // Each ask records what the runner can run, so plan routing picks from
-    // the models live runners offer (Ledger.putOffer, src/plans/route.ts).
-    if (offer) await index(env).putOffer(offer, new Date().toISOString());
+    // Each ask records what the runner can run (putRunnerOffer), so the
+    // server can say when a dispatch names a model or a job no live runner
+    // offers, instead of letting it wait as though merely unclaimed, and plan
+    // routing picks from the models live runners offer (src/plans/route.ts).
+    if (offer) await index(env).putRunnerOffer(offer, new Date().toISOString());
     const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
     const lists = await Promise.all(projects.map(async (p) => {
@@ -767,6 +763,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
     return res;
+  }
+  // What each runner last said it can run, as the server recorded it when the
+  // runner asked the queue for work, newest ask per runner. The owner's
+  // surfaces read it to say when a dispatch no live runner offers can never
+  // be claimed (unoffered in src/dispatch/rules.ts): atelier land while it
+  // waits for a verdict, plan show for a routed review, status for the queue
+  // and its Runners section. Plan routing reads the same offers on the index
+  // (t246), picking builders and reviewers only from what live runners offer.
+  if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await index(env).runnerOffers());
   }
   if (parts[0] !== "projects") throw new RuleError("not_found", "no such route", 404);
   if (parts.length === 1 && m === "GET") return json((await index(env).projects()).filter((p) => inScope(c.token, namesOf(p))));
@@ -970,9 +977,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
+  // The runner offers come with it, so an open review request is judged
+  // against what live runners offer rather than read as merely unclaimed.
   if (verb === "plan" && parts.length === 5 && m === "GET") {
     requireOwner(env, actor);
-    return json(await L.planView(id, await index(env).models(), await mainHeadOf(env, L)));
+    return json(await L.planView(id, await index(env).models(), await mainHeadOf(env, L), await index(env).runnerOffers()));
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 

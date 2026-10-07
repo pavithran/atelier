@@ -3193,15 +3193,21 @@ const commands = {
     const known = await call("GET", "/projects", undefined, OWNER);
     const chosen = known;
     const inbox = await call("GET", "/inbox", undefined, OWNER);
-    // The runners' recorded offers, for the Runners section; a server without
-    // the route (older than this CLI's route level) leaves the section out.
-    const offers = await request("GET", "/offers", undefined, OWNER).then((r) => r, () => null);
+    // The runner queue and the offers each runner last asked with, so the
+    // waiting section can say when a queued job — a review routed to a model
+    // no live runner offers, say — can never be claimed, not merely waits
+    // (t240), and the Runners section can list what each offers (t246).
+    // Either read failing leaves the listing as it was.
+    const [queue, offers] = await Promise.all([
+      request("GET", "/queue", undefined, OWNER).catch(() => null),
+      request("GET", "/runners", undefined, OWNER).catch(() => null),
+    ]);
     const views = await Promise.all(chosen.map(async (p) => {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views, offers));
+    console.log(formatStatus(views, { queue, offers }));
   },
 
   async open() {

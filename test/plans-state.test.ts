@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, type Dispatch } from "../src/dispatch/rules.ts";
+import { assign, OFFER_LIVE_MS, type Dispatch } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
@@ -91,7 +91,7 @@ test("the default planner is the first model for research work that is not refus
   assert.match(noneOffered.reasons[0], /claude-code\/opus-5\.5 \(no live runner offers claude-code\/opus-5\.5, so no runner could claim the plan job\)/);
   assert.match(noneOffered.reasons[0], /codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim the plan job\)/);
   // A stale offer plans nothing.
-  const stale = [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now - 6 * 60_000).toISOString() }];
+  const stale = [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now - OFFER_LIVE_MS - 60_000).toISOString() }];
   assert.equal(pickPlanner([opus, gpt], record, policy, undefined, stale).actor, null);
 });
 

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planBrief, planText, type PlanPartView, type PlanView } from "../src/plans/show.ts";
+import { planBrief, planText, type PlanPartReview, type PlanPartView, type PlanView } from "../src/plans/show.ts";
+import type { SeenOffer } from "../src/dispatch/rules.ts";
 import { limitsFor } from "../src/plans/state.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 
@@ -125,6 +126,40 @@ test("plan show prints a part's latest integration failure, its kind and whether
   assert.ok(failed(null).some((line) => line.startsWith("      integration failed at 2026-10-06 12:00 UTC (kind not recorded; not charged to the builder): ")));
   // Once integrated, the old failure is no longer shown.
   assert.ok(!failed("checks", "integrated").some((line) => line.includes("integration failed")));
+});
+
+// A part's live review request (t240): who was asked, whether it is claimed,
+// and — judged against the runner offers the view was read with — that a
+// request no live runner offers can never be claimed, with the reroute that
+// names another reviewer.
+test("a part's review request is shown; one no live runner offers says it can never be claimed", () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const at = now.toISOString();
+  const offers: SeenOffer[] = [{ runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at }];
+  const shown = (review: PlanPartReview | null, change: Partial<PlanView> = {}) => planText({
+    ...building,
+    parts: [part("t2", "a", {
+      state: "submitted", owner: "x/y", head: "a".repeat(40),
+      gate: { ready: false, blockers: ["a protected change needs an independent review, and none is recorded at aaaaaaaa"] }, review,
+    })],
+    offers, ...change,
+  }, "demo", now).split("\n");
+  const dead = shown({ reviewer: "claude-code/fable-5.1", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null });
+  assert.ok(dead.includes("      review of aaaaaaaa asked of claude-code/fable-5.1; the request is open, and no live runner can take it: home:studio offers review as opencode/glm-5.3"), dead.join("\n"));
+  assert.ok(dead.includes("      it will not be claimed until a runner that offers claude-code/fable-5.1 for the review job asks for work; name another reviewer: atelier plan reroute t2 --to H/M --project demo"));
+  // A live runner offering the reviewer, or offers not read, reads as merely open.
+  const open = shown({ reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null });
+  assert.ok(open.includes("      review of aaaaaaaa asked of opencode/glm-5.3; the request is open"));
+  assert.ok(!open.some((l) => l.includes("no live runner")));
+  const unread = shown({ reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null }, { offers: null });
+  assert.ok(unread.some((l) => l.includes("the request is open")));
+  assert.ok(!unread.some((l) => l.includes("no live runner")));
+  const plain = planText({ ...building, parts: [part("t2", "a", { state: "submitted", owner: "x/y", head: "a".repeat(40), gate: null, review: { reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null } })] }, "demo", now).split("\n");
+  assert.ok(plain.some((l) => l.includes("the request is open")), "a view with no offers field still shows the request");
+  // Once claimed, the request names when and no longer judges the offers.
+  const claimed = shown({ reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "claimed", claimedBy: "opencode/glm-5.3", claimedAt: at });
+  assert.ok(claimed.includes("      review of aaaaaaaa asked of opencode/glm-5.3, claimed at 2026-10-07 12:00 UTC"));
+  assert.ok(!claimed.some((l) => l.includes("the request is open")));
 });
 
 // How far behind main the plan's branch is, and its latest refresh: one in
