@@ -136,20 +136,22 @@ it("with main unmoved the tick dispatches the dependent part at once, with no re
   expect((await L.planView(id)).refresh).toMatchObject({ taken: H0, main: H0, last: null });
 });
 
-it("a failed refresh charges no part, is not tried again for the same main head, and the parts go on without it", async () => {
+it("a refresh that failed its checks charges no part, is not tried again for the same main head, and the parts go on without it", async () => {
   const L = await setup("refresh-failed");
   const { id, b } = await readyPlan(L);
   await integrateA(L, id, M1);
   await L.claim(id, INTEGRATOR, RUNNER, true);
-  await L.refreshFailed(id, INTEGRATOR, M1, "merging main conflicted: CONFLICT in docs/using-atelier.md", "conflict");
+  await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
   // b is dispatched without the refresh, and no attempt is counted against any part.
   expect((await L.item(b)).dispatch).toMatchObject({ by: ORCHESTRATOR });
   const view = await L.planView(id);
   expect(view.parts.every((p) => p.attempts.every((a) => a.outcome !== "failed"))).toBe(true);
   expect(view.parts.every((p) => !p.integrationFailure)).toBe(true);
-  expect(view.refresh).toMatchObject({ taken: H0, main: M1, last: { state: "failed", kind: "conflict", mainHead: M1 } });
+  expect(view.refresh).toMatchObject({ taken: H0, main: M1, last: { state: "failed", kind: "checks", mainHead: M1 } });
   expect(view.integration.integrationHead).toBe(MA);
-  expect((await events(L, id)).some((e) => e.kind === "plan.refresh_failed" && e.data.kind === "conflict")).toBe(true);
+  expect((await events(L, id)).some((e) => e.kind === "plan.refresh_failed" && e.data.kind === "checks")).toBe(true);
+  // Failing checks add no part to resolve them; only a conflict does.
+  expect(view.parts.map((p) => p.key)).toEqual(["a", "b"]);
   // Released and ticked again with main still at M1: the failed refresh is not dispatched again.
   await L.release(id, INTEGRATOR, "refresh failed");
   expect((await L.item(id)).dispatch).toBeNull();
@@ -332,5 +334,7 @@ it("POST refresh-failed needs the branch rolled back to its integration head, an
   const ok = await call(name, `${id}/refresh-failed`, INTEGRATOR, { mainHead: M1, reason: "merging main conflicted", kind: "conflict" }, moved);
   expect(ok.status).toBe(200);
   expect((await L.planView(id)).refresh?.last).toMatchObject({ state: "failed", kind: "conflict", reason: "merging main conflicted" });
-  expect((await L.item(b)).dispatch).toMatchObject({ by: ORCHESTRATOR });
+  // The conflict adds the merge-main part, which goes before b.
+  expect((await L.item(b)).dispatch).toBeNull();
+  expect((await L.planView(id)).parts.find((p) => p.key === "merge-main-11111111")?.dispatch).toMatchObject({ job: "merge-main", head: M1 });
 });

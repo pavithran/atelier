@@ -232,3 +232,23 @@ test("integrationFailures keeps each part's latest failure with its kind", () =>
   assert.deepEqual(failures.get("a"), { reason: "the plan's checks failed after the merge: FAIL npm test", kind: "checks", at: AT });
   assert.deepEqual(failures.get("b"), { reason: "old", kind: null, at: AT });
 });
+
+// A part that goes first (a merge-main part the Ledger added): while it is
+// not integrated, merged or abandoned, it alone is dispatched, though it
+// comes last in plan order; parts already live go on.
+test("a part that goes first is dispatched before every other part and holds them until it is settled", () => {
+  const p = plan(part("a"), part("b"), part("m"));
+  const routes = [route("a"), route("b"), route("m")];
+  const holds = ["m"];
+  assert.deepEqual(parts(tick(p, [view("a"), view("b"), view("m")], routes, [], { holds })), ["m"]);
+  // Dispatched and waiting, claimed, submitted or blocked, it still holds the others.
+  assert.deepEqual(parts(tick(p, [view("a"), view("b"), view("m")], routes, [event(1, "atelier/orchestrator", "item.dispatched", {}, "m")], { holds })), []);
+  for (const state of ["claimed", "submitted", "blocked"] as const) assert.deepEqual(parts(tick(p, [view("a"), view("b"), view("m", state)], routes, [], { holds })), [], state);
+  // A part already live goes on, and counts against maxParallel.
+  assert.deepEqual(parts(tick(p, [view("a", "claimed"), view("b"), view("m")], routes, [], { holds, maxParallel: 2 })), ["m"]);
+  assert.deepEqual(parts(tick(p, [view("a", "claimed"), view("b", "claimed"), view("m")], routes, [], { holds, maxParallel: 2 })), []);
+  // Settled, it holds nothing.
+  for (const state of ["integrated", "merged", "abandoned"] as const) assert.deepEqual(parts(tick(p, [view("a"), view("b"), view("m", state)], routes, [], { holds })), ["a", "b"], state);
+  // Without it, plan order.
+  assert.deepEqual(parts(tick(p, [view("a"), view("b"), view("m")], routes)), ["a", "b"]);
+});
