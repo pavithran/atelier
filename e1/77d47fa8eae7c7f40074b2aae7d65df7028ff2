@@ -1,0 +1,24 @@
+atelier atelier/t202 "Follow-ups from gemini-3.1-pro's after-the-fact review of t193 (atelier status overlap pairs): an overlap decision whose reason the pattern does not match is dropped from the text output entirely, so show it as a plain decision instead (cli/status.mjs:35); a project whose only entries are overlaps prints 'Nothing waiting.' then the overlap heading, which should say nothing waits on the owner but scopes overlap (cli/status.mjs:109); the comment at cli/status.mjs:13 says overlaps sit on each item, but they sit on the project"
+accepted head a2bb6b6f5b95b3a38c3705c38a31b60479bc723d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T01:29:04.957Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T01:29:08.597Z
+REVIEW approve by antigravity/gemini-3.1-pro at a2bb6b6f5b95b3a38c3705c38a31b60479bc723d, recorded by pavi with the owner token, answering a claimed review request
+2026-10-06T22:16:02.813Z pavi item.created
+2026-10-07T00:16:46.074Z opencode/glm-5.3 item.claimed
+2026-10-07T00:16:49.731Z opencode/glm-5.3 fork.created
+2026-10-07T01:25:21.307Z pavi land.lease
+2026-10-07T01:25:23.861Z pavi land.merge
+2026-10-07T01:25:34.442Z pavi land.regenerate
+2026-10-07T01:25:38.354Z opencode/glm-5.3 push.observed
+2026-10-07T01:25:38.485Z pavi land.push
+2026-10-07T01:29:05.721Z opencode/glm-5.3 evidence.observed
+2026-10-07T01:29:08.889Z opencode/glm-5.3 evidence.observed
+2026-10-07T01:29:09.563Z pavi land.check
+2026-10-07T01:29:10.082Z opencode/glm-5.3 item.submitted
+2026-10-07T01:29:10.363Z pavi land.submit
+2026-10-07T01:29:10.533Z pavi review.requested
+2026-10-07T01:29:11.272Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T01:31:19.136Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T01:31:21.947Z pavi land.review
+2026-10-07T01:31:22.667Z pavi item.accepted
+2026-10-07T01:31:22.817Z pavi land.accept
