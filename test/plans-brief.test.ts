@@ -221,3 +221,30 @@ test("quoted text cannot close its block, and hidden characters are shown", asyn
     "Its output:\n`````\n```\n```` fail\n<U+202E>\n`````",
   );
 });
+
+// A merge-main part's brief: main has been merged into the workspace and the
+// conflicts are left in it; the builder keeps both sides' behaviour and
+// claims, removes the markers, runs the checks and commits the merge with
+// its message as it stands, which already carries the Agent line.
+test("a merge-main brief says main is merged with conflicts left, to keep both sides, and to commit the merge as it stands", async () => {
+  const M = "c".repeat(40);
+  const brief = await text({ mergeMain: { head: M }, dependencies: [], part: part({ key: "merge-main-cccccccc", title: "Merge main at cccccccc into the plan's branch", dependsOn: [] }) });
+  has(brief,
+    "## Rules\n\n- Work only in this workspace. Change only what resolving the merge needs; main's own changes come with the merge and are not yours to change.",
+    `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${GLM}.`,
+    "Do not start the merge again, abort it, rebase or reset it.",
+    "## Merging main",
+    `Main at cccccccc (${M}) conflicts with the plan's branch.`,
+    "the runner has merged main at cccccccc into it before you start. The conflicts remain in the files listed under \"Conflicts in this workspace\"",
+    "keeping both sides' behaviour",
+    "keep both sides' claims and merge their meaning; do not pick one side.",
+    "- Remove every conflict marker",
+    "- Run the checks, fix what the merge broke, then commit the merge.",
+  );
+  lacks(brief, "- Write tests for new behaviour.", "- Commit your work in this workspace");
+  assert.ok(brief.indexOf("## Rules") < brief.indexOf("## Merging main") && brief.indexOf("## Merging main") < brief.indexOf("## The plan"));
+  // Any other part's brief, and its hash, are as they were without the field.
+  assert.equal(await hash({ mergeMain: null }), await hash());
+  assert.notEqual(await hash({ mergeMain: { head: M } }), await hash());
+  lacks(await text(), "## Merging main");
+});

@@ -20,11 +20,13 @@ export interface Dispatch {
   // A job other than building the item: "plan" asks the runner to write the
   // plan item's plan document (docs/orchestrator.md, section 2), "integrate"
   // and "refresh" ask atelier/integrator to merge a part onto the plan's
-  // branch or main into it (section 5). Absent for ordinary work.
-  job?: "plan" | "integrate" | "refresh";
+  // branch or main into it (section 5), and "merge-main" asks a part's
+  // builder to merge main into the part's workspace and resolve what
+  // conflicts. Absent for ordinary work.
+  job?: "plan" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
-  // refresh job, `head` is the main head to merge into the plan's branch.
+  // refresh or merge-main job, `head` is the main head to merge.
   part?: string;
   head?: string;
   partId?: string;
