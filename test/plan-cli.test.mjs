@@ -88,6 +88,14 @@ test("plan \"goal\" starts a plan as the owner with its scope and planner, and s
   assert.equal(f.requests.length, 1);
 });
 
+test("an unquoted goal that begins with a subcommand word is refused with a hint to quote it", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["plan", "show", "me", "the", "feature"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /"show me the feature" reads as plan show with too many words; plan show takes one id\. If that phrase is the goal, quote it: atelier plan "show me the feature"/);
+  assert.equal(f.requests.length, 0);
+});
+
 test("plan show prints the plan, or its JSON, and each subcommand refuses flags it does not take", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["plan", "show", "t1"]);
@@ -102,7 +110,7 @@ test("plan show prints the plan, or its JSON, and each subcommand refuses flags 
     [["plan", "retry", "t2", "--note", "x"], "plan retry does not take --note; see atelier plan --help"],
     [["plan", "Ship", "--json"], "plan does not take --json; see atelier plan --help"],
     [["plan", "show"], "usage: atelier plan"],
-    [["plan", "show", "t1", "t2"], "usage: atelier plan"],
+    [["plan", "show", "t1", "t2"], "quote it"],
   ]) {
     const refused = await f.run(argv);
     assert.equal(refused.status, 1, argv.join(" "));
