@@ -1,5 +1,5 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
-import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
+import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
@@ -1422,6 +1422,65 @@ export class Ledger extends DurableObject<Env> {
     return this.projectLanding();
   }
 
+  // The queue of landings waiting for the lease with --wait (t249): the
+  // server hands a freed lease to the landing that queued first, not to
+  // whichever waiting poll happens to land next, so one landing cannot take
+  // the lease ahead of another that waited longer. A waiting landing asks
+  // again on each of its polls (queueProjectLanding), which refreshes its
+  // place; a row whose landing stops asking for the expiry's span no longer
+  // counts, as a lease not renewed for that long stops guarding the project,
+  // and a row whose task has closed goes the same way, for its landing can
+  // never take the lease. What is read is already pruned of both.
+  private projectLandingQueue(): WaitingLanding[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'landing-queue'`).toArray()[0];
+    const rows = row ? JSON.parse(row.value as string) as WaitingLanding[] : [];
+    const now = Date.now();
+    return rows.filter((w) => !waitingLandingGone(w, now) && this.landingOpen(w));
+  }
+
+  // A row counts only while its task could still land: a task that merged or
+  // was abandoned can never take the lease its landing queued for.
+  private landingOpen(w: WaitingLanding): boolean {
+    try { const held = this.item(w.item); return held.state !== "merged" && held.state !== "abandoned"; } catch { return false; }
+  }
+
+  private setProjectLandingQueue(rows: WaitingLanding[]): void {
+    if (rows.length) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-queue', ?)`, JSON.stringify(rows));
+    else this.sql.exec(`DELETE FROM meta WHERE key = 'landing-queue'`);
+  }
+
+  readLandingQueue(): WaitingLanding[] {
+    return this.projectLandingQueue();
+  }
+
+  // A landing queued with --wait asks again (one ask per poll of atelier
+  // land's wait): the ask refreshes the landing's row, keeping the place it
+  // queued at, or adds the landing at the back of the queue when it had
+  // none, and answers the lease and the queue as the server sees them, so
+  // the landing waits on the server's judgment rather than its machine's
+  // clock. Nothing is taken by an ask; the landing takes the lease itself
+  // when its turn comes. `leave` drops the landing's row instead: its wait
+  // ended (it gave up after its limit, or a signal ended it), and the
+  // landings behind it must not wait for a peer that no longer waits; a row
+  // whose landing stops asking goes the same way once the expiry has passed
+  // without an ask.
+  queueProjectLanding(id: string, actor: string, leave = false): { lease: LandingLease | null; waiting: WaitingLanding[] } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    const item = this.item(id);
+    const at = new Date().toISOString();
+    const rows = this.projectLandingQueue();
+    const mine = rows.findIndex((w) => w.item === id);
+    if (leave || item.state === "merged" || item.state === "abandoned") {
+      if (mine >= 0) rows.splice(mine, 1);
+    } else if (mine >= 0) {
+      rows[mine] = { ...rows[mine], renewedAt: at };
+    } else {
+      rows.push({ item: id, holder: actor, at, renewedAt: at });
+    }
+    this.setProjectLandingQueue(rows);
+    return { lease: this.projectLanding(), waiting: rows };
+  }
+
   // Whether a lease still guards the project at `at`: renewed (or taken)
   // within the expiry, for a task that is still open.
   private landingLive(held: LandingLease, at: string): boolean {
@@ -1445,6 +1504,26 @@ export class Ledger extends DurableObject<Env> {
       // so a killed landing is named rather than silently replaced.
       if (landingLeaseLapsed(held, Date.parse(at))) expired = held;
     }
+    // The lease is free to take: the waiting queue decides who takes it
+    // (t249). Landings take the lease in the order they queued, so one
+    // cannot take it ahead of a landing that queued earlier, however their
+    // polls happen to land; the first waiting landing takes it on its next
+    // ask, and this take is refused naming it. Only the rows before this
+    // landing's own are in its way — the landings queued behind it wait
+    // their turn, and its taking spends its own row. A landing resuming its
+    // own lease (held for its task above) is not queued past: the lease is
+    // still its task's, and the queue waits behind it.
+    const rows = this.projectLandingQueue();
+    const mine = rows.findIndex((w) => w.item === id);
+    const ahead = mine === -1 ? rows : rows.slice(0, mine);
+    if (held?.item !== id && ahead.length) {
+      const first = ahead[0];
+      const since = first.at.slice(0, 16).replace("T", " ");
+      throw new RuleError("landing_lease", `${first.holder}'s landing of ${first.item} has been waiting for the lease since ${since} UTC, first of ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued for it; landings take the lease in the order they queued, so ${id} cannot take it ahead of them`, 409);
+    }
+    // The taker leaves the queue (its row, had it one, is spent), and the
+    // lease is written as before.
+    this.setProjectLandingQueue(rows.filter((w) => w.item !== id));
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
     return { item, expired };
   }
