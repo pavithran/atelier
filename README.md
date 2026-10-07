@@ -240,8 +240,11 @@ a review. It counts only at the head it names, so a later push needs a review
 or another override, and it waives that review and nothing else: a failing
 check or a rejection still refuses acceptance. Atelier refuses an override
 where no review is missing. The task page, the inbox and the decision brief
-show it with its reason, and the merge's provenance note and landing receipt
-record it.
+show it with its reason, and the landing receipt records it. The merge's
+provenance note, which can be pushed to a public remote, names the override and
+who made it but not its reason; it names each review's reviewer, verdict, head
+and recorder in the same way, without the review's note. Both stay in the
+ledger.
 
 ## Projects governed by ControlPlane
 

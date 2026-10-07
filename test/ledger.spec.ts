@@ -146,7 +146,7 @@ it("a protected path is accepted only after an independent approval", async () =
   await L.addReview(review("t1", "codex/opus-5.5", H1, true));
   await refusal(L.accept("t1", "owner"), "not_ready", /protected path/);
 
-  await L.addReview(review("t1", B, H1, true, "independent model, looks right"));
+  await L.addReview(review("t1", B, H1, true, "independent model, looks right"), undefined, true);
   const accepted = await L.accept("t1", "owner");
   expect(accepted).toMatchObject({ state: "accepted", acceptedHead: H1, owner: A });
 
@@ -184,7 +184,7 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
   expect((await L.item("t1")).reviewOverride).toBeUndefined();
   // Where another family has approved, there is nothing to override.
-  await L.addReview(review("t1", B, H1, true));
+  await L.addReview(review("t1", B, H1, true), undefined, true);
   await refusal(L.accept("t1", "owner", H1, reason), "override_unneeded", /not missing an independent review/);
 
   // At a new head the approval no longer counts, and the owner overrides.
@@ -227,7 +227,7 @@ it("the holder under another letter case, profile or registered name cannot revi
   // Another harness may record a review, but the same model does not count for a protected change.
   for (const by of ["codex/Opus-5.5", "antigravity/claude-opus-5-5:fast"]) await L.addReview(review("t1", by, H1, true));
   await refusal(L.accept("t1", "owner"), "not_ready", /protected path/);
-  await L.addReview(review("t1", B, H1, true));
+  await L.addReview(review("t1", B, H1, true), undefined, true);
   expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
 });
 
@@ -370,13 +370,15 @@ it("push events read the authoritative branch head and ignore duplicate or unrel
   await index.registerProject({name:'events-project',repo:'events-project',policy,createdAt:new Date().toISOString()});
   // The fork's history as the consumer reads it: H2 on top of H0, the base.
   // The first event reads the head and then the history that holds the
-  // recorded head; the duplicate reads the head alone, since it has not moved.
+  // recorded head, then the base's line, where the pushed commits whose Agent
+  // lines it reads end (t215); the duplicate reads the head alone, since it
+  // has not moved.
   let reads=0,acks=0,retries=0;
   const artifacts={get:async()=>({info:async()=>({defaultBranch:'main'}),log:async()=>{reads++;return[{hash:H2,parents:[H0]},{hash:H0,parents:[]}]},[Symbol.dispose](){}})} as unknown as Artifacts;
   const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'events-project--t1'},payload:{ref:'refs/heads/main',after:H1}};
   const send=async(body:unknown)=>worker.queue({messages:[{body,ack(){acks++},retry(){retries++}}]} as unknown as MessageBatch<unknown>,{...env,ARTIFACTS:artifacts});
   await send(notice);await send(notice);await send({...notice,payload:{...notice.payload,ref:'refs/heads/other'}});
-  expect((await L.item('t1')).head).toBe(H2);expect(acks).toBe(3);expect(retries).toBe(0);expect(reads).toBe(3);
+  expect((await L.item('t1')).head).toBe(H2);expect(acks).toBe(3);expect(retries).toBe(0);expect(reads).toBe(4);
   expect(kinds(await L.events('t1')).filter(k=>k==='push.observed')).toHaveLength(1);
 });
 
@@ -824,7 +826,7 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.addReview(review("t1", "owner", H1, true));
   expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
   await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
-  await L.addReview(review("t1", B, H1, true));
+  await L.addReview(review("t1", B, H1, true), undefined, true);
   for (let i = 0; i < 2; i++) {
     await L.accept("t1", "owner", H1);
     expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(changed.protected);

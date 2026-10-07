@@ -34,7 +34,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, stateLabel, modelOf, modelKey,
+  DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -541,7 +541,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
     ["Planned", `${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope.`, `${plural(t.planned, "task")} planned`, "var(--main-line)"],
     ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
     ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
-    ["Checked", "The project's checks run on a clean copy of the exact revision: in a Cloudflare container, or, where the project allows it, on the agent's machine.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
+    ["Checked", "The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
     ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
     ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
     ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
@@ -1684,7 +1684,7 @@ ${framing}${openScope}
       ${view.reports.map((r) => `<p>${tag("Reported")} ${e(r.claim)} <span class="meta">${e(r.by)}</span></p>`).join("")}</details>`
     : "";
   const reviews = latestReviews(d.reviews, item.head).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
-    <p>${e(r.note || "No note provided.")}</p><p class="meta">${e(r.by)} · ${when(r.at)}</p></div>`).join("");
+    <p>${e(r.note || "No note provided.")}</p><p class="meta">${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   const overrideNote = overridden
     ? `<div class="review-note">${tag("Review overridden", "ask")}

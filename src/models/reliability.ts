@@ -9,7 +9,9 @@
 // harness/model names it acted under are kept beside it.
 //
 // Its work is what it held: the outcome of a review, a merge or a defect is
-// the model's that held the item when the reviewed revision was submitted.
+// the model's that held the item when the reviewed revision was submitted,
+// and also the model's of every other agent whose commit a push brought into
+// the item, by the commit's final Agent line (push.observed `authors`).
 // Its verdicts are the reviews it recorded. The project owner's approvals are
 // never a model's verdict: they are counted apart, per model whose work they
 // approved, by where they were recorded (src/ledger.ts addReview): on the
@@ -22,13 +24,13 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, redactKeys, type PoolFamily } from "./pool.ts";
-import { matchesAny, modelKey, RuleError, sameActor, validActor } from "../rules.ts";
+import { matchesAny, modelKey, pushAuthors, RuleError, sameActor, validActor } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { SERVED, servedActor, servedBy } from "./served.ts";
 
 export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
-export const RUN_ROLES = ["build", "review"] as const;
+export const RUN_ROLES = ["build", "plan", "review"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
 // What a plan part is, as the plan names it (src/plans/schema.ts): the kind of
@@ -285,6 +287,16 @@ function replay(
   // treated as no builder, so it opens no row and earns no credit or blame.
   const agentOnly = (a: string | undefined) => (a !== undefined && isAgent(a, owner) ? a : undefined);
   const builderOf = (item: string, head: string) => agentOnly(builtAt.get(item)?.get(head) ?? holders.get(item)?.serving ?? lastBuilder.get(item));
+  // Agents other than the holder whose commits a push brought into the item,
+  // by the Agent line the Worker read (push.observed `authors`). Their work
+  // is in the revision, so its review, merge and defects are theirs as well.
+  const coauthors = new Map<string, Set<string>>();
+  const creditedOf = (item: string, head: string): string[] => {
+    const builder = builderOf(item, head);
+    const out = builder ? [builder] : [];
+    for (const a of coauthors.get(item) ?? []) if (isAgent(a, owner) && !out.some((b) => modelKey(b) === modelKey(a))) out.push(a);
+    return out;
+  };
   const seconds = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / 1000;
 
   for (const event of sorted) {
@@ -347,6 +359,7 @@ function replay(
         reworkFrom.delete(item);
       }
     } else if (kind === "push.observed") {
+      for (const a of pushAuthors(data)) coauthors.set(item, (coauthors.get(item) ?? new Set()).add(a.actor));
       const claim = claimAt.get(item);
       if (claim && !pushed.has(item)) {
         pushed.add(item);
@@ -365,6 +378,7 @@ function replay(
     } else if (kind === "review.approved" || kind === "review.rejected") {
       const approve = kind === "review.approved";
       const builder = builderOf(item, head);
+      const credited = creditedOf(item, head);
       if (actor === owner) {
         if (!builder) continue;
         if (approve) {
@@ -372,9 +386,9 @@ function replay(
           ownerSeen.add(`${item} ${head}`);
           const recorded = data.via;
           const via: OwnerChannel = recorded === "page" || recorded === "api" ? recorded : "unrecorded";
-          get(builder, project).ownerApprovals[via]++;
+          for (const b of credited) get(b, project).ownerApprovals[via]++;
         } else {
-          get(builder, project).rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
+          for (const b of credited) get(b, project).rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
           reworkFrom.set(item, { at: event.at, model: builder });
         }
         continue;
@@ -397,26 +411,30 @@ function replay(
         recordTiming(claim.model, k, "claimToVerdict", seconds(claim.at, event.at));
       }
       if (!builder) continue;
-      const built = get(builder, project);
-      const first = `${item} ${modelKey(builder)}`;
-      if (!firstReview.has(first)) {
-        firstReview.add(first);
-        built.firstReviews++;
-        if (approve) built.approvedFirst++;
+      for (const b of credited) {
+        const built = get(b, project);
+        const first = `${item} ${modelKey(b)}`;
+        if (!firstReview.has(first)) {
+          firstReview.add(first);
+          built.firstReviews++;
+          if (approve) built.approvedFirst++;
+        }
+        if (!approve) built.rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
       }
       reviewedHeads.set(item, (reviewedHeads.get(item) ?? new Set()).add(head));
-      if (!approve) built.rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
     } else if (kind === "item.merged") {
       const builder = agentOnly(holder?.serving ?? lastBuilder.get(item));
       holders.delete(item);
       if (!builder) continue;
       lastBuilder.set(item, builder);
-      const r = get(builder, project);
-      r.merged++;
       const rounds = reviewedHeads.get(item)?.size ?? 0;
-      if (rounds) {
-        r.mergedReviewed++;
-        r.rounds += rounds;
+      for (const b of [builder, ...creditedOf(item, head).filter((a) => modelKey(a) !== modelKey(builder))]) {
+        const r = get(b, project);
+        r.merged++;
+        if (rounds) {
+          r.mergedReviewed++;
+          r.rounds += rounds;
+        }
       }
       const claim = claimAt.get(item);
       if (claim && !merged.has(item)) {
@@ -428,8 +446,7 @@ function replay(
       // the model that built that revision, and against every model that
       // approved that revision before the defect was traced.
       const cause = { project, item, by: actor, note: str(data.note), at: event.at };
-      const builder = builderOf(item, head);
-      if (builder) get(builder, project).defects.push(cause);
+      for (const b of creditedOf(item, head)) get(b, project).defects.push(cause);
       for (const a of approvedAt.get(item) ?? []) {
         if (a.head === head) {
           get(a.reviewer, project).contradicted.push(cause);
@@ -544,7 +561,7 @@ export function cleanRun(body: Record<string, unknown>, at: string, runner: stri
   const actor = str(body.actor).trim();
   if (!validActor(actor) || !actor.includes("/") || actor.startsWith("atelier/")) throw bad("actor must be the harness/model the runner ran, such as opencode/glm-5.3");
   const role = body.role === undefined ? "build" : str(body.role);
-  if (!RUN_ROLES.includes(role as RunRole)) throw bad("role must be build or review");
+  if (!RUN_ROLES.includes(role as RunRole)) throw bad("role must be build, plan or review");
   const outcome = str(body.outcome);
   if (!RUN_OUTCOMES.includes(outcome as RunOutcome)) throw bad(`outcome must be one of ${RUN_OUTCOMES.join(", ")}`);
   const project = body.project === undefined || body.project === null ? null : str(body.project).trim();

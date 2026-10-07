@@ -172,12 +172,14 @@ test("a run report is validated: an agent, a known role and outcome, a task id, 
   assert.deepEqual(cleanRun({ actor: OPUS, outcome: "refused", project: "atelier", item: "t3", detail: "harness exited 1\u0007" }, at, "home:studio"),
     { actor: OPUS, role: "build", outcome: "refused", project: "atelier", item: "t3", detail: "harness exited 1", runner: "home:studio", at });
   assert.equal(cleanRun({ actor: OPUS, role: "review", outcome: "stalled" }, at, "home:studio").role, "review");
+  // The runner reports a plan job's run as a plan run (t213).
+  assert.equal(cleanRun({ actor: OPUS, role: "plan", outcome: "stalled" }, at, "home:studio").role, "plan");
   assert.match(cleanRun({ actor: OPUS, outcome: "stalled", detail: "key sk-abcdefghijklmnopqrstuvwxyz0123" }, at, "home:x").detail, /\[key removed\]/);
   for (const [body, why] of [
     [{ actor: "owner", outcome: "stalled" }, /harness\/model/],
     [{ actor: "atelier/sandbox", outcome: "stalled" }, /harness\/model/],
     [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, early_stop, permission_stop, duplicate_design, incomplete_merge/],
-    [{ actor: OPUS, outcome: "stalled", role: "plan" }, /build or review/],
+    [{ actor: OPUS, outcome: "stalled", role: "integrate" }, /build, plan or review/],
     [{ actor: OPUS, outcome: "stalled", item: "x1" }, /task id/],
     [{ actor: OPUS, outcome: "stalled", project: "a/b" }, /project/],
     [{ actor: OPUS, outcome: "stalled", token: "x" }, /never a key/],
@@ -391,4 +393,25 @@ test("the owner's own submitted, reviewed, merged and defective work opens no mo
   const rel = buildReliability([{ project: "a", events }], [], OWNER);
   assert.equal([...rel.keys()].some((k) => k.includes(OWNER)), false);
   assert.ok(rel.get(GEMINI) || [...rel.keys()].some((k) => k.includes("gemini")), "the reviewer keeps its row");
+});
+
+test("a commit another agent pushed into the holder's task is credited to that agent as well (t215)", () => {
+  const a = history(
+    ["t1", OPUS, "item.claimed"],
+    ["t1", OPUS, "push.observed", { head: H1 }],
+    // A fix by Gemini, pushed from the holder's workspace, named by its Agent line.
+    ["t1", "atelier/events", "push.observed", { head: H2, authors: [{ commit: H2, actor: GEMINI }] }],
+    ["t1", OPUS, "item.submitted", { head: H2 }],
+    ["t1", GPT, "review.approved", { head: H2 }],
+    ["t1", OWNER, "item.merged", { head: H2 }],
+    ["t1", OWNER, "item.defect", { head: H2, note: "the fix broke the form" }],
+  );
+  const rel = buildReliability([{ project: "a", events: a }], [], OWNER);
+  for (const model of ["opus-5.5", "gemini-3.1-pro"]) {
+    const r = one(rel, model);
+    assert.equal(r.firstReviews, 1, model);
+    assert.equal(r.approvedFirst, 1, model);
+    assert.equal(r.merged, 1, model);
+    assert.equal(r.defects.length, 1, model);
+  }
 });
