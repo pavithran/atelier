@@ -91,9 +91,10 @@ export async function runLand(io) {
   // before anything changes. A lease held for another live task refuses the
   // landing with who holds it and since when.
   const { lease } = await request("GET", leasePath);
-  if (lease && lease.item !== id) {
-    // A lease that lapsed blocks nothing: the server lets this landing take
-    // it over and names it (below).
+  if (lease && lease.item !== id && dryRun) {
+    // The server decides whether a lease held for another task still
+    // guards the project, when the landing asks for it below; a dry run
+    // never asks, so it judges by this machine's clock, for the message only.
     if (!landingLeaseLapsed(lease, Date.now())) die(`a landing is already in progress: ${lease.holder} has been landing ${lease.item} since ${since(lease)}. One landing runs at a time in ${name}; wait for it, run atelier land ${lease.item} again to finish or release that landing, or free the lease with atelier land ${lease.item} --release-lease`);
   }
 
@@ -170,10 +171,26 @@ export async function runLand(io) {
     } catch (error) {
       throw new StepError(error.message.replace(/^landing_lease: /, "") || `the landing lease could not be taken: ${error.message}`);
     }
-    heartbeat = setInterval(() => {
-      request("POST", leasePath, { item: id, renew: true }).catch((error) => {
-        print(`Warning: the landing lease could not be renewed: ${error.message}`);
-      });
+    // A renewal the server refuses (a 4xx, such as no_lease) says the lease
+    // is no longer this landing's: the heartbeat stops, the loss is said
+    // once, and the release at the end leaves the lease alone, since it is
+    // another landing's now. A renewal that fails to reach the server, or
+    // that the server fails (a 5xx), is retried on the next beat and warned
+    // of once, until a renewal succeeds again.
+    let renewFailing = false;
+    heartbeat = setInterval(async () => {
+      try {
+        await request("POST", leasePath, { item: id, renew: true });
+        if (renewFailing) { renewFailing = false; print("The landing lease is renewed again."); }
+      } catch (error) {
+        if (error.status >= 400 && error.status < 500) {
+          clearInterval(heartbeat); heartbeat = null; leased = false;
+          print(`Warning: the landing lease is no longer ${id}'s (${error.message}); the landing stops renewing it. Stop this landing, or run atelier land ${id} again once the other landing ends.`);
+        } else if (!renewFailing) {
+          renewFailing = true;
+          print(`Warning: the landing lease could not be renewed (${error.message}); trying again every ${Math.round(LEASE_RENEW_MS / 1000)}s. It lapses after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes without a renewal.`);
+        }
+      }
     }, LEASE_RENEW_MS);
     heartbeat.unref();
     await record("lease", Date.now() - t0);

@@ -47,7 +47,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, version: null, routeLevel: ROUTE_LEVEL,
     review: { needed: true, reviewer: "codex/gpt-6-astra", pending: false, at: null, approveAfter: 0, claimed: false },
-    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [],
+    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], renewFails: false,
   };
   // The tasks fork from the baseline before main moves, so a landing has
   // main's commits to merge; each has a workspace in the cache's layout.
@@ -96,12 +96,13 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       if (req.method === "GET") answer = { lease: box.lease };
       else if (body.cancel === true) { answer = { held: !!box.lease, lease: box.lease }; box.lease = null; }
       else if (body.renew === true) {
+        if (box.renewFails) return fail(503, "unavailable", "the ledger could not be reached");
         if (!box.lease || box.lease.item !== body.item) return fail(409, "no_lease", `the landing lease is held for ${box.lease?.item ?? "nobody"}, not ${body.item}`);
         box.lease = { ...box.lease, renewedAt: now }; answer = { lease: box.lease };
       } else {
         let expired = null;
         if (box.lease && box.lease.item !== body.item) {
-          if (!landingLeaseLapsed(box.lease, Date.now())) return fail(409, "landing_lease", `${box.lease.holder} has been landing ${box.lease.item} since ${box.lease.at}; one landing runs at a time in this project`);
+          if (!landingLeaseLapsed(box.lease, Date.now())) return fail(409, "landing_lease", `${box.lease.holder} has been landing ${box.lease.item} since ${box.lease.at.slice(0, 16).replace("T", " ")} UTC; one landing runs at a time in this project. Wait for it to finish, run atelier land ${box.lease.item} again to finish or release that landing, or atelier land ${box.lease.item} --release-lease to free the lease`);
           expired = box.lease;
         }
         box.lease = { item: body.item, holder: "owner", at: now, renewedAt: now };
@@ -201,8 +202,10 @@ test("the lease refuses a second landing with who holds it and since when", asyn
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /owner has been landing t2 since 2026-10-06 09:30 UTC/);
   assert.match(r.output, /atelier land t2 --release-lease/);
-  // Nothing changed: no lease was taken or posted, the workspace did not move.
-  assert.ok(f.box.requests.every((x) => !(x.method === "POST" && x.path.endsWith("/landing-lease"))));
+  // The server decided: the one request for the lease was refused, nothing
+  // was released, the lease stands, and the workspace did not move.
+  assert.deepEqual(f.posts("/landing-lease").map((x) => x.body), [{ item: "t1" }]);
+  assert.equal(f.box.lease.item, "t2");
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
   assert.ok(!existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
   assert.deepEqual(f.posts("/land"), []);
@@ -436,4 +439,32 @@ test("while the review request is unclaimed, the landing names the runner's job 
   assert.equal(claimed.status, 0, claimed.output);
   assert.doesNotMatch(claimed.output, /not claimed yet/);
   assert.equal(g.box.states.t1, "merged");
+});
+
+test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
+  const f = await landFixture(t);
+  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
+  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 2, 15_000, "two renewals");
+  // The server cannot be reached for a while: one warning, renewals go on.
+  f.box.renewFails = true;
+  await until(() => landing.output().includes("could not be renewed"), 15_000, "the warning");
+  const failed = f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
+  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= failed + 3, 15_000, "three more renewals");
+  assert.equal(landing.output().split("could not be renewed").length - 1, 1);
+  f.box.renewFails = false;
+  await until(() => landing.output().includes("renewed again"), 15_000, "the recovery");
+  // Another landing took the lease over: the renewal is refused, said once,
+  // and no renewal follows.
+  f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
+  await until(() => landing.output().includes("no longer t1's"), 15_000, "the loss");
+  const after = f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
+  await new Promise((ok) => setTimeout(ok, 300));
+  assert.equal(f.posts("/landing-lease").filter((x) => x.body.renew === true).length, after, "renewals continued after the refusal");
+  assert.equal(landing.output().split("no longer t1's").length - 1, 1);
+  assert.match(landing.output(), /run atelier land t1 again once the other landing ends/);
+  // Ending the landing leaves t2's lease where it is.
+  landing.child.kill("SIGTERM");
+  await landing.done;
+  assert.equal(f.box.lease?.item, "t2");
+  assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
 });
