@@ -1,0 +1,24 @@
+atelier atelier/t290 "Rewrite README.md for a first-time reader, a competition judge with five minutes (PAVI, 2026-10-07, demo freeze): open with what Atelier is and why (one owner per task, many agents, cross-family review, evidence-graded merges), a quickstart that gets a reader from clone to a first landed task, how it is built on Cloudflare (Workers, Durable Objects, Artifacts, Analytics Engine, AI Gateway, Workers Logs, Access, Browser Rendering, R2, Workflows: say which are live and which are in progress), then reference. Move ControlPlane migration and other owner-only sections to docs/, keep every fact, keep run instructions accurate against the code, and follow the house style"
+accepted head 5e1668c721ccc7db1d66fb325a4dfca3caefa9f7
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T23:03:11.171Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T23:03:13.949Z
+REVIEW approve by antigravity/gemini-3.1-pro at 5e1668c721ccc7db1d66fb325a4dfca3caefa9f7, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T22:26:50.021Z pavi item.created
+2026-10-07T22:26:54.890Z claude-code/opus-5.5 item.claimed
+2026-10-07T22:27:00.925Z claude-code/opus-5.5 fork.created
+2026-10-07T22:59:48.504Z pavi land.lease
+2026-10-07T22:59:51.350Z pavi land.merge
+2026-10-07T22:59:59.069Z pavi land.regenerate
+2026-10-07T23:00:02.323Z claude-code/opus-5.5 push.observed
+2026-10-07T23:00:02.481Z pavi land.push
+2026-10-07T23:03:11.803Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:03:14.228Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:03:14.816Z pavi land.check
+2026-10-07T23:03:15.202Z claude-code/opus-5.5 item.submitted
+2026-10-07T23:03:15.466Z pavi land.submit
+2026-10-07T23:03:15.617Z pavi review.requested
+2026-10-07T23:03:42.232Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T23:06:39.836Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T23:06:40.717Z pavi land.review
+2026-10-07T23:06:41.441Z pavi item.accepted
+2026-10-07T23:06:41.568Z pavi land.accept
