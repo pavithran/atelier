@@ -98,7 +98,9 @@ export function reviewBrief(input: BriefInput): string {
     ? "Every part of a plan is reviewed by a model of another family, whatever its change class."
     : need.basis === "protected"
       ? "It needs an independent review before the project owner can accept it."
-      : "This project's execution policy needs another agent's review of a coordinated change.";
+      : need.basis === "coordinated"
+        ? "This project's execution policy needs another agent's review of a coordinated change."
+        : "The project owner named you to review it, though the gate needs no review of this change.";
   section(
     "## What to review",
     "",
