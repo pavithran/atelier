@@ -100,7 +100,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "plan approve ID --hash HASH [--allow-paid]", about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no model of another family can review, refuses the approval. `--allow-paid` lets models paid per token build and review." },
     { form: 'plan revise ID --note TEXT', about: "Before approval, sends the plan back to its planner with a note; its next proposal replaces the one before." },
   ], [
-    { form: "plan reroute ID --to H/M", about: "Names who builds an open part from now on, its attempts counted afresh; before approval, names another planner for the plan." },
+    { form: "plan reroute ID --to H/M", about: "Names who builds an open part from now on, its attempts counted afresh; for a submitted part, or one blocked for want of an eligible reviewer, names its reviewer, in the pool or not, which must be of another family than every contributor; before approval, names another planner for the plan." },
     { form: "plan retry ID", about: "Counts an open part's attempts afresh, so its builder is asked again; before approval, asks the planner again." },
     { form: "plan stop ID [--note TEXT]", about: "Closes the plan and every part not yet merged, revoking their write tokens. The history and evidence stay." },
   ], [
@@ -444,7 +444,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--hash HASH": "with approve, the full hash of the newest proposal",
       "--allow-paid": "with approve, lets models paid per token build parts",
       "--note TEXT": "with revise or stop, why; kept with the event",
-      "--to H/M": "with reroute, the model that builds from now on, or plans before approval",
+      "--to H/M": "with reroute, the model that builds from now on, reviews a submitted part, or plans before approval",
     },
     example: 'atelier plan "Move the parser to the new grammar" --scope "src/parser/**" --project demo',
   },

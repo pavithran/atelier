@@ -2934,6 +2934,12 @@ const commands = {
       if (typeof args.to !== "string" || !args.to.trim()) die(`--to needs harness/model: atelier plan reroute ${id} --to claude-code/opus-5.5`);
       const view = await call("POST", `${I(name, id)}/plan/reroute`, { to: args.to }, OWNER);
       const part = view.parts.find((p) => p.id === id);
+      // Only an open part's builder is rerouted, so a part submitted or
+      // blocked now had its reviewer named.
+      if (part && (part.state === "submitted" || part.state === "blocked")) {
+        console.log(`${id} is reviewed by ${args.to.trim()} from now on; ${part.state === "blocked" ? `it is still blocked: ${flat(part.blocked?.reason ?? "")}` : "the plan asks it for the next review the part needs"}.`);
+        return;
+      }
       console.log(part ? `${id} is built by ${args.to} from now on; ${part.dispatch && part.state === "open" ? "it is queued for it" : `it is ${part.state}, and the plan dispatches it when it may start`}.` : `${id}'s planner is now ${view.planner}, and the plan job is queued for it.`);
       return;
     }
