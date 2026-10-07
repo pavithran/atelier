@@ -206,6 +206,10 @@ export interface ProjectPolicy {
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
+  // Globs of the files only one live item at a time may change: the queue
+  // holds a dispatch whose scope overlaps a live item's within one of them
+  // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
+  coreFiles?: string[];
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
 }
@@ -439,18 +443,40 @@ export function pathCollisions(paths: string[]): string[][] {
   return [...groups.values()].filter((group) => group.length > 1 && new Set(group.map(parent)).size < group.length);
 }
 
+// A glob's literal prefix, up to its first wildcard, and whether two such
+// prefixes could name one path: one is a prefix of the other.
+const stem = (g: string) => g.split(/[*?]/)[0];
+const related = (x: string, y: string) => x.startsWith(y) || y.startsWith(x);
+
 // Two scopes overlap when a literal prefix of one could fall inside the other.
 // Conservative on purpose: a false overlap costs a glance, a missed one a conflict.
 export function scopesOverlap(a: string[], b: string[]): boolean {
   if (a.length === 0 || b.length === 0) return true; // unscoped means "anything"
-  const stem = (g: string) => g.split(/[*?]/)[0];
   for (const x of a) {
     for (const y of b) {
-      const sx = stem(x), sy = stem(y);
-      if (sx.startsWith(sy) || sy.startsWith(sx)) return true;
+      if (related(stem(x), stem(y))) return true;
     }
   }
   return false;
+}
+
+// The first glob of `within` that some path matched by both scopes could
+// also match, or null when none could: the overlap of scopesOverlap, narrowed
+// to the paths `within` names. Three literal prefixes can name one path when
+// each pair of them can, since each is then a prefix of the longest. An
+// unscoped side matches anything, as in scopesOverlap; an empty `within`
+// names no path, so nothing overlaps within it.
+export function scopesOverlapWithin(a: string[], b: string[], within: string[]): string | null {
+  const stems = (scope: string[]) => (scope.length ? scope.map(stem) : [""]);
+  const sa = stems(a), sb = stems(b);
+  for (const glob of within) {
+    const c = stem(glob);
+    for (const x of sa) {
+      if (!related(x, c)) continue;
+      for (const y of sb) if (related(y, c) && related(x, y)) return glob;
+    }
+  }
+  return null;
 }
 
 // Durable Object RPC keeps an error's message and drops its other fields, so

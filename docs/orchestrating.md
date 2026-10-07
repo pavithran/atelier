@@ -34,8 +34,18 @@ A task moves through five hands:
 5. **The owner** accepts that exact revision and merges it into the
    registered checkout with `atelier merge`.
 
-Several builders can work at once, each on its own task and fork. Landing is
-the part that must not run in parallel.
+Several builders can work at once, each on its own task and fork, except on
+the project's core files: the queue does not start two pieces of work whose
+scopes overlap in one. Name them with `atelier init --core GLOB`, once per
+glob (for Atelier: `cli/runner.mjs`, `src/ledger.ts`,
+`src/dispatch/rules.ts`, the files where a dozen tasks built at once left
+half the landings on merge conflicts). A dispatch whose scope overlaps a
+live item's (claimed, submitted or accepted) within a core file waits in the
+queue until that item merges or is abandoned; `atelier status` names the item
+it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
+overlap is known to be harmless. Parts of one plan never hold each other,
+since the plan orders overlapping parts already. Landing is the part that
+must not run in parallel.
 
 ## Starting cold
 
