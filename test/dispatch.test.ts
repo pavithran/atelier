@@ -70,10 +70,12 @@ test("a dispatch note over its limit is refused, never cut", () => {
 test("the owner may dispatch one job by hand: merge-main, naming main's head", () => {
   const M = "5".repeat(40);
   const d = makeDispatch({ job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" }, "pavi", T);
-  assert.deepEqual(d, { to: "any", agent: "opencode", model: "glm-5.3-flash", by: "pavi", at: T, note: "", job: "merge-main", head: M });
-  // A runner that offers the merge-main job takes it; one that does not never sees it.
-  const offers: RunnerOffer = { runner: "home:studio", kind: "home", agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], jobs: ["merge-main"] };
+  assert.deepEqual(d, { to: "any", agent: "opencode", model: "glm-5.3-flash", by: "pavi", at: T, note: "", job: "merge-main", head: M, task: true });
+  // A runner that offers a task's merge-main job takes it; one that does not
+  // never sees it, nor does one that offers only a part's (before t243).
+  const offers: RunnerOffer = { runner: "home:studio", kind: "home", agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], jobs: ["merge-main", "merge-main-task"] };
   assert.equal(assign(d, offers)?.actor, "opencode/glm-5.3-flash");
+  assert.equal(assign(d, { ...offers, jobs: ["merge-main"] }), null);
   assert.equal(assign(d, { ...offers, jobs: [] }), null);
   assert.throws(() => makeDispatch({ job: "plan" }, "pavi", T), /only merge-main is dispatched by hand/);
   assert.throws(() => makeDispatch({ job: "merge-main" }, "pavi", T), /names main's head to merge as the full commit hash/);

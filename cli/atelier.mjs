@@ -3207,12 +3207,20 @@ const commands = {
     const known = await call("GET", "/projects", undefined, OWNER);
     const chosen = known;
     const inbox = await call("GET", "/inbox", undefined, OWNER);
+    // The runner queue and the offers each runner last asked with, so the
+    // waiting section can say when a queued job — a review routed to a model
+    // no live runner offers, say — can never be claimed, not merely waits
+    // (t240). Either read failing leaves the listing as it was.
+    const [queue, offers] = await Promise.all([
+      request("GET", "/queue", undefined, OWNER).catch(() => null),
+      request("GET", "/runners", undefined, OWNER).catch(() => null),
+    ]);
     const views = await Promise.all(chosen.map(async (p) => {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views));
+    console.log(formatStatus(views, { queue, offers }));
   },
 
   async open() {

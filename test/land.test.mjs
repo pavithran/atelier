@@ -56,7 +56,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, version: null, routeLevel: ROUTE_LEVEL,
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
-    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], renewFails: false,
+    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], runners: null, renewFails: false,
   };
   // The tasks fork from the baseline before main moves, so a landing has
   // main's commits to merge; each has a workspace in the cache's layout.
@@ -126,7 +126,9 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
         answer = { item: { id: body.item, state: box.states[body.item] }, expired };
       }
     } else if (url === "/api/projects/proj/items") answer = box.items;
-    else if (url === "/api/queue") answer = box.queue; else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") answer = { remote: baseline, token: "fixture", defaultBranch: "main" };
+    else if (url === "/api/queue") answer = box.queue;
+    else if (url === "/api/runners") answer = box.runners;
+    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") answer = { remote: baseline, token: "fixture", defaultBranch: "main" };
     else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
     else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
     else if (url.endsWith("/evidence")) answer = item ? { ...detail(item), evidence: [] } : {};
@@ -542,6 +544,21 @@ async function until(ready, ms = 15_000, what = "the condition") {
   }
 }
 
+// Waits until `count()` has gone quiet — unchanged for `quiet` ms, several
+// of the heartbeat's beats — and returns what it settled on. A stream that
+// keeps coming never settles, so this waits on the renewal calls themselves
+// rather than proving they stopped with a fixed sleep on the clock.
+async function settled(count, quiet, ms = 15_000, what = "the count") {
+  let last = count(), at = Date.now();
+  for (const t0 = Date.now();;) {
+    if (Date.now() - t0 > ms) throw new Error(`${what} did not settle within ${ms}ms`);
+    await new Promise((ok) => setTimeout(ok, 10));
+    const now = count();
+    if (now !== last) { last = now; at = Date.now(); }
+    else if (Date.now() - at >= quiet) return last;
+  }
+}
+
 // A landing that is waiting for a review verdict that never comes, spawned
 // rather than awaited, so a test can signal it or watch its heartbeat.
 function waitingLanding(f, env = {}) {
@@ -680,30 +697,68 @@ test("while the review request is unclaimed, the landing names the runner's job 
   assert.equal(g.box.states.t1, "merged");
 });
 
+test("while the review request is unclaimed and no live runner offers the reviewer, the landing says it can never be claimed", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.approveAfter = 4;
+  // No runner offers the review job for the routed reviewer: one offers the
+  // job under another model, one offers no review job, one is the wrong kind.
+  f.box.runners = [
+    { runner: "cloud:far", kind: "cloud", jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:mbp", kind: "home", jobs: ["build", "plan"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: new Date().toISOString() },
+  ];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /The review request is not claimed yet, and no live runner can take it: cloud:far is a cloud runner, not a home one; home:mbp offers no review job; home:studio offers review as opencode\/glm-5\.3\. It will not be claimed until a runner that offers codex\/gpt-6-astra for the review job asks the server for work\. Review it by hand \(atelier review t1 --approve --as codex\/gpt-6-astra --note "…"\), then atelier accept t1 and atelier merge t1, or run atelier land t1 again with --reviewer H\/M to ask a model a live runner offers\./);
+  // Said once, not on every poll, and the landing still lands on approval.
+  assert.equal(r.output.split("The review request is not claimed yet").length - 1, 1);
+  assert.equal(f.box.states.t1, "merged");
+  // A runner that offers the reviewer reads as an ordinary wait again.
+  const g = await landFixture(t);
+  g.box.review.approveAfter = 3;
+  g.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  const offered = await g.run(g.checkout, "land", "t1");
+  assert.equal(offered.status, 0, offered.output);
+  assert.doesNotMatch(offered.output, /no live runner/);
+  assert.equal(g.box.states.t1, "merged");
+  // No runner has ever asked: said as that, not as a mismatch.
+  const h = await landFixture(t);
+  h.box.review.approveAfter = 3;
+  h.box.runners = [];
+  const none = await h.run(h.checkout, "land", "t1");
+  assert.equal(none.status, 0, none.output);
+  assert.match(none.output, /The review request is not claimed yet, and no runner has asked the server for work\. It will not be claimed until a runner that offers codex\/gpt-6-astra for the review job asks the server for work\./);
+  assert.equal(h.box.states.t1, "merged");
+});
+
 test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
   const f = await landFixture(t);
-  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 2, 15_000, "two renewals");
+  const beatMs = 40;
+  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: String(beatMs) });
+  const renewals = () => f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
+  await until(() => renewals() >= 2, 15_000, "two renewals");
   // The server cannot be reached for a while: one warning, renewals go on.
   f.box.renewFails = true;
   await until(() => landing.output().includes("could not be renewed"), 15_000, "the warning");
-  const failed = f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
-  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= failed + 3, 15_000, "three more renewals");
+  const failed = renewals();
+  await until(() => renewals() >= failed + 3, 15_000, "three more renewals");
   assert.equal(landing.output().split("could not be renewed").length - 1, 1);
   f.box.renewFails = false;
   await until(() => landing.output().includes("renewed again"), 15_000, "the recovery");
   // Another landing took the lease over: the renewal is refused, said once,
-  // and no renewal follows.
+  // and no renewal follows — the renewal calls themselves must settle, quiet
+  // for several beats, at the count the refusal left them at.
   f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
   await until(() => landing.output().includes("no longer t1's"), 15_000, "the loss");
-  const after = f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
-  await new Promise((ok) => setTimeout(ok, 300));
-  assert.equal(f.posts("/landing-lease").filter((x) => x.body.renew === true).length, after, "renewals continued after the refusal");
-  assert.equal(landing.output().split("no longer t1's").length - 1, 1);
+  const after = renewals();
+  // The landing stops on its own — every step, and each poll of the review
+  // wait, asks the guard — so its end is waited for, not raced with a sleep.
+  const ended = await landing.done;
+  assert.equal(ended.status, 1, landing.output());
   assert.match(landing.output(), /run atelier land t1 again once the other landing ends/);
-  // Ending the landing leaves t2's lease where it is.
-  landing.child.kill("SIGTERM");
-  await landing.done;
+  assert.equal(await settled(renewals, beatMs * 5, 15_000, "the renewals"), after, "renewals continued after the refusal");
+  assert.equal(landing.output().split("no longer t1's").length - 1, 1);
+  // The landing's end leaves t2's lease where it is.
   assert.equal(f.box.lease?.item, "t2");
   assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
 });

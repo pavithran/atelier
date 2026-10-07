@@ -142,6 +142,38 @@ test("a status with no overlaps prints no heading", () => {
   assert.ok(!out.includes("Overlapping scopes"));
 });
 
+// The queue and the runner offers (t240): each open review request waits with
+// the runner work, naming its reviewer, and a queued job no live runner
+// offers says it can never be claimed — a mismatch, not a wait.
+test("with the queue and the runners' offers, open reviews wait with the runner work and unoffered jobs say so", () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const offers = [
+    { runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: now.toISOString() },
+  ];
+  const review = (agent, model) => ({ to: "home", agent, model, by: "atelier/orchestrator", at: now.toISOString(), note: "", job: "review" });
+  const queue = [
+    { project: "demo", item: { id: "t7", title: "Task t7", dispatch: review("claude-code", "fable-5.1") } },
+    { project: "other", item: { id: "t9", title: "Elsewhere", dispatch: review("antigravity", "gemini-3.1-pro") } },
+  ];
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", by: "owner", at: now.toISOString(), note: "" } }), item("t4", "open", { dispatch: { to: "home", agent: "opencode", model: "glm-5.3", by: "owner", at: now.toISOString(), note: "" } })],
+    inbox: [],
+  }], { queue, offers, now }).split("\n");
+  assert.ok(out.includes("    t3  for home codex/gpt-6-astra  Task t3"));
+  assert.ok(out.includes("      No live runner can take it: home:studio offers build as opencode/glm-5.3."));
+  assert.ok(out.includes("    t4  for home opencode/glm-5.3  Task t4"), "a job a live runner offers says no more");
+  assert.ok(out.includes("    t7  review by claude-code/fable-5.1  Task t7"));
+  assert.ok(out.includes("      No live runner can take it: home:studio offers review as opencode/glm-5.3."));
+  assert.ok(!out.some((l) => l.includes("t9")), "another project's review waits in its own section");
+  // Without the offers, the reviews still wait and nothing is judged.
+  const unread = formatStatus([{ name: "demo", items: [], inbox: [] }], { queue, now }).split("\n");
+  assert.ok(unread.includes("    t7  review by claude-code/fable-5.1  Task t7"));
+  assert.ok(!unread.some((l) => l.includes("No live runner")));
+  // A project with nothing but a queued review no longer says nothing waits.
+  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { queue, offers, now }).includes("Nothing waiting."));
+});
+
 // `atelier status --project demo` against a stand-in server, with the CLI's
 // cache pointed at a temp folder, so the On this Mac section reads real git
 // in real workspaces. No checkout is registered, so the run reads the
