@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
+import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { paidPerToken, routeParts, SIZE_M_CONTEXT, type PartRoute, type RouteInput } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
@@ -277,4 +278,44 @@ test("routing is deterministic, breaks ties by model id then actor name, and lea
   const alias = one([{ ...gpt, aliases: ["gpt-6"] }, opus], { events: [event(1, "codex/gpt-6", "item.claimed"), event(2, "atelier/sandbox", "evidence.observed", { passed: true })] });
   assert.equal(alias.builder!.actor, "codex/gpt-6-astra");
   has(alias.builder, /score 101/);
+});
+
+// An offer as the index records it: what a runner asked for, with when.
+const offer = (runner: string, agents: { agent: string; models: string[] }[], at: number): SeenOffer =>
+  ({ runner, kind: "home", agents, at: new Date(at).toISOString() });
+
+test("routing picks builders, alternates and reviewers only from the models live runners offer", () => {
+  const now = Date.now();
+  // Only codex/gpt-6-astra is offered: it builds, says who offers it, and the
+  // part is unrouted for its review, naming each model no runner offers.
+  const gptOnly = one([opus, sonnet, gpt], { offers: [offer("home:studio", [{ agent: "codex", models: ["gpt-6-astra"] }], now)] });
+  assert.equal(gptOnly.builder!.actor, "codex/gpt-6-astra");
+  has(gptOnly.builder, /Offered by home:studio/);
+  assert.deepEqual(actors(gptOnly.alternates), []);
+  assert.deepEqual(gptOnly.excluded.map((e) => [e.actor, e.reasons]), [
+    ["claude-code/opus-5.5", ["no live runner offers claude-code/opus-5.5, so no runner could claim its dispatch"]],
+    ["claude-code/sonnet-5.5", ["no live runner offers claude-code/sonnet-5.5, so no runner could claim its dispatch"]],
+  ]);
+  assert.equal(gptOnly.reviewer, null);
+  assert.equal(gptOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5, so no runner could claim its dispatch), claude-code/sonnet-5.5 (no live runner offers claude-code/sonnet-5.5, so no runner could claim its dispatch)");
+
+  // A runner offering the whole pool routes as no offers would; the case of
+  // the offered names is not the case of the pool's.
+  const whole = offer("home:studio", [
+    { agent: "Codex", models: ["GPT-6-Astra"] },
+    { agent: "Claude-Code", models: ["opus-5.5", "sonnet-5.5"] },
+  ], now);
+  const routed = one([opus, sonnet, gpt], { offers: [whole] });
+  const unconstrained = one([opus, sonnet, gpt]);
+  assert.deepEqual([routed.builder!.actor, routed.reviewer!.actor, actors(routed.alternates), routed.unrouted], [unconstrained.builder!.actor, unconstrained.reviewer!.actor, actors(unconstrained.alternates), unconstrained.unrouted]);
+
+  // A stale offer is no offer: the offer's runner asked too long ago.
+  const stale = one([opus, gpt], { offers: [offer("home:studio", [{ agent: "codex", models: ["gpt-6-astra"] }], now - OFFER_LIVE_MS - 60_000)] });
+  assert.equal(stale.builder, null);
+  assert.match(stale.unrouted!, /^no eligible builder: (claude-code\/opus-5\.5|codex\/gpt-6-astra) \(no live runner offers/);
+
+  // A preference for a model no live runner offers says why it was not chosen.
+  const prefer = one([opus, gpt], { offers: [offer("home:studio", [{ agent: "codex", models: ["gpt-6-astra"] }], now)] }, part("a", { prefer: { actor: "claude-code/opus-5.5", reason: "knows the module" } }));
+  assert.equal(prefer.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(prefer.builder!.reasons[0], "The plan preferred claude-code/opus-5.5 (knows the module); not chosen: no live runner offers claude-code/opus-5.5, so no runner could claim its dispatch");
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertDispatchable, assertDispatchedClaim, assign, describe, makeDispatch, parseRunner, type RunnerOffer } from "../src/dispatch/rules.ts";
+import { assertDispatchable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offering, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
 
 const T = "2026-10-04T12:00:00.000Z";
 const item = (over: Record<string, unknown> = {}) => ({
@@ -65,6 +65,27 @@ test("a dispatch note over its limit is refused, never cut", () => {
   assert.throws(() => makeDispatch({ note: "n".repeat(501) }, "pavi", T), /the dispatch note is 501 characters; the limit is 500\. Shorten it and send it again/);
 });
 
+// A merge-main dispatch (t243) sends a task whose landing conflicted with
+// main back to its builder, naming the main head its job merges.
+test("the owner may dispatch one job by hand: merge-main, naming main's head", () => {
+  const M = "5".repeat(40);
+  const d = makeDispatch({ job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" }, "pavi", T);
+  assert.deepEqual(d, { to: "any", agent: "opencode", model: "glm-5.3-flash", by: "pavi", at: T, note: "", job: "merge-main", head: M, task: true });
+  // A runner that offers a task's merge-main job takes it; one that does not
+  // never sees it, nor does one that offers only a part's (before t243).
+  const offers: RunnerOffer = { runner: "home:studio", kind: "home", agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], jobs: ["merge-main", "merge-main-task"] };
+  assert.equal(assign(d, offers)?.actor, "opencode/glm-5.3-flash");
+  assert.equal(assign(d, { ...offers, jobs: ["merge-main"] }), null);
+  assert.equal(assign(d, { ...offers, jobs: [] }), null);
+  assert.throws(() => makeDispatch({ job: "plan" }, "pavi", T), /only merge-main is dispatched by hand/);
+  assert.throws(() => makeDispatch({ job: "merge-main" }, "pavi", T), /names main's head to merge as the full commit hash/);
+  assert.throws(() => makeDispatch({ job: "merge-main", head: "not-a-hash" }, "pavi", T), /full commit hash/);
+  assert.throws(() => makeDispatch({ job: "merge-main", head: M.slice(1) }, "pavi", T), /full commit hash/);
+  assert.throws(() => makeDispatch({ head: M }, "pavi", T), /head names the main head a merge-main job merges/);
+  // An ordinary dispatch carries no job and no head, as before.
+  assert.deepEqual(makeDispatch({}, "pavi", T), { to: "any", agent: null, model: null, by: "pavi", at: T, note: "" });
+});
+
 test("a dispatch describes itself plainly", () => {
   assert.equal(describe(makeDispatch({ to: "home", agent: "opencode", model: "glm-5.3-flash" }, "pavi", T)), "a home runner, opencode with glm-5.3-flash");
   assert.equal(describe(makeDispatch({}, "pavi", T)), "any runner, its choice of agent");
@@ -87,4 +108,67 @@ test("runner names are exactly kind:name, normalized, with no further colon", ()
   // The whole name, so one runner is never two by the case of its name.
   assert.deepEqual(parseRunner("HOME:Studio"), { runner: "home:studio", kind: "home" });
   assert.deepEqual(parseRunner("Cloud:Atelier-1"), { runner: "cloud:atelier-1", kind: "cloud" });
+});
+
+// An offer as the index records it: what a runner asked for, with when.
+const asked = (runner: string, agents: RunnerOffer["agents"], at: number): SeenOffer =>
+  ({ runner, kind: runner.startsWith("cloud") ? "cloud" : "home", agents, at: new Date(at).toISOString() });
+
+test("an offer is live for OFFER_LIVE_MS after its runner asked, and which runners offer an actor is said by claimable name", () => {
+  const now = Date.parse("2026-10-07T12:00:00.000Z");
+  const studio = asked("home:studio", [{ agent: "claude-code", models: ["Opus-5.5"] }], now - 10_000);
+  const atelier = asked("cloud:atelier", [{ agent: "codex", models: ["gpt-6-astra"] }], now - OFFER_LIVE_MS);
+  const gone = asked("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], now - OFFER_LIVE_MS - 1);
+  const untimed = { ...studio, at: "not a time" };
+  assert.deepEqual(liveOffers([studio, atelier, gone, untimed], new Date(now)), [studio, atelier]);
+  // The actors are keyed by the name a claim would use, lowercased; a model no
+  // claim could carry is never offered, as assign never hands it out.
+  const offered = offering([studio, atelier, asked("home:bad", [{ agent: "opencode", models: ["a b"] }], now)]);
+  assert.deepEqual(offered.get("claude-code/opus-5.5"), ["home:studio"]);
+  assert.deepEqual(offered.get("codex/gpt-6-astra"), ["cloud:atelier"]);
+  assert.equal(offered.has("opencode/a b"), false);
+  assert.equal(offered.has("zcode/glm-5.3"), false, "a stale offer offers nothing");
+  // Two runners may offer the same actor; both are named.
+  const also = asked("home:desk", [{ agent: "codex", models: ["GPT-6-Astra"] }], now);
+  assert.deepEqual(offering([atelier, also]).get("codex/gpt-6-astra"), ["cloud:atelier", "home:desk"]);
+});
+
+test("the core files hold a building dispatch whose scope overlaps a live item's within one", () => {
+  const d = makeDispatch({}, "pavi", T);
+  const live = item({ id: "t1", scope: ["src/**"], state: "claimed", owner: "codex/gpt-6" });
+  const waiting = (over: Record<string, unknown>) => item({ id: "t2", dispatch: d, ...over });
+  const core = ["src/ledger.ts", "cli/runner.mjs"];
+  // Within a core file: held, naming the live item and the core glob.
+  assert.deepEqual(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], core), { id: "t1", owner: "codex/gpt-6", state: "claimed", title: "Work", core: "src/ledger.ts" });
+  // An overlap outside every core file, and a project with no core files, hold nothing.
+  assert.equal(coreHold(waiting({ scope: ["src/index.ts"] }), [live], core), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], []), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], undefined), null);
+  // Two scopes that each reach a core glob, but not the same path, hold nothing.
+  const both = item({ id: "t1", scope: ["src/index.ts"], state: "submitted", owner: "x/y" });
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [both], ["src/**"]), null);
+  // An unscoped item reaches every core file.
+  assert.equal(coreHold(waiting({ scope: [] }), [live], core)?.core, "src/ledger.ts");
+  // Submitted and accepted items hold; merged, abandoned, open and integrated ones do not.
+  for (const state of ["submitted", "accepted"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core)?.id, "t1", state);
+  for (const state of ["merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
+  // The owner's override, and the jobs that build nothing, are never held; merge-main is.
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: makeDispatch({ overlapOk: true }, "pavi", T) }), [live], core), null);
+  for (const job of ["plan", "integrate", "refresh", "review"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job } }), [live], core), null, job);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job: "merge-main", head: "a".repeat(40), task: true } }), [live], core)?.id, "t1");
+  // Items of one plan never hold each other; a part is held by work outside its plan.
+  const sibling = item({ id: "t5", scope: ["src/**"], state: "claimed", owner: "x/y", kind: "part", plan: "t4" });
+  const queuedPart = waiting({ scope: ["src/ledger.ts"], kind: "part", plan: "t4" });
+  assert.equal(coreHold(queuedPart, [sibling], core), null);
+  assert.equal(coreHold(queuedPart, [sibling, live], core)?.id, "t1");
+  // A plan item its planner or the integrator holds changes no main; a submitted one does.
+  const planItem = item({ id: "t6", scope: ["src/**"], state: "claimed", owner: "atelier/integrator", kind: "plan" });
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [planItem], core), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core)?.id, "t6");
+});
+
+test("a dispatch keeps the owner's overlap override only when it is asked for", () => {
+  assert.equal(makeDispatch({ overlapOk: true }, "pavi", T).overlapOk, true);
+  assert.equal("overlapOk" in makeDispatch({ overlapOk: false }, "pavi", T), false);
+  assert.throws(() => makeDispatch({ overlapOk: "yes" }, "pavi", T), /overlapOk must be true or false/);
 });

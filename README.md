@@ -702,6 +702,16 @@ protected paths (with the defaults), and everything not named keeps its value.
 `atelier init --reset` rebuilds the policy from the options given and the
 defaults, as a first init does; the project's title and creation date are kept.
 
+`atelier init --review-bar TEXT` records what may block a review, at most
+1,000 characters, with line breaks and control characters read as spaces.
+Every review brief a runner serves, for a task or a plan's part, states it
+before the reply format. Unset, or after `--review-bar ""`, the brief states
+the default bar: block only for a correctness, security or data-loss defect
+that the change introduces, or fails to fix while claiming to; a claim in a
+commit message that the code does not support is a correctness defect;
+decisions the project owner made are not defects; everything else is a
+follow-up.
+
 When the checkout is already registered locally, `init` reuses its registered
 name, even if the folder has a different name. A different `--name NAME` is
 refused. `atelier init --name NAME --rename-local` changes only that local
@@ -951,6 +961,22 @@ else, while it waits. Names are matched and stored in lower case, so
 `home:Studio` and `home:studio` are one runner. A claim belongs to the runner
 that made it; after a handoff, the first runner to claim as the new owner
 takes it, and the task's history records which runner that was.
+
+A held task (claimed, or submitted and perhaps rejected) is sent back to a
+runner the same way: its holder is released and the task queued in one step,
+keeping its workspace and commits for the next builder. One job may be
+dispatched by hand, `--job merge-main`: it sends a task whose landing
+conflicted with main back to its builder, as a conflicted plan's refresh
+adds a merge-main part to the plan. The dispatch names the main head the job merges
+— `--head H`, or main's head as the baseline holds it — and a runner that
+offers the merge-main job claims the task, merges main at that head into its
+workspace (clearing the conflicted merge the landing left, which the
+workspace's reset removes) and leaves the conflicts for the harness, whose
+brief says to resolve each keeping both sides' behaviour and claims and
+commit the merge as it stands. Then `atelier land ID` again: main is already
+merged, and the landing picks up from the push. Without this a conflicted
+task dead-ended outside a plan (t234): a plain rework dispatch resets the
+workspace to the task's head, where the builder cannot reach main.
 
 ## Plans
 
@@ -1258,7 +1284,10 @@ atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --
 `atelier defect` traces a defect to the revision an item was accepted at;
 the item itself does not change. `atelier finding` records a verdict on one
 finding of a review, at the head the review was made at and the finding's
-position in its findings, one based. A run ends without a result the ledger
+position in its findings, one based. A later review of the task shows the
+reviewer each earlier finding, numbered as `--index` counts it, with the
+owner's verdict and note, and says that a refuted finding is repeated only
+with new evidence that the owner's answer is wrong, quoting the code. A run ends without a result the ledger
 saw when it stalls, times out or is refused, or when the harness stops
 early, stops at a permission, designs something a task already had, or
 leaves a merge incomplete. The runner reports a run through `POST /api/runs`
@@ -1434,6 +1463,20 @@ be resumed by running `atelier land t9` again, which takes its own lease
 back, and a lease whose task has merged or was abandoned no longer guards
 anything.
 
+With `--wait` a landing queues for the lease instead of refusing, and the
+queue has an order: the server keeps the landings waiting for the lease in
+the order they queued (one row per task, with who asked and when) and hands
+the lease to the first of them when it frees, so a landing cannot take it
+ahead of another that waited longer, however their polls happen to land —
+t247 once took it ahead of t245, which had waited longer and was the one its
+plan needed. While it waits the landing asks the server again on every poll,
+which refreshes its place, and says whose landing it waits behind and which
+landings are queued ahead; a landing that stops asking (killed, or ended by a
+signal, or given up after its three-hour limit, which leaves the queue
+outright) drops out once 15 minutes pass without an ask, as a lease not
+renewed for that long stops guarding the project, and a row whose task has
+closed goes the same way.
+
 A landing that loses the lease stops rather than merge beside its successor:
 a Mac can sleep through a landing, pausing the timers that renew the lease,
 so it lapses and a landing queued with `--wait` takes it over, and the first
@@ -1452,13 +1495,23 @@ The steps in between:
    reports the commit the server was deployed from (`npm run deploy` records
    it) and its route level, and a landing whose server is older refuses
    before it starts, naming both levels and saying to deploy, since the
-   server may lack the routes the landing needs. The route level
+   server may lack the routes the landing needs, or answer one the landing
+   asks in a way it no longer expects. The route level
    (`src/route-level.ts`) rises by one only when a change makes the CLI
-   start calling a route the server did not have.
+   start calling a route the server did not have, or changes the meaning of
+   a route the CLI already calls; the waiting queue the landing's `--wait`
+   asks about (`{ item, queued: true }` on the landing-lease route) raised
+   it to 10 (main had already reached 9 with another route change).
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
-   `atelier land t9` again picks up from the push.
+   `atelier land t9` again picks up from the push. The conflicts can also go
+   back to the task's builder instead: `atelier dispatch t9 --job merge-main`
+   (naming the holder with `--agent` and `--model`, as the message the
+   landing prints says) sends the task to a runner, whose merge-main job
+   merges main into the workspace again and leaves the conflicts for the
+   builder to resolve and commit; then `atelier land t9` again, with main
+   already merged. See Dispatch.
 3. When the project's policy declares a `regenerate` command
    (`atelier init --regenerate "CMD"`), it runs in the workspace like a check
    runs, and what it changes is committed before the push, so generated

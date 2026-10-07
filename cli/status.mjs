@@ -1,6 +1,16 @@
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
-// and inbox holds the entries the Decisions page lists for it.
+// and inbox holds the entries the Decisions page lists for it. With `waiting` —
+// the runner queue and the runner offers as the server holds them — the
+// waiting section also names each open review request and its reviewer, and
+// says of any queued job no live runner offers that it can never be claimed,
+// which is not a wait but a mismatch between the dispatch and the runners
+// (unoffered in src/dispatch/rules.ts). A queued job the project's core
+// files hold (coreHold there) says which live item it waits on, as the
+// queue's entry for it carries that. The offers (GET /runners) are each
+// { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
+// the runner last asked, and a Runners section lists them after the projects.
+import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
@@ -105,8 +115,82 @@ function runnerOf(d) {
   return `${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}`;
 }
 
-export function formatStatus(views) {
+// Whether a runner's offer is live: its runner asked within OFFER_LIVE_MS
+// (src/dispatch/rules.ts), the window plan routing and unoffered both read,
+// so a runner that asked longer ago than this offers nothing.
+export const isLive = (offer, now = Date.now()) => {
+  const at = Date.parse(offer.at);
+  return Number.isFinite(at) && now - at <= OFFER_LIVE_MS;
+};
+
+const ago = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+};
+
+// One runner's line: whether it is live, when it last asked, and the actors
+// it offers, so the owner sees what plan routing could pick from.
+export function runnerLine(offer, now = Date.now()) {
+  const asked = Date.parse(offer.at);
+  const when = Number.isFinite(asked) ? ago(now - asked) : "at an unknown time";
+  const live = isLive(offer, now);
+  const actors = offer.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`));
+  return `${offer.runner}  ${live ? `live, asked ${when}` : `not live, last asked ${when}`}  ${actors.length ? `offers ${actors.join(", ")}` : "offers no model"}${offer.jobs?.length ? `  jobs: ${offer.jobs.join(", ")}` : ""}`;
+}
+
+// The runners section of `atelier status`: one line per recorded offer, live
+// first, so the owner can see why routing passed a model over (no live runner
+// offers it) or what a runner went away from.
+export function formatRunners(offers, now = Date.now()) {
+  const lines = [...offers].sort((a, b) => Number(isLive(b, now)) - Number(isLive(a, now)) || a.runner.localeCompare(b.runner));
+  return ["Runners:", ...lines.map((o) => `  ${runnerLine(o, now)}`)];
+}
+
+// The queue's review requests for one project, as lines: each is a submitted
+// part waiting for a runner to claim its review, so it stands with the tasks
+// waiting for a runner, naming the reviewer asked.
+function reviewQueue(waiting, name, offers) {
+  return (waiting.queue ?? [])
+    .filter((q) => q.project === name && q.item?.dispatch?.job === "review" && q.item.dispatch.agent && q.item.dispatch.model)
+    .map((q) => ({
+      id: q.item.id,
+      title: q.item.title ?? "",
+      reviewer: `${q.item.dispatch.agent}/${q.item.dispatch.model}`,
+      dispatch: q.item.dispatch,
+      dead: offers ? unoffered(q.item.dispatch, offers, waiting.now) : null,
+    }));
+}
+
+// What each queued job of one project that the core files hold waits on, by
+// item id, from the queue's entries (GET /queue).
+function heldIn(waiting, name) {
+  return new Map((waiting.queue ?? [])
+    .filter((q) => q.project === name && q.item?.held && q.item.dispatch?.job !== "review")
+    .map((q) => [q.item.id, q.item.held]));
+}
+
+// A held job's line: what it waits on, and how it goes ahead — once that
+// item merges or is abandoned, or at once, for a task, by the owner's
+// override. A plan's part takes no override: the plan dispatches it.
+function heldLine(item, held) {
+  const next = item.kind === "part" ? "" : `, or at once with atelier dispatch ${item.id} --overlap-ok`;
+  return `Held: ${holdText(held)}; offered once ${held.id} merges or is abandoned${next}.`;
+}
+
+// One queued job no live runner offers: said as its own line, capitalised,
+// for the line above it names the job.
+function unofferedLine(dead) {
+  return `${dead[0].toUpperCase()}${dead.slice(1)}.`;
+}
+
+export function formatStatus(views, waiting = {}) {
   if (!views.length) return "No projects.";
+  const offers = Array.isArray(waiting.offers) ? waiting.offers : null;
   const lines = [];
   for (const v of views) {
     const mine = v.inbox.filter((x) => x.project === v.name);
@@ -118,9 +202,15 @@ export function formatStatus(views) {
     const decisions = mine.filter((x) => x.kind !== "overlap" || !overlapOther(x));
     const overlaps = overlapPairs(mine);
     const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
-    const waiting = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
+    const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
+    const reviews = reviewQueue(waiting, v.name, offers);
+    const held = heldIn(waiting, v.name);
+    const deadBuilds = new Map(queued
+      .filter((i) => offers && (i.dispatch.agent || i.dispatch.model))
+      .map((i) => [i.id, unoffered(i.dispatch, offers, waiting.now)])
+      .filter(([, dead]) => dead !== null));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
-    if (!decisions.length && !working.length && !waiting.length) {
+    if (!decisions.length && !working.length && !queued.length && !reviews.length) {
       // Only overlaps follow, so the idle line is worded for the owner: it
       // would otherwise read against the heading printed under it.
       lines.push(overlaps.length ? "  Nothing waiting on you." : "  Nothing waiting.");
@@ -142,10 +232,20 @@ export function formatStatus(views) {
       lines.push("  In progress");
       for (const i of working) lines.push(`    ${i.id}  ${i.state}  held by ${i.owner ?? "nobody"}  ${i.title}`);
     }
-    if (waiting.length) {
+    if (queued.length || reviews.length) {
       lines.push("  Waiting for a runner");
-      for (const i of waiting) lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
+      for (const i of queued) {
+        lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
+        if (held.has(i.id)) lines.push(`      ${heldLine(i, held.get(i.id))}`);
+        const dead = deadBuilds.get(i.id);
+        if (dead) lines.push(`      ${unofferedLine(dead)}`);
+      }
+      for (const r of reviews) {
+        lines.push(`    ${r.id}  review by ${r.reviewer}  ${r.title}`);
+        if (r.dead) lines.push(`      ${unofferedLine(r.dead)}`);
+      }
     }
   }
+  if (offers?.length) lines.push("", ...formatRunners(offers, waiting.now ? waiting.now.getTime() : Date.now()));
   return lines.join("\n");
 }
