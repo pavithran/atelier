@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "../cli/runner-config.mjs";
-import { commandFor, offerFrom, planFilePath, runPlanTask, runTask, runRunner, execute } from "../cli/runner.mjs";
+import { commandFor, offerFrom, planFilePath, runPlanTask, runTask, runRunner, runOutcome, execute } from "../cli/runner.mjs";
 
 // The runner's plan job and a part's brief (docs/orchestrator.md, sections 2
 // and 3, build step 7b): the runner offers plan jobs, claims the plan item as
@@ -79,7 +79,7 @@ function fixture(t, options = {}) {
     async harness(argv, cwd, env) {
       calls.push({ harness: argv, cwd, env });
       if (options.noDocument !== true) writeFileSync(planFilePath(cwd), JSON.stringify(planDocument));
-      return { code: options.code ?? 0, timedOut: options.timedOut };
+      return { code: options.code ?? 0, timedOut: options.timedOut, stderr: options.stderr ?? "", output: options.output ?? "" };
     },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
     async dataHome() { return { dir: join(root, "data-home") }; },
@@ -131,6 +131,25 @@ test("a harness that fails or writes no plan document fails the job, which is re
   const { io, logs } = fixture(t, { noDocument: true });
   await runPlanTask(planJob, planConfig, "home:studio", io);
   assert.ok(logs.some((l) => l.includes("wrote no plan document")), logs.join("\n"));
+});
+
+test("a harness that fails is released as the harness failing, with its last error line, and reported as harness_failed", async (t) => {
+  const { io, calls } = fixture(t, { code: 1, stderr: "noise\nthe CLI is too old\n" });
+  const state = await runPlanTask(planJob, planConfig, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(state.taskFailure, true);
+  assert.equal(state.reason, "the harness failed: the CLI is too old");
+  assert.equal(state.detail, "the CLI is too old");
+  assert.equal(runOutcome(state), "harness_failed");
+  const release = calls.find((c) => c.argv?.[0] === "release");
+  assert.ok(release.argv.some((a) => String(a).includes("the harness failed: the CLI is too old")), "the release note names the harness failure");
+  // A timeout and a missing document fail the same way, without an error line.
+  for (const options of [{ timedOut: true }, { noDocument: true }]) {
+    const f = fixture(t, options);
+    const s = await runPlanTask(planJob, planConfig, "home:studio", f.io);
+    assert.match(s.reason, /^the harness failed: /, JSON.stringify(options));
+    assert.equal(runOutcome(s), "harness_failed", JSON.stringify(options));
+  }
 });
 
 test("a job brief that cannot be read is an infrastructure failure, and an entry without {plan_file} is skipped", async (t) => {
@@ -258,6 +277,37 @@ test("a refused plan job is retried once before the runner retires it", async (t
   assert.deepEqual(claims, [1, 2], "the planner gets its two attempts, then the runner retires the job");
   assert.equal(logs.filter((s) => s.includes("the plan was refused")).length, 2);
   assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+});
+
+test("a plan job whose harness exits with an error is reported as harness_failed with its last error line", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-plan-harness-fail-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const workspace = join(dir, "t7");
+  execFileSync("git", ["init", "--quiet", workspace]);
+  const git = (...args) => execFileSync("git", args, { cwd: workspace, encoding: "utf8" });
+  git("config", "user.name", "Plan test");
+  git("config", "user.email", "plan@example.test");
+  writeFileSync(join(workspace, "tracked"), "original");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "initial");
+  const script = join(dir, "harness.mjs");
+  writeFileSync(script, `process.stderr.write("noise\\nthe CLI is too old\\n"); process.exit(1);`);
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ agents: [{ ...planEntry, command: [process.execPath, script, "{model}", "{brief_file}", "{plan_file}"] }] }));
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const reports = [];
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: () => workspace, queue: async () => [planJob],
+    taskIO: { log: () => {}, jobBrief: async () => ({ job: "plan", text: "SERVER BRIEF", hash: "hb1" }), postPlan: async () => ({ valid: true, hash: "abc123", parts: 1 }) },
+    executeChild: async (argv, options) => {
+      if (argv[0] === "git") return execute(argv, options);
+      if (argv[1]?.endsWith("atelier.mjs")) return execute([process.execPath, "-e", ""], options);
+      return execute(argv, options);
+    },
+    reportRun: async (body) => { reports.push(body); },
+  });
+  assert.deepEqual(reports.map((r) => [r.role, r.outcome, r.detail]), [["plan", "harness_failed", "the CLI is too old"]]);
 });
 
 test("a stale plan document is cleaned from the workspace before the harness runs", async (t) => {

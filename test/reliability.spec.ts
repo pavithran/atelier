@@ -57,7 +57,7 @@ it("a runner reports a run under its name; the owner token reads the reports; an
   expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "laptop" })).status).toBe(400);
   const bad = await call("POST", "/runs", "owner", { ...body, outcome: "crashed" }, { "x-atelier-runner": "home:studio" });
   expect(bad.status).toBe(400);
-  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, early_stop, permission_stop, duplicate_design, incomplete_merge" });
+  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge" });
   const sent = await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" });
   expect(sent.status).toBe(201);
   expect(await sent.json()).toMatchObject({ ...body, runner: "home:studio" });
