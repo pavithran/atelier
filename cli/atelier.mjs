@@ -2541,6 +2541,19 @@ const commands = {
 
   async merge() {
     const git = landingGit;
+    // A plan's branch is updated only by its integrator, which merges
+    // recorded parts, so an accepted plan that conflicts with main would stay
+    // accepted with no one able to update it. Its merge, already aborted,
+    // puts it back to building through plan refresh instead: the acceptance
+    // is withdrawn and main's head is merged into the branch, or, when that
+    // conflicts, a merge-main part is added for a model to resolve.
+    const planConflicted = async (name, id, item) => {
+      let view;
+      try { view = await request("POST", `${I(name, id)}/plan/refresh`, {}, OWNER); }
+      catch (error) { die(`merge conflicts: ${id}'s branch does not merge with main, so nothing was merged, and ${id} stays accepted at ${short(item.acceptedHead)}: putting it back to building was refused: ${error.message}. Once that is cleared, take main into the branch with atelier plan refresh ${id}`); }
+      const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
+      die(`merge conflicts: ${id}'s branch does not merge with main, so nothing was merged. Its acceptance at ${short(item.acceptedHead)} is withdrawn and the plan is building again: a refresh from main at ${short(main)} is queued for atelier/integrator, and if it conflicts the plan adds a merge-main part whose builder resolves it. The integrator submits the plan again once every part is integrated; then merge it with atelier merge ${id} --head H, H being the integration head atelier plan show ${id} prints`);
+    };
     // An override is recorded only while accepting, which needs the revision.
     if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
     const name = project(), id = itemArg();
@@ -2743,7 +2756,7 @@ const commands = {
           catch(error){journal.clear();die(error.message);}
           if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
-          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
+          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
@@ -3049,12 +3062,17 @@ const commands = {
       console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
       return;
     }
+    // A plan submitted or accepted is put back to building by a refresh,
+    // which withdraws the submission and any acceptance first; the server
+    // says so with `reopened`.
+    const reopenedLine = (view) => view.reopened ? `${id} was ${view.reopened.from === "accepted" ? `accepted at ${short(view.reopened.acceptedHead)}` : "submitted"}; that is withdrawn, and the plan is building again until its branch holds main. The integrator submits it again once every part is integrated.` : null;
     if (sub === "refresh" && args.resolve === true) {
       if (args.to !== undefined && (typeof args.to !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(args.to.trim()))) die(`--to needs harness/model: atelier plan refresh ${id} --resolve --to claude-code/opus-5.5`);
       const view = await call("POST", `${I(name, id)}/plan/refresh`, { resolve: true, ...(args.to !== undefined ? { to: args.to.trim() } : {}) }, OWNER);
       const main = view.refresh?.main ?? "";
       const part = view.parts.find((p) => p.added?.mainHead === main);
       const who = part?.dispatch && part.state === "open" ? `queued for ${part.dispatch.agent}/${part.dispatch.model}` : part ? `${part.state}, and the plan dispatches it before any other part` : "added";
+      if (view.reopened) console.log(reopenedLine(view));
       console.log(`${view.item.id} has part ${part ? `${part.id} (${part.key})` : "merge-main"} to merge main at ${main.slice(0, 8)} into its branch: ${who}. Its builder resolves the conflicts; no other part is dispatched until it is integrated.`);
       console.log(`Follow it with atelier plan show ${view.item.id} ${flag}`);
       return;
@@ -3062,6 +3080,7 @@ const commands = {
     if (sub === "refresh") {
       if (args.to !== undefined) die(`--to names the builder of the part --resolve adds: atelier plan refresh ${id} --resolve --to H/M`);
       const view = await call("POST", `${I(name, id)}/plan/refresh`, {}, OWNER);
+      if (view.reopened) console.log(reopenedLine(view));
       const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
       const taken = view.refresh?.taken;
       console.log(`${view.item.id}'s refresh from main at ${main.slice(0, 8)} is queued for atelier/integrator${taken ? `; the branch last took main at ${taken.slice(0, 8)}` : ""}. A runner started with --integrate merges it; parts wait for it before they are dispatched.`);

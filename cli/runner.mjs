@@ -757,7 +757,9 @@ export function checkFailures(output) {
 // integrations build on it. It runs as the integrate job does: claim the
 // plan item, merge with --no-ff, push with atelier push, run the plan's
 // checks, and post refreshed with the merge commit. A branch that already
-// holds main's head is reported refreshed with no merge commit. A merge that
+// holds main's head is reported refreshed with no merge commit. The plan
+// item is then released, or submitted when the server says every part is
+// integrated, as for a plan put back to building to take main. A merge that
 // conflicts, or checks that fail, rolls the branch back with atelier push
 // --rollback, logs the reason and posts refresh-failed with its kind; the
 // refresh is the plan's, so no part's builder is charged. Any other error is
@@ -780,6 +782,14 @@ export async function runRefresh(assignment, config, name, io) {
     await io.rollback(workspace, before);
     await io.cli(["push", item.id, ...at, "--rollback"], workspace);
     pushed = false;
+  };
+  // A recorded refresh releases the plan item, or, when every part is
+  // integrated (a plan put back to building to take main), submits it for
+  // the owner again, as the last integration does.
+  const finish = async (result, reason) => {
+    if (!result?.allIntegrated) return await release(reason);
+    await io.cli(["submit", item.id, ...at, "--summary", `main at ${mainHead.slice(0, 8)} merged; integrated ${result.parts.length} part${result.parts.length === 1 ? "" : "s"}: ${result.parts.join(", ")}`]);
+    io.log("main merged and every part is integrated; the plan item is submitted for the owner");
   };
   const fail = async (kind, reason) => {
     io.log(`refresh from main at ${mainHead.slice(0, 8)} failed (${kind}): ${reason}`);
@@ -807,8 +817,8 @@ export async function runRefresh(assignment, config, name, io) {
     }
     const mergeHead = await io.head(workspace);
     if (mergeHead === before) {
-      await io.cli(["refreshed", item.id, ...at, "--main-head", mainHead]);
-      await release("the plan's branch already holds main's head");
+      const result = JSON.parse(await io.cli(["refreshed", item.id, ...at, "--main-head", mainHead]));
+      await finish(result, "the plan's branch already holds main's head");
       return { phase: "refreshed" };
     }
     // As in runIntegrate: atelier push records the merge as the plan item's
@@ -828,9 +838,9 @@ export async function runRefresh(assignment, config, name, io) {
       await rollback();
       return await fail("checks", `the plan's checks failed with main merged: ${failing}`);
     }
-    await io.cli(["refreshed", item.id, ...at, "--main-head", mainHead, "--merge-commit", mergeHead]);
+    const result = JSON.parse(await io.cli(["refreshed", item.id, ...at, "--main-head", mainHead, "--merge-commit", mergeHead]));
     pushed = false;
-    await release("main merged into the plan's branch");
+    await finish(result, "main merged into the plan's branch");
     return { phase: "refreshed" };
   } catch (error) {
     // As in runIntegrate: a refused claim is the caller's, not the job's.
