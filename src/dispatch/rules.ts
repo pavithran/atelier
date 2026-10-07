@@ -22,15 +22,29 @@ export interface Dispatch {
   // and "refresh" ask atelier/integrator to merge a part onto the plan's
   // branch or main into it (section 5), and "merge-main" asks the builder of
   // a part or a task to merge main into its workspace and resolve what
-  // conflicts. Absent for ordinary work. The owner writes none of these by
-  // hand but merge-main (t243): the plan's own jobs are the plan's.
-  job?: "plan" | "integrate" | "refresh" | "merge-main";
+  // conflicts. "review" is the review dispatch a review request carries
+  // (section 4): it is stored with the request, not on the item, and offered
+  // to a runner whose offer lists the job. Absent for ordinary work. The
+  // owner writes none of these by hand but merge-main (t243): the plan's own
+  // jobs are the plan's.
+  job?: "plan" | "review" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
   // refresh or merge-main job, `head` is the main head to merge.
   part?: string;
   head?: string;
   partId?: string;
+  // For a part sent back because its integration conflicted with the plan's
+  // branch: the plan branch's head, which the runner merges into the part's
+  // workspace before the builder starts. Only a runner that offers the
+  // "merge-plan" job takes such a dispatch.
+  planHead?: string;
+  // Set on a merge-main job the owner dispatched for a task outside a plan
+  // (t243), whose runner reads main through the task's own base token rather
+  // than a plan's. A runner from before t243 offers merge-main but refuses
+  // such an assignment, so only a runner that offers the "merge-main-task"
+  // job takes it.
+  task?: true;
 }
 
 // What a runner says it can run when it asks for work. `jobs` names the
@@ -106,13 +120,22 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   // to read, so one over its limit is refused, never cut.
   const note = String(input.note ?? "");
   assertLength(note, OWNER_TEXT_MAX, "the dispatch note");
-  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head! } : {}) };
+  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}) };
 }
 
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
     throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
   }
+}
+
+// The jobs a runner must offer to take a dispatch besides building: its job,
+// "merge-plan" when it carries a plan head to merge, and "merge-main-task"
+// for a task's merge-main job (t243). Returns the first the offer lacks, or
+// null when it offers them all.
+function missingJob(d: Dispatch, offer: RunnerOffer): string | null {
+  const needs = [d.job, d.planHead ? "merge-plan" : null, d.job === "merge-main" && d.task ? "merge-main-task" : null];
+  return needs.find((job): job is string => !!job && !(offer.jobs ?? []).includes(job)) ?? null;
 }
 
 // The agent and model a runner should use for a dispatch, or null if it cannot.
@@ -125,7 +148,7 @@ export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
     return { agent: "atelier", model: "integrator", actor: "atelier/integrator" };
   }
   if (d.to !== "any" && d.to !== offer.kind) return null;
-  if (d.job && !(offer.jobs ?? []).includes(d.job)) return null;
+  if (missingJob(d, offer)) return null;
   for (const { agent, models } of offer.agents) {
     if (d.agent && agent !== d.agent) continue;
     const usable = models.filter((m) => claimable(agent, m));
@@ -156,4 +179,64 @@ export function describe(d: Dispatch): string {
   const where = d.to === "any" ? "any runner" : `a ${d.to} runner`;
   const what = d.agent ? `${d.agent}${d.model ? ` with ${d.model}` : ""}` : d.model ? d.model : "its choice of agent";
   return `${where}, ${what}`;
+}
+
+// An offer as the server holds it (putRunnerOffer): what a runner can run
+// and when it last asked for work with that offer.
+export interface SeenOffer extends RunnerOffer {
+  at: string;   // ISO time the runner last polled the queue with this offer
+}
+
+// How long after its last ask an offer still counts as live. A runner asks
+// every 30 seconds, but it runs one task at a time and asks again only when
+// the task ends, so the window covers a task at the default timeouts
+// (cli/runner-config.mjs: 45 minutes of harness, 60 of finish) and the check
+// that may follow. An offer older than this says its runner stopped, and
+// counts for no more than one never made.
+export const OFFER_LIVE_MS = 2 * 60 * 60 * 1000;
+
+export function liveOffers(offers: readonly SeenOffer[], now = new Date()): SeenOffer[] {
+  const until = now.getTime() - OFFER_LIVE_MS;
+  return offers.filter((o) => Number.isFinite(Date.parse(o.at)) && Date.parse(o.at) >= until);
+}
+
+// The names a runner offers for a dispatch's job, or null when the offer
+// cannot take the job at all: it is the wrong kind of runner, or it offers
+// no such job. The names are the claimable agent/model pairs assign() could
+// hand the job to under this offer, whatever harness was asked — the useful
+// fact is what could take the job instead, not which harness is missing.
+function offeredNames(d: Dispatch, offer: RunnerOffer): string[] | null {
+  if (d.to !== "any" && d.to !== offer.kind) return null;
+  if (missingJob(d, offer)) return null;
+  const names: string[] = [];
+  for (const { agent, models } of offer.agents) {
+    for (const model of models) if (claimable(agent, model)) names.push(`${agent}/${model}`);
+  }
+  return names;
+}
+
+// Why a dispatch no live runner offers will never be claimed, or null when a
+// live runner would take it. The queue offers a dispatch only to a runner
+// whose offer can run it, so a review routed to a model no live runner's
+// config lists — or a dispatch for a job none offers — sits unclaimed however
+// long it waits, and this says so: each live runner is named with what it
+// offers instead, or that no runner is live at all.
+export function unoffered(d: Dispatch, offers: readonly SeenOffer[], now = new Date()): string | null {
+  const live = liveOffers(offers, now);
+  if (live.some((offer) => assign(d, offer) !== null)) return null;
+  if (!live.length) {
+    const last = offers.map((o) => o.at).sort().at(-1);
+    return last
+      ? `no runner is live; the last to ask for work did so at ${last.slice(0, 16).replace("T", " ")} UTC`
+      : "no runner has asked the server for work";
+  }
+  const said = live.map((offer) => {
+    const names = offeredNames(d, offer);
+    if (names === null) {
+      if (d.to !== "any" && d.to !== offer.kind) return `${offer.runner} is a ${offer.kind} runner, not a ${d.to} one`;
+      return `${offer.runner} offers no ${missingJob(d, offer)} job`;
+    }
+    return `${offer.runner} offers ${d.job ?? "build"} as ${names.length ? names.join(", ") : "nothing it could claim as"}`;
+  });
+  return `no live runner can take it: ${said.join("; ")}`;
 }

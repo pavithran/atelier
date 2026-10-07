@@ -6,6 +6,7 @@ import { checkEnv } from "./check-env.mjs";
 import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
+import { unoffered } from "../src/dispatch/rules.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -206,9 +207,9 @@ export async function runLand(io) {
   // keeps the process alive on its own (unref), and a renewal the server
   // refuses says the lease is no longer this landing's, which is reported
   // once rather than retried.
-  let leased = false, heartbeat = null, takenOverBy = null;
+  let leased = false, beating = false, takenOverBy = null;
   const release = async () => {
-    if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+    beating = false;
     if (!leased) return;
     leased = false;
     // The cancel names this task: a lease that lapsed, or whose task has
@@ -309,7 +310,7 @@ export async function runLand(io) {
     // `why` is the server's word on the refusal, kept for the guard's error;
     // the warning names the loss in the heartbeat's own phrase, said once.
     const loseLease = (why) => {
-      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+      beating = false;
       leased = false;
       lostLease = why;
     };
@@ -336,21 +337,32 @@ export async function runLand(io) {
         print(`Warning: the landing lease could not be renewed before this step (${error.message}); the merge asks the server again itself.`);
       }
     };
-    heartbeat = setInterval(async () => {
+    // One beat at a time: each beat waits for its renewal's answer before
+    // scheduling the next, so beats never overlap, and a heartbeat that has
+    // stopped — the landing ended, or lost the lease — sends no further
+    // renewal, whatever a slow beat was still answering when it stopped.
+    const beat = async () => {
+      if (!beating) return;
       try {
         await request("POST", leasePath, { item: id, renew: true });
         if (renewFailing) { renewFailing = false; print("The landing lease is renewed again."); }
       } catch (error) {
         if (error.status >= 400 && error.status < 500) {
+          // Said once, even where a slow beat's refusal lands after the loss
+          // was already learned (a guard, or the renewal before publishing).
+          const said = lostLease !== null;
           loseLease(error.message);
-          print(`Warning: the landing lease is no longer ${id}'s (${error.message}); this landing stops when the step it runs ends, and accepts and merges nothing. Run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
+          if (!said) print(`Warning: the landing lease is no longer ${id}'s (${error.message}); this landing stops when the step it runs ends, and accepts and merges nothing. Run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
         } else if (!renewFailing) {
           renewFailing = true;
           print(`Warning: the landing lease could not be renewed (${error.message}); trying again every ${Math.round(LEASE_RENEW_MS / 1000)}s. It lapses after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes without a renewal.`);
         }
       }
-    }, LEASE_RENEW_MS);
-    heartbeat.unref();
+      if (beating) { const next = setTimeout(beat, LEASE_RENEW_MS); next.unref(); }
+    };
+    beating = true;
+    const firstBeat = setTimeout(beat, LEASE_RENEW_MS);
+    firstBeat.unref();
     await record("lease", Date.now() - t0);
 
     // Merge main into the workspace, no-ff, so the task carries main's
@@ -502,13 +514,26 @@ export async function runLand(io) {
         // While no runner has claimed the request, the landing says what the
         // runners are busy with and what waits ahead in the queue, once and
         // again when that changes, so a long wait is explained rather than
-        // silent (a review queues behind every older build on a runner).
+        // silent (a review queues behind every older build on a runner). A
+        // request no live runner offers — a reviewer whose model no runner's
+        // config lists, or a runner that offers no review job — can never be
+        // claimed, however long it waits, and is said as that instead, with
+        // what would change it; a review of t210 routed to fable-5.1 once sat
+        // queued for hours this way (plan t197, 2026-10-07).
         let busyLine = null;
         const explainWait = async (d) => {
           const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
           if (claimed) return;
+          let offers = null;
+          try { offers = await request("GET", "/runners"); } catch { /* without the offers the wait is explained as before */ }
+          const slash = (ask.reviewer ?? "").indexOf("/");
+          const dead = offers && slash > 0
+            ? unoffered({ to: "home", agent: ask.reviewer.slice(0, slash), model: ask.reviewer.slice(slash + 1), by: "atelier/orchestrator", at: since, note: "", job: "review" }, Array.isArray(offers) ? offers : [])
+            : null;
           let line;
-          try {
+          if (dead) {
+            line = `The review request is not claimed yet, and ${dead}. It will not be claimed until a runner that offers ${ask.reviewer} for the review job asks the server for work. Review it by hand (atelier review ${id} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again with --reviewer H/M to ask a model a live runner offers.`;
+          } else try {
             const [items, queued] = await Promise.all([request("GET", `/projects/${encodeURIComponent(name)}/items`), request("GET", "/queue")]);
             const busy = (Array.isArray(items) ? items : []).filter((i) => i.runner && i.state === "claimed" && i.id !== id)
               .map((i) => `${i.runner} is busy with ${i.id} (${i.dispatch?.job ?? "build"}, ${i.owner}) since ${String(i.updatedAt).slice(0, 16).replace("T", " ")} UTC`);

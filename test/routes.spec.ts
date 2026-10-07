@@ -96,7 +96,24 @@ it("a merge-main dispatch names main's head from the baseline, and needs one whe
   const res = await post({ job: "merge-main" }, artifacts(M));
   expect(res.status).toBe(200);
   const sent = await res.json() as { dispatch: { job: string; head: string } | null };
-  expect(sent.dispatch).toMatchObject({ job: "merge-main", head: M });
+  expect(sent.dispatch).toMatchObject({ job: "merge-main", head: M, task: true });
+});
+
+// A runner's offer is what it can run, recorded as it asks the queue for
+// work (t240): the owner reads the offers back to see when a dispatch names
+// a model or a job no live runner offers, which can never be claimed.
+it("each runner's offer is recorded as it asks for work, and /runners answers the owner alone", async () => {
+  const offer = { runner: "home:offers", kind: "home", jobs: ["build", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }] };
+  await call("POST", "/queue", "owner", offer);
+  await call("POST", "/queue", "owner", { ...offer, runner: "home:other", agents: [{ agent: "codex", models: ["gpt-6-astra"] }] });
+  // The newest ask per runner replaces the one before it.
+  await call("POST", "/queue", "owner", { ...offer, jobs: ["build"] });
+  const offers = await (await call("GET", "/runners", "owner")).json() as { runner: string; jobs?: string[]; at: string }[];
+  const mine = offers.find((o) => o.runner === "home:offers");
+  expect(mine).toMatchObject({ runner: "home:offers", kind: "home", jobs: ["build"], agents: [{ agent: "opencode", models: ["glm-5.3"] }] });
+  expect(Number.isFinite(Date.parse(mine!.at))).toBe(true);
+  expect(offers.find((o) => o.runner === "home:other")).toMatchObject({ jobs: ["build", "review"] });
+  expect((await call("GET", "/runners", "codex/gpt-6-astra")).status).toBe(403);
 });
 
 it("the model pool: anyone signed in reads it, only the owner changes it, a runner reports status", async () => {

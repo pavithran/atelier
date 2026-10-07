@@ -39,7 +39,7 @@ test("the runner config knows {plan_file}, and the offer names the plan job", ()
     ["opencode", "run", "--model", "glm-5.3", "--file", "/brief.txt", "--plan-file", "/work/t7/.atelier-plan.json", "/work/t7"]);
   // A build command without the placeholder still parses; only plan jobs need it.
   assert.deepEqual(parseConfig(buildConfig).errors, []);
-  assert.deepEqual(offerFrom(planConfig, "home:studio").jobs, ["build", "plan", "merge-main"]);
+  assert.deepEqual(offerFrom(planConfig, "home:studio").jobs, ["build", "plan", "merge-main", "merge-main-task", "merge-plan"]);
 });
 
 // The io the plan job runs against: the fixture of test/runner.test.mjs, with
