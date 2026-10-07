@@ -183,8 +183,9 @@ export function assertDispatchable(item: Item): void {
 }
 
 // The jobs a runner must offer to take a dispatch: its job, "merge-plan"
-// when it carries a plan head to merge, "merge-main-task" for a task's
-// merge-main job (t243), and "build" for a plain build, which an offer names
+// when it carries a plan head to merge, "merge-main-task" in place of
+// "merge-main" for a task's merge-main job (t243), which is how the runner
+// names that job (jobOf in cli/runner.mjs), and "build" for a plain build, which an offer names
 // like any other job — a runner kept for reviews alone must never be handed
 // one, or a single long build on it holds every review behind it while
 // unoffered() stays silent (t252). An offer naming no job at all is an older
@@ -193,7 +194,8 @@ export function assertDispatchable(item: Item): void {
 // lacks, or null when it offers them all.
 function missingJob(d: Dispatch, offer: RunnerOffer): string | null {
   const jobs = offer.jobs ?? [];
-  const needs = [d.job, d.planHead ? "merge-plan" : null, d.job === "merge-main" && d.task ? "merge-main-task" : null,
+  const taskMerge = d.job === "merge-main" && d.task;
+  const needs = [taskMerge ? null : d.job, d.planHead ? "merge-plan" : null, taskMerge ? "merge-main-task" : null,
     d.job === undefined && !d.planHead ? "build" : null];
   return needs.find((job): job is string => !!job && !jobs.includes(job) && !(job === "build" && !jobs.length)) ?? null;
 }
