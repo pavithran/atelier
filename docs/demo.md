@@ -523,10 +523,12 @@ relies on them:
 - More than one active plan per project, and re-planning after approval.
   Changing the split means `atelier plan stop` and a new plan.
 - A cloud runner. Every job is taken by a home runner.
-- Metering spend per token. The harnesses report no usage data, so paid
+- Metering spend per token. `atelier runner --usage` reports each tool's
+  allowance, tokens and cost, but nothing feeds that to routing, so paid
   models are an opt-in at approval, not a budget Atelier counts.
 
 Nor does `plan show` yet show the plan branch's combined checks or its
-mergeability with main, and the `refresh` job that merges main into the
-plan's branch is built on the runner's side but is not dispatched
-automatically.
+mergeability with main. Main never moves in this walk, so the `refresh`
+job that merges main into the plan's branch — dispatched by the tick
+once main has moved, and run again by `atelier plan refresh` after a
+failed one — never runs here.
