@@ -247,9 +247,16 @@ globalThis.fetch = async (url, options) => {
   if (url.endsWith('/accept')) { state = 'accepted'; acceptanceProtected = policy.protected; acceptancePolicy = { protected: policy.protected, eligible: policy.eligible ?? [], refuseOverlap: policy.refuseOverlap ?? false, checks: policy.checks }; }
   writeFileSync(storage, JSON.stringify({ policy, state, acceptanceProtected, acceptancePolicy }));
   if (url.endsWith('/accept')) return Response.json({ state, acceptedHead: '${head}' });
+  // A plan's refresh, which puts an accepted plan back to building.
+  if (url.endsWith('/plan/refresh')) {
+    if (process.env.TEST_REFRESH_REFUSED) return Response.json({ error: 'job_in_flight', detail: 'a refresh from main at cccccccc is queued' }, { status: 409 });
+    state = 'open';
+    writeFileSync(storage, JSON.stringify({ policy, state, acceptanceProtected, acceptancePolicy }));
+    return Response.json({ item: { id: 't1', state }, refresh: { main: '${"c".repeat(40)}', last: { mainHead: '${"c".repeat(40)}', state: 'dispatched' } }, reopened: { from: 'accepted', acceptedHead: '${head}' } });
+  }
   if (url.endsWith('/api/projects/example')) return Response.json({ project: { policy }, items: JSON.parse(process.env.TEST_ITEMS ?? '[]'), baseline: { token: 'test-token', remote: 'https://git.test/example' } });
   if (url.endsWith('/items/t1')) return Response.json({
-    item: { id: 't1', state, head: '${head}', acceptedHead: '${head}', base: '${base}', scope: JSON.parse(process.env.TEST_SCOPE ?? '[]') },
+    item: { id: 't1', state, head: '${head}', acceptedHead: '${head}', base: '${base}', scope: JSON.parse(process.env.TEST_SCOPE ?? '[]'), ...(process.env.TEST_KIND ? { kind: process.env.TEST_KIND } : {}) },
     policy, acceptanceProtected, acceptancePolicy, events: JSON.parse(process.env.TEST_EVENTS ?? '[]'), evidence: [], reviews: [],
   });
   return Response.json({ remote: 'https://git.test/example', token: 'test-token' });
@@ -327,6 +334,26 @@ test("re-acceptance after refusal records the refreshed list", () => commandFixt
     assert.match(result.stderr, /merge conflicts/);
   }
   assert.ok(gitCalls().some((args) => args.includes("--no-ff")));
+}));
+
+test("a plan whose merge conflicts with main is put back to building through plan refresh, which withdraws its acceptance", () => commandFixture(({ command, calls, gitCalls }) => {
+  const result = command(["merge", "t1", "--policy-changed-ok"], { TEST_KIND: "plan" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /merge conflicts: t1's branch does not merge with main, so nothing was merged\. Its acceptance at aaaaaaaa is withdrawn and the plan is building again: a refresh from main at cccccccc is queued for atelier\/integrator/);
+  assert.match(result.stderr, /atelier merge t1 --head H/);
+  assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--abort")), "the interrupted merge is aborted");
+  const refresh = calls().filter((c) => c.url.endsWith("/items/t1/plan/refresh"));
+  assert.equal(refresh.length, 1);
+  assert.deepEqual(JSON.parse(refresh[0].body), {});
+  // The plan is building now, so a merge run again stops before Git.
+  assert.match(command(["merge", "t1", "--policy-changed-ok"], { TEST_KIND: "plan" }).stderr, /t1 is open; accept the reviewed revision first/);
+}));
+
+test("a plan whose merge conflicts stays accepted, saying why, when the server refuses to put it back to building", () => commandFixture(({ command }) => {
+  const result = command(["merge", "t1", "--policy-changed-ok"], { TEST_KIND: "plan", TEST_REFRESH_REFUSED: "1" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /t1 stays accepted at aaaaaaaa: putting it back to building was refused: .*a refresh from main at cccccccc is queued/);
+  assert.match(result.stderr, /atelier plan refresh t1/);
 }));
 
 test("override still reaches Git after repeated refusals", () => commandFixture(({ command }) => {

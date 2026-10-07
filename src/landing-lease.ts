@@ -10,3 +10,19 @@ export const LANDING_LEASE_EXPIRY_MS = 15 * 60_000;
 export function landingLeaseLapsed(lease: LandingLease, now: number): boolean {
   return now - Date.parse(lease.renewedAt ?? lease.at) >= LANDING_LEASE_EXPIRY_MS;
 }
+
+// A landing queued with --wait for the lease (t249): which task's landing
+// waits, which session asked for it, when it queued and when it last asked
+// again. The server keeps these rows in the order the landings queued and
+// hands a freed lease to the first of them, so landings start in the order
+// their owners queued them rather than the order their polls happen to land.
+export interface WaitingLanding { item: string; holder: string; at: string; renewedAt?: string }
+
+// Whether a waiting landing still counts at `now`: one that has not asked
+// again for the expiry's span may have been killed while it queued, and the
+// landings behind it must not wait for a peer that is gone. A landing that
+// keeps asking, one ask per poll, never lapses, exactly as a holder that
+// keeps renewing never loses the lease.
+export function waitingLandingGone(waiting: WaitingLanding, now: number): boolean {
+  return now - Date.parse(waiting.renewedAt ?? waiting.at) >= LANDING_LEASE_EXPIRY_MS;
+}
