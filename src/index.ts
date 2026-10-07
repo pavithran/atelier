@@ -3,11 +3,11 @@ import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions,
 import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
@@ -162,7 +162,10 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   const imported = await importedAll(env, shown.map((s) => s.project), cutoffs);
   const stories = shown.map((s) => s.story);
   const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), shown.length < entries.length, imported, shown));
-  res.headers.set("cache-control", "public, max-age=60");
+  // The zone and browsers may hold the page for a minute at most, so a
+  // project removed from the showcase disappears within a minute.
+  res.headers.set("cache-control", "public, max-age=60, s-maxage=60");
+  res.headers.set("cdn-cache-control", "max-age=60");
   // A copy the cache refuses is not an error: the page is still served.
   await caches.default.put(key, res.clone()).catch(() => undefined);
   return res;
@@ -453,6 +456,40 @@ async function pushLineage(env: Env, fork: string, observed: string, recorded: s
   const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, fork, observed, recorded);
   const rebasedFrom = typeof declared === "string" && /^[a-f0-9]{40,64}$/.test(declared) ? declared : null;
   return { holdsRecorded: holds, searched, rebasedFrom };
+}
+
+// The commits a push brought, each with the actor its final "Agent:
+// harness/model" line names (agentLine), for the Ledger to record those by
+// another actor than the holder (recordPush). It reads the fork's
+// first-parent line from the new head back to the head recorded before it,
+// or to the item's base, and stops at any commit on the first-parent line of
+// the repository the item is measured against, so commits a merge or a
+// rebase brought from main are never taken for the task's. At most
+// PUSH_AUTHORS_MAX commits are read; a commit naming no actor is skipped.
+const PUSH_AUTHORS_MAX = 200;
+async function pushedAuthors(env: Env, fork: string, observed: string, item: { head: string | null; base: string | null }, againstRepo: string): Promise<PushAuthor[]> {
+  if (observed === item.head) return [];
+  using r = await env.ARTIFACTS.get(fork);
+  using against = await env.ARTIFACTS.get(againstRepo);
+  const stop = new Set((await against.log({ limit: HISTORY_PAGE })).map((c) => c.hash));
+  for (const h of [item.head, item.base]) if (h) stop.add(h);
+  const authors: PushAuthor[] = [];
+  let next: string | undefined = observed, read = 0;
+  while (next && !stop.has(next) && read < PUSH_AUTHORS_MAX) {
+    const commits: ArtifactsCommitMetadata[] = await r.log({ ref: next, limit: 50 });
+    const page: Map<string, ArtifactsCommitMetadata> = new Map(commits.map((c) => [c.hash, c] as const));
+    let c: ArtifactsCommitMetadata | undefined = page.get(next);
+    if (!c) break;
+    // Follow first parents through the page; a parent the page does not hold starts the next read.
+    while (c && !stop.has(c.hash) && read < PUSH_AUTHORS_MAX) {
+      read++;
+      const actor = agentLine(c.message ?? "");
+      if (actor) authors.push({ commit: c.hash, actor });
+      next = c.parents?.[0];
+      c = next ? page.get(next) : undefined;
+    }
+  }
+  return authors;
 }
 
 // The branch Atelier reads in a project's baseline and in every fork of it:
@@ -986,7 +1023,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      return json(await L.recordPush(id, actor, observed, reported, !!c.token, await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom)));
+      const lineage = await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom);
+      // A rewrite the push does not declare is refused by the Ledger, so no
+      // more history is read for it.
+      const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
+      const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
+      return json(await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors));
     }
     case "evidence": {
       const item = await L.item(id);
@@ -1208,8 +1250,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // overrideReview, when sent, is the reason for the owner's override of
       // a missing independent review. Anything but text arrives as a blank
       // reason, which the Ledger refuses.
+      // note, when sent, is the owner's own word on the acceptance, kept
+      // with it in the ledger (land.sh records the session's note there).
       return json(await L.accept(id, actor, String(body.head ?? ""),
-        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : ""));
+        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "",
+        typeof body.note === "string" ? body.note : undefined));
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
@@ -1819,7 +1864,8 @@ export default {
               // progress (observePush); the compare-and-set retry is for a
               // head that should have moved and did not.
               const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded);
+              const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
+              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors);
               if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
             }
             break;
