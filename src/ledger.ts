@@ -884,6 +884,19 @@ export class Ledger extends DurableObject<Env> {
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
   }
 
+  // The jobs a runner's dead run left behind: the claims it holds whose
+  // dispatch still routes them, oldest dispatch first. The queue offers them
+  // back to that runner alone (t235), so the process that takes over after a
+  // restart or a crash re-claims its own and finishes what the dead run
+  // committed, instead of the claim sitting with no one to end it. The claim
+  // itself stays as it was: only the asking runner matches, compared without
+  // case as claim() compares it.
+  heldJobs(runner: string): Item[] {
+    return this.items()
+      .filter((i) => i.state === "claimed" && i.dispatch && (i.runner ?? "").toLowerCase() === runner.toLowerCase())
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
+  }
+
   // A failed fork must not leave an owner holding nothing.
   unclaim(id: string, actor: string, reason: string, proved = false): void {
     const at = new Date().toISOString();

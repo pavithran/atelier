@@ -310,39 +310,57 @@ export async function runTask(assignment, config, name, io) {
     await io.reset(workspace);
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
-    // A part's brief comes from the server (GET items/tN/job-brief): the
-    // plan's spec, its checks and any rework to carry. Any other task keeps
-    // the local briefFor below.
-    const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
-    if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
-    // A task sent back with an earlier attempt committed keeps briefFor, and
-    // adds the review's findings the server holds for its head, if any.
-    const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
-    if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
-    const local = briefFor({ ...item, owner: actor }, project);
-    brief = await io.brief(workspace, serverBrief ? serverBrief.text : reworked?.text ? `${local}\n${reworked.text}\n` : local);
-    const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
-    for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
-    // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
-    // is removed when the harness ends, however it ends, before anything else.
-    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-    let result;
-    try {
+    // A job the queue offered back because this runner already holds it
+    // (the claim a dead run left behind; the queue offers its own held jobs
+    // to a runner alone) resumes rather than rebuilds when the workspace
+    // holds commits Atelier never recorded: the dead run's harness committed
+    // and the run ended — a stop, a crash — before finish could push and
+    // submit. The commit is the model's completed work, its last step under
+    // the brief, so this run finishes it (push, checks, submit) and starts
+    // no harness of its own. A workspace at the recorded head means the dead
+    // run committed nothing, and the harness runs as for any other claim.
+    const resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head;
+    let result = null;
+    if (resumed) {
+      io.log(`resumed: an earlier run of this runner committed ${String(before).slice(0, 8)} and never submitted it; finishing it without the harness`);
       advance({ type: "start" });
-      taskFailure = true;
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
-    } finally {
-      if (dataHome) {
-        try { await io.removeDataHome(dataHome); }
-        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+    } else {
+      // A part's brief comes from the server (GET items/tN/job-brief): the
+      // plan's spec, its checks and any rework to carry. Any other task keeps
+      // the local briefFor below.
+      const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
+      if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
+      // A task sent back with an earlier attempt committed keeps briefFor, and
+      // adds the review's findings the server holds for its head, if any.
+      const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
+      if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
+      const local = briefFor({ ...item, owner: actor }, project);
+      brief = await io.brief(workspace, serverBrief ? serverBrief.text : reworked?.text ? `${local}\n${reworked.text}\n` : local);
+      const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+      for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
+      // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
+      // is removed when the harness ends, however it ends, before anything else.
+      const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+      try {
+        advance({ type: "start" });
+        taskFailure = true;
+        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+      } finally {
+        if (dataHome) {
+          try { await io.removeDataHome(dataHome); }
+          catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+        }
       }
     }
-    if (result.timedOut) throw new Error("harness timed out");
+    if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
-    taskFailure = result.code !== 0;
-    const head = await io.head(workspace);
+    taskFailure = result !== null && result.code !== 0;
+    // A resumed run reads no head again: no harness ran, so before is it. Its
+    // work began at the recorded head, not at the workspace's before, so the
+    // exit names that head as what the run moved from.
+    const head = resumed ? before : await io.head(workspace);
     taskFailure = true;
-    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result.code, before, head });
+    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : before, head });
     if (state.phase === "failed") throw new Error(state.reason);
     await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
     advance({ type: "finish" });
