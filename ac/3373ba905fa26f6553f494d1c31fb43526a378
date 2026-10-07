@@ -1,0 +1,29 @@
+atelier atelier/t276 "Anonymised showcase projects still show commit hashes that could re-identify a public repository (src/graph.ts ~221, 430; audit 2026-10-06, later list): leave hashes out of anonymised projects' graph and pages. Split out of t219, which built the public-route fixes; the /login rate limit is covered by t270 (Cloudflare Access replaces /login)"
+accepted head 4c207813be8d5ae57d436156c066ba5d4e467d45
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T23:49:52.485Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T23:49:55.243Z
+REVIEW approve by antigravity/gemini-3.1-pro at 4c207813be8d5ae57d436156c066ba5d4e467d45, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T17:55:44.033Z pavi item.created
+2026-10-07T23:23:14.278Z pavi item.dispatched
+2026-10-07T23:23:17.954Z opencode/glm-5.3 item.claimed
+2026-10-07T23:23:31.447Z opencode/glm-5.3 fork.created
+2026-10-07T23:33:12.898Z opencode/glm-5.3 push.observed
+2026-10-07T23:37:50.316Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:37:55.386Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:37:57.554Z opencode/glm-5.3 item.submitted
+2026-10-07T23:46:43.978Z pavi land.lease
+2026-10-07T23:46:48.290Z pavi land.merge
+2026-10-07T23:47:00.732Z pavi land.regenerate
+2026-10-07T23:47:03.701Z opencode/glm-5.3 push.observed
+2026-10-07T23:47:04.246Z pavi land.push
+2026-10-07T23:49:53.102Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:49:55.549Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:49:56.018Z pavi land.check
+2026-10-07T23:49:56.430Z opencode/glm-5.3 item.submitted
+2026-10-07T23:49:56.674Z pavi land.submit
+2026-10-07T23:49:56.822Z pavi review.requested
+2026-10-07T23:50:04.475Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T23:54:18.034Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T23:54:19.896Z pavi land.review
+2026-10-07T23:54:20.677Z pavi item.accepted
+2026-10-07T23:54:20.962Z pavi land.accept
