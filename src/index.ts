@@ -26,7 +26,7 @@ import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { durationsSql, fetchNewLogs, gatewayConfig, gatewayView, parseDurations, parseTotals, totalsSql, writeLog, type GatewayGap, type GatewayMark, type GatewayPull, type GatewayView } from "./usage/gateway.ts";
-import { query, queryConfig } from "./metrics.ts";
+import { query, queryConfig, neverWritten } from "./metrics.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
@@ -1740,6 +1740,7 @@ export async function readGateway(env: Env, now = Date.now(), fetcher: typeof fe
     const [totals, durations] = await Promise.all([query(read, totalsSql(), fetcher), query(read, durationsSql(), fetcher)]);
     return gatewayView(null, parseTotals(totals), parseDurations(durations), pull, gaps, now);
   } catch (err) {
+    if (neverWritten(err)) return gatewayView(null, [], [], pull, gaps, now);
     return gatewayView(`AI Gateway costs could not be read just now: ${err instanceof Error ? err.message : String(err)}`, [], [], pull, gaps, now);
   }
 }

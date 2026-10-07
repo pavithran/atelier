@@ -160,6 +160,15 @@ it("the Models page shows each model's calls, tokens, cost and median duration w
   // A failed read says so rather than showing no calls.
   const down = await readGateway(on, NOW, (async () => new Response("", { status: 500 })) as typeof fetch);
   expect(down.off).toBe("AI Gateway costs could not be read just now: the Analytics Engine SQL API answered 500");
+
+  // Before the first data point the dataset has no columns: that is no calls, not a failure.
+  const empty = await readGateway(on, NOW, (async () => new Response('Input was invalid: unable to find type of column: "timestamp".', { status: 422 })) as typeof fetch);
+  expect(empty.off).toBeNull();
+  expect(empty.models).toEqual([]);
+  expect(renderModels([], new Map(), "PAVI", "", undefined, undefined, empty)).toContain("No calls through the gateway in the last 7 days.");
+  // Figures that cannot be read still show the last pull.
+  const unreadHtml = renderModels([], new Map(), "PAVI", "", undefined, undefined, { ...down, pull: { at: at(5), added: 0, error: "the AI Gateway logs route answered 404" } });
+  expect(unreadHtml).toContain("failed: the AI Gateway logs route answered 404.");
 });
 
 it("GET /api/usage carries the gateway's view for atelier runner --usage", async () => {
