@@ -48,6 +48,8 @@ async function fixture(t) {
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/approve") data = approvedView;
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/revise") data = { ...proposedView, proposal: { ...proposedView.proposal, answered: false } };
     else if (req.method === "POST" && /^\/api\/projects\/proj\/items\/t2\/plan\/(reroute|retry)$/.test(p)) data = approvedView;
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t3/plan/reroute") data = { ...approvedView, parts: [{ ...partView, id: "t3", state: "submitted", dispatch: null }] };
+    else if (req.method === "POST" && p === "/api/projects/proj/items/t4/plan/reroute") data = { ...approvedView, parts: [{ ...partView, id: "t4", state: "blocked", dispatch: null, blocked: { reason: "the owner holds it", by: "owner" } }] };
     else if (req.method === "POST" && p === "/api/projects/proj/items/t1/plan/stop") data = { ...approvedView, item: { ...item, state: "abandoned" }, parts: [{ ...partView, state: "abandoned" }] };
     else status = 404;
     res.writeHead(status, { "content-type": "application/json" });
@@ -134,6 +136,19 @@ test("plan approve sends the full hash and allowPaid; revise, reroute, retry and
     ["t2/plan/reroute", "owner", { to: "zcode/glm-5.3" }],
     ["t2/plan/retry", "owner", {}],
     ["t1/plan/stop", "owner", { note: "changed course" }],
+  ]);
+});
+
+test("plan reroute of a submitted or blocked part says who reviews it from now on", async (t) => {
+  const f = await fixture(t);
+  const submitted = await f.run(["plan", "reroute", "t3", "--to", "antigravity/gemini-3.1-pro"]);
+  assert.equal(submitted.status, 0, submitted.stderr);
+  assert.equal(submitted.stdout.trim(), "t3 is reviewed by antigravity/gemini-3.1-pro from now on; the plan asks it for the next review the part needs.");
+  const blocked = await f.run(["plan", "reroute", "t4", "--to", "antigravity/gemini-3.1-pro"]);
+  assert.equal(blocked.stdout.trim(), "t4 is reviewed by antigravity/gemini-3.1-pro from now on; it is still blocked: the owner holds it.");
+  assert.deepEqual(f.requests.map((r) => [r.path.replace("/api/projects/proj/items/", ""), r.body]), [
+    ["t3/plan/reroute", { to: "antigravity/gemini-3.1-pro" }],
+    ["t4/plan/reroute", { to: "antigravity/gemini-3.1-pro" }],
   ]);
 });
 
