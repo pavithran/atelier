@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const zsh = ["/bin/zsh", "/usr/bin/zsh"].find((p) => existsSync(p));
 
-function landing(t, { model, answer = "VERDICT: APPROVE\nSUMMARY: The reviewer's own summary.\n" } = {}) {
+function landing(t, { model, answer = "VERDICT: APPROVE\nSUMMARY: The reviewer's own summary.\n", check = "PASS npm test" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-land-sh-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   // land.sh beside its siblings, with a review.sh that writes the answer and
@@ -30,7 +30,7 @@ function landing(t, { model, answer = "VERDICT: APPROVE\nSUMMARY: The reviewer's
   // An atelier that records each call and passes every check.
   const tools = join(dir, "tools"), log = join(dir, "calls.jsonl");
   mkdirSync(tools);
-  writeFileSync(join(tools, "atelier"), `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconsole.log(process.argv[2] === "check" ? "PASS npm test" : "ok");\n`);
+  writeFileSync(join(tools, "atelier"), `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconsole.log(process.argv[2] === "check" ? ${JSON.stringify(check)} : "ok");\n`);
   chmodSync(join(tools, "atelier"), 0o755);
   const cache = join(dir, "cache"), config = join(dir, "config"), checkout = join(dir, "checkout");
   const ws = join(cache, "work", "demo", "t9");
@@ -77,4 +77,14 @@ test("any other model is refused before anything runs", { skip: !zsh && "zsh is 
   assert.equal(result.status, 7);
   assert.match(result.stdout, /REVIEW_MODEL gemini-3-flash is not one land.sh can name/);
   assert.deepEqual(calls, []);
+});
+
+test("a failed check shows the last 25 lines of its output", { skip: !zsh && "zsh is not installed" }, (t) => {
+  const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+  const { result, calls } = landing(t, { model: "gemini-3.1-pro-high", check: ["FAIL  npm test", ...lines].join("\n") });
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stdout, /t9: CHECK FAILED\n/);
+  const shown = result.stdout.slice(result.stdout.indexOf("CHECK FAILED\n") + 13).trim().split("\n");
+  assert.deepEqual(shown, lines.slice(-25));
+  assert.ok(!calls.some((c) => c[0] === "submit"));
 });
