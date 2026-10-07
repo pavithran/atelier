@@ -3,6 +3,12 @@
   "name": "atelier",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-03",
+  // Workers Logs: the account keeps every invocation and every console.*
+  // line the Worker writes (seven days, three on the free plan) — read them
+  // in the dashboard under Workers & Pages → atelier → Observability, or
+  // live with wrangler tail; docs/orchestrating.md, "Reading the server's
+  // logs", says how a session queries them. test/workers-logs.test.mjs
+  // keeps the logs free of tokens and keys.
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
