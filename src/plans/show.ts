@@ -12,7 +12,7 @@ import { TEXT_CONTROLS } from "../text.ts";
 import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
 import type { PartRoute } from "./route.ts";
 import type { Plan } from "./schema.ts";
-import type { PlanLimits } from "./state.ts";
+import type { PlanLimits, PlanRefresh } from "./state.ts";
 
 export interface PlanPartView {
   id: string;
@@ -48,6 +48,10 @@ export interface PlanView {
   parts: PlanPartView[];
   preview: PartRoute[] | null;    // before approval: the routing an approval would fix now
   integration: { integrationHead: string | null };  // the plan branch's integration head; null when none is recorded
+  // How the branch stands against main: the main head it last took (from a
+  // refresh, or the commit the plan forked from), main's head now as read or
+  // last observed, the latest refresh, and whether the integrator holds it.
+  refresh?: { taken: string | null; main: string | null; last: PlanRefresh | null; running: boolean };
   harnessFailure: string | null;  // the release note when the harness failed, shown while the plan waits for the planner
   pastDeadline: boolean;          // an approved plan past its deadline, whose block only stop can lift
 }
@@ -157,9 +161,39 @@ export function planText(v: PlanView, project: string): string {
   if (v.approval) {
     const head = v.integration.integrationHead;
     lines.push("", head ? `Integration branch at ${head.slice(0, 8)}.` : "No part is integrated yet; the integration branch still sits at the commit the plan forked from.");
+    lines.push(...refreshLines(v, flag));
   }
   lines.push("", ...nextSteps(v, flag));
   return lines.join("\n");
+}
+
+// How far behind main the plan's branch is, and its latest refresh: one in
+// flight, which parts wait for, or one that failed, with why and the command
+// that runs it again. A refresh is the plan's own work and charges no part.
+function refreshLines(v: PlanView, flag: string): string[] {
+  const r = v.refresh;
+  if (!r || v.item.state === "merged" || v.item.state === "abandoned") return [];
+  const s = (hash: string) => hash.slice(0, 8);
+  const lines: string[] = [];
+  const again = `atelier plan refresh ${v.item.id} ${flag}`;
+  const last = r.last;
+  const inFlight = last?.state === "dispatched";
+  if (!r.taken) lines.push(r.main ? `Main is at ${s(r.main)}; the commit the branch forked from is not recorded.` : "");
+  else if (!r.main) lines.push(`The branch last took main at ${s(r.taken)}; main's head is not known yet.`);
+  else if (r.main === r.taken) lines.push(`The branch holds main's head ${s(r.main)}.`);
+  else {
+    const triedHere = last && last.mainHead === r.main;
+    lines.push(`The branch last took main at ${s(r.taken)}; main is now at ${s(r.main)}.${inFlight || triedHere ? "" : ` Take it now: ${again}`}`);
+  }
+  if (last && inFlight) {
+    lines.push(`A refresh from main at ${s(last.mainHead)} is ${r.running ? "being merged by atelier/integrator" : "queued for atelier/integrator"}, asked by ${last.by} at ${when(last.at)}; parts wait for it before they are dispatched.`);
+  } else if (last?.state === "failed") {
+    const what = last.kind === "conflict" ? "a merge conflict" : last.kind === "checks" ? "failing checks" : last.kind ? `kind ${flat(last.kind)}` : "kind not recorded";
+    lines.push(`The refresh from main at ${s(last.mainHead)} failed at ${when(last.endedAt ?? last.at)} (${what}; charged to no part): ${cut(flat(last.reason ?? "") || "no reason given", 500)}. It is not tried again for that head; parts are dispatched without it. Run it again: ${again}`);
+  } else if (last?.state === "refreshed") {
+    lines.push(`Refreshed from main at ${s(last.mainHead)} at ${when(last.endedAt ?? last.at)}${last.mergeCommit ? `, as ${s(last.mergeCommit)}` : "; the branch already held it"}.`);
+  }
+  return lines.filter(Boolean);
 }
 
 function nextSteps(v: PlanView, flag: string): string[] {

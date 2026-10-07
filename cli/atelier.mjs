@@ -244,6 +244,8 @@ export const FLAGS = {
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
   "integration-failed": { part: false, reason: false, kind: false },
+  refreshed: { "main-head": false, "merge-commit": false },
+  "refresh-failed": { "main-head": false, reason: false, kind: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
@@ -280,7 +282,7 @@ export const FLAGS = {
 };
 const REST = new Set(["check"]);
 // The flags each plan subcommand takes; "" is a new plan's.
-const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], stop: ["note"], post: [] };
+const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: [], stop: ["note"], post: [] };
 const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
 
 export function parseArgs(argv, switches = SWITCHES) {
@@ -2347,6 +2349,24 @@ const commands = {
     console.log(JSON.stringify(r));
   },
 
+  // The integrator's reports on a refresh of the plan's branch with main's
+  // head (docs/orchestrator.md, section 5). The server verifies the merge.
+  async refreshed() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args["main-head"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["main-head"])) die("usage: atelier refreshed tP --main-head SHA [--merge-commit SHA]; --main-head needs the full hash of the main head merged");
+    if (args["merge-commit"] !== undefined && (typeof args["merge-commit"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["merge-commit"]))) die("--merge-commit needs the full merge commit hash");
+    const r = await call("POST", `${I(name, id)}/refreshed`, { mainHead: args["main-head"], ...(args["merge-commit"] ? { mergeCommit: args["merge-commit"] } : {}) }, as);
+    console.log(JSON.stringify(r));
+  },
+
+  async "refresh-failed"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args["main-head"] !== "string" || !/^[a-f0-9]{40,64}$/.test(args["main-head"])) die("usage: atelier refresh-failed tP --main-head SHA --reason TEXT [--kind conflict|checks]");
+    if (args.kind !== undefined && args.kind !== "conflict" && args.kind !== "checks") die("--kind is conflict or checks");
+    const r = await call("POST", `${I(name, id)}/refresh-failed`, { mainHead: args["main-head"], reason: args.reason ?? "", ...(args.kind ? { kind: args.kind } : {}) }, as);
+    console.log(JSON.stringify(r));
+  },
+
   async handoff() {
     if (!args.to) die(COMMAND_USAGE.handoff);
     const name = project(), id = itemArg(), as = await actor();
@@ -3013,6 +3033,14 @@ const commands = {
       const view = await call("POST", `${I(name, id)}/plan/retry`, {}, OWNER);
       const part = view.parts.find((p) => p.id === id);
       console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
+      return;
+    }
+    if (sub === "refresh") {
+      const view = await call("POST", `${I(name, id)}/plan/refresh`, {}, OWNER);
+      const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
+      const taken = view.refresh?.taken;
+      console.log(`${view.item.id}'s refresh from main at ${main.slice(0, 8)} is queued for atelier/integrator${taken ? `; the branch last took main at ${taken.slice(0, 8)}` : ""}. A runner started with --integrate merges it; parts wait for it before they are dispatched.`);
+      console.log(`Follow it with atelier plan show ${view.item.id} ${flag}`);
       return;
     }
     if (sub === "stop") {
