@@ -1432,6 +1432,7 @@ async function discoverModels() {
 
 // Each tool's usage goes to the usage route under the runner's name; one
 // that fails does not stop the others, and runUsage names every failure.
+// The AI Gateway's figures are read back from GET /api/usage.
 async function reportUsage() {
   const { runUsage } = await import("./usage.mjs");
   const controller = new AbortController();
@@ -1440,6 +1441,7 @@ async function reportUsage() {
     await runUsage(args, {
       signal: controller.signal,
       report: (tool, body, runner) => postAsRunner(`/usage/${encodeURIComponent(tool)}`, body, runner, controller.signal),
+      gateway: async () => (await request("GET", "/usage", undefined, OWNER)).gateway,
     });
   } catch (error) { die(error.message); }
 }
@@ -1663,14 +1665,23 @@ const commands = {
             return null;
           }
         },
+        // A poll that times out, cannot reach the server, or meets a 5xx or a
+        // 429 throws an error marked transient, which the runner's loop takes
+        // as the server being slow rather than a failure (transientQueueError).
         async queue(offer, signal) {
           await resolveTokenActor();
-          const res = await fetch(server() + "/api/queue", {
-            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
-            body: JSON.stringify(offer),
-          });
-          if (!res.ok) throw new Error(`queue: ${res.status}`);
+          let res;
+          try {
+            res = await fetch(server() + "/api/queue", {
+              method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+              headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
+              body: JSON.stringify(offer),
+            });
+          } catch (error) {
+            if (signal.aborted) throw error;
+            throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
+          }
+          if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
           const incomplete = res.headers.get("x-atelier-incomplete");
           if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
           return res.json();

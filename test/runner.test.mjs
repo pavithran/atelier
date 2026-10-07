@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, runOutcome, harnessEnv, versionRefusal } from "../cli/runner.mjs";
+import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -407,6 +407,53 @@ test("runRunner once polls once and handles SIGINT, SIGTERM and SIGHUP", async (
   for (const change of [{ once: "yes" }, { config: true }, { _: ["runner", "extra"] }, { multi: { unknown: [true] } }]) {
     await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, ...change }, {}), /usage/);
   }
+});
+
+test("a queue poll that times out or meets a 5xx is transient: logged once, backed off and retried, never a failure", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-transient-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const logs = [];
+  t.mock.method(console, "log", (s) => logs.push(s));
+  const timeout = () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+  const errors = [timeout(), new Error("queue: 500"), Object.assign(new Error("queue: fetch failed"), { transient: true })];
+  const waits = [];
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    wait: async (ms) => { waits.push(ms); },
+    async queue() {
+      polls++;
+      if (polls <= errors.length) throw errors[polls - 1];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(polls, 4);
+  assert.deepEqual(waits, [30_000, 60_000, 120_000], "each miss in a row waits longer");
+  assert.equal(logs.filter((s) => s.includes("queue unavailable")).length, 1, "a run of misses is logged once");
+  assert.ok(logs.some((s) => s.includes("queue answering again after 3 failed polls")));
+  assert.ok(!logs.some((s) => s.includes("failed:")), "a slow queue is no failure");
+
+  // Run once, a timed-out poll leaves the exit code alone.
+  const before = process.exitCode;
+  t.after(() => { process.exitCode = before; });
+  process.exitCode = undefined;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    async queue() { throw timeout(); },
+  });
+  assert.equal(process.exitCode, undefined);
+});
+
+test("transientQueueError takes timeouts, 5xx, 429 and marked errors, not a 4xx or a bad answer, and the backoff is capped", () => {
+  assert.equal(transientQueueError(Object.assign(new Error("x"), { name: "TimeoutError" })), true);
+  for (const status of [500, 502, 503, 429]) assert.equal(transientQueueError(new Error(`queue: ${status}`)), true);
+  assert.equal(transientQueueError(Object.assign(new Error("queue: fetch failed"), { transient: true })), true);
+  for (const message of ["queue: 401", "queue: 404", "queue did not return an array"]) assert.equal(transientQueueError(new Error(message)), false);
+  assert.equal(transientQueueError(Object.assign(new Error("queue: 403"), { transient: false })), false);
+  assert.deepEqual([1, 2, 3, 4, 5, 10].map(queueBackoffMs), [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
 });
 
 test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
@@ -979,7 +1026,43 @@ test("parseConfig refuses review jobs for an agent whose command has no {verdict
   const errors = parseConfig({ ...config, jobs: ["review"] }).errors.join(" ");
   assert.match(errors, /opencode's command has no \{verdict_file\} placeholder/);
   assert.deepEqual(parseConfig({ agents: [{ ...entry, command: [...entry.command, "{verdict_file}"] }], jobs: ["review"] }).errors, []);
-  assert.deepEqual(parseConfig({ ...config, jobs: ["other"] }).errors, []);
+  // t252: jobs names the jobs exactly, so a name the runner does not know is
+  // refused rather than taken as a job it silently cannot run.
+  assert.match(parseConfig({ ...config, jobs: ["other"] }).errors.join(" "), /jobs cannot list "other"/);
+});
+
+// t252: jobs is the exact list a runner takes. A runner configured for
+// reviews offers no build, plan or merge job, so the queue's builds pass it
+// by instead of holding every review behind one long build.
+test("jobs is the exact list a runner offers, and unknown job names are refused", () => {
+  const reviewer = { agent: "opencode", models: ["glm-5.3"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{verdict_file}"] };
+  for (const jobs of [["review"], ["build", "review"], DEFAULT_JOBS]) {
+    assert.deepEqual(parseConfig({ agents: [reviewer], jobs }).jobs, jobs, JSON.stringify(jobs));
+    assert.deepEqual(offerFrom({ agents: [reviewer], jobs }, "home:rev").jobs, jobs, JSON.stringify(jobs));
+  }
+  for (const jobs of [[], ["other"], ["reviews"], ["review", "other"], ["integrate"], ["refresh"]]) {
+    const errors = parseConfig({ agents: [reviewer], jobs }).errors.join(" ");
+    assert.match(errors, /jobs/, JSON.stringify(jobs));
+  }
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["integrate"] }).errors.join(" "), /the integrator's alone/);
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan and review/);
+  // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
+  assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
+});
+
+// t252: the job an assignment is, which the runner takes only when its offer
+// names it.
+test("jobOf names the job an assignment is", () => {
+  const item = (dispatch) => ({ id: "t9", dispatch });
+  assert.equal(jobOf({ item: item() }), "build");
+  assert.equal(jobOf({ item: item({ to: "home", by: "owner", at: "x", note: "" }) }), "build");
+  assert.equal(jobOf({ item: item({ job: "plan" }) }), "plan");
+  assert.equal(jobOf({ item: item({ job: "review" }) }), "review");
+  assert.equal(jobOf({ item: item({ job: "integrate" }) }), "integrate");
+  assert.equal(jobOf({ item: item({ job: "refresh" }) }), "refresh");
+  assert.equal(jobOf({ item: item({ job: "merge-main" }) }), "merge-main");
+  assert.equal(jobOf({ item: item({ job: "merge-main", task: true }) }), "merge-main-task");
+  assert.equal(jobOf({ item: item({ planHead: "b".repeat(40) }) }), "merge-plan");
 });
 
 test("server failures in finish retire the task after three failures", async (t) => {
