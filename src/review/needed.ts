@@ -58,7 +58,7 @@ export interface ReviewRequired {
   outOfScope: string[];
   checks: EvidenceView["checks"];
   round: number;                    // 1, plus each earlier head a model rejected
-  previous: ReviewRecord[];         // counting reviews at earlier heads, latest per reviewer and head, oldest first
+  previous: ReviewRecord[];         // counting reviews at any head, latest per reviewer and head, oldest first
   previousReviewer: string | null;  // who rejected most recently, asked first on a re-review
   lapsed: string[];                 // reviewers whose claim on a review of this head lapsed
 }
@@ -152,19 +152,21 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   }
   const lapsed = [...new Set(live.flatMap((r) => (r.claimedBy ? [r.claimedBy] : [])))];
 
-  // Earlier rounds: the latest counting review per reviewer at each earlier
-  // head, oldest first. A round is an earlier head a model rejected; the
-  // owner's rejections are shown to the reviewer but are the owner's own
-  // decisions, not rounds of automatic review. The limit on rounds is fixed
-  // when a plan is approved and reaching it blocks the plan, so it is the
-  // plan tick's to enforce; this reports the round.
+  // Earlier reviews: the latest counting review per reviewer at each head,
+  // this one included (an approval here that does not suffice, with its
+  // findings), oldest first. A round is an earlier head a model rejected; a
+  // rejection at this head ended the need above, and the owner's rejections
+  // are shown to the reviewer but are the owner's own decisions, not rounds
+  // of automatic review. The limit on rounds is fixed when a plan is
+  // approved and reaching it blocks the plan, so it is the plan tick's to
+  // enforce; this reports the round.
   const counts = (r: Review) => r.by === owner || hasRole(r.by, policy, "assessor");
   const latest = new Map<string, ReviewRecord>();
-  for (const r of reviews.filter((r) => r.head !== head && counts(r)).sort((a, b) => a.at.localeCompare(b.at))) {
+  for (const r of reviews.filter(counts).sort((a, b) => a.at.localeCompare(b.at))) {
     latest.set(`${r.head}\n${r.by}`, r);
   }
   const previous = [...latest.values()].sort((a, b) => a.at.localeCompare(b.at));
-  const modelRejections = previous.filter((r) => !r.approve && r.by !== owner);
+  const modelRejections = previous.filter((r) => !r.approve && r.by !== owner && r.head !== head);
   const round = new Set(modelRejections.map((r) => r.head)).size + 1;
   const last = modelRejections.at(-1);
 

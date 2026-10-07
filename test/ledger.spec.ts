@@ -610,6 +610,13 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(full, { ...base, title: "U" }, "later")).toEqual({ ...full, title: "U", revision: 2 });
   // An explicit null clears; reset starts from the defaults.
   expect(mergeProject(full, { ...base, title: null, approval: null }, "later")).toEqual({ ...full, revision: 2, title: undefined, policy: { ...full.policy, approval: undefined } } as never);
+  // The review bar is set, kept by an init that does not name it, and cleared by null.
+  const barred = mergeProject(full, { ...base, reviewBar: "Block only for data loss." }, "later");
+  expect(barred.policy.reviewBar).toBe("Block only for data loss.");
+  expect(mergeProject(barred, { ...base, title: "V" }, "later").policy.reviewBar).toBe("Block only for data loss.");
+  expect(mergeProject(barred, { ...base, reviewBar: null }, "later").policy).not.toHaveProperty("reviewBar");
+  expect(full.policy).not.toHaveProperty("reviewBar");
+  expect(mergeProject(barred, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewBar");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
   expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], eligible: [], refuseOverlap: false, sandboxOnly: false });

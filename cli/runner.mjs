@@ -424,6 +424,7 @@ export async function runReview(assignment, config, name, io) {
     }
     const text = reviewBrief({
       need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner, compare,
+      bar: claimed.reviewBar ?? null,
     });
     brief = await io.brief(workspace, text);
     diffFile = await io.writeDiff(workspace, diff);
