@@ -72,20 +72,25 @@ test("the default planner is the first model for research work that is not refus
   assert.deepEqual(pickPlanner([], [], policy), { actor: null, reasons: ["the model pool is empty"], passedOver: [] });
 });
 
-test("the planner's attempts count claims released without a valid proposal, from the plan's latest request", () => {
+test("the planner's attempts count only proposals posted and refused, from the plan's latest request", () => {
   const claimed = (seq: number) => event(seq, "item.claimed");
   const released = (seq: number) => event(seq, "item.released");
   const invalid = (seq: number, errors: string[]) => event(seq, "plan.invalid", "t1", "claude-code/opus-5.5", { errors });
   assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4)]), { failed: 1, lastErrors: ["e1"] });
-  const twice = [event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), released(6)];
-  assert.deepEqual(plannerAttempts(twice), { failed: 2, lastErrors: [] });
-  assert.equal(plannerBlock(plannerAttempts(twice)), "the planner gave no valid plan in 2 attempts");
+  // A release in which no proposal was refused (a harness that failed, an
+  // interrupt or an infrastructure failure) fails no attempt.
+  assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), released(3)]), { failed: 0, lastErrors: [] });
+  assert.deepEqual(plannerAttempts([event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), released(6)]), { failed: 1, lastErrors: ["e1"] });
+  // Two refused proposals block the plan; the errors are the last refusal's.
+  const twice = [event(1, "item.created"), claimed(2), invalid(3, ["e1"]), released(4), claimed(5), invalid(6, ["e2"]), released(7)];
+  assert.deepEqual(plannerAttempts(twice), { failed: 2, lastErrors: ["e2"] });
+  assert.equal(plannerBlock(plannerAttempts(twice)), "the planner gave no valid plan in 2 attempts; its last proposal's errors: e2");
   const errors = ["a", "b", "c", "d", "e"];
   assert.equal(plannerBlock({ failed: 2, lastErrors: errors }), "the planner gave no valid plan in 2 attempts; its last proposal's errors: a; b; c; and 2 more");
   assert.equal(plannerBlock({ failed: 1, lastErrors: errors }), null);
   // A revise, reroute or retry, or a valid proposal, starts the count again.
   for (const kind of ["plan.revised", "plan.rerouted", "plan.retried", "plan.proposed"]) {
-    assert.equal(plannerAttempts([...twice, event(7, kind)]).failed, 0, kind);
+    assert.equal(plannerAttempts([...twice, event(8, kind)]).failed, 0, kind);
   }
   // The release that ends a claim in which a valid proposal was posted is no failure.
   assert.equal(plannerAttempts([claimed(1), event(2, "plan.proposed"), released(3)]).failed, 0);
