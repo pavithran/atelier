@@ -1133,8 +1133,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
       return json({ runId, state }, 202);
     }
-    case "dispatch":
-      return json(await L.dispatch(id, actor, body));
+    case "dispatch": {
+      // A held task is released as it is queued, so its holder's write token
+      // is revoked first, as for a release.
+      const oldToken = await L.tokenId(id);
+      const before = await L.checkDispatch(id, actor, body);
+      if (before.owner) await revoke(env, before.fork, oldToken);
+      return json(await L.dispatch(id, actor, body, oldToken));
+    }
     case "undispatch":
       return json(await L.undispatch(id, actor));
     // The owner's framing of a task: agentRoute gives an agent token no edit
@@ -1629,15 +1635,16 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // one the token was made for, even if a claim made both after `before`
     // was read. With `before.fork` that token would go unrevoked, and the
     // change would then take it off the record while it still works.
-    const moving = verb === "abandon" || verb === "release" || verb === "handoff";
+    const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
     if (moving) {
-      if (verb === "abandon") await L.checkAbandon(id, owner, note);
+      if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+      else if (verb === "abandon") await L.checkAbandon(id, owner, note);
       else if (verb === "release") await L.checkRelease(id, owner, note);
       else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
       const { fork } = await L.item(id);
       await revoke(env, fork, oldToken);
     }
-    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
     else if (verb === "undispatch") await L.undispatch(id, owner);
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
