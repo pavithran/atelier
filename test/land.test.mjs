@@ -25,8 +25,10 @@ function root(t) { const p = mkdtempSync(join(tmpdir(), "atelier-landcmd-")); t.
 // The owner's checkout, the baseline, and each task's fork and workspace,
 // served by a stand-in ledger that answers from `box`: the items' states, the
 // landing lease, the server's version (route level and commit), whether the
-// gate needs a review (the reviewer approves on the first poll after the
-// request), and every request made, so a test can say what a landing
+// gate needs a review (the reviewer approves, or rejects when `approve` is
+// false, on the first poll after the request; a request naming a reviewer
+// with `wanted` is made even where the gate needs none, as the server does),
+// and every request made, so a test can say what a landing
 // changed.
 async function landFixture(t, { mainChange = null, taskChange = "task\n", conflict = false } = {}) {
   const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), checkout = join(p, "checkout"), config = join(p, "config"), cache = join(p, "cache");
@@ -38,7 +40,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const forkHead = (id) => { try { return git(p, "--git-dir", join(p, `fork-${id}.git`), "rev-parse", "main"); } catch { return null; } };
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, version: null, routeLevel: ROUTE_LEVEL,
-    review: { needed: true, reviewer: "codex/gpt-6-astra", pending: false, at: null },
+    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null },
     requests: [], regen: "echo generated > gen-fixtures.txt",
   };
   // The tasks fork from the baseline before main moves, so a landing has
@@ -61,7 +63,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const repoHead = git(resolve("."), "rev-parse", "HEAD");
   const detail = (id) => {
     const head = forkHead(id);
-    const reviews = id === "t1" && box.review.pending ? (box.reviews.t1.push({ by: box.review.reviewer, approve: true, head, note: "Land fixture approves.", at: new Date().toISOString() }), box.review.pending = false, box.reviews.t1) : box.reviews[id];
+    const reviews = id === "t1" && box.review.pending ? (box.reviews.t1.push({ by: box.review.reviewer, approve: box.review.approve, head, note: box.review.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString() }), box.review.pending = false, box.reviews.t1) : box.reviews[id];
     const state = box.states[id];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", head, acceptedHead: state === "accepted" || state === "merged" ? head : null },
@@ -93,8 +95,8 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/evidence")) answer = item ? { ...detail(item), evidence: [] } : {};
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
-      if (!box.review.needed) answer = { needed: false, reason: "the gate counts an independent approval already" };
-      else { box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: "a protected change needs an independent review", at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
+      if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: "the gate counts an independent approval already" };
+      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: "a protected change needs an independent review", at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
@@ -150,6 +152,43 @@ test("a clean landing takes the lease, merges main, regenerates, checks, waits f
   assert.deepEqual(events.find((e) => e.body.step === "regenerate").body, { step: "regenerate", ms: events.find((e) => e.body.step === "regenerate").body.ms, command: f.box.regen, changed: true });
   assert.equal(events.find((e) => e.body.step === "review").body.verdict, "approve");
   assert.equal(events.find((e) => e.body.step === "merged").body.mergeCommit, merged);
+});
+
+test("--reviewer waits for that review and lands on approval even where the gate needs none", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "antigravity/gemini-3.1-pro");
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(f.posts("/review-request").at(-1).body, { reviewer: "antigravity/gemini-3.1-pro", wanted: true });
+  assert.match(r.output, /Review requested for antigravity\/gemini-3\.1-pro/);
+  assert.match(r.output, /antigravity\/gemini-3\.1-pro approved t1/);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "approve");
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("--reviewer stops the landing on a rejection even where the gate needs no review", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false; f.box.review.approve = false;
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "antigravity/gemini-3.1-pro");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /antigravity\/gemini-3\.1-pro rejected t1/);
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "reject");
+  assert.equal(f.box.lease, null);
+});
+
+test("without --reviewer a gate that needs no review says why and does not claim to accept", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(f.posts("/review-request").at(-1).body, {});
+  assert.match(r.output, /No review was requested: the gate counts an independent approval already\./);
+  assert.doesNotMatch(r.output, /accepting/);
 });
 
 test("--no-review leaves the task submitted, accepts and merges nothing, and releases the lease", async (t) => {
