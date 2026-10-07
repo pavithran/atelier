@@ -979,3 +979,23 @@ it("the framing is stored with the item, carried by its brief, and edited only b
   await L.abandon(item.id, "owner", "done elsewhere");
   await refusal(L.editItem(item.id, "owner", { nextGate: "x" }), "closed", /its fields stay as they were/);
 });
+
+it("a task sent back for rework gets the rejecting review's findings in its job brief", async () => {
+  const L = await setup("dispatch-held-brief");
+  const item = await L.newItem("Rework me", ["docs/**"], "owner");
+  await L.claim(item.id, A);
+  await L.setFork(item.id, "dispatch-held-brief--t1", H0, A);
+  await L.recordPush(item.id, A, H1, null);
+  await L.submit(item.id, A);
+  await L.addReview({ ...review(item.id, B, H1, false, "the guard is missing"), findings: [
+    { file: "docs/a.md", line: 7, severity: "blocking", text: "guard the empty case" },
+    { file: "docs/b.md", line: null, severity: "follow-up", text: "rename the heading" },
+  ] });
+  await L.dispatch(item.id, "owner", { to: "home", note: "address the review" });
+  await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  const brief = await L.jobBrief(item.id, "opencode/glm-5.3-flash");
+  expect(brief.job).toBe("rework");
+  for (const text of [B, "the guard is missing", "docs/a.md:7 guard the empty case", "docs/b.md rename the heading", "Blocking findings", "Follow-ups"]) expect(brief.text).toContain(text);
+  // Only the holder reads it.
+  await refusal(L.jobBrief(item.id, A), "not_a_plan", /writes its own brief/);
+});
