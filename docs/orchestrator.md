@@ -7,13 +7,15 @@ that dispatches them. Step 6 gives them routes and the `atelier plan`
 command. Step 7 gives the planner and each part's builder a brief from the
 server (`GET items/tN/job-brief`) and the runner a plan job. Steps 9 and 10
 add automatic cross-family review: the Ledger's tick asks a review request
-for each submitted part, and a reviewer's runner answers it with findings
-and the rework transition. Steps 12 to 14 add the integration branch: parts
+for each submitted part, and a home runner serving the review job answers
+it with findings and the rework transition (section 4). Steps 12 to 14 add the integration branch: parts
 fork from and are measured against their plan's fork, the integrator merges
 each part and reports `integrated` or `integration-failed`, and the plan
-submits and merges once every part is integrated. The merge receipt that
-lists the parts is not built, and nothing dispatches the `refresh` job
-automatically yet (section 5).
+submits and merges once every part is integrated. Every merge writes a
+landing receipt (`writeReceipt` in `cli/atelier.mjs`), but it names the
+item, not the plan's parts, and nothing dispatches the `refresh` job
+automatically yet (section 5). A goal walked end to end through the
+running orchestrator, command by command, is in [docs/demo.md](demo.md).
 
 Where a section describes something not built, it is the design, not a
 claim that the routes, storage, commands or runner jobs exist. Where the
@@ -47,11 +49,11 @@ A plan is an item with `kind = "plan"`. That gives it everything an item already
 
 **Plan states.** A pure `planPhase()` derives them: planning → proposed → building ⇄ blocked → ready (the plan item is submitted) → accepted → merged, or abandoned. Only the reason for `blocked` is stored.
 
-**New item state for parts.** Parts gain the state `integrated`, meaning they are on the plan's branch (t16). Until t16 exists, a dependency counts as landed only when it is `merged`.
+**New item state for parts.** Parts gain the state `integrated`, meaning they are on the plan's branch (t16, built: steps 12 to 14). A dependency counts as landed when it is `integrated` or `merged` (`LANDED` in `src/plans/integrate.ts`).
 
 ## 2. Plan proposals
 
-1. `atelier plan "goal"` creates the plan item and dispatches it as a `plan` job: its `Dispatch` carries `job: "plan"`, and `assign()` offers it only to a runner whose offer lists `jobs: ["plan"]`; the runner's offer is `jobs: ["build","plan"]` (step 7b). The default planner (`pickPlanner` in `src/plans/state.ts`) is the top result of `route({kind:"research"})` over the pool that is not refused, not paid per token (nothing is approved yet; the owner may still name a paid model with `--planner`) and holds the `planner` role. The plan item's claim, before approval, needs the `planner` role under a governed policy, where any other claim needs `executor`.
+1. `atelier plan "goal"` creates the plan item and dispatches it as a `plan` job: its `Dispatch` carries `job: "plan"`, and `assign()` offers it only to a runner whose offer lists `jobs: ["plan"]`; the runner's offer is `["build","plan"]` plus whatever its config adds, such as `review` (`offerFrom` in `cli/runner.mjs`, step 7b). The default planner (`pickPlanner` in `src/plans/state.ts`) is the top result of `route({kind:"research"})` over the pool that is not refused, not paid per token (nothing is approved yet; the owner may still name a paid model with `--planner`) and holds the `planner` role. The plan item's claim, before approval, needs the `planner` role under a governed policy, where any other claim needs `executor`.
 2. A runner claims the plan item the ordinary way. That claim forks the baseline, and this fork becomes the integration branch.
 3. The harness writes JSON to a new `{plan_file}` placeholder (in `cli/runner-config.mjs`) and must not commit.
 4. The runner posts the JSON to `POST items/tP/plan` and releases the claim.
@@ -106,7 +108,7 @@ non-empty list of non-empty strings; the reviewer judges their content.
 
 A part with no eligible builder, or no reviewer of another family, is returned unrouted with a reason that names each model passed over. Every choice carries human-readable reasons, for the task page's "why this model?".
 
-Two inputs added on 2026-10-05 describe the owner's tools rather than the models. `availability` maps an actor or a harness (an actor's entry wins) to `available`, `reserved` (near its usage limit; `for` lists the task kinds it may still take, and a part of any other kind passes it over) or `paused` (gets nothing). `spend {cap, used}` is the owner's figure for paid models; once `used` reaches `cap`, paid models are excluded as if `allowPaid` were off. The reasons say when a model was passed over for availability or spend. Harnesses report no usage data, so `used` is what the owner reports.
+Two inputs added on 2026-10-05 describe the owner's tools rather than the models. `availability` maps an actor or a harness (an actor's entry wins) to `available`, `reserved` (near its usage limit; `for` lists the task kinds it may still take, and a part of any other kind passes it over) or `paused` (gets nothing). `spend {cap, used}` is the owner's figure for paid models; once `used` reaches `cap`, paid models are excluded as if `allowPaid` were off. The reasons say when a model was passed over for availability or spend. What each tool served and cost is reported by `atelier runner --usage` (`cli/usage.mjs`), but nothing feeds those reports to routing, so `used` is still what the owner reports.
 
 **An invalid plan** is recorded as `plan.invalid`. The planner is dispatched once more with the errors in its brief; after that the plan is blocked. The Ledger counts attempts, not documents: an attempt is a claim of the plan item, and it fails when the claim is released without a valid proposal, whether one was posted invalid or none was posted. After two failed attempts since the plan last asked (its creation, a valid proposal, or the owner's revise, reroute or retry), the plan job leaves the queue and the plan is blocked. Before approval the owner may revise, reroute the planner (`plan reroute tP --to a/m`) or retry it.
 
@@ -114,17 +116,17 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 
 ## 3. Dispatch after approval
 
-`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm. `merged` is how a dependency lands until t16, and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
+`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm. A dependency has landed when it is `integrated` or `merged` (`LANDED` in `src/plans/integrate.ts`), and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
 - its dependencies have landed;
 - the plan is not blocked;
 - fewer than `maxParallel` parts are live (default 2, one per Mac);
 - the budget has room.
 
-**Who dispatches.** An internal method, `dispatchPart`, writes the same `Dispatch` record from the frozen routing. It is not the owner-only `dispatch()` route. Its event's actor is `atelier/orchestrator`, with `{approval: hash, reason}`. `assertDispatchedClaim()` is unchanged. The owner's `dispatch` and `undispatch` refuse a plan or a part. A part is claimed only through its dispatch: an open part with none is refused, so no one takes it before its dependencies land. An approved plan's own item is claimed by nobody until the integrator exists (t16).
+**Who dispatches.** An internal method, `dispatchPart`, writes the same `Dispatch` record from the frozen routing. It is not the owner-only `dispatch()` route. Its event's actor is `atelier/orchestrator`, with `{approval: hash, reason}`. `assertDispatchedClaim()` is unchanged. The owner's `dispatch` and `undispatch` refuse a plan or a part. A part is claimed only through its dispatch: an open part with none is refused, so no one takes it before its dependencies land. An approved plan's own item is claimed by nobody but the integrator, which takes its integrate or refresh job (`assertPlanClaim` in `src/ledger.ts`).
 
-**What the tick adds to `planActions`.** `maxJobs` is counted here, as the part dispatches `atelier/orchestrator` has made; `planActions` does not count jobs. The block `planActions` reports is stored as the plan's reason, and cleared when it no longer holds, so a plan stays blocked until the owner's decision changes what the tick reads. While it is blocked, parts waiting in the queue are taken out (`item.undispatched`). A released part's dispatch record is cleared unless the tick dispatches it again, so it never waits in the queue for an actor the tick did not choose. Attempts are counted from the owner's latest reroute or retry of each part, and a reroute keeps the routed alternates behind the actor it names. The spend budget is not passed (`budget: null`), and neither is availability: nothing records them yet.
+**What the tick adds to `planActions`.** `maxJobs` is counted here, as the part dispatches `atelier/orchestrator` has made; `planActions` does not count jobs. The block `planActions` reports is stored as the plan's reason, and cleared when it no longer holds, so a plan stays blocked until the owner's decision changes what the tick reads. While it is blocked, parts waiting in the queue are taken out (`item.undispatched`). A released part's dispatch record is cleared unless the tick dispatches it again, so it never waits in the queue for an actor the tick did not choose. Attempts are counted from the owner's latest reroute or retry of each part, and a reroute keeps the routed alternates behind the actor it names. The spend budget is not passed (`budget: null` in `Ledger.tick`), and neither is availability: `atelier runner --usage` (`cli/usage.mjs`) records each tool's allowance, tokens and cost on the Usage page, but nothing feeds it to the tick.
 
-**Finishing, until t16.** Without the integration branch, a part reaches main by its own acceptance and merge, as any item does. The plan is complete when every part is merged or abandoned and at least one merged: the tick marks the plan item merged and logs `plan.completed`, with no merge commit of its own. When every part is abandoned the plan blocks, since it brings nothing. t16 replaces this with `planGate` and the owner's merge of the plan item.
+**Finishing.** A part lands through its plan's branch (section 5): the tick dispatches the plan item's integrate job once the part's review approves (`integrateDispatch` in `src/ledger.ts`), and when every part is integrated the integrator submits the plan item (`runIntegrate` in `cli/runner.mjs`), which the owner accepts under `planGate` and merges; the merge marks each remaining part merged with `{via: tP}` (`Ledger.merged`). The tick still completes a plan whose parts all reached main on their own — every part merged or abandoned and at least one merged — by marking the plan item merged and logging `plan.completed`, with no merge commit of its own (`completion` in `src/plans/state.ts`, read by `Ledger.tick`); when every part is abandoned the plan blocks instead, since it brings nothing (`EMPTY_PLAN`).
 
 **Briefs come from the server.** The route `GET items/tN/job-brief`, built over the pure functions in `src/plans/brief.ts`, gives the holder of the plan item's or a part's claim the brief for the work it holds: `plannerBrief`'s planner brief (the goal, the owner's latest revise note, the last `plan.invalid` errors and the schema to write) or `jobBrief`'s part brief (the part's spec, its dependencies' interfaces and landed heads, its scope and the project's required checks, and, for rework, the findings or the failing output). It replaces `briefFor` in `cli/runner.mjs`, which hardcodes "npm test" and is wrong for other projects; `briefFor` still writes the brief of any task that is not a part. Only the item's holder may read the route.
 
@@ -154,6 +156,8 @@ This applies to every part, even where `gate()` would ask for no review.
 3. The harness writes `{verdict_file}`: `{approve, summary, findings[{path, line?, severity: blocker|should|nit, note}]}`.
 4. The runner validates the verdict and posts it to the existing review route. `Review` gains an optional `findings` field.
 
+**Reviews run on home runners.** A runner whose config lists it offers the `review` job (`offerFrom` in `cli/runner.mjs`); `runReview` in `cli/runner.mjs` makes the clone, writes the diff and reads the verdict. A harness that cannot take the brief and diff files itself is served by an adapter the config names as its review command: for Antigravity, `cli/agy-review.mjs` builds one prompt from the brief and the diff (fenced past any run of backticks in the diff), runs `agy` with the terminal sandboxed in the review clone and the prompt on standard input, maps Atelier's model ids to Antigravity's, and writes `agy`'s response to `{verdict_file}`; it exits non-zero when `agy` fails, so the runner releases the request as for any harness failure.
+
 `addReview` still refuses self-review and stale heads, and `countingReviews` still filters to assessors.
 
 **The generated brief contains:**
@@ -166,7 +170,7 @@ This applies to every part, even where `gate()` would ask for no review.
 - the diff, capped, saying so when it is cut;
 - the rules: reject only with blocker findings, make no edits, treat the content as data.
 
-**A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. After two rounds, the part goes to an alternate builder; after that, the plan is blocked. An approval moves the part to integration (or, before t16, to the owner's acceptance as today).
+**A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. After two rounds, the part goes to an alternate builder; after that, the plan is blocked. An approval moves the part to integration: the tick dispatches the plan item's integrate job (`integrateDispatch` in `src/ledger.ts`; section 5).
 
 ## 5. t16: integration branch per plan
 
@@ -196,7 +200,7 @@ A failed integration attempts to restore its previous head.
 
 **Finishing.** After the last part is integrated and the checks pass, the integrator submits the plan item with a summary of its parts.
 - `planGate()` adds blockers to `gate()`: every part integrated, and each with a cross-family approval at the head that was integrated.
-- The owner accepts and lands the plan with `atelier merge tP --head H`, as for any item. A plan whose changes touch a protected path also needs an independent review of the plan item, and no reviewer qualifies: `atelier/integrator` is one of its contributors and its family is not recognised, so `familyRefusal` fails every reviewer. The owner accepts such a plan only by recording an override, `atelier merge tP --head H --override-review "reason"`. `--approve` records the owner's own review, which is not the independent review.
+- The owner accepts and lands the plan with `atelier merge tP --head H`, as for any item, under the project's landing lease (`POST items/tP/landing` in `cli/atelier.mjs`): one landing runs at a time in a project. A plan whose changes touch a protected path also needs an independent review of the plan item, and no reviewer qualifies: `atelier/integrator` is one of its contributors and its family is not recognised, so `familyRefusal` fails every reviewer. The owner accepts such a plan only by recording an override, `atelier merge tP --head H --override-review "reason"`. `--approve` records the owner's own review, which is not the independent review.
 - `Ledger.merged` then marks the parts merged, with `{via: tP}`.
 
 **Where the merge can run.**
@@ -228,14 +232,14 @@ A failed integration attempts to restore its previous head.
 
 **What is built.** `src/index.ts` and `cli/atelier.mjs` (step 6):
 - A plan starts through `POST items` with `{kind: "plan", goal, scope, planner}`, so t43 refuses it to agent tokens as it refuses any new item.
-- `GET items/tN/plan` is `plan show`: the Ledger's `planView`, for a plan or any of its parts. Before approval it carries the routing an approval would fix now, without paid models. The integration head, combined checks and mergeability with main are not built (t16), and the command says so; the budget used is the part dispatches against `maxJobs`, since spend is not recorded.
+- `GET items/tN/plan` is `plan show`: the Ledger's `planView`, for a plan or any of its parts. Before approval it carries the routing an approval would fix now, without paid models. It shows the integration head (`Integration branch at` in `planText`, `src/plans/show.ts`); the combined checks and mergeability with main are not shown, since they need Artifacts the Ledger cannot read (section 5). The budget used is the part dispatches against `maxJobs` (`jobsUsed` in `planView`); spend is not metered into a plan.
 - `POST items/tP/plan` takes the plan document as its body. A refused document answers 422 `invalid_plan`, with every error and which of the planner's two attempts it was.
 - `POST items/tN/plan/approve`, `revise`, `reroute`, `retry` and `stop` are the owner's. `reroute` and `retry` also take the plan item before approval, for its planner. `stop` revokes the write token of every item it closes before closing them, as `abandon` does for one, and closes them in one transaction.
 - `GET items/tP/brief` gives a plan item's own brief (`planBrief` in `src/plans/show.ts`), which `atelier show tP` and `atelier inbox` print. `plan show` prints from the same view (`planText`).
-- A runner's queue offer lists the jobs it runs; the runner offers `jobs: ["build","plan"]` (step 7b).
+- A runner's queue offer lists the jobs it runs: `build` and `plan` for every harness in its config, plus whatever the config lists, such as `review` (`offerFrom` in `cli/runner.mjs`, step 7b).
 
 **Inbox.** Two new kinds: `approve-plan` (weight 95) and `plan-blocked` (weight 85). The plan item's `accept` and `merge` entries work as today. `approve-plan` appears once the newest proposal answers the owner's latest revise, reroute or retry; `plan-blocked` gives the reason and the decisions open.
-- Parts never appear as accept, assess, failing, scope or stale entries. An accepted part still appears as a `merge` entry. Until t16 the owner accepts and merges each part, and learns which are ready from the plan's view (`planView`, read by `atelier plan show`), not from the inbox.
+- Parts never appear as accept, assess, failing, scope or stale entries. An accepted part still appears as a `merge` entry. A part lands through its plan's merge, which marks it merged with `{via: tP}` (`Ledger.merged`), and the owner learns which parts are ready from the plan's view (`planView`, read by `atelier plan show`), not from the inbox.
 - `overlappingLive` and the inbox's overlap check skip pairs within one plan. Otherwise the plan item's scope overlaps every part, and `refuseOverlap` would refuse their claims.
 
 **Agent apps.** `atelier show tP` prints the plan's brief, which an agent can relay unchanged.
@@ -246,9 +250,9 @@ A failed integration attempts to restore its previous head.
 
 **Tokens (t43).**
 - t43 binds each token to one actor and filters queue offers by it. So a runner holds one agent token per actor it offers, named by Keychain entry in `runner.json`.
-- The planner, reviewers and the integrator each have their own token. The owner token never sits on a runner.
+- The planner, reviewers and the integrator each have their own token. The owner token reaches a runner's own server calls only for status and usage reports, named by the runner header (`postAsRunner` in `cli/atelier.mjs`); no harness environment gets it (`harnessEnv` in `cli/runner.mjs` withholds it).
 - Routes to add to t43's allowlist: `plan` post and `job-brief` (each for the item's current holder only), `review-claim` and `base-token`; `integrated` and `integration-failed` for the integrator only. `plan` post and `job-brief` are added (`agentRoute` in `src/tokens.ts`), and the Ledger takes each only from the holder; every other plan route, `GET items/tN/plan` included, stays owner-only. The others are added with the steps that build their routes (9, 12 and 13).
-- **Conflict to settle:** t43 refuses `POST models/ID/status` for agent tokens, but runners use it to report model status. Either allow it with the runner header, or drop status reporting.
+- **Settled:** runners report model status under the owner token with the `X-Atelier-Runner` header naming them (`postAsRunner` in `cli/atelier.mjs`; the route requires the header, `parseRunner` in `src/index.ts`), and `agentRoute` in `src/tokens.ts` still refuses `POST models/ID/status` for agent tokens.
 
 **Harness environment.** `runTask` in `cli/runner.mjs` gives the harness what a check gets (`checkEnv`) and the variables its runner config entry names in `env`; never a variable named `ATELIER_*`, and never one that holds the owner's token. A harness with shell access can still reach the Keychain; agent tokens limit what such a leak can do.
 
@@ -281,24 +285,24 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 
 8. **Review rules.** `src/review/` with `reviewNeeded`, `pickReviewer`, `parseVerdict` and `reviewBrief`. Built.
 9. **Ledger side.** Review requests, review claims, findings, the rework transition, and review jobs in the queue. Built: the `review_requests` table, `reviewTick`, `claimReview` and `releaseReview` in `src/ledger.ts`, the `review-claim` and `review-release` routes, `findings` on `Review`, and the `review.rework` event `phase.ts` reads as a failed finish. Test: `test/review-requests.spec.ts`.
-10. **Runner review job.** Built: `runReview` in `cli/runner.mjs`, the `{diff_file}` and `{verdict_file}` placeholders, and the `review` job in the runner's queue offer. Test: `test/review-runner.test.mjs`.
+10. **Runner review job.** Built: `runReview` in `cli/runner.mjs`, the `{diff_file}` and `{verdict_file}` placeholders, and the `review` job in the runner's queue offer (`offerFrom` in `cli/runner.mjs`); the Antigravity adapter a config names as the review command is `cli/agy-review.mjs` (`test/agy-review.test.mjs`). Test: `test/review-runner.test.mjs`.
 
 **t16: Integration branch per plan**
 
 11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`. Built.
 12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`. Built.
 13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check at the integrator's claim, marking parts merged when the plan merges, and the reserved integrator actor. Built.
-14. **Runner `--integrate`.** The integrate and refresh jobs; the merge receipt that lists the parts is not built. Built.
+14. **Runner `--integrate`.** The integrate and refresh jobs. Built. The merge receipt still lists no parts: every merge writes the landing receipt (`writeReceipt` in `cli/atelier.mjs`), and it names the item, not the plan's parts.
 
 ## Deferred work
 
-- A web page for plans.
 - Merging in Cloudflare (t47).
 - A second model reviewing the plan before the owner sees it.
 - More than one active plan per project.
 - Re-planning after approval.
 - A cloud runner.
-- Metering spend per token: the harnesses report no usage data.
+- Metering spend per token against a plan's budget: `atelier runner --usage` (`cli/usage.mjs`) reports each tool's allowance, tokens and cost to the Usage page, but the tick still passes `budget: null`.
+- Dispatching the `refresh` job automatically (section 5).
 
 ### Implementation files
 - `src/ledger.ts`
