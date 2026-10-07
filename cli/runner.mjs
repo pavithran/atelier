@@ -432,73 +432,94 @@ export async function runTask(assignment, config, name, io) {
     await io.reset(workspace);
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
-    // The merges, of main for a merge-main job and of the plan's branch for
-    // a part whose integration conflicted, come after the reset, and nothing
-    // after them resets the workspace, so the conflicts stay for the harness.
-    // The reset is what makes the merge-main job a task needs (t243): it
-    // clears the conflicted merge a landing left in the workspace, and the
-    // merge that follows puts main back in it for the builder to resolve.
-    const merges = [];
-    const logMerge = (m) => io.log(m.state === "conflicts" ? `${mergedWhat(m)} merged with conflicts in ${m.files.join(", ")}` : m.state === "merged" ? `${mergedWhat(m)} merged cleanly as ${m.head.slice(0, 8)}` : m.state === "skipped" ? `${mergedWhat(m)} fetched, not merged, while the merge of main is in progress` : `the workspace already holds ${mergedWhat(m)}`);
-    if (merging) merges.push(await startMergeMain(assignment, workspace, io));
-    if (merges[0]) logMerge(merges[0]);
-    if (io.stopped()) throw new Error("interrupted");
-    if (mergingPlan) {
-      merges.push(await startMergePlan(assignment, workspace, io, { merge: merges[0]?.state !== "conflicts" }));
-      logMerge(merges.at(-1));
+    // A job the queue offered back because this runner already holds it
+    // (the claim a dead run left behind; the queue offers its own held jobs
+    // to a runner alone) resumes rather than rebuilds when the workspace
+    // holds commits Atelier never recorded: the dead run's harness committed
+    // and the run ended — a stop, a crash — before finish could push and
+    // submit. The commit is the model's completed work, its last step under
+    // the brief, so this run finishes it (push, checks, submit) and starts
+    // no harness of its own, and merges nothing again either: the dead run
+    // already merged what the job asked — main for a merge-main job, the
+    // plan's branch — and committed the resolution. A workspace at the
+    // recorded head means the dead run committed nothing, and the harness
+    // runs as for any other claim.
+    const resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head;
+    let result = null;
+    if (resumed) {
+      io.log(`resumed: an earlier run of this runner committed ${String(before).slice(0, 8)} and never submitted it; finishing it without the harness`);
+      advance({ type: "start" });
+    } else {
+      // The merges, of main for a merge-main job and of the plan's branch for
+      // a part whose integration conflicted, come after the reset, and nothing
+      // after them resets the workspace, so the conflicts stay for the harness.
+      // The reset is what makes the merge-main job a task needs (t243): it
+      // clears the conflicted merge a landing left in the workspace, and the
+      // merge that follows puts main back in it for the builder to resolve.
+      const merges = [];
+      const logMerge = (m) => io.log(m.state === "conflicts" ? `${mergedWhat(m)} merged with conflicts in ${m.files.join(", ")}` : m.state === "merged" ? `${mergedWhat(m)} merged cleanly as ${m.head.slice(0, 8)}` : m.state === "skipped" ? `${mergedWhat(m)} fetched, not merged, while the merge of main is in progress` : `the workspace already holds ${mergedWhat(m)}`);
+      if (merging) merges.push(await startMergeMain(assignment, workspace, io));
+      if (merges[0]) logMerge(merges[0]);
       if (io.stopped()) throw new Error("interrupted");
-    }
-    const merged = merges.some((m) => m.state === "merged") && !merges.some((m) => m.state === "conflicts" || m.state === "skipped");
-    if (merged) {
-      // A clean merge is the part's work: the job finishes with it, no harness.
-      const head = await io.head(workspace);
-      advance({ type: "start" });
-      taskFailure = true;
-      advance({ type: "exit", code: 0, before, head });
-      await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
-      advance({ type: "finish" });
-      return state;
-    }
-    // A part's brief comes from the server (GET items/tN/job-brief): the
-    // plan's spec, its checks and any rework to carry. Any other task keeps
-    // the local briefFor below, and a merge-main task's adds the job's own
-    // instructions (mergeMainSection) beside it.
-    const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
-    if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
-    // A task sent back with an earlier attempt committed keeps briefFor, and
-    // adds the review's findings the server holds for its head, if any.
-    const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
-    if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
-    const local = briefFor({ ...item, owner: actor }, project);
-    // A merge-main task's brief (t243) is the local one with the job's own
-    // instructions (mergeMainSection) and the conflicts after it.
-    brief = await io.brief(workspace, serverBrief
-      ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text)
-      : merging
-        ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
-        : reworked?.text ? `${local}\n${reworked.text}\n` : local);
-    const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
-    for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
-    // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
-    // is removed when the harness ends, however it ends, before anything else.
-    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-    let result;
-    try {
-      advance({ type: "start" });
-      taskFailure = true;
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
-    } finally {
-      if (dataHome) {
-        try { await io.removeDataHome(dataHome); }
-        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      if (mergingPlan) {
+        merges.push(await startMergePlan(assignment, workspace, io, { merge: merges[0]?.state !== "conflicts" }));
+        logMerge(merges.at(-1));
+        if (io.stopped()) throw new Error("interrupted");
+      }
+      const merged = merges.some((m) => m.state === "merged") && !merges.some((m) => m.state === "conflicts" || m.state === "skipped");
+      if (merged) {
+        // A clean merge is the part's work: the job finishes with it, no harness.
+        const head = await io.head(workspace);
+        advance({ type: "start" });
+        taskFailure = true;
+        advance({ type: "exit", code: 0, before, head });
+        await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
+        advance({ type: "finish" });
+        return state;
+      }
+      // A part's brief comes from the server (GET items/tN/job-brief): the
+      // plan's spec, its checks and any rework to carry. Any other task keeps
+      // the local briefFor below, and a merge-main task's adds the job's own
+      // instructions (mergeMainSection) beside it.
+      const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
+      if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
+      // A task sent back with an earlier attempt committed keeps briefFor, and
+      // adds the review's findings the server holds for its head, if any.
+      const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
+      if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
+      const local = briefFor({ ...item, owner: actor }, project);
+      // A merge-main task's brief (t243) is the local one with the job's own
+      // instructions (mergeMainSection) and the conflicts after it.
+      brief = await io.brief(workspace, serverBrief
+        ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text)
+        : merging
+          ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
+          : reworked?.text ? `${local}\n${reworked.text}\n` : local);
+      const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+      for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
+      // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
+      // is removed when the harness ends, however it ends, before anything else.
+      const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+      try {
+        advance({ type: "start" });
+        taskFailure = true;
+        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+      } finally {
+        if (dataHome) {
+          try { await io.removeDataHome(dataHome); }
+          catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+        }
       }
     }
-    if (result.timedOut) throw new Error("harness timed out");
+    if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
-    taskFailure = result.code !== 0;
-    const head = await io.head(workspace);
+    taskFailure = result !== null && result.code !== 0;
+    // A resumed run reads no head again: no harness ran, so before is it. Its
+    // work began at the recorded head, not at the workspace's before, so the
+    // exit names that head as what the run moved from.
+    const head = resumed ? before : await io.head(workspace);
     taskFailure = true;
-    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result.code, before, head });
+    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : before, head });
     if (state.phase === "failed") throw new Error(state.reason);
     await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
     advance({ type: "finish" });

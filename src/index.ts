@@ -25,6 +25,8 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { durationsSql, fetchNewLogs, gatewayConfig, gatewayView, parseDurations, parseTotals, totalsSql, writeLog, type GatewayGap, type GatewayMark, type GatewayPull, type GatewayView } from "./usage/gateway.ts";
+import { query, queryConfig, neverWritten } from "./metrics.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
@@ -41,7 +43,7 @@ const READ_TTL = 3600;
 
 // `ref` is the project an API path names, resolved once at the entry (see
 // resolveProject); null when the path names none.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null };
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -787,7 +789,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // thresholds in force and the alerts in force.
   if (parts[0] === "usage") {
     const I = index(env);
-    if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts() });
+    if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts(), gateway: await readGateway(env) });
     if (parts.length === 2 && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a usage report names its runner in X-Atelier-Runner", 400);
@@ -826,6 +828,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
+    // Every runner polls here, so a signed-in poll also starts a due AI
+    // Gateway pull in the background; its failure never touches this answer.
+    if (m === "POST") c.waitUntil?.(pullGatewayIfDue(env).catch((err) => console.error("AI Gateway pull failed", err instanceof Error ? err.message : String(err))));
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -841,18 +846,29 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // One call per project reads both its waiting tasks and its open review requests.
     const lists = await Promise.all(projects.map(async (p) => {
       try {
-        const { waiting, reviews } = await ledgerOf(env, p).queued();
-        return [...waiting, ...reviews].map((item) => ({ project: p.name, item }));
+        // The runner's own held jobs come first (heldJobs, t235): a run that
+        // died mid-build leaves its claim behind, and the process that takes
+        // over settles it, finishing the commits the dead run made, before
+        // it starts new work.
+        const L = ledgerOf(env, p);
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
+        return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
     const read = Date.now();
-    const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
+    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // the claim a dead run left behind is settled before new work starts.
+    const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
-          return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
+          // A held job is offered only as the claim it already is: the
+          // assignment must name its holder, or the re-claim would be refused
+          // as another's claim (claim guards the runner name; assign the actor).
+          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1667,7 +1683,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, track] = await Promise.all([I.models(), trackRecords(env)]);
+  const [entries, track, gateway] = await Promise.all([I.models(), trackRecords(env), readGateway(env)]);
   const record = new Map<string, ActorRecord>();
   for (const { events } of track.sources) {
     for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
@@ -1676,7 +1692,86 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway), error ? 400 : 200);
+}
+
+// ── AI Gateway ───────────────────────────────────────────────────────────────
+// The scheduled pull of the AI Gateway's logs into Analytics Engine
+// (src/usage/gateway.ts) and what the Models page and GET /api/usage show of
+// them, read back through the SQL API (src/metrics.ts). With no gateway
+// token the pull does nothing and the view says the gateway is off.
+
+// Writes the logs newer than the last one written, oldest first, and moves
+// the mark to the newest log written: a missing binding or a failed write
+// stops the writing there, so the mark never passes a log that was not
+// written and the next pull reads it again. A pull capped short of the
+// mark records the stretch it did not read. Null when the gateway is off or
+// the logs could not be read.
+export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
+  const cfg = gatewayConfig(env);
+  if (typeof cfg === "string") return null;
+  const I = index(env);
+  const at = new Date(now).toISOString();
+  let read;
+  try {
+    read = await fetchNewLogs(cfg, await I.gatewayMark(), now, fetcher);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    await I.recordGatewayPull({ at, added: 0, error }, null);
+    console.error("AI Gateway pull failed", error);
+    return null;
+  }
+  let added = 0, mark: GatewayMark | null = null, error: string | null = null;
+  if (read.logs.length && !env.METRICS) error = "the METRICS binding is missing, so no log was written";
+  else {
+    for (const log of [...read.logs].reverse()) {
+      try {
+        if (!writeLog(env.METRICS, log)) throw new Error("no dataset");
+      } catch (err) {
+        error = `writing log ${log.id} failed: ${err instanceof Error ? err.message : String(err)}`;
+        break;
+      }
+      added++;
+      mark = { id: log.id, at: log.at };
+    }
+  }
+  // The gap lies below the oldest log read, the first written; it is lost
+  // only once the mark has moved past it.
+  const gap = read.gap && added ? { ...read.gap, pulledAt: at } : null;
+  await I.recordGatewayPull({ at, added, error, answered: read.answered, unreadable: read.unreadable, ...(read.unreadableFields ? { unreadableFields: read.unreadableFields } : {}) }, mark, gap);
+  if (error) console.error("AI Gateway pull failed", error);
+  return { added, error };
+}
+
+// How often a pull may start. The cron asks every five minutes; requests
+// ask too (the queue route every runner polls), because on 2026-10-07 the
+// cron was listed but never ran. A little under five minutes, so the cron's
+// own tick is never refused for a request's pull a moment before it.
+export const GATEWAY_PULL_EVERY_MS = 4.5 * 60_000;
+
+// Pulls when no pull was started in the last GATEWAY_PULL_EVERY_MS, and
+// otherwise does nothing; the index grants one attempt per interval. Nothing
+// is asked of the index when the gateway is off.
+export async function pullGatewayIfDue(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
+  if (typeof gatewayConfig(env) === "string") return null;
+  if (!(await index(env).claimGatewayPull(now, GATEWAY_PULL_EVERY_MS))) return null;
+  return pullGateway(env, now, fetcher);
+}
+
+export async function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
+  const cfg = gatewayConfig(env);
+  if (typeof cfg === "string") return gatewayView(cfg, [], [], null, [], now);
+  const read = queryConfig(env);
+  if (typeof read === "string") return gatewayView(`AI Gateway costs cannot be read: ${read}`, [], [], null, [], now);
+  const I = index(env);
+  const [pull, gaps] = await Promise.all([I.gatewayPull() as Promise<GatewayPull | null>, I.gatewayGaps() as Promise<GatewayGap[]>]);
+  try {
+    const [totals, durations] = await Promise.all([query(read, totalsSql(), fetcher), query(read, durationsSql(), fetcher)]);
+    return gatewayView(null, parseTotals(totals), parseDurations(durations), pull, gaps, now);
+  } catch (err) {
+    if (neverWritten(err)) return gatewayView(null, [], [], pull, gaps, now);
+    return gatewayView(`AI Gateway costs could not be read just now: ${err instanceof Error ? err.message : String(err)}`, [], [], pull, gaps, now);
+  }
 }
 
 // Each model's record is read from every event of every project, and
@@ -1787,6 +1882,12 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
         : [];
     }),
   };
+}
+
+// Whether an item coming off the queue is a claim a runner already holds, as
+// heldJobs lists it: the queue offers it back to its holder alone.
+function isHeld(item: Item): boolean {
+  return item.state === "claimed" && !!item.owner;
 }
 
 async function inbox(env: Env, token?: AgentToken) {
@@ -2177,6 +2278,10 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
+  // The cron in wrangler.jsonc pulls the AI Gateway's new logs.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(pullGatewayIfDue(env));
+  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
@@ -2206,7 +2311,7 @@ export default {
       } catch (error) { console.error("push event retry", error); message.retry(); }
     }
   },
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const pathname = url.pathname.endsWith("/") && url.pathname.length > 1 ? url.pathname.slice(0, -1) : url.pathname;
     // Pages show times in the owner's zone (src/time.ts).
@@ -2279,7 +2384,7 @@ export default {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
-        const res = await api({ env, req, url, actor, body, token, ref }, parts.slice(1));
+        const res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         if (ref?.former) res.headers.set("x-atelier-project", ref.name);
         return res;
       }
