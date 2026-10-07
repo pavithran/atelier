@@ -752,7 +752,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const offer = m === "POST" ? runnerOffer(body) : null;
     // Each ask records what the runner can run (putRunnerOffer), so the
     // server can say when a dispatch names a model or a job no live runner
-    // offers, instead of letting it wait as though merely unclaimed.
+    // offers, instead of letting it wait as though merely unclaimed, and plan
+    // routing picks from the models live runners offer (src/plans/route.ts).
     if (offer) await index(env).putRunnerOffer(offer, new Date().toISOString());
     const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
@@ -780,7 +781,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // runner asked the queue for work, newest ask per runner. The owner's
   // surfaces read it to say when a dispatch no live runner offers can never
   // be claimed (unoffered in src/dispatch/rules.ts): atelier land while it
-  // waits for a verdict, plan show for a routed review, status for the queue.
+  // waits for a verdict, plan show for a routed review, status for the queue
+  // and its Runners section. Plan routing reads the same offers on the index
+  // (t246), picking builders and reviewers only from what live runners offer.
   if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
     requireOwner(env, actor);
     return json(await index(env).runnerOffers());
