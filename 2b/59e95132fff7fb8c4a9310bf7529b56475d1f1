@@ -1,0 +1,31 @@
+atelier atelier/t218 "Record fidelity (audit 2026-10-06, later list): the Models page reads only the last 1000 events per project, so older history is cut off; read every event, paged. A task closed as delivered by another task needs its own close: atelier abandon --delivered-by tN records it as delivered there, and the graphs, tallies and pages count it as merged by that task, not abandoned (t15, t16, t17 and t39 are recorded as abandoned today)"
+accepted head fb963300b532a10280807912578f289a6e31cedc
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-07T02:35:17.297Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-07T02:35:20.145Z
+REVIEW approve by antigravity/gemini-3.1-pro at fb963300b532a10280807912578f289a6e31cedc, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T00:04:50.510Z pavi item.created
+2026-10-07T01:01:38.761Z pavi item.dispatched
+2026-10-07T01:09:43.991Z claude-code/sonnet-5.5 item.claimed
+2026-10-07T01:09:55.624Z claude-code/sonnet-5.5 fork.created
+2026-10-07T01:29:34.323Z claude-code/sonnet-5.5 push.observed
+2026-10-07T01:32:20.537Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T01:32:23.554Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T01:32:24.147Z claude-code/sonnet-5.5 item.submitted
+2026-10-07T02:22:37.411Z pavi land.lease
+2026-10-07T02:22:40.219Z pavi land.merge
+2026-10-07T02:33:08.859Z pavi land.lease
+2026-10-07T02:33:11.641Z pavi land.merge
+2026-10-07T02:33:19.791Z pavi land.regenerate
+2026-10-07T02:33:23.715Z claude-code/sonnet-5.5 push.observed
+2026-10-07T02:33:23.850Z pavi land.push
+2026-10-07T02:35:17.834Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T02:35:20.506Z claude-code/sonnet-5.5 evidence.observed
+2026-10-07T02:35:21.000Z pavi land.check
+2026-10-07T02:35:21.440Z claude-code/sonnet-5.5 item.submitted
+2026-10-07T02:35:21.759Z pavi land.submit
+2026-10-07T02:35:21.919Z pavi review.requested
+2026-10-07T02:35:25.969Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T02:38:53.407Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T02:38:56.463Z pavi land.review
+2026-10-07T02:38:57.052Z pavi item.accepted
+2026-10-07T02:38:57.182Z pavi land.accept
