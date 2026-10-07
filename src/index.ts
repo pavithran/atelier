@@ -1161,10 +1161,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-claim": {
       const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
       // The review job clones the part read-only, so the claim also carries a
-      // read token for the fork, as the read-token route mints one.
+      // read token for the fork, as the read-token route mints one. It also
+      // carries a read token for the branch the item merges into (the plan's
+      // integration branch for a part, the baseline's for any other item, as
+      // base-token chooses), so the job can diff from the merge base of the
+      // head and that branch rather than from the fork point, which a merge
+      // of main into the task leaves behind (t230).
       if (claim.item.fork) {
-        const t = await mint(env, claim.item.fork, "read", await projectBranch(env, await L.project()));
-        return json({ ...claim, readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch } });
+        const p = await L.project();
+        const branch = await projectBranch(env, p);
+        const t = await mint(env, claim.item.fork, "read", branch);
+        const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
+        return json({
+          ...claim,
+          readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
+          target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
+        });
       }
       return json(claim);
     }
