@@ -86,7 +86,8 @@ export function thresholdsFrom(settings: Record<string, string | undefined>): Th
 const TOOL = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
 const CURRENCY = /^[A-Z]{3,8}$/;
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
-const plain = (s: string, max: number) => redactKeys(s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")).replace(/\s+/g, " ").trim().slice(0, max);
+// Text with control and format characters spaced out, keys removed, cut to max.
+export const plain = (s: string, max: number) => redactKeys(s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")).replace(/\s+/g, " ").trim().slice(0, max);
 const bad = (detail: string) => new RuleError("bad_usage", detail, 400);
 const list = (v: unknown, what: string, max: number): unknown[] => {
   if (v === undefined) return [];
@@ -163,6 +164,14 @@ export function cleanReport(tool: string, body: Record<string, unknown>, at: str
 // balance past the owner's threshold. The key names the figure, so the
 // Ledger can tell a crossing already alerted from a new one.
 export interface Crossing { key: string; title: string; body: string }
+
+// "1.2M", "340k", "12": tokens at a glance.
+export function tokens(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e4) return `${Math.round(n / 1e3)}k`;
+  return n.toLocaleString("en");
+}
 
 // "$0", "<$0.01", "$0.40", "$12": whole dollars without cents.
 export function money(n: number): string {

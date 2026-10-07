@@ -17,6 +17,7 @@ import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
+import { GATEWAY_WINDOW_MS, type GatewayGap, type GatewayMark, type GatewayPull } from "./usage/gateway.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
@@ -682,6 +683,50 @@ export class Ledger extends DurableObject<Env> {
     return { report, alerts };
   }
 
+  // ── AI Gateway pulls ─────────────────────────────────────────────────────
+  // The scheduled pull of the AI Gateway's logs writes each log to Analytics
+  // Engine (src/usage/gateway.ts); the index instance keeps the newest log
+  // written, where the next pull stops, how the last pull went, and the
+  // stretches a capped pull did not read, while they are in the window.
+
+  // The newest log written; null before any.
+  gatewayMark(): GatewayMark | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'gateway_mark'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  gatewayPull(): GatewayPull | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'gateway_pull'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  gatewayGaps(): GatewayGap[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'gateway_gaps'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : [];
+  }
+
+  // Grants one pull attempt per `everyMs`: true, and the attempt recorded,
+  // when none was granted in the last `everyMs`; false otherwise. The
+  // Durable Object runs one call at a time, so two requests that ask at once
+  // never both pull.
+  claimGatewayPull(now: number, everyMs: number): boolean {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'gateway_pull_claimed'`).toArray()[0];
+    if (row && now - Number(row.value) < everyMs) return false;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('gateway_pull_claimed', ?)`, String(now));
+    return true;
+  }
+
+  // Records a pull; the newest log it wrote, when it wrote any, as the next
+  // pull's mark; and the gap it left, when it moved the mark past one. Gaps
+  // that ended before the window are dropped.
+  recordGatewayPull(pull: GatewayPull, mark: GatewayMark | null, gap: GatewayGap | null = null): void {
+    if (mark) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('gateway_mark', ?)`, JSON.stringify(mark));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('gateway_pull', ?)`, JSON.stringify(pull));
+    const since = new Date(Date.parse(pull.at) - GATEWAY_WINDOW_MS).toISOString();
+    const gaps = [...this.gatewayGaps(), ...(gap ? [gap] : [])].filter((g) => g.to >= since);
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('gateway_gaps', ?)`, JSON.stringify(gaps));
+  }
+
   // ── runs ─────────────────────────────────────────────────────────────────
   // Runs that ended without a result the ledger could record, as the runners
   // reported them (src/models/reliability.ts), on the index instance beside
@@ -1013,6 +1058,19 @@ export class Ledger extends DurableObject<Env> {
       histories.set(id, history);
     }
     return rows.map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
+  }
+
+  // The jobs a runner's dead run left behind: the claims it holds whose
+  // dispatch still routes them, oldest dispatch first. The queue offers them
+  // back to that runner alone (t235), so the process that takes over after a
+  // restart or a crash re-claims its own and finishes what the dead run
+  // committed, instead of the claim sitting with no one to end it. The claim
+  // itself stays as it was: only the asking runner matches, compared without
+  // case as claim() compares it.
+  heldJobs(runner: string): Item[] {
+    return this.items()
+      .filter((i) => i.state === "claimed" && i.dispatch && (i.runner ?? "").toLowerCase() === runner.toLowerCase())
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
   }
 
   // A failed fork must not leave an owner holding nothing.

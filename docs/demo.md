@@ -54,8 +54,8 @@ entry that holds one when a harness needs it.
 **Configure a home runner with build, plan and review jobs.** The runner
 offers `build` and `plan` jobs for every harness in its config, and
 `review` when the config lists it. Save `~/.config/atelier/runner.json`
-with one entry per harness; the README's Home runner section has a full
-example. The three placeholders that matter for this walk:
+with one entry per harness; "Home runner" in
+[docs/runners.md](runners.md#home-runner) has a full example. The three placeholders that matter for this walk:
 
 - `{plan_file}` in a harness's command lets it take plan jobs: the harness
   writes the plan document there and commits nothing.
