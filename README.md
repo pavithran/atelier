@@ -1447,6 +1447,20 @@ be resumed by running `atelier land t9` again, which takes its own lease
 back, and a lease whose task has merged or was abandoned no longer guards
 anything.
 
+With `--wait` a landing queues for the lease instead of refusing, and the
+queue has an order: the server keeps the landings waiting for the lease in
+the order they queued (one row per task, with who asked and when) and hands
+the lease to the first of them when it frees, so a landing cannot take it
+ahead of another that waited longer, however their polls happen to land —
+t247 once took it ahead of t245, which had waited longer and was the one its
+plan needed. While it waits the landing asks the server again on every poll,
+which refreshes its place, and says whose landing it waits behind and which
+landings are queued ahead; a landing that stops asking (killed, or ended by a
+signal, or given up after its three-hour limit, which leaves the queue
+outright) drops out once 15 minutes pass without an ask, as a lease not
+renewed for that long stops guarding the project, and a row whose task has
+closed goes the same way.
+
 A landing that loses the lease stops rather than merge beside its successor:
 a Mac can sleep through a landing, pausing the timers that renew the lease,
 so it lapses and a landing queued with `--wait` takes it over, and the first
@@ -1465,9 +1479,13 @@ The steps in between:
    reports the commit the server was deployed from (`npm run deploy` records
    it) and its route level, and a landing whose server is older refuses
    before it starts, naming both levels and saying to deploy, since the
-   server may lack the routes the landing needs. The route level
+   server may lack the routes the landing needs, or answer one the landing
+   asks in a way it no longer expects. The route level
    (`src/route-level.ts`) rises by one only when a change makes the CLI
-   start calling a route the server did not have.
+   start calling a route the server did not have, or changes the meaning of
+   a route the CLI already calls; the waiting queue the landing's `--wait`
+   asks about (`{ item, queued: true }` on the landing-lease route) raised
+   it to 9.
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
