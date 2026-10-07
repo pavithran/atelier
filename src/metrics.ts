@@ -10,6 +10,8 @@
 // Analytics: Read on the account CF_ACCOUNT_ID names. Writing needs only
 // the binding.
 
+import { plain } from "./usage/report.ts";
+
 declare global {
   interface Env { ANALYTICS_TOKEN?: string }
 }
@@ -57,13 +59,21 @@ export type MetricRow = Record<string, unknown>;
 
 // Runs one SQL statement against the Analytics Engine SQL API and returns
 // its rows, as the API's JSON format gives them: { data: [row, …] }. A
-// refused or malformed answer is an Error naming the status.
+// refused or malformed answer is an Error naming the status and the API's
+// own words.
 export async function query(cfg: QueryConfig, sql: string, fetcher: typeof fetch = fetch): Promise<MetricRow[]> {
   const res = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cfg.account)}/analytics_engine/sql`, {
     method: "POST", headers: { authorization: `Bearer ${cfg.token}` }, body: sql,
   });
-  const body = (await res.json().catch(() => null)) as { data?: unknown } | null;
-  if (!res.ok || !body || !Array.isArray(body.data)) throw new Error(`the Analytics Engine SQL API answered ${res.status}`);
+  const text = await res.text().catch(() => "");
+  let body: { data?: unknown } | null = null;
+  try { body = JSON.parse(text) as { data?: unknown }; } catch { body = null; }
+  if (!res.ok || !body || !Array.isArray(body.data)) {
+    // On an error the API answers in plain text naming the cause (an
+    // unknown table, a syntax error); keep it, cut and made plain.
+    const why = plain(text, 200);
+    throw new Error(`the Analytics Engine SQL API answered ${res.status}${why ? `: ${why}` : ""}`);
+  }
   return body.data.filter((r): r is MetricRow => !!r && typeof r === "object");
 }
 
