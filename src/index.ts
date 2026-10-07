@@ -865,12 +865,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
   // One landing at a time per project (atelier land, t187): GET reads who
   // holds the lease; POST takes it for one task, refusing while another live
-  // task's landing holds it, and { cancel: true } releases it.
+  // task's landing holds it and naming a lapsed lease it took over,
+  // { item, renew: true } is the holder's heartbeat, and { cancel: true, item }
+  // releases that task's lease, answering which task held it since when, and
+  // leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
     if (m === "GET") return json({ lease: await L.readProjectLanding() });
     requireOwner(env, actor);
-    if (body.cancel === true) return json(await L.cancelProjectLanding(actor));
-    return json({ item: await L.beginProjectLanding(String(body.item ?? ""), actor) });
+    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
+    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
+    return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
