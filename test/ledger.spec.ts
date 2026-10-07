@@ -452,7 +452,9 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   expect(await L.waiting()).toEqual([]);
   const events = (await L.events(item.id)) as unknown as LedgerEvent[];
   expect(events.find((e) => e.kind === "item.claimed")?.data).toEqual({ runner: "home:studio" });
-  await refusal(L.dispatch(item.id, "owner", {}), "not_open", /owned by opencode/);
+  // A refused dispatch leaves the holder in place.
+  await refusal(L.dispatch(item.id, "owner", { to: "mars" }), "bad_dispatch", /send to cloud, home or any/);
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash" });
 
   // A runner that gives up releases the task, and it waits in the queue again.
   await L.release(item.id, "opencode/glm-5.3-flash", "out of time");
@@ -465,6 +467,25 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   const { item: byHand } = await L.claim(item.id, A);
   expect(byHand.owner).toBe(A);
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.dispatched", "item.undispatched", "item.released"]));
+});
+
+it("the owner can dispatch a held task, which releases its holder and queues it for rework", async () => {
+  const L = await setup("dispatch-held");
+  const item = await L.newItem("Rework me", ["docs/**"], "owner");
+  await L.claim(item.id, A);
+  await L.recordPush(item.id, A, H1, null);
+  await L.submit(item.id, A);
+  await L.addReview(review(item.id, B, H1, false));
+  expect((await L.item(item.id)).state).toBe("submitted");
+  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the project owner dispatches/);
+  const queued = await L.dispatch(item.id, "owner", { to: "home", note: "address the review" });
+  expect(queued).toMatchObject({ state: "open", owner: null, head: H1, dispatch: { to: "home", note: "address the review" } });
+  expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
+  expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.released", "item.dispatched"]));
+  // A runner claims it again and finds the earlier commits.
+  const { item: again, needsFork } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  expect(again).toMatchObject({ state: "claimed", head: H1 });
+  expect(needsFork).toBe(false);
 });
 
 it("the queue lists the oldest dispatch first and skips tasks that are not open", async () => {

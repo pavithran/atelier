@@ -820,15 +820,38 @@ export class Ledger extends DurableObject<Env> {
 
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
-  dispatch(id: string, actor: string, input: Record<string, unknown>): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
-    const item = this.item(id);
-    this.assertNotPlanned(item);
-    assertDispatchable(item);
+  // A task held by an agent (claimed, or submitted and perhaps rejected) can
+  // be sent back to a runner too: the holder is released and the task queued
+  // in one step, keeping its workspace and commits for the next builder. The
+  // caller revokes the holder's write token first (see checkDispatch), and
+  // passes its id as `token`.
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
+    const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
+    const held = this.holds(item);
+    if (held) {
+      this.dropToken(id, token);
+      this.update(id, { owner: null, state: "open" }, d.at);
+      this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
+    }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note }, d.at);
     return this.item(id);
+  }
+
+  // What a dispatch checks alone, so the caller can revoke a holder's token
+  // only for a dispatch that will be made.
+  checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
+    const item = this.item(id);
+    this.assertNotPlanned(item);
+    if (!this.holds(item)) assertDispatchable(item);
+    if (input) makeDispatch(input, actor, new Date().toISOString());
+    return item;
+  }
+
+  private holds(item: Item): boolean {
+    return !!item.owner && (item.state === "claimed" || item.state === "submitted");
   }
 
   undispatch(id: string, actor: string): Item {
