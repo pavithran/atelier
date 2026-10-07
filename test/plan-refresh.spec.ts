@@ -9,13 +9,15 @@ import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.
 
 // Refreshing a plan's branch with main (docs/orchestrator.md, section 5):
 // the owner's atelier plan refresh and its refusals, the tick's refresh
-// before it dispatches a part when main has moved, a recorded refresh as
-// the head later integrations sit on, a failed refresh that charges no part
-// and is not tried again for the same main head, and what plan show says.
-// The Ledger is driven over Durable Object RPC, and the routes through the
-// Worker's fetch handler against a stand-in Artifacts. Workerd logs each
-// refusal under test as an "uncaught exception"; those lines are the
-// refusals, not failures.
+// before it dispatches a part when main has moved, what moves the record
+// of main's head (a plan's own merge does, a part's own landing does not,
+// and the merged plan is never refreshed against its own), a recorded
+// refresh as the head later integrations sit on, a failed refresh that
+// charges no part and is not tried again for the same main head, and what
+// plan show says. The Ledger is driven over Durable Object RPC, and the
+// routes through the Worker's fetch handler against a stand-in Artifacts.
+// Workerd logs each refusal under test as an "uncaught exception"; those
+// lines are the refusals, not failures.
 
 const TOKEN = "plan-refresh-token";
 const H0 = "0".repeat(40), M1 = "1".repeat(40), M2 = "2".repeat(40);
@@ -134,6 +136,72 @@ it("with main unmoved the tick dispatches the dependent part at once, with no re
   expect((await L.item(id)).dispatch).toBeNull();
   expect((await L.item(b)).dispatch).toMatchObject({ by: ORCHESTRATOR });
   expect((await L.planView(id)).refresh).toMatchObject({ taken: H0, main: H0, last: null });
+});
+
+// A one-part plan taken as far as its own landing: its part built, reviewed
+// and integrated, the branch pushed and submitted, the plan accepted.
+async function landedPlan(L: L) {
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+  await L.claim(item.id, PLANNER, RUNNER);
+  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  await submitApproved(L, parts[0].id, PART_A, "a");
+  await L.claim(item.id, INTEGRATOR, RUNNER, true);
+  await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
+  await L.recordPush(item.id, INTEGRATOR, MA, MA);
+  await L.submit(item.id, INTEGRATOR);
+  await L.addEvidence(observed(item.id, MA, "a"));
+  await L.accept(item.id, "owner");
+  return item.id;
+}
+
+it("a plan's own merge is recorded as main's head for the plans in flight, and the closed plan is not refreshed against it", async () => {
+  const L = await setup("refresh-plan-merge");
+  const id = await landedPlan(L);
+  // Before the landing, the ledger last observed main at the plan's fork.
+  expect((await L.planView(id)).refresh).toMatchObject({ main: H0, taken: H0 });
+  const MC = "6".repeat(40);
+  await L.merged(id, "owner", MC, true);
+  // The plan's own merge is main's head now, so a later plan reads the move
+  // before any integration notes it...
+  expect((await L.planView(id)).refresh).toMatchObject({ main: MC, taken: H0 });
+  const next = await L.newPlan("Another feature", ["src/**"], "owner", PLANNER, []);
+  expect((await L.planView(next.item.id)).refresh).toMatchObject({ main: MC, taken: null });
+  // ...while the merged plan itself is closed and refreshes against nothing.
+  expect(await L.item(id)).toMatchObject({ state: "merged", owner: null, dispatch: null });
+  expect((await events(L, id)).some((e) => e.kind === "plan.refreshed")).toBe(false);
+});
+
+it("a part landed on main by itself does not move the record, so the plan is not refreshed against its own landed work", async () => {
+  const L = await setup("refresh-part-landed");
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+  await L.claim(item.id, PLANNER, RUNNER);
+  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const [a, b] = [parts[0].id, parts[1].id];
+  // Part a is landed on main by itself, as the owner merges it there by hand.
+  const d = (await L.item(a)).dispatch!;
+  const builder = `${d.agent}/${d.model}`;
+  await L.claim(a, builder, RUNNER);
+  await L.setFork(a, `fork-${a}`, H0, builder);
+  await L.recordPush(a, builder, PART_A, PART_A);
+  await L.addEvidence(observed(a, PART_A, "a"));
+  await L.submit(a, builder);
+  await L.accept(a, "owner");
+  const LAND = "6".repeat(40);
+  await L.merged(a, "owner", LAND, true);
+  // Main moved to the part's landing, but the record keeps the fork's head:
+  // the plan does not refresh against work its own part just landed, and b
+  // is dispatched without a refresh first.
+  expect((await L.planView(item.id)).refresh).toMatchObject({ main: H0, taken: H0 });
+  expect(await L.item(item.id)).toMatchObject({ dispatch: null });
+  expect((await L.item(b)).dispatch).toMatchObject({ by: ORCHESTRATOR });
 });
 
 it("a refresh that failed its checks charges no part, is not tried again for the same main head, and the parts go on without it", async () => {
