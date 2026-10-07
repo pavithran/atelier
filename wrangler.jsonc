@@ -6,6 +6,14 @@
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
+  // Cloudflare Access in front of the owner's pages (src/access.ts): set
+  // both, as vars or secrets, and the Worker verifies the Access assertion
+  // on every owner route against the keys the team publishes. The issuer is
+  // the team's URL; the audience is the Access application's AUD tag.
+  //   "vars": {
+  //     "CF_ACCESS_ISS": "https://TEAM.cloudflareaccess.com",
+  //     "CF_ACCESS_AUD": "<the application's AUD tag>"
+  //   }
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   "durable_objects": {

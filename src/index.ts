@@ -4,6 +4,7 @@ import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
@@ -63,6 +64,10 @@ type Settings = {
   // and read by GET /api/version beside the route level, so a CLI can
   // refuse a server older than the routes it calls (atelier land).
   DEPLOYED_MAIN?: string;
+  // Cloudflare Access in front of the owner's pages (src/access.ts): the
+  // team's URL and the Access application's audience tag. Both set, and every
+  // owner route must carry an assertion Access signed.
+  CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string;
 };
 
 function thresholds(env: Env): Thresholds {
@@ -2215,8 +2220,19 @@ export default {
         if (req.headers.get("origin") !== url.origin) return html("Cross-origin form refused.", 403);
         return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
-      const how = await authorised(req, env);
+      // Cloudflare Access in front of the owner's pages (src/access.ts). When
+      // the server names its Access team and application, every route that
+      // needs a sign-in — every page but the public ones above, and never the
+      // /api routes, which take bearer tokens the CLI sends without passing
+      // Access — must carry an Access assertion the Worker verifies against
+      // the team's published keys, so a request that reached the Worker
+      // without Access's vouching is refused before its cookie is read.
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const access = accessSettings(env as unknown as Record<string, string | undefined>);
+      if (access && parts[0] !== "api" && !(await accessVouches(req, access))) {
+        return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", "/login"), 401);
+      }
+      const how = await authorised(req, env);
       if (parts[0] === "api") {
         // The server's version: the deployed main commit and its route
         // level (src/route-level.ts). It answers without a token: the

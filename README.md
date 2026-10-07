@@ -675,6 +675,32 @@ name; an unknown name falls back to UTC:
 printf America/New_York | npx wrangler secret put TIMEZONE
 ```
 
+The owner's pages can also sit behind Cloudflare Access, so the person
+reaching them has signed in with whatever the Zero Trust account asks — a
+one-time code, a passkey, an identity provider — before the Worker is reached
+at all. Add a self-hosted Access application for the server's domain that
+covers every path, then give the Worker the team's URL and the application's
+audience tag, both shown on the application's page in the Zero Trust
+dashboard:
+
+```bash
+printf https://TEAM.cloudflareaccess.com | npx wrangler secret put CF_ACCESS_ISS
+printf 47c6b47f... | npx wrangler secret put CF_ACCESS_AUD
+```
+
+With both set, the Worker itself checks the `Cf-Access-Jwt-Assertion` header
+Access adds to a request it let through: the token is verified with jose
+against the keys the team publishes at
+`https://TEAM.cloudflareaccess.com/cdn-cgi/access/certs`, and its issuer and
+audience must be the team and the application. Any route that needs a
+sign-in is refused without that vouching — even a request carrying a session
+cookie — so the pages hold even if the Access application stops covering the
+server. The public pages (`/showcase`, `/how`, `/login`, `/live.js`) and the
+sign-out form stay open, and so do the `/api` routes: the CLI and the runners
+send bearer tokens and never pass Access. Signing in then takes both, Access
+first and the server token after. With either variable unset, the server
+stands as it always has, without the second check.
+
 `atelier login` asks the server for the owner's actor, so the CLI follows
 whatever the Worker is set to.
 
