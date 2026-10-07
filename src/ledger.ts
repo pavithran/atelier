@@ -1,6 +1,6 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
-import { type AgentToken, type BrowserSession } from "./tokens.ts";
+import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -22,7 +22,7 @@ import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
 import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
-import { jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
+import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
@@ -824,15 +824,38 @@ export class Ledger extends DurableObject<Env> {
 
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
-  dispatch(id: string, actor: string, input: Record<string, unknown>): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
-    const item = this.item(id);
-    this.assertNotPlanned(item);
-    assertDispatchable(item);
+  // A task held by an agent (claimed, or submitted and perhaps rejected) can
+  // be sent back to a runner too: the holder is released and the task queued
+  // in one step, keeping its workspace and commits for the next builder. The
+  // caller revokes the holder's write token first (see checkDispatch), and
+  // passes its id as `token`.
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
+    const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
+    const held = this.holds(item);
+    if (held) {
+      this.dropToken(id, token);
+      this.update(id, { owner: null, state: "open" }, d.at);
+      this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
+    }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note }, d.at);
     return this.item(id);
+  }
+
+  // What a dispatch checks alone, so the caller can revoke a holder's token
+  // only for a dispatch that will be made.
+  checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
+    const item = this.item(id);
+    this.assertNotPlanned(item);
+    if (!this.holds(item)) assertDispatchable(item);
+    if (input) makeDispatch(input, actor, new Date().toISOString());
+    return item;
+  }
+
+  private holds(item: Item): boolean {
+    return !!item.owner && (item.state === "claimed" || item.state === "submitted");
   }
 
   undispatch(id: string, actor: string): Item {
@@ -1684,7 +1707,18 @@ export class Ledger extends DurableObject<Env> {
   async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
-      throw new RuleError("not_a_plan", `${id} is not a plan or a part of one; its runner writes its own brief`, 404);
+      // An ordinary task's runner writes its own brief; the server adds only
+      // what it alone holds: for a task sent back to a runner, the latest
+      // rejecting review at its head, with its findings. Anyone but the
+      // holder is told there is no brief, as before.
+      if (item.owner !== actor || item.state !== "claimed") {
+        throw new RuleError("not_a_plan", `${id} is not a plan or a part of one; its runner writes its own brief`, 404);
+      }
+      assertOwner(item, actor);
+      const rejection = this.reviewsFor(id).filter((r) => !r.approve && r.head === item.head).at(-1) ?? null;
+      const findings = rejection ? reviewFindings(rejection) : null;
+      const text = findings ? findingsSection(findings) : "";
+      return { job: findings ? "rework" : "build", text, hash: await sha256(text) };
     }
     assertOwner(item, actor);
     const project = this.project();
