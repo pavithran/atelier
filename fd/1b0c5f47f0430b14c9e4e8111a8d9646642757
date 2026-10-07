@@ -1,0 +1,24 @@
+atelier atelier/t274 "The accept-time conflict check (t266, assertPlanMergeable in src/index.ts) reports a false conflict for a plan whose branch already holds main: previewAgainstMain's mergeBase (src/diff.ts) looks only at the plan fork's first-parent commits and their direct parents, while main enters the plan branch two merges deep (the integrator's merge of a merge-main part, whose own second parent is main), so plan t197 at cfdab7b, which holds main 4a315ea2, was refused 'would conflict with main at 4a315ea2' (2026-10-07). Before previewing, ask holdsCommit (src/index.ts, which follows merge parents) whether the branch head holds main's head; if so the merge is clean; else, when it holds a newer main commit than the first-parent search found, measure from that. Test with a plan branch that took main through an integrated merge-main part"
+accepted head acebe70a1fa16d0a9211d4b2087f3103295975b5
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T17:58:52.366Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T17:58:55.405Z
+REVIEW approve by antigravity/gemini-3.1-pro at acebe70a1fa16d0a9211d4b2087f3103295975b5, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T17:47:08.935Z pavi item.created
+2026-10-07T17:47:12.617Z claude-code/opus-5.5 item.claimed
+2026-10-07T17:47:19.649Z claude-code/opus-5.5 fork.created
+2026-10-07T17:55:26.078Z pavi land.lease
+2026-10-07T17:55:27.566Z pavi land.merge
+2026-10-07T17:55:35.287Z pavi land.regenerate
+2026-10-07T17:55:46.495Z claude-code/opus-5.5 push.observed
+2026-10-07T17:55:46.778Z pavi land.push
+2026-10-07T17:58:53.111Z claude-code/opus-5.5 evidence.observed
+2026-10-07T17:58:55.711Z claude-code/opus-5.5 evidence.observed
+2026-10-07T17:58:56.240Z pavi land.check
+2026-10-07T17:58:56.670Z claude-code/opus-5.5 item.submitted
+2026-10-07T17:58:56.935Z pavi land.submit
+2026-10-07T17:58:57.118Z pavi review.requested
+2026-10-07T17:59:25.206Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T18:03:06.541Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T18:03:09.652Z pavi land.review
+2026-10-07T18:03:21.995Z pavi item.accepted
+2026-10-07T18:03:24.186Z pavi land.accept
