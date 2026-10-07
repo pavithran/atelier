@@ -49,7 +49,7 @@ export function queryConfig(env: { CF_ACCOUNT_ID?: string; ANALYTICS_TOKEN?: str
   const token = env.ANALYTICS_TOKEN?.trim();
   if (!token) return "set ANALYTICS_TOKEN";
   const account = env.CF_ACCOUNT_ID?.trim();
-  if (!account) return "set CF_ACCOUNT_ID in wrangler.jsonc";
+  if (!account) return "set CF_ACCOUNT_ID";
   return { account, token };
 }
 

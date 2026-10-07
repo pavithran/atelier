@@ -129,7 +129,7 @@ test("each model's figures: calls, failures, tokens and cost by weight, the medi
 
 test("with no token the gateway is off and says which setting to set", () => {
   assert.equal(gatewayConfig({ CF_ACCOUNT_ID: "test-account" }), "AI Gateway costs are off: set AI_GATEWAY_TOKEN");
-  assert.equal(gatewayConfig({ AI_GATEWAY_TOKEN: "t" }), "AI Gateway costs are off: set CF_ACCOUNT_ID in wrangler.jsonc");
+  assert.equal(gatewayConfig({ AI_GATEWAY_TOKEN: "t" }), "AI Gateway costs are off: set CF_ACCOUNT_ID");
   assert.deepEqual(gatewayConfig({ CF_ACCOUNT_ID: "a", AI_GATEWAY_TOKEN: "t" }), { account: "a", gateway: "atelier", token: "t" });
   assert.equal(queryConfig({ CF_ACCOUNT_ID: "a" }), "set ANALYTICS_TOKEN");
   const off = gatewayView("AI Gateway costs are off: set AI_GATEWAY_TOKEN", [{ provider: "p", model: "m", tokensIn: 1, tokensOut: 1, cost: 1, durationMs: 1, success: true, weight: 1 }], null, NOW);
