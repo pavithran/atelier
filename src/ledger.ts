@@ -6,7 +6,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
-  assertBlockable, assertNotBlocked, blockReason,
+  assertBlockable, assertNotBlocked, blockReason, REASON_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type ItemFields,
 } from "./rules";
@@ -33,6 +33,7 @@ import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRu
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
+import { independenceRefusal } from "./review/independence.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -166,11 +167,23 @@ export type PlanPost =
   | { valid: true; hash: string; parts: number }
   | { valid: false; errors: string[]; attempt: number; attempts: number };
 
-// A part's routing with the owner's reroute applied: the named actor builds
-// it from now on, and the routed alternates stay behind it.
-function rerouted(route: PartRoute, actor: string | undefined): PartRoute {
-  if (!actor) return route;
-  return { ...route, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: route.alternates.filter((a) => a.actor !== actor) };
+// A part's routing with the plan's later changes applied. The owner's
+// reroute names the actor that builds it from now on, and the routed
+// alternates stay behind it. A reviewer the plan tick picked in place of the
+// routed one (reviewTick) reviews it from now on, with the reason shown.
+function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "reviewers">): PartRoute {
+  const actor = record.reroutes[route.key];
+  const change = record.reviewers?.[route.key];
+  let out = route;
+  if (actor) out = { ...out, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: out.alternates.filter((a) => a.actor !== actor) };
+  if (change) {
+    out = {
+      ...out,
+      reviewer: { actor: change.actor, reasons: [`Picked by the plan in place of ${change.from ?? "no reviewer"}: ${change.reason}`] },
+      reviewerChange: { from: change.from, reason: change.reason, at: change.at },
+    };
+  }
+  return out;
 }
 
 // What the Worker found in a fork's history for a push (see recordPush):
@@ -1779,7 +1792,7 @@ export class Ledger extends DurableObject<Env> {
     // Refuses a name no runner could claim under, before anything is written.
     makeDispatch({ to: "home", agent: builder.slice(0, slash), model: builder.slice(slash + 1) }, ORCHESTRATOR, at);
     const route = record.approval!.routes.find((r) => r.key === key)!;
-    const from = rerouted(route, record.reroutes[key]).builder?.actor ?? null;
+    const from = rerouted(route, record).builder?.actor ?? null;
     record.reroutes[key] = builder;
     this.savePlanRecord(item.plan!, record);
     this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
@@ -1873,7 +1886,7 @@ export class Ledger extends DurableObject<Env> {
           id: p.id, key: p.partKey!, title: p.title, state: p.state, owner: p.owner, head: p.head, acceptedHead: p.acceptedHead, scope: p.scope,
           dependsOn: (p.deps ?? []).map((key) => ({ key, id: ids.get(key) ?? null })),
           dispatch: p.dispatch ?? null,
-          route: route ? rerouted(route, record.reroutes[p.partKey!]) : null,
+          route: route ? rerouted(route, record) : null,
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
           integration: this.partIntegration(p.id),
@@ -2081,14 +2094,14 @@ export class Ledger extends DurableObject<Env> {
     const events = tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!])));
     // Automatic review (docs/orchestrator.md, section 4): a submitted part
     // with its checks passing and paths measured asks for a review request.
-    const reviewBlock = this.reviewTick(id, record, parts, at);
+    this.reviewTick(id, record, parts, at);
     const result = planActions({
       plan: this.approvedPlan(id, approval.hash),
       parts: parts.map((p) => ({ key: p.partKey!, state: p.state })),
-      routes: approval.routes.map((r) => rerouted(r, record.reroutes[r.key])),
+      routes: approval.routes.map((r) => rerouted(r, record)),
       events, maxParallel: approval.limits.maxParallel, deadline: approval.deadline, budget: null, now: at,
     });
-    let blocked = result.blocked ?? reviewBlock, chosen = result.dispatch;
+    let blocked = result.blocked, chosen = result.dispatch;
     if (!blocked && chosen.length) {
       const room = approval.limits.maxJobs - jobsUsed(all);
       if (room <= 0) blocked = `the plan has used its ${approval.limits.maxJobs} part dispatches (${RUN_LIMITS.jobsPerPart} per part)`;
@@ -2114,15 +2127,24 @@ export class Ledger extends DurableObject<Env> {
 
   // Automatic review (docs/orchestrator.md, section 4): asks for a review
   // request for each submitted part whose checks pass and paths are measured,
-  // routed by pickReviewer from the pool frozen at approval. Returns why a
-  // part has no reviewer, which blocks the plan, or null when none does.
-  private reviewTick(id: string, record: PlanRecord, parts: Item[], at: string): string | null {
+  // routed by pickReviewer from the pool frozen at approval. A reviewer can
+  // become a contributor after approval (a claim, a handoff or a push names
+  // it), so the routed reviewer and each live request are judged against the
+  // contributors now: a live request for one who can no longer review is
+  // withdrawn, and a routed reviewer who cannot is replaced on the part's
+  // routing by the reviewer picked, with the reason. A part no eligible
+  // reviewer remains for is blocked with what the owner can do.
+  private reviewTick(id: string, record: PlanRecord, parts: Item[], at: string): void {
     const approval = record.approval!;
     const plan = this.approvedPlan(id, approval.hash);
     const policy = this.project().policy;
     const now = new Date(at);
-    for (const p of parts) {
-      if (p.state !== "submitted" || !p.partKey) continue;
+    for (const listed of parts) {
+      if (listed.state !== "submitted" || !listed.partKey) continue;
+      // The part as item() reads it, with its push actors: planParts reads
+      // the row alone, and every claim, handoff and push makes a contributor
+      // the reviewer must be independent of.
+      const p = this.item(listed.id);
       // A request at a head the part has moved past is withdrawn, so the queue
       // offers only the current head's review.
       if (p.head) {
@@ -2132,9 +2154,24 @@ export class Ledger extends DurableObject<Env> {
           this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reason: "the part's head moved" }, at);
         }
       }
+      // A live request for a reviewer who has since contributed, or is no
+      // longer of another family than every contributor, would only be
+      // refused at its claim or not counted by the gate; it is withdrawn so
+      // the review is asked again below of one who can give it.
+      const contributors = contributorsOf(p);
+      const live = this.sql.exec(`SELECT id, head, dispatch FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
+      for (const r of live) {
+        const d = JSON.parse(r.dispatch as string) as Dispatch;
+        const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+        const refusal = asked ? independenceRefusal(asked, contributors) : null;
+        if (!asked || !refusal) continue;
+        this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+        this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal }, at);
+      }
       const part = plan.parts.find((x) => x.key === p.partKey);
       if (!part) continue;
-      const route = approval.routes.find((r) => r.key === p.partKey);
+      const found = approval.routes.find((r) => r.key === p.partKey);
+      const route = found ? rerouted(found, record) : null;
       const need = reviewNeeded({
         item: p, part: true, policy,
         evidence: this.evidenceFor(p.id),
@@ -2143,15 +2180,31 @@ export class Ledger extends DurableObject<Env> {
         now, owner: this.owner,
       });
       if (!need.needed) continue;
+      // pickReviewer passes over every contributor and every model of a
+      // contributor's family, the routed reviewer included, and asks the
+      // alternates and then the pool.
       const pick = pickReviewer({
         item: p, pool: approval.pool, policy, allowPaid: approval.allowPaid,
-        part, route: route ? rerouted(route, record.reroutes[p.partKey]) : null,
+        part, route,
         previous: need.previousReviewer,
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
       });
-      if (!pick.reviewer) return `part ${p.partKey} has no reviewer for automatic review: ${pick.unpicked}`;
+      if (!pick.reviewer) {
+        this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval, so add a model of another family than every contributor with atelier models add, then stop this plan with atelier plan stop ${id} and plan this part's work again. ${pick.unpicked}`, at);
+        continue;
+      }
       const reviewer = pick.reviewer.actor;
+      // The routed reviewer that can no longer review is replaced on the
+      // part's routing, so plan show and the plan page name the reviewer
+      // asked and why, and later rounds ask that reviewer first.
+      const routed = route?.reviewer?.actor ?? null;
+      const why = routed ? independenceRefusal(routed, contributors) : null;
+      if (routed && why && !sameActor(routed, reviewer)) {
+        (record.reviewers ??= {})[p.partKey!] = { actor: reviewer, from: routed, reason: why, at };
+        this.savePlanRecord(id, record);
+        this.log(p.id, ORCHESTRATOR, "plan.reviewer_changed", { from: routed, to: reviewer, reason: why }, at);
+      }
       const slash = reviewer.indexOf("/");
       const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
       const brief = reviewBrief({
@@ -2163,7 +2216,17 @@ export class Ledger extends DurableObject<Env> {
         p.id, need.head, JSON.stringify(dispatch), briefHash);
       this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round }, at);
     }
-    return null;
+  }
+
+  // A submitted part no review can be asked for is blocked by the
+  // orchestrator with the reason, as block() records an owner's block, so the
+  // owner sees it in the inbox and on plan show; unblocking returns it to
+  // submitted and the next tick asks again.
+  private blockPart(p: Item, plan: string, reason: string, at: string): void {
+    const text = reason.length > REASON_MAX ? `${reason.slice(0, REASON_MAX - 1)}…` : reason;
+    const block: Block = { reason: text, by: ORCHESTRATOR, at, from: p.state };
+    this.update(p.id, { state: "blocked", blocked: JSON.stringify(block) }, at);
+    this.log(p.id, ORCHESTRATOR, "item.blocked", { reason: text, from: p.state, plan }, at);
   }
 
   // The review requests for one part, oldest first, as reviewNeeded reads them.
