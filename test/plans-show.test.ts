@@ -83,6 +83,11 @@ test("once approved, plan show gives each part's state, routing, attempts and th
   const blocked = planText({ ...building, phase: "blocked", blocked: "part c has reached 3 attempts" }, "demo").split("\n");
   assert.ok(blocked.includes("Phase: blocked.") && blocked.includes("Blocked: part c has reached 3 attempts."));
   assert.ok(blocked.includes("  name who builds a part: atelier plan reroute tN --to H/M --project demo"));
+  assert.ok(blocked.includes("  name who reviews a submitted or blocked part: atelier plan reroute tN --to H/M --project demo"));
+  // A blocked part says why and by whom, and waits on the owner.
+  const held = planText({ ...building, parts: [part("t2", "a", { state: "blocked", blocked: { reason: "no eligible reviewer remains for part a. Name one with atelier plan reroute t2 --to H/M.", by: "atelier/orchestrator" } })] }, "demo").split("\n");
+  assert.ok(held.includes("      blocked by atelier/orchestrator: no eligible reviewer remains for part a. Name one with atelier plan reroute t2 --to H/M."));
+  assert.ok(held.includes("1 part waits on you; each line above gives its command."));
   const stuck = planText({ ...building, parts: [part("t2", "a", { state: "submitted", owner: "x/y", head: "h", gate: { ready: false, blockers: ["`npm test` failed when observed"] } })] }, "demo");
   assert.ok(stuck.split("\n").includes("      not ready: `npm test` failed when observed"));
 });
