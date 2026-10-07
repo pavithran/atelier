@@ -6,6 +6,7 @@
 // `node --test` as phase.ts's are.
 
 import type { LedgerEvent } from "../ledger.ts";
+import { liveOffers, offering, type LiveOffer } from "../dispatch/rules.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { route } from "../models/routing.ts";
@@ -293,10 +294,13 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // work that may plan. A refused model is passed over, as routing passes it
 // over; so is a model paid per token, because a plan is not yet approved and
 // paid models are used only when the owner allows them (the owner may still
-// name one); so is one the project's policy does not let plan.
-export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES): PlannerPick {
+// name one); so is one the project's policy does not let plan; and so is one
+// no live runner offers, since the plan job would wait for a runner that
+// never asks for it.
+export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly LiveOffer[]): PlannerPick {
   const entries = new Map(pool.map((entry) => [actorOf(entry), entry]));
   const ranked = route({ kind: "research" }, pool.map((entry) => profileFor(entry, profiles)), recordFor(pool, events), { localOnly: false, allowedWhere: "any" });
+  const offered = offers ? offering(liveOffers(offers)) : null;
   const passedOver: Choice[] = [];
   for (const [i, candidate] of ranked.entries()) {
     const entry = entries.get(candidate.actor!)!;
@@ -304,6 +308,7 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     const refusals: string[] = [];
     if (entry.status?.state === "refused") refusals.push(`status refused, reported by ${entry.status.by} at ${entry.status.at}`);
     if (paidPerToken(entry)) refusals.push(`paid per token (${entry.provider}); name it with --planner to use it`);
+    if (offered && !offered.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor}, so no runner could claim the plan job`);
     try { assertEligible(actor, policy, DEFAULT_OWNER, "planner"); } catch (err) {
       const rule = parseRuleError(err);
       if (!rule) throw err;
