@@ -1,0 +1,29 @@
+atelier atelier/t247 "A rejection whose blocking findings the owner has refuted still blocks another review at that head (review_blocked: the builder reworks it before another review), so the only way to a second opinion is a cosmetic new commit (t240, 2026-10-07: all three blocking findings refuted with file and line). When every blocking finding of the latest rejection at a head is recorded refuted (atelier finding), land and the owner may request a fresh review at the same head; the request and the brief say it follows refutations"
+accepted head d7db4701952443d5583f5f152e488b2ec9b724ea
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T10:41:10.725Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T10:41:13.688Z
+REVIEW approve by antigravity/gemini-3.1-pro at d7db4701952443d5583f5f152e488b2ec9b724ea, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T10:04:21.633Z pavi item.created
+2026-10-07T10:07:01.311Z pavi item.dispatched
+2026-10-07T10:11:54.251Z opencode/glm-5.3 item.claimed
+2026-10-07T10:12:06.720Z opencode/glm-5.3 fork.created
+2026-10-07T10:33:04.343Z opencode/glm-5.3 push.observed
+2026-10-07T10:34:52.631Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:34:55.136Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:34:55.644Z opencode/glm-5.3 item.submitted
+2026-10-07T10:38:45.320Z pavi land.lease
+2026-10-07T10:38:47.880Z pavi land.merge
+2026-10-07T10:38:55.980Z pavi land.regenerate
+2026-10-07T10:38:58.881Z opencode/glm-5.3 push.observed
+2026-10-07T10:38:58.980Z pavi land.push
+2026-10-07T10:41:11.567Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:41:13.838Z opencode/glm-5.3 evidence.observed
+2026-10-07T10:41:14.287Z pavi land.check
+2026-10-07T10:41:14.618Z opencode/glm-5.3 item.submitted
+2026-10-07T10:41:14.815Z pavi land.submit
+2026-10-07T10:41:14.901Z pavi review.requested
+2026-10-07T11:02:19.647Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T11:05:50.535Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T11:05:50.776Z pavi land.review
+2026-10-07T11:05:51.412Z pavi item.accepted
+2026-10-07T11:05:51.595Z pavi land.accept
