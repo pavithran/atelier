@@ -247,7 +247,7 @@ export const FLAGS = {
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
-  abandon: { note: false },
+  abandon: { note: false, "delivered-by": false },
   defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
   finding: { head: false, index: false, verdict: '--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed', note: false },
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
@@ -2313,7 +2313,7 @@ const commands = {
   async abandon() {
     const name = project(), id = itemArg();
     const { item: before } = await call("GET", I(name, id), undefined, OWNER);
-    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "" }, OWNER);
+    await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "", ...(typeof args["delivered-by"] === "string" ? { deliveredBy: args["delivered-by"] } : {}) }, OWNER);
     console.log(before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`);
   },
 
