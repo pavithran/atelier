@@ -1,0 +1,31 @@
+atelier atelier/t244 "A merge-main part's review cannot be served: the runner diffs it from the plan branch, which is all of main's work since the plan forked (888 KB for t241, 2026-10-07), so GLM's review came back with no verdict twice; and the review wrappers pass the diff as a command-line argument, capped near 1 MB. Review a merge-main part by its conflict resolution, git show --remerge-diff HEAD (15 KB for t241), with the list of files main changed; and have the runner write the diff into the review clone's .scratch/ and the wrappers name that file rather than pass the diff as an argument (~/.local/bin wrappers are documented in bin/orchestrate/README.md)"
+accepted head 4fc0dcd7f0d5b839f2cd13ab5e1ef91d852c5cd6
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T23:39:13.357Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T23:39:16.083Z
+REVIEW approve by antigravity/gemini-3.1-pro at 4fc0dcd7f0d5b839f2cd13ab5e1ef91d852c5cd6, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T09:45:12.928Z pavi item.created
+2026-10-07T17:02:59.793Z pavi item.dispatched
+2026-10-07T21:10:11.649Z opencode/glm-5.3 item.claimed
+2026-10-07T21:10:25.384Z opencode/glm-5.3 fork.created
+2026-10-07T21:17:40.248Z opencode/glm-5.3 item.released
+2026-10-07T21:17:59.274Z pavi item.dispatched
+2026-10-07T23:15:57.146Z opencode/glm-5.3 item.claimed
+2026-10-07T23:22:24.165Z opencode/glm-5.3 item.released
+2026-10-07T23:22:43.060Z pavi item.undispatched
+2026-10-07T23:22:44.099Z claude-code/opus-5.5 item.claimed
+2026-10-07T23:34:43.595Z pavi land.lease
+2026-10-07T23:34:47.090Z pavi land.merge
+2026-10-07T23:34:56.085Z pavi land.regenerate
+2026-10-07T23:34:59.652Z claude-code/opus-5.5 push.observed
+2026-10-07T23:34:59.785Z pavi land.push
+2026-10-07T23:39:13.972Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:39:16.460Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:39:16.923Z pavi land.check
+2026-10-07T23:39:17.353Z claude-code/opus-5.5 item.submitted
+2026-10-07T23:39:17.616Z pavi land.submit
+2026-10-07T23:39:17.770Z pavi review.requested
+2026-10-07T23:39:47.613Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T23:46:30.932Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T23:46:32.106Z pavi land.review
+2026-10-07T23:46:32.993Z pavi item.accepted
+2026-10-07T23:46:33.127Z pavi land.accept
