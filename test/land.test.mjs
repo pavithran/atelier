@@ -30,9 +30,12 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // of the loss, and leaves the lease that took it over where it is. Where
 // main and the task each raised the route level from one base (t248), the
 // landing raises the merged level past both, its own commit, saying to
-// deploy — after its own merge, and on a rerun of a conflicted merge the
-// owner resolved by hand, which finds main already merged; a raise on one
-// side alone lands as it is.
+// deploy — after its own merge, on a rerun of a conflicted merge the
+// owner resolved by hand, which finds main already merged, and wherever a
+// merge brought main in through a side branch, which the walk down HEAD's
+// first-parent line finds by ancestry; a raise on one side alone, or a
+// repo with no route-level file, lands as it is, the comparison skipped
+// and the landing going on.
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -591,6 +594,55 @@ test("a rerun after the route level was raised compares the same levels and rais
   assert.equal(git(f.workspace("t1"), "log", "--format=%s").split("\n").filter((s) => /^Raise the route level/.test(s)).length, 1);
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 11;/);
   assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
+});
+
+test("a merge that brought main in through a side branch still compares and raises the route level", async (t) => {
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  // Both sides raise 6 to 7, so every merge below is clean at 7.
+  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
+  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
+  // Main reaches the task's head through a side branch: main merged into
+  // the side branch, the side branch into the task's line. The merge that
+  // brought main in is no merge of HEAD's first-parent line at all, so a
+  // --first-parent rev-list finds nothing and the comparison would be
+  // skipped exactly where both sides raised the level.
+  const w = f.workspace("t1");
+  git(w, "checkout", "-q", "-b", "side");
+  git(w, "fetch", "-q", f.baseline, "main");
+  git(w, "merge", "-q", "--no-ff", "-m", "Merge main into the side branch", "FETCH_HEAD");
+  git(w, "checkout", "-q", "main");
+  git(w, "merge", "-q", "--no-ff", "-m", "Merge the side branch into the task", "side");
+  git(w, "push", "-q", "origin", "main");
+  // The premise of the regression: this topology leaves the --first-parent
+  // rev-list empty, so the merge that brought main in must be found another way.
+  const mainHead = git(f.checkout, "rev-parse", "HEAD");
+  assert.equal(git(w, "rev-list", "--first-parent", "--ancestry-path", `${mainHead}..HEAD`), "");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
+  assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 7, t1 to 7\), and the merge left it at 7: the merged CLI calls both sides' routes, so the level is raised to 8\. Deploy the server from a checkout at route level 8 or newer/);
+  // The raise is its own commit above the side branch's merge, measured
+  // from the task's head before that merge, and it is what lands.
+  const subjects = git(w, "log", "--format=%s").split("\n");
+  assert.ok(subjects.includes("Merge the side branch into the task"));
+  assert.equal(subjects.filter((s) => /^Raise the route level/.test(s)).length, 1);
+  assert.match(readFileSync(join(w, "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
+  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 8;/);
+  assert.equal(f.box.states.t1, "merged");
+  // The merge step records the skipped merge beside the levels it compared and set.
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.skipped, true);
+  assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
+});
+
+test("a repo with no route-level file skips the comparison and the landing goes on", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.doesNotMatch(r.output, /route level/);
+  assert.ok(!existsSync(join(f.workspace("t1"), "src", "route-level.ts")));
+  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
+  assert.equal(f.box.states.t1, "merged");
 });
 
 test("--dry-run says a merge that finds both sides raised the route level raises it past both", async (t) => {
