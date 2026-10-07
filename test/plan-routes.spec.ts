@@ -131,6 +131,7 @@ it("the owner approves by hash, reroutes and retries a part, and a stop revokes 
   const L = ledger(name);
   const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a"), part("b")));
   const hash = post.valid ? post.hash : "";
+  await L.release(id, "claude-code/opus-5.5", "proposed");
   const approve = (body: unknown, actor = "owner") => call("POST", `/projects/${name}/items/${id}/plan/approve`, actor, body);
   expect((await approve({ hash }, "codex/gpt-6-astra")).status).toBe(403);
   expect((await approve({ hash, allowPaid: "yes" })).status).toBe(400);
@@ -214,6 +215,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   const L = ledger(name);
   const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a"), part("b", { dependsOn: ["a"], scope: ["src/b/**"] })));
   const hash = post.valid ? post.hash : "";
+  await L.release(id, "claude-code/opus-5.5", "proposed");
   const view = await (await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash })).json() as PlanView;
   const [a, b] = view.parts;
   expect(b.dispatch).toBeNull(); // b waits for a

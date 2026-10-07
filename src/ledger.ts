@@ -24,7 +24,7 @@ import { routeParts, type PartRoute } from "./plans/route.ts";
 import { partAttempts, planActions, planPhase } from "./plans/phase.ts";
 import { jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
-  cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pickPlanner, planInboxEntries,
+  cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
   plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, RUN_LIMITS, tickEvents, waitingParts, type PlanRecord,
 } from "./plans/state.ts";
 import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
@@ -1557,7 +1557,7 @@ export class Ledger extends DurableObject<Env> {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
-    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name), ...this.shipEntries(p)]
+    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p)]
       .sort((a, b) => b.weight - a.weight);
   }
 
@@ -1724,6 +1724,9 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner approves a plan", 403);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    // The plan item must be unheld: a planner that still holds its claim would
+    // keep a live write token through the plan's completion.
+    if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; approve it once its claim is released`, 409);
     const record = this.planRecord(id);
     if (record.approval) throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; a plan is approved once`, 409);
     if (!/^[a-f0-9]{64}$/.test(hash)) throw new RuleError("bad_hash", `give the full hash atelier plan show ${id} prints`, 400);
@@ -1910,6 +1913,7 @@ export class Ledger extends DurableObject<Env> {
       // The plan branch's integration head (docs/orchestrator.md, section 5).
       integration: { integrationHead: record.integrationHead ?? null },
       harnessFailure,
+      pastDeadline: pastDeadline(record, new Date().toISOString()),
     };
   }
 
@@ -1975,12 +1979,12 @@ export class Ledger extends DurableObject<Env> {
     return row?.kind === "plan.proposed";
   }
 
-  private planEntries(project: string): InboxEntry[] {
+  private planEntries(project: string, now: string): InboxEntry[] {
     const ids = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
     return planInboxEntries(ids.map((id) => {
       const newest = this.proposal(id);
       return { project, plan: this.item(id), record: this.planRecord(id), proposal: newest && { hash: newest.hash, parts: newest.plan.parts.length }, answered: this.answered(id) };
-    }));
+    }), now);
   }
 
   // A plan not yet approved, open and held by nobody, for a decision about its planner.
@@ -2002,11 +2006,17 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind !== "part") throw new RuleError("not_a_plan", `${item.id} is not a plan or a part of one`, 400);
     const plan = this.item(item.plan!);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
+    const record = this.planRecord(plan.id);
+    // A deadline block is fixed at approval, so reroute and retry cannot lift
+    // it; the owner stops the plan instead.
+    if (pastDeadline(record, new Date().toISOString())) {
+      throw new RuleError("plan_deadline", `${item.id}'s plan ${plan.id} is past its deadline ${record.approval!.deadline}; the deadline is fixed at approval, so ${verb === "reroute" ? "rerouting" : "retrying"} a part cannot lift it. Stop the plan with atelier plan stop ${plan.id}`, 409);
+    }
     if (item.state !== "open" || item.owner) {
       const release = item.state === "claimed" ? `; ask ${item.owner} to release it, or release it with atelier release ${item.id}` : "";
       throw new RuleError("part_busy", `${item.id} is ${item.state}${item.owner ? `, held by ${item.owner}` : ""}; a part is ${verb === "reroute" ? "rerouted" : "retried"} only while it is open and held by nobody${release}`, 409);
     }
-    return { record: this.planRecord(plan.id), key: item.partKey! };
+    return { record, key: item.partKey! };
   }
 
   // Asks the planner again: the plan job is dispatched to the record's

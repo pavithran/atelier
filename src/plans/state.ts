@@ -249,6 +249,14 @@ export function completion(states: readonly ItemState[]): "complete" | "empty" |
 }
 export const EMPTY_PLAN = "every part is abandoned, so the plan brings nothing; stop it";
 
+// Whether an approved plan is past its deadline. The tick blocks an unfinished
+// plan once now is past the approval's deadline (planActions in phase.ts), and
+// no owner decision lifts that block: the deadline is fixed at approval, so
+// retry and reroute cannot move it, and the owner stops the plan instead.
+export function pastDeadline(record: PlanRecord, now: string): boolean {
+  return !!record.approval && Date.parse(now) > Date.parse(record.approval.deadline);
+}
+
 // What the inbox needs to know of one plan.
 export interface PlanInboxView {
   project: string;
@@ -260,9 +268,10 @@ export interface PlanInboxView {
 
 // The plan's own entries: approve-plan when the planner has answered with a
 // valid proposal and the plan is not approved, and plan-blocked when the
-// plan is blocked, with the decisions open to the owner. A closed plan has
-// none.
-export function planInboxEntries(views: readonly PlanInboxView[]): InboxEntry[] {
+// plan is blocked, with the decisions open to the owner. A deadline block
+// can only be stopped, since the deadline is fixed at approval. A closed
+// plan has none.
+export function planInboxEntries(views: readonly PlanInboxView[], now: string): InboxEntry[] {
   const out: InboxEntry[] = [];
   for (const { project, plan, record, proposal, answered } of views) {
     if (plan.state === "merged" || plan.state === "abandoned") continue;
@@ -270,7 +279,9 @@ export function planInboxEntries(views: readonly PlanInboxView[]): InboxEntry[] 
     const show = `atelier plan show ${plan.id} --project ${project}`;
     if (record.blocked) {
       const options = record.approval
-        ? "retry or reroute a part, abandon a part, or stop the plan"
+        ? pastDeadline(record, now)
+          ? "stop the plan"
+          : "retry or reroute a part, abandon a part, or stop the plan"
         : `${proposal ? `approve the last valid proposal (${proposal.hash.slice(0, 12)}), ` : ""}revise it, retry or reroute the planner, or stop the plan`;
       out.push({ ...base, kind: "plan-blocked", reason: `blocked: ${record.blocked}. Read ${show}, then ${options}`, weight: PLAN_INBOX_WEIGHTS["plan-blocked"] });
     } else if (!record.approval && proposal && answered) {
