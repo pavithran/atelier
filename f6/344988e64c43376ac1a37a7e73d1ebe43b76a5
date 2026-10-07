@@ -1,0 +1,24 @@
+atelier atelier/t230 "A runner-served review diffs from the task's fork point (claimed.item.base) to its head, so after atelier land merges main into the task, everything main gained since the fork shows as the task's own change: t228 was rejected for 'unrelated plan changes' that were main's (2026-10-07), and every review after a merge of main read a diff padded with main's work. Diff from the merge base of the head and the project's main (or the plan branch for a part), as bin/orchestrate/review.sh does, in the runner's review job and in any brief that quotes the diff"
+accepted head 0d9323c51024fa046478e4b14134d668638ac398
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T04:13:25.865Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T04:13:29.479Z
+REVIEW approve by antigravity/gemini-3.1-pro at 0d9323c51024fa046478e4b14134d668638ac398, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T03:43:52.419Z pavi item.created
+2026-10-07T03:44:04.796Z claude-code/opus-5.5 item.claimed
+2026-10-07T03:44:12.519Z claude-code/opus-5.5 fork.created
+2026-10-07T04:11:05.092Z pavi land.lease
+2026-10-07T04:11:08.107Z pavi land.merge
+2026-10-07T04:11:16.826Z pavi land.regenerate
+2026-10-07T04:11:20.729Z claude-code/opus-5.5 push.observed
+2026-10-07T04:11:20.912Z pavi land.push
+2026-10-07T04:13:26.949Z claude-code/opus-5.5 evidence.observed
+2026-10-07T04:13:29.855Z claude-code/opus-5.5 evidence.observed
+2026-10-07T04:13:30.328Z pavi land.check
+2026-10-07T04:13:30.702Z claude-code/opus-5.5 item.submitted
+2026-10-07T04:13:30.899Z pavi land.submit
+2026-10-07T04:13:30.997Z pavi review.requested
+2026-10-07T04:13:34.983Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T04:18:28.080Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T04:18:31.890Z pavi land.review
+2026-10-07T04:18:32.394Z pavi item.accepted
+2026-10-07T04:18:32.498Z pavi land.accept
