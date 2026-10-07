@@ -23,6 +23,7 @@ export interface PlanPartReview {
   state: "open" | "claimed";
   claimedBy: string | null;
   claimedAt: string | null;      // ISO time the request was claimed
+  topTier?: boolean;             // the gate's request asked of a tier model, whose review serves as the tier review too
 }
 
 export interface PlanPartView {
@@ -41,6 +42,7 @@ export interface PlanPartView {
   attempts: Attempt[];            // counted from the owner's latest reroute or retry
   gate: { ready: boolean; blockers: string[] } | null;  // while submitted or accepted
   review?: PlanPartReview | null; // the part's live review request, if any
+  tierReview?: PlanPartReview | null; // the part's live tier review request (src/review/tier.ts), if any
   integration: { head: string; mergeCommit: string } | null;  // recorded when the part became integrated
   integrationFailure?: IntegrationFailure | null;  // the part's latest failed integration, if any
   blocked?: { reason: string; by: string } | null;  // while blocked: why, and who blocked it
@@ -135,7 +137,9 @@ function reviewLines(p: PlanPartView, v: PlanView, flag: string, now = new Date(
   const r = p.review;
   if (!r) return [];
   const head = r.head.slice(0, 8);
-  if (r.state === "claimed") return [`review of ${head} asked of ${r.reviewer}, claimed at ${r.claimedAt ? when(r.claimedAt) : "a time not recorded"}`];
+  // The gate's review asked of a tier model gives the tier review too.
+  const what = r.topTier ? "gate review, top tier," : "review";
+  if (r.state === "claimed") return [`${what} of ${head} asked of ${r.reviewer}, claimed at ${r.claimedAt ? when(r.claimedAt) : "a time not recorded"}`];
   const slash = r.reviewer.indexOf("/");
   const asked = v.offers
     ? unoffered(
@@ -145,10 +149,21 @@ function reviewLines(p: PlanPartView, v: PlanView, flag: string, now = new Date(
     : null;
   return asked
     ? [
-        `review of ${head} asked of ${r.reviewer}; the request is open, and ${asked}`,
+        `${what} of ${head} asked of ${r.reviewer}; the request is open, and ${asked}`,
         `it will not be claimed until a runner that offers ${r.reviewer} for the review job asks for work; name another reviewer: atelier plan reroute ${p.id} --to H/M ${flag}`,
       ]
-    : [`review of ${head} asked of ${r.reviewer}; the request is open`];
+    : [`${what} of ${head} asked of ${r.reviewer}; the request is open`];
+}
+
+// A part's live tier review request (src/review/tier.ts): a second opinion
+// beside the gate's review, which the part's integration never waits for.
+function tierLines(p: PlanPartView): string[] {
+  const r = p.tierReview;
+  if (!r) return [];
+  const head = r.head.slice(0, 8);
+  return [r.state === "claimed"
+    ? `tier review of ${head} asked of ${r.reviewer}, claimed at ${r.claimedAt ? when(r.claimedAt) : "a time not recorded"}; integration does not wait for it`
+    : `tier review of ${head} asked of ${r.reviewer}; the request is open, and integration does not wait for it`];
 }
 
 // Routing fell back to the whole pool because no runner is live, though
@@ -212,7 +227,7 @@ export function planText(v: PlanView, project: string, now = new Date()): string
     for (const p of v.parts) {
       lines.push(`  ${p.id}  ${p.key}  ${partState(p, v.parts)}  ${flat(p.title)}`);
       const deps = p.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`);
-      const detail = [addedLine(p), `scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), heldLine(p), ...reviewLines(p, v, flag, now), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
+      const detail = [addedLine(p), `scope ${p.scope.map(flat).join(", ")}; depends on ${deps.length ? list(deps) : "nothing"}`, ...routeLines(p.route, false), heldLine(p), ...reviewLines(p, v, flag, now), ...tierLines(p), attemptsLine(p.attempts), integrationFailureLine(p), ownerStep(p, flag)];
       for (const line of detail) if (line) lines.push(`      ${line}`);
     }
   } else if (v.plan) {

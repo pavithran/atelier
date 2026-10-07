@@ -97,6 +97,8 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const repoHead = git(resolve("."), "rev-parse", "HEAD");
   const detail = (id) => {
     const head = forkHead(id);
+    // A tier review (`box.tier`) answers on the first poll after the request, before the gate's reviewer.
+    if (id === "t1" && box.review.pending && box.tier && !box.tier.given) { box.tier.given = true; box.reviews.t1.push({ by: box.tier.by, approve: box.tier.approve, tier: true, head, note: "Tier fixture.", at: new Date().toISOString() }); }
     const due = id === "t1" && box.review.pending && box.review.approveAfter !== null && box.review.approveAfter-- <= 0;
     const reviews = due ? (box.reviews.t1.push({ by: box.review.reviewer, approve: box.review.approve, head, note: box.review.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString() }), box.review.pending = false, box.reviews.t1) : box.reviews[id];
     const state = box.states[id];
@@ -273,6 +275,40 @@ test("--reviewer stops the landing on a rejection even where the gate needs no r
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
   assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "reject");
   assert.equal(f.box.lease, null);
+});
+
+test("a tier approval that comes first is said and not taken for the gate's verdict; the landing waits for the gate's review alone", async (t) => {
+  const f = await landFixture(t);
+  f.box.tier = { by: "claude-code/sonnet-5.5", approve: true };
+  f.box.review.approveAfter = 2;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /claude-code\/sonnet-5\.5 approved t1 at \w+ as its tier review; the landing still waits for the gate's review\./);
+  assert.match(r.output, /codex\/gpt-6-astra approved t1/);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.reviewer, "codex/gpt-6-astra");
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("a tier rejection that arrives in the same poll as the gate's later approval still stops the landing", async (t) => {
+  const f = await landFixture(t);
+  f.box.tier = { by: "claude-code/sonnet-5.5", approve: false };
+  f.box.review.approveAfter = 0;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /claude-code\/sonnet-5\.5 \(tier review\) rejected t1/);
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+});
+
+test("a tier rejection stops the landing as any rejection does", async (t) => {
+  const f = await landFixture(t);
+  f.box.tier = { by: "claude-code/sonnet-5.5", approve: false };
+  f.box.review.approveAfter = 2;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /claude-code\/sonnet-5\.5 \(tier review\) rejected t1/);
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
 });
 
 test("without --reviewer a gate that needs no review says why and does not claim to accept", async (t) => {
