@@ -115,7 +115,7 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 
 ## 3. Dispatch after approval
 
-`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm. `merged` is how a dependency lands until t16, and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
+`approvePlan` creates the part items and then runs the tick, in one transaction. The tick runs at the end of `submit`, `addEvidence`, `addReview`, `release`, `recordPush`, `merged` and `abandon` for a part or its plan, after the owner's reroute or retry, and on the alarm; a refused review claim runs it too (the request the claiming agent could not take is re-judged: withdrawn and asked again), the alarm fires not only for the deadline but for the moment a part's claimed review lapses, and a deploy ticks every open plan once, comparing the main commit it was built from (`DEPLOYED_MAIN`) with the last it ticked under, so changed tick logic reaches a plan waiting on nothing else. `merged` is how a dependency lands until t16, and `abandon` can unblock a plan whose stuck part the owner gives up. A tick that throws is undone and logged as `plan.tick_failed`; the change that ran it stands. `planActions` dispatches a part when:
 - its dependencies have landed;
 - the plan is not blocked;
 - fewer than `maxParallel` parts are live (default 2, one per Mac);
@@ -186,10 +186,13 @@ Before dispatching, the Worker runs `mergeability()` from `src/preview/merge.ts`
 
 **The runner side.** `atelier runner --integrate` runs on the Studio and uses no model:
 1. Claim the plan item, fetch the part's head and run `git merge --no-ff`.
-2. Push, then run `atelier check tP`. The plan item's checks compare against the baseline, which is correct here.
+2. Push with `atelier push tP`, so the head the ledger records for the plan item is the merge, then run `atelier check tP` on it. The plan item's checks compare against the baseline, which is correct here.
 3. **If the checks pass:** post `POST items/tP/integrated {part, mergeCommit}`. The Worker verifies the commit is on the plan fork's log and that its parents include the part's head, as the `merged` route does today. The part becomes `integrated`.
-4. **If they fail, or the merge conflicts:** `push --force-with-lease` back to the previous head and post `integration-failed`. The part goes back to its builder for rework.
-5. Release the plan item.
+4. **If they fail (`atelier check` exits 2), or the merge conflicts:** log the reason, reset to the previous head and record it with `atelier push tP --rollback`, then post `integration-failed` with `kind` `checks` or `conflict`. The part goes back to its builder for rework, and only these two kinds charge the builder an attempt.
+5. **Any other error** (the checks could not run, a refused post) is the integrator's: the pushed merge is rolled back the same way and nothing is posted against the part.
+6. Release the plan item.
+
+A part's rework, after a failed integration or a rejection, never goes to a model that reviewed the part, approving or rejecting: those are left out of the builder and alternates the tick walks.
 
 A successful integration leaves the plan branch with passing checks.
 A failed integration attempts to restore its previous head.

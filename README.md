@@ -1434,6 +1434,18 @@ be resumed by running `atelier land t9` again, which takes its own lease
 back, and a lease whose task has merged or was abandoned no longer guards
 anything.
 
+A landing that loses the lease stops rather than merge beside its successor:
+a Mac can sleep through a landing, pausing the timers that renew the lease,
+so it lapses and a landing queued with `--wait` takes it over, and the first
+landing wakes to find the lease gone. It then ends at once, having accepted
+and merged nothing, and says whose landing holds the lease now; before the
+accepting and merging steps it also asks for the lease again, so a loss it
+slept through cannot slip between renewals, and the server itself refuses a
+merge while another task's landing holds the lease. Whatever is left of the
+stopped landing (a merged main, a pushed head, a review already approved)
+stands, and `atelier land t9` again, or `atelier merge t9` once the task is
+accepted, finishes it after the other landing ends.
+
 The steps in between:
 
 1. The server must be at this CLI's route level or newer. `GET /api/version`
