@@ -62,6 +62,16 @@ test("formatReviews prints each review at each head, newest first, whole and fla
   assert.equal(bare.split("\n").length, 3, "a review with no findings and no provenance says neither");
 });
 
+test("formatReviews labels a tier review as one", () => {
+  const text = formatReviews([{ itemId: "t1", by: "claude-code/sonnet-5.5", head: HEAD_A, approve: true, note: "Tier: fine", at: "2026-10-07T14:03:00.000Z", tier: true, recordedBy: "claude-code/sonnet-5.5", proved: true, claimed: true }], "owner");
+  assert.match(text.split("\n")[1], /^  Tier review: claude-code\/sonnet-5\.5 approved at 11111111 \(2026-10-07 14:03 UTC; recorded with its own token\)\.$/);
+});
+
+test("formatReviews labels a gate review by a tier model as the gate review, top tier", () => {
+  const text = formatReviews([{ itemId: "t1", by: "codex/gpt-6-astra", head: HEAD_A, approve: true, note: "Gate and tier: fine", at: "2026-10-07T14:03:00.000Z", topTier: true, recordedBy: "codex/gpt-6-astra", proved: true, claimed: true }], "owner");
+  assert.match(text.split("\n")[1], /^  Gate review, top tier: codex\/gpt-6-astra approved at 11111111 /);
+});
+
 test("show prints the brief alone, and with --reviews each review in full", async (t) => {
   const f = await fixture(t);
   const plain = await f.run(["show", "t1", "--project", "proj"]);

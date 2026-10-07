@@ -8,7 +8,7 @@ import { pushActors, type Evidence, type Item, type ProjectPolicy } from "../src
 import { BRIEF_LIMITS, reviewBrief, type BriefInput } from "../src/review/brief.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
-import { parseVerdict, REPLY_FORMAT, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
+import { DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
 
 const H0 = "0".repeat(40);
 const H1 = "a".repeat(40);
@@ -150,6 +150,47 @@ test("reviewNeeded: a rejection at this head waits for rework, and an item's nee
   });
   // A part takes no override: it still needs its review from another family.
   assert.ok(need({ item: item({ reviewOverride }) }).needed);
+});
+
+test("reviewNeeded: a rejection whose every blocking finding the owner refuted is reviewed again at that head, not reworked", () => {
+  const GPT = "codex/gpt-6-astra";
+  const findings: Finding[] = [
+    { file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." },
+    { file: "README.md", line: null, severity: "follow-up", text: "Mention it." },
+    { file: "src/rules.ts", line: 5, severity: "blocking", text: "Drops a row." },
+  ];
+  const rejected = review(GPT, false, H2, { at: "2026-10-05T12:00:00.000Z", findings });
+  const verdict = (seq: number, index: number, v: string) =>
+    event(seq, OWNER, "review.finding", { head: H2, index, verdict: v, by: GPT, finding: findings[index - 1] });
+  const lifted = [verdict(20, 1, "refuted"), verdict(21, 3, "refuted")];
+  // With no verdicts, only one blocking finding refuted, or only a follow-up,
+  // the rejection still blocks: the builder reworks it before another review.
+  for (const verdicts of [[], [verdict(20, 1, "refuted")], [verdict(20, 2, "refuted")]] as const) {
+    assert.equal(need({ reviews: [rejected], verdicts: [...verdicts] }).reason, "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review");
+  }
+  // Every blocking finding refuted lifts the block: the same head is reviewed
+  // again, a re-review of round 2 asked of the same reviewer first.
+  const again = required({ reviews: [rejected], verdicts: lifted });
+  assert.equal(again.kind, "re-review");
+  assert.equal(again.round, 2);
+  assert.equal(again.previousReviewer, GPT);
+  assert.equal(again.reason, "every part is reviewed by another model family, and this coordinated change has no such approval at bbbbbbbb; round 2, after codex/gpt-6-astra rejected bbbbbbbb");
+  // The newest verdict on a finding wins, so a later confirm blocks again.
+  assert.equal(need({ reviews: [rejected], verdicts: [...lifted, verdict(22, 1, "confirmed")] }).reason,
+    "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review");
+  // A rejection with no findings recorded has nothing to refute, and the
+  // owner's own rejection is the owner's decision: both still block.
+  assert.equal(need({ reviews: [review(GPT, false)] }).reason, "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review");
+  assert.equal(need({ reviews: [review(OWNER, false, H2, { note: "Rename it" })] }).reason, "the project owner rejected bbbbbbbb; the builder reworks it before another review");
+  // A second, unrefuted rejection at the head still blocks beside a refuted one.
+  assert.equal(need({ reviews: [rejected, review("claude-code/opus-5.5", false, H2, { at: "2026-10-05T12:30:00.000Z", findings: [findings[0]] })], verdicts: lifted }).reason,
+    "claude-code/opus-5.5 rejected bbbbbbbb; the builder reworks it before another review");
+  // The owner's approval does not stand in for the second opinion.
+  assert.ok(need({ reviews: [rejected, review(OWNER, true, H2, { at: "2026-10-05T13:00:00.000Z" })], verdicts: lifted }).needed);
+  // An earlier head the builder pushed past is a round too: this is round 3.
+  const round3 = required({ reviews: [rejected, review(GPT, false, H1, { at: "2026-10-05T09:00:00.000Z", findings: [findings[0]] })], verdicts: lifted });
+  assert.equal(round3.round, 3);
+  assert.equal(round3.reason.endsWith("round 3, after codex/gpt-6-astra rejected bbbbbbbb"), true);
 });
 
 test("reviewNeeded: a live request holds the item until its claim lapses", () => {
@@ -555,6 +596,27 @@ test("reviewBrief: names what to review, carries the plan, checks and summary, a
   assert.equal(brief(), text);
 });
 
+test("reviewBrief: the task's title and the plan's text are labelled the request, not claims the change makes", () => {
+  // gemini-3.1-pro blocked t240 and t246 (2026-10-07) on phrases of the task's
+  // title ("for the job", "name the runner config entry") read as claims a
+  // commit message had made, while the commits said otherwise. The brief
+  // labels the task's text as the request the change answers, and the rules
+  // for blocking say a claim the code does not support blocks only when a
+  // commit of the change makes it.
+  const text = brief({ item: item({ title: "Pick the reviewer for the job" }) });
+  assert.ok(text.includes("Title, as written for the item. The title asks for the change; it is not a claim the change or its commits make:\n```\nPick the reviewer for the job\n```"), text);
+  assert.ok(text.includes("The plan's text is the request the change answers, not claims the change makes:"), text);
+  const rules = text.slice(text.indexOf("## Rules for blocking"), text.indexOf("## Reply format"));
+  assert.ok(rules.includes("The task's title and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The plan's acceptance criteria bind as criteria, not as claims."), rules);
+  // The fenced text's authors include whoever filed the task, and a task
+  // outside a plan carries the title label and the rule without the plan's.
+  assert.ok(text.includes("written by the plan's author, the owner who filed the task, the builder or earlier reviewers"), text);
+  const task = brief({ need: required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), plan: null });
+  assert.ok(task.includes("it is not a claim the change or its commits make:"), task);
+  assert.ok(task.includes("a phrase of them is not a claim a commit must support"), task);
+  assert.ok(!task.includes("The plan's text is the request"), task);
+});
+
 test("reviewBrief: a re-review carries the earlier findings and says the builder has pushed since", () => {
   const findings: Finding[] = [blocker, { file: "README.md", line: null, severity: "follow-up", text: "Mention t39." }];
   const need = required({ reviews: [
@@ -571,8 +633,8 @@ test("reviewBrief: a re-review carries the earlier findings and says the builder
     "Round 1, at aaaaaaaa: codex/gpt-6-astra rejected.",
     "```",
     "note: One blocker.",
-    "blocking src/review/needed.ts:88 A lapsed claim is never retried.",
-    "follow-up README.md Mention t39.",
+    "finding 1: blocking src/review/needed.ts:88 A lapsed claim is never retried.",
+    "finding 2: follow-up README.md Mention t39.",
     "```",
     "",
     "Round 1, at aaaaaaaa: the project owner approved.",
@@ -612,4 +674,93 @@ test("reviewBrief: an item outside a plan, with no diff and no summary", () => {
   const unbased = brief({ need, plan: null, diff: null, events: [], item: item({ base: null }) });
   assert.ok(unbased.includes("Base: not recorded"));
   assert.ok(unbased.includes("The diff is not included here. Read it in your clone."));
+});
+
+test("reviewBrief: states the project's review bar, or the default, before the reply format, for a part and for a task", () => {
+  const rules = (text: string) => text.slice(text.indexOf("## Rules for blocking"));
+  // A part's brief, and a task's outside a plan, with no bar set: the default.
+  const task = { need: required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), plan: null };
+  for (const text of [brief(), brief({ bar: null }), brief(task)]) {
+    assert.ok(rules(text).startsWith(`## Rules for blocking\n\nThe project's review bar, which says what may block:\n${DEFAULT_REVIEW_BAR}\n`));
+    assert.ok(text.endsWith(`## Reply format\n\n${REPLY_FORMAT}`));
+  }
+  assert.match(DEFAULT_REVIEW_BAR, /^Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to\./);
+  // The project's own bar replaces the default in both.
+  const bar = "Block only for data loss.";
+  for (const text of [brief({ bar }), brief({ ...task, bar })]) {
+    assert.ok(rules(text).includes(`which says what may block:\n${bar}\n`));
+    assert.ok(!text.includes(DEFAULT_REVIEW_BAR));
+    assert.ok(text.includes("A finding is blocking only when the review bar says it may block."));
+  }
+});
+
+test("reviewBrief: from round 2, earlier findings carry the owner's verdicts, and a refuted one is repeated only with new evidence", () => {
+  const findings: Finding[] = [blocker, { file: "src/rules.ts", line: 12, severity: "follow-up", text: "Rename x." }];
+  const GEMINI = "opencode/gemini-3.1-pro";
+  const need = required({ reviews: [review(GEMINI, false, H1, { at: "2026-10-05T11:00:00.000Z", note: "One blocker.", findings })] });
+  const refuted = event(20, OWNER, "review.finding", { head: H1, index: 1, verdict: "refuted", note: "needed.ts:140 retries a lapsed claim.", by: GEMINI, finding: blocker });
+  // An older verdict on the same finding is replaced by the newer one.
+  const older = event(15, OWNER, "review.finding", { head: H1, index: 1, verdict: "confirmed", note: "", by: GEMINI, finding: blocker });
+  // A verdict on another reviewer's review, or on a finding that is not this one, is not shown.
+  const other = event(21, OWNER, "review.finding", { head: H1, index: 2, verdict: "fixed", note: "", by: "codex/gpt-6-astra", finding: findings[1] });
+  const text = brief({ need, events: [submitted(H2, "Reworked."), refuted, older, other] });
+  assert.ok(text.includes([
+    "Round 1, at aaaaaaaa: opencode/gemini-3.1-pro rejected.",
+    "```",
+    "note: One blocker.",
+    "finding 1: blocking src/review/needed.ts:88 A lapsed claim is never retried.",
+    "finding 2: follow-up src/rules.ts:12 Rename x.",
+    "```",
+    "The project owner's verdicts on these findings:",
+    "- finding 1: refuted, noting `needed.ts:140 retries a lapsed claim.`",
+  ].join("\n")), text);
+  assert.ok(!text.includes("- finding 2:"));
+  assert.ok(text.includes("A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code"));
+  // The rule sits with the bar, before the reply format.
+  assert.ok(text.indexOf("A finding the owner refuted") > text.indexOf("## Rules for blocking"));
+  // An approval at the head under review that does not suffice (the
+  // builder's own family) is an earlier review too, with its verdicts.
+  const followUp: Finding = { file: "src/rules.ts", line: null, severity: "follow-up", text: "Add a test." };
+  const SAME = "opencode/glm-5.2";
+  const here = required({ reviews: [review(SAME, true, H2, { note: "Fine.", findings: [followUp] })] });
+  const atHead = brief({ need: here, events: [event(30, OWNER, "review.finding", { head: H2, index: 1, verdict: "refuted", note: "Covered by test/rules.test.ts.", by: SAME, finding: followUp })] });
+  assert.ok(atHead.includes("At bbbbbbbb (this head): opencode/glm-5.2 approved."), atHead);
+  assert.ok(atHead.includes("- finding 1: refuted, noting `Covered by test/rules.test.ts.`"));
+});
+
+test("reviewBrief: round 1 lists no earlier findings, verdicts or the rule on refuted findings", () => {
+  const text = brief({ events: [submitted(H2, "First."), event(20, OWNER, "review.finding", { head: H1, index: 1, verdict: "refuted", note: "No.", by: GLM, finding: blocker })] });
+  assert.ok(!text.includes("## Earlier reviews"));
+  assert.ok(!text.includes("verdicts on these findings"));
+  assert.ok(!text.includes("refuted"));
+});
+
+test("reviewBrief: a re-review at the same head says the owner refuted the rejection, not that the builder pushed", () => {
+  const GPT = "codex/gpt-6-astra";
+  const refuted = event(20, OWNER, "review.finding", { head: H2, index: 1, verdict: "refuted", note: "needed.ts:95 already retries it.", by: GPT, finding: blocker });
+  const need = required({
+    reviews: [review(GPT, false, H2, { at: "2026-10-05T11:00:00.000Z", note: "One blocker.", findings: [blocker] })],
+    verdicts: [refuted],
+  });
+  const text = brief({ need, events: [submitted(H2, "Adds reviewNeeded with tests."), refuted] });
+  assert.ok(text.includes("This is review round 2. A model rejected this head, and the project owner refuted every blocking finding of that rejection, so it is reviewed again rather than reworked. Start with the earlier blocking findings under \"Earlier reviews\": say in your summary which are resolved, and repeat as blocking any that still holds."), text);
+  assert.ok(text.includes([
+    "## Earlier reviews",
+    "",
+    "These are the reviews recorded before this one. One marked \"this head\" is of bbbbbbbb, the head under review; the builder has pushed since each of the others.",
+    "",
+    "Round 1, at bbbbbbbb (this head): codex/gpt-6-astra rejected.",
+  ].join("\n")), text);
+  assert.ok(text.includes("- finding 1: refuted, noting `needed.ts:95 already retries it.`"), text);
+  // An earlier head beside the refuted one at this head: both are said.
+  const round3 = required({
+    reviews: [
+      review(GPT, false, H1, { at: "2026-10-05T09:00:00.000Z", findings: [blocker] }),
+      review(GPT, false, H2, { at: "2026-10-05T11:00:00.000Z", findings: [blocker] }),
+    ],
+    verdicts: [refuted],
+  });
+  const both = brief({ need: round3, events: [submitted(H2, "Adds reviewNeeded with tests."), refuted] });
+  assert.ok(both.includes("This is review round 3. A model rejected an earlier head and the builder has pushed since, and the project owner refuted every blocking finding of a rejection at this head, so it is reviewed again rather than reworked."), both);
+  assert.ok(both.includes("Round 2, at bbbbbbbb (this head): codex/gpt-6-astra rejected."), both);
 });

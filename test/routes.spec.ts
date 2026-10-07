@@ -91,6 +91,62 @@ it("the queue offers a runner the claim its dead run left held, to it alone", as
   expect(all.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
 });
 
+it("a merge-main dispatch names main's head from the baseline, and needs one when it cannot be read", async () => {
+  await project("routes-merge-main");
+  const created = await (await call("POST", "/projects/routes-merge-main/items", "owner", { title: "Conflicted", scope: ["docs/**"] })).json() as { id: string };
+  const path = `/projects/routes-merge-main/items/${created.id}/dispatch`;
+  const M = "5".repeat(40), H0 = "0".repeat(40);
+
+  // A stand-in Artifacts: the baseline's HEAD is main's head (headOf reads
+  // the first log entry); a repository it does not know answers nothing.
+  const artifacts = (head: string | null): Artifacts => ({
+    get: async () => ({
+      log: async () => (head ? [{ hash: head }] : []),
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts);
+  const post = (body: unknown, art: Artifacts) =>
+    worker.fetch(new Request(`https://atelier.test/api${path}`, {
+      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: art } as typeof env);
+
+  // The task has no workspace yet: main's head is read first, and a baseline
+  // that answers nothing refuses the headless form asking for one.
+  const unreadable = await post({ job: "merge-main" }, artifacts(null));
+  expect([unreadable.status, ((await unreadable.json()) as { error: string }).error]).toEqual([503, "bad_head"]);
+  const bare = await post({ job: "merge-main", head: M }, artifacts(M));
+  expect([bare.status, ((await bare.json()) as { error: string }).error]).toEqual([409, "no_fork"]);
+
+  const ledger = env.LEDGER.get(env.LEDGER.idFromName("project:routes-merge-main"));
+  await ledger.claim(created.id, "claude-code/opus-5.5", null, true);
+  await ledger.setFork(created.id, "routes-merge-main--fork", H0, "claude-code/opus-5.5");
+  await ledger.release(created.id, "claude-code/opus-5.5", "built");
+  // With no head named, the route reads main's head from the baseline and
+  // the dispatch carries it, ready for a runner that offers the job.
+  const res = await post({ job: "merge-main" }, artifacts(M));
+  expect(res.status).toBe(200);
+  const sent = await res.json() as { dispatch: { job: string; head: string } | null };
+  expect(sent.dispatch).toMatchObject({ job: "merge-main", head: M, task: true });
+});
+
+// A runner's offer is what it can run, recorded as it asks the queue for
+// work (t240): the owner reads the offers back to see when a dispatch names
+// a model or a job no live runner offers, which can never be claimed.
+it("each runner's offer is recorded as it asks for work, and /runners answers the owner alone", async () => {
+  const offer = { runner: "home:offers", kind: "home", jobs: ["build", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }] };
+  await call("POST", "/queue", "owner", offer);
+  await call("POST", "/queue", "owner", { ...offer, runner: "home:other", agents: [{ agent: "codex", models: ["gpt-6-astra"] }] });
+  // The newest ask per runner replaces the one before it.
+  await call("POST", "/queue", "owner", { ...offer, jobs: ["build"] });
+  const offers = await (await call("GET", "/runners", "owner")).json() as { runner: string; jobs?: string[]; at: string }[];
+  const mine = offers.find((o) => o.runner === "home:offers");
+  expect(mine).toMatchObject({ runner: "home:offers", kind: "home", jobs: ["build"], agents: [{ agent: "opencode", models: ["glm-5.3"] }] });
+  expect(Number.isFinite(Date.parse(mine!.at))).toBe(true);
+  expect(offers.find((o) => o.runner === "home:other")).toMatchObject({ jobs: ["build", "review"] });
+  expect((await call("GET", "/runners", "codex/gpt-6-astra")).status).toBe(403);
+});
+
 it("the model pool: anyone signed in reads it, only the owner changes it, a runner reports status", async () => {
   const api = (method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}) =>
     worker.fetch(new Request(`https://atelier.test/api/models${path}`, {
@@ -263,6 +319,49 @@ it("the title route keeps the stored title on re-init, clears it on an empty one
     const res = await putTitle("routes-title", bad);
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("bad_title");
+  }
+});
+
+it("the review bar route cleans the bar, keeps it on re-init, clears it on an empty one, and refuses one too long or not text", async () => {
+  await project("routes-review-bar");
+  const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-bar", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
+  }), artifactsEnv);
+  const barOf = async (fields: Record<string, unknown>) =>
+    (((await (await put(fields)).json()) as { project: { policy: { reviewBar?: string } } }).project.policy.reviewBar);
+  expect(await barOf({})).toBeUndefined();
+  expect(await barOf({ reviewBar: "  Block only\nfor data\u202e loss.\t" })).toBe("Block only for data loss.");
+  expect(await barOf({ title: "Kept" })).toBe("Block only for data loss.");
+  expect(await barOf({ reviewBar: "" })).toBeUndefined();
+  for (const [bad, code] of [["x".repeat(1001), "too_long"], [7, "bad_review_bar"], [{}, "bad_review_bar"]] as const) {
+    const res = await put({ reviewBar: bad });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(code);
+  }
+});
+
+it("the review tier route takes models separated by commas or a list, keeps the tier on re-init, clears it on an empty one, and refuses one not harness/model", async () => {
+  await project("routes-review-tier");
+  const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-tier", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
+  }), artifactsEnv);
+  const tierOf = async (fields: Record<string, unknown>) =>
+    (((await (await put(fields)).json()) as { project: { policy: { reviewTier?: string[] } } }).project.policy.reviewTier);
+  expect(await tierOf({})).toBeUndefined();
+  const tier = ["claude-code/opus-5.5", "codex/gpt-6.1-sol", "antigravity/gemini-3.1-pro"];
+  expect(await tierOf({ reviewTier: " claude-code/opus-5.5, codex/gpt-6.1-sol,,antigravity/gemini-3.1-pro,codex/gpt-6.1-sol" })).toEqual(tier);
+  expect(await tierOf({ title: "Kept" })).toEqual(tier);
+  expect(await tierOf({ reviewTier: "" })).toBeUndefined();
+  expect(await tierOf({ reviewTier: ["codex/gpt-6.1-sol"] })).toEqual(["codex/gpt-6.1-sol"]);
+  expect(await tierOf({ reviewTier: [] })).toBeUndefined();
+  for (const bad of ["opus-5.5", 7, [3], "a/b c"]) {
+    const res = await put({ reviewTier: bad });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_review_tier");
   }
 });
 

@@ -206,6 +206,24 @@ It runs no model and reads no config. It offers only the integrate and refresh
 jobs and acts as `atelier/integrator`. Without it, a plan's parts build and
 pass review and then stop. Run exactly one.
 
+The integrator does not claim under the owner's token that `atelier login`
+stored. It acts as the reserved actor `atelier/integrator`, whose claim the
+server takes only through an agent token bound to that actor; a claim with
+any other token is refused (`integrator_token`). Issue the token from an
+owner session and start the integrator with it in `ATELIER_TOKEN`:
+
+```sh
+atelier token issue --as atelier/integrator --label integrator   # prints the token once
+ATELIER_TOKEN=atl_… atelier runner --integrate --name home:mac-integrator
+```
+
+Started with the owner's token instead, the integrator is offered the jobs
+all the same, every claim is refused, and it logs `runner: claim refused:
+integrator_token: atelier/integrator claims only through a token bound to
+it`, skips the job and integrates nothing. The token expires (30 days unless
+`--days` says otherwise); an expired or revoked one fails every call, so
+issue a fresh one before it lapses.
+
 ### Keeping them running
 
 A runner started in a terminal ends with it. To keep the runner and the
@@ -242,7 +260,12 @@ folder holding `node` in `PATH`):
 
 For the integrator, copy the file as `zone.atelier.integrator.plist` with the
 label `zone.atelier.integrator`, the arguments `runner`, `--integrate`,
-`--name`, `home:mac-integrator`, and its own log file. Make the log folder
+`--name`, `home:mac-integrator`, and its own log file. It also needs the
+integrator's token (above) in `ATELIER_TOKEN`, and a plist holds no token: a
+plist that names one in `EnvironmentVariables` has it on disk in the clear.
+Point the plist's `ProgramArguments` at a wrapper that reads the token file
+into its own process's environment and execs the runner, as the agent
+wrappers in "Setting up the agents" read their keys. Make the log folder
 first (`mkdir -p ~/Library/Logs/atelier`), then start and stop each one:
 
 ```sh
@@ -301,7 +324,8 @@ running the model again, and where it holds none, the model builds as for any
 claim. A restart therefore loses no committed work and leaves no runner
 reported busy with a claim no live run holds; a resumed finish that keeps
 failing leaves the claim for the owner, as any failed finish does. This needs
-a server at route level 6, which the runner asks for at start.
+a server at route level 13 (the task's own raise to 6 plus the raises main
+had already merged), which the runner asks for at start.
 
 ## What the agents may and may not do
 

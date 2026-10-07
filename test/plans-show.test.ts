@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planBrief, planText, type PlanPartView, type PlanView } from "../src/plans/show.ts";
+import { planBrief, planText, type PlanPartReview, type PlanPartView, type PlanView } from "../src/plans/show.ts";
+import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
 import { limitsFor } from "../src/plans/state.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 
@@ -125,4 +126,120 @@ test("plan show prints a part's latest integration failure, its kind and whether
   assert.ok(failed(null).some((line) => line.startsWith("      integration failed at 2026-10-06 12:00 UTC (kind not recorded; not charged to the builder): ")));
   // Once integrated, the old failure is no longer shown.
   assert.ok(!failed("checks", "integrated").some((line) => line.includes("integration failed")));
+});
+
+// Routing falls back to the whole pool when runners have asked but none is
+// live (routable in src/ledger.ts): plan show warns of the fallback while
+// the plan is not approved, naming when a runner last asked, and says
+// nothing of it when no runner has ever asked, one is live, or the routing
+// is already fixed by an approval.
+test("plan show warns when runners have asked but none is live, the case routing falls back to the pool", () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const asked = (ms: number) => new Date(now.getTime() - ms).toISOString();
+  const stale: SeenOffer[] = [
+    { runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: asked(OFFER_LIVE_MS + 120_000) },
+    { runner: "home:desk", kind: "home", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: asked(OFFER_LIVE_MS + 60_000) },
+  ];
+  const warned = planText({ ...proposed, offers: stale }, "demo", now).split("\n");
+  assert.ok(warned.includes("No runner is live now; the last to ask for work did so at 2026-10-07 09:59 UTC, so routing falls back to the whole pool, and a dispatch may wait until a runner asks again."), warned.join("\n"));
+  // No runner has ever asked: nothing is known to be offered, and there is
+  // no fallback to warn of.
+  const never = planText({ ...proposed, offers: [] }, "demo", now).split("\n");
+  assert.ok(!never.some((l) => l.includes("falls back to the whole pool")));
+  // A live runner leaves the routing offered, not fallen back.
+  const live = planText({ ...proposed, offers: [{ runner: "home:studio", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: asked(30_000) }] }, "demo", now).split("\n");
+  assert.ok(!live.some((l) => l.includes("falls back to the whole pool")));
+  // Offers not read with the view are not judged.
+  const unread = planText({ ...proposed, offers: null }, "demo", now).split("\n");
+  assert.ok(!unread.some((l) => l.includes("falls back to the whole pool")));
+  // Once approved, the routing is fixed and the warning stands down.
+  const approved = planText({ ...building, offers: stale }, "demo", now).split("\n");
+  assert.ok(!approved.some((l) => l.includes("falls back to the whole pool")));
+});
+
+// A part's live review request (t240): who was asked, whether it is claimed,
+// and — judged against the runner offers the view was read with — that a
+// request no live runner offers can never be claimed, with the reroute that
+// names another reviewer.
+test("a part's review request is shown; one no live runner offers says it can never be claimed", () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const at = now.toISOString();
+  const offers: SeenOffer[] = [{ runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at }];
+  const shown = (review: PlanPartReview | null, change: Partial<PlanView> = {}) => planText({
+    ...building,
+    parts: [part("t2", "a", {
+      state: "submitted", owner: "x/y", head: "a".repeat(40),
+      gate: { ready: false, blockers: ["a protected change needs an independent review, and none is recorded at aaaaaaaa"] }, review,
+    })],
+    offers, ...change,
+  }, "demo", now).split("\n");
+  const dead = shown({ reviewer: "claude-code/fable-5.1", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null });
+  assert.ok(dead.includes("      review of aaaaaaaa asked of claude-code/fable-5.1; the request is open, and no live runner can take it: home:studio offers review as opencode/glm-5.3"), dead.join("\n"));
+  assert.ok(dead.includes("      it will not be claimed until a runner that offers claude-code/fable-5.1 for the review job asks for work; name another reviewer: atelier plan reroute t2 --to H/M --project demo"));
+  // A live runner offering the reviewer, or offers not read, reads as merely open.
+  const open = shown({ reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null });
+  assert.ok(open.includes("      review of aaaaaaaa asked of opencode/glm-5.3; the request is open"));
+  assert.ok(!open.some((l) => l.includes("no live runner")));
+  const unread = shown({ reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null }, { offers: null });
+  assert.ok(unread.some((l) => l.includes("the request is open")));
+  assert.ok(!unread.some((l) => l.includes("no live runner")));
+  const plain = planText({ ...building, parts: [part("t2", "a", { state: "submitted", owner: "x/y", head: "a".repeat(40), gate: null, review: { reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "open", claimedBy: null, claimedAt: null } })] }, "demo", now).split("\n");
+  assert.ok(plain.some((l) => l.includes("the request is open")), "a view with no offers field still shows the request");
+  // Once claimed, the request names when and no longer judges the offers.
+  const claimed = shown({ reviewer: "opencode/glm-5.3", head: "a".repeat(40), state: "claimed", claimedBy: "opencode/glm-5.3", claimedAt: at });
+  assert.ok(claimed.includes("      review of aaaaaaaa asked of opencode/glm-5.3, claimed at 2026-10-07 12:00 UTC"));
+  assert.ok(!claimed.some((l) => l.includes("the request is open")));
+});
+
+// How far behind main the plan's branch is, and its latest refresh: one in
+// flight that parts wait for, or one that failed, charged to no part.
+test("plan show says what main head the branch last took, main's head now, and a refresh in flight or failed", () => {
+  const M0 = "0".repeat(40), M1 = "1".repeat(40), R = "2".repeat(40);
+  const lines = (refresh: PlanView["refresh"], change: Partial<PlanView> = {}) => planText({ ...building, refresh, ...change }, "demo").split("\n");
+  const behind = lines({ taken: M0, main: M1, last: null, running: false });
+  assert.ok(behind.includes("The branch last took main at 00000000; main is now at 11111111. Take it now: atelier plan refresh t1 --project demo"), behind.join("\n"));
+  assert.ok(lines({ taken: M1, main: M1, last: null, running: false }).includes("The branch holds main's head 11111111."));
+  const queued = lines({ taken: M0, main: M1, last: { mainHead: M1, state: "dispatched", by: "atelier/orchestrator", at: AT }, running: false });
+  assert.ok(queued.includes("The branch last took main at 00000000; main is now at 11111111."));
+  assert.ok(queued.includes("A refresh from main at 11111111 is queued for atelier/integrator, asked by atelier/orchestrator at 2026-10-06 12:00 UTC; parts wait for it before they are dispatched."), queued.join("\n"));
+  const running = lines({ taken: M0, main: M1, last: { mainHead: M1, state: "dispatched", by: "owner", at: AT }, running: true });
+  assert.ok(running.some((l) => l.startsWith("A refresh from main at 11111111 is being merged by atelier/integrator")));
+  const failed = lines({ taken: M0, main: M1, last: { mainHead: M1, state: "failed", by: "atelier/orchestrator", at: AT, endedAt: AT, reason: "merging main conflicted:\nCONFLICT in docs/using-atelier.md", kind: "conflict" }, running: false });
+  assert.ok(failed.includes("The branch last took main at 00000000; main is now at 11111111."), "a failed head is not offered again on the behind line");
+  assert.ok(failed.includes("The refresh from main at 11111111 failed at 2026-10-06 12:00 UTC (a merge conflict; charged to no part): merging main conflicted: CONFLICT in docs/using-atelier.md. It is not tried again for that head. Parts are dispatched without it. Run it again: atelier plan refresh t1 --project demo, or have a part resolve it: atelier plan refresh t1 --resolve --project demo"), failed.join("\n"));
+  const done = lines({ taken: M1, main: M1, last: { mainHead: M1, state: "refreshed", by: "atelier/orchestrator", at: AT, endedAt: AT, mergeCommit: R }, running: false });
+  assert.ok(done.includes("Refreshed from main at 11111111 at 2026-10-06 12:00 UTC, as 22222222."));
+  // A plan not approved, or closed, says nothing of main.
+  assert.ok(!planText({ ...proposed, refresh: { taken: M0, main: M1, last: null, running: false } }, "demo").includes("main is now at"));
+  assert.ok(!lines({ taken: M0, main: M1, last: null, running: false }, { item: { ...item, state: "merged" } }).some((l) => l.includes("main is now at")));
+});
+
+// A merge-main part the Ledger added for a conflicted refresh is listed like
+// any part, marked as added by Atelier for that main head and outside the
+// approved plan, and the failed refresh names it as what resolves it.
+test("plan show lists a merge-main part as added by Atelier for main at its head, and the failed refresh names it", () => {
+  const M0 = "0".repeat(40), M1 = "1".repeat(40);
+  const merging = part("t5", "merge-main-11111111", {
+    title: "Merge main at 11111111 into the plan's branch", scope: ["src/diagrams.ts"], route: route("merge-main-11111111", "codex/gpt-6-astra"),
+    dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", by: "atelier/orchestrator", at: AT, note: "", job: "merge-main", head: M1 },
+    added: { mainHead: M1, by: "atelier/orchestrator", at: AT },
+  });
+  const failed = { mainHead: M1, state: "failed" as const, by: "atelier/orchestrator", at: AT, endedAt: AT, reason: "merging main conflicted: CONFLICT (content): Merge conflict in src/diagrams.ts", kind: "conflict" };
+  const text = planText({ ...building, parts: [...building.parts, merging], refresh: { taken: M0, main: M1, last: failed, running: false } }, "demo").split("\n");
+  assert.ok(text.includes("  t5  merge-main-11111111  queued for codex/gpt-6-astra  Merge main at 11111111 into the plan's branch"), text.join("\n"));
+  assert.ok(text.includes("      added by Atelier for main at 11111111, after the refresh conflicted, at 2026-10-06 12:00 UTC; not in the approved plan. No other part is dispatched until it is integrated"), text.join("\n"));
+  assert.ok(text.includes("      scope src/diagrams.ts; depends on nothing"));
+  assert.ok(text.some((l) => l.startsWith("The refresh from main at 11111111 failed") && l.endsWith("It is not tried again for that head. Part t5 (merge-main-11111111) resolves it and goes before every other part.")), text.join("\n"));
+  // One the owner asked for says so; a part the approved plan holds carries no such line.
+  const asked = planText({ ...building, parts: [{ ...merging, added: { mainHead: M1, by: "owner", at: AT } }] }, "demo").split("\n");
+  assert.ok(asked.some((l) => l.startsWith("      added by Atelier for main at 11111111, at owner's request")));
+  assert.ok(!planText(building, "demo").includes("added by Atelier"));
+});
+
+test("a queued part the project's core files hold says which live item outside the plan it waits on", () => {
+  const held = { id: "t9", owner: "codex/gpt-6-astra", state: "claimed" as const, title: "Other work", core: "src/ledger.ts" };
+  const queued = part("t4", "c", { dispatch: { to: "home", agent: "zcode", model: "glm-5.3", by: "atelier/orchestrator", at: AT, note: "" }, held });
+  const lines = planText({ ...building, parts: [queued] }, "demo").split("\n");
+  assert.ok(lines.includes("      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned"), lines.join("\n"));
+  assert.ok(!planText(building, "demo").includes("held in the queue"));
 });

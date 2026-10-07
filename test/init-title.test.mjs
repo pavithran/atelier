@@ -23,6 +23,18 @@ test("a bare --title is refused, not treated as an empty title", () => {
   }
 });
 
+test("a bare --review-bar is refused, not treated as clearing the bar", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-init-"));
+  try {
+    const r = spawnSync(process.execPath, [cli, "init", "--review-bar"], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default/);
+    assert.equal(r.stdout, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 const { initName } = await import("../cli/atelier.mjs");
 
 test("init reuses the registered name when the checkout folder differs", () => {

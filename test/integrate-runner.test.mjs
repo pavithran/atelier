@@ -138,7 +138,7 @@ test("runIntegrate treats only exit 2 from atelier check as failing checks; anot
 });
 
 test("the runner captures integration-failed's and check's output, as it does the other commands it reads", () => {
-  for (const command of ["integration-failed", "check", "integrated", "read-token"]) assert.equal(readsOutput([command]), true, command);
+  for (const command of ["integration-failed", "check", "integrated", "read-token", "refreshed", "refresh-failed"]) assert.equal(readsOutput([command]), true, command);
   assert.equal(readsOutput(["release"]), false);
 });
 
@@ -157,29 +157,156 @@ test("runIntegrate refuses an assignment that is not the integrator's or is unsa
   }
 });
 
-test("runRefresh claims, merges the baseline and releases", async () => {
-  const refresh = { project: "atelier", item: { id: "t1", dispatch: { job: "refresh" } }, agent: "atelier", model: "integrator", actor: "atelier/integrator" };
-  const calls = [], logs = [];
-  const io = {
-    log: (s) => logs.push(s), stopped: () => false,
-    workspacePath: (p, id) => `/cache/work/${p}/${id}`,
-    async cli(argv) {
-      calls.push({ argv });
-      if (argv[0] === "base-token") return JSON.stringify({ remote: "https://artifacts.example/baseline", token: "read-token", defaultBranch: "main" });
-      return "{}";
-    },
-    async head() { return "before"; },
-    async resetToRemote() {},
-    async fetch(cwd, remote, token, head) { calls.push({ fetch: [remote, head] }); },
-    async merge(cwd, head) { calls.push({ merge: head }); return { code: 0, output: "" }; },
-    async abortMerge() {},
-    async rollback() {},
+// The refresh job merges the main head its dispatch names, as the integrate
+// job merges a part: atelier push records the merge, the plan's checks run
+// on it, and refreshed is posted with the merge commit; a conflict or failing
+// checks roll the branch back with atelier push --rollback and post
+// refresh-failed with the reason, charging no part.
+const MAIN = "c".repeat(40);
+const refreshJob = { project: "atelier", item: { id: "t1", dispatch: { job: "refresh", head: MAIN } }, agent: "atelier", model: "integrator", actor: "atelier/integrator" };
+
+function refreshFixture(options = {}) {
+  const f = fixture(options);
+  const cli = f.io.cli;
+  f.io.cli = async (argv, cwd) => {
+    if (argv[0] === "base-token") { f.calls.push({ argv, cwd }); return JSON.stringify({ remote: "https://artifacts.example/baseline", token: "read-token", defaultBranch: "main" }); }
+    return cli(argv, cwd);
   };
-  const state = await runRefresh(refresh, config, name, io);
+  let heads = 0;
+  // The workspace's head: before the merge, then the merge (or the same head
+  // when main was already held).
+  f.io.head = async () => { f.calls.push({ head: true }); return heads++ === 0 ? "before" : options.unchanged ? "before" : MA; };
+  return f;
+}
+
+// The owner's token cannot claim as atelier/integrator: the server answers
+// integrator_token (403), the CLI exits 3, and the job reports a refused
+// claim rather than a failure, so the runner skips that head instead of
+// counting three consecutive infrastructure failures and skipping the task
+// for the process.
+const REFUSAL = "atelier: integrator_token: atelier/integrator claims only through a token bound to it";
+
+test("runIntegrate and runRefresh report a refused claim and release nothing", async () => {
+  // The refresh job checks its dispatch names main's head before it claims.
+  for (const [job, run] of [[assignment, runIntegrate], [refreshJob, runRefresh]]) {
+    const { io, calls, logs } = fixture();
+    io.cli = async (argv) => {
+      calls.push({ argv });
+      if (argv[0] === "claim") throw Object.assign(new Error(REFUSAL), { claimRefused: true });
+      return "{}";
+    };
+    const state = await run(job, config, name, io);
+    assert.equal(state.phase, "failed");
+    assert.equal(state.claimRefused, true);
+    assert.ok(!state.taskFailure);
+    assert.ok(logs.includes(`claim refused: ${REFUSAL}`), job.item.dispatch.job);
+    assert.ok(!logs.some((s) => s.startsWith("failed:")), job.item.dispatch.job);
+    assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "a refused claim holds nothing to release");
+  }
+});
+
+test("an --integrate runner whose claims are refused tries each head once, not three times", async () => {
+  const calls = [], logs = [];
+  let polls = 0;
+  const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true };
+  await runRunner(args, {
+    workspacePath: () => "/cache/work/atelier/t1", wait: async () => {},
+    taskIO: { log: (s) => logs.push(s) },
+    async queue() {
+      polls++;
+      if (polls === 4) process.emit("SIGTERM");
+      return polls === 4 ? [] : [assignment];
+    },
+    async executeChild(argv) {
+      if (argv[2] === "claim") { calls.push(argv[2]); return { code: 3, stderr: REFUSAL }; }
+      return { code: 0, output: "{}" };
+    },
+  });
+  assert.equal(calls.length, 1, "the refused head is not claimed again");
+  assert.ok(logs.includes(`claim refused: ${REFUSAL}`));
+  assert.ok(!logs.some((s) => s.includes("infrastructure")), "a refused claim is not an infrastructure failure");
+});
+
+test("runRefresh claims, merges the dispatched main head, pushes with atelier push, checks and posts refreshed, then releases", async () => {
+  const { io, calls } = refreshFixture();
+  const state = await runRefresh(refreshJob, config, name, io);
   assert.equal(state.phase, "refreshed");
-  assert.ok(calls.some((c) => c.merge === "FETCH_HEAD"), "the baseline is merged");
-  assert.ok(calls.some((c) => c.argv?.[0] === "push"), "the merge is recorded with atelier push");
-  assert.ok(calls.some((c) => c.argv?.[0] === "release"));
+  const at = (match) => calls.findIndex(match);
+  assert.deepEqual(calls.find((c) => c.fetch).fetch, ["https://artifacts.example/baseline", "read-token", MAIN], "main's head is fetched by hash");
+  assert.ok(calls.some((c) => c.merge === MAIN), "the dispatched main head is merged");
+  const push = at((c) => c.argv?.[0] === "push");
+  assert.ok(push !== -1 && !calls[push].argv.includes("--rollback"), "the merge is recorded with atelier push");
+  assert.equal(calls[push].cwd, "/cache/work/atelier/t1");
+  assert.ok(at((c) => c.merge) < push && push < at((c) => c.argv?.[0] === "check"), "the merge is pushed before the checks run on it");
+  const posted = calls.find((c) => c.argv?.[0] === "refreshed").argv;
+  assert.equal(posted[posted.indexOf("--main-head") + 1], MAIN);
+  assert.equal(posted[posted.indexOf("--merge-commit") + 1], MA);
+  assert.ok(at((c) => c.argv?.[0] === "check") < at((c) => c.argv?.[0] === "refreshed"));
+  assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1, "the plan item is released");
+});
+
+test("runRefresh submits the plan item instead of releasing it when the server says every part is integrated", async () => {
+  // A plan put back to building to take main: the refresh is its last step.
+  const { io, calls, logs } = refreshFixture();
+  const cli = io.cli;
+  io.cli = async (argv, cwd) => {
+    if (argv[0] === "refreshed") { calls.push({ argv, cwd }); return JSON.stringify({ allIntegrated: true, parts: ["a", "b"] }); }
+    return cli(argv, cwd);
+  };
+  const state = await runRefresh(refreshJob, config, name, io);
+  assert.equal(state.phase, "refreshed");
+  const submit = calls.find((c) => c.argv?.[0] === "submit");
+  assert.ok(submit, "the plan item is submitted");
+  assert.match(submit.argv[submit.argv.indexOf("--summary") + 1], /^main at cccccccc merged; integrated 2 parts: a, b$/);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the plan item is not released");
+  assert.ok(logs.some((s) => s.includes("submitted for the owner")));
+});
+
+test("runRefresh posts refreshed with no merge commit when the branch already holds main's head", async () => {
+  const { io, calls } = refreshFixture({ unchanged: true });
+  const state = await runRefresh(refreshJob, config, name, io);
+  assert.equal(state.phase, "refreshed");
+  const posted = calls.find((c) => c.argv?.[0] === "refreshed").argv;
+  assert.ok(!posted.includes("--merge-commit"));
+  assert.ok(!calls.some((c) => c.argv?.[0] === "push" || c.argv?.[0] === "check"), "nothing is pushed or checked");
+});
+
+test("runRefresh rolls the branch back with atelier push --rollback and posts refresh-failed when the checks fail", async () => {
+  const { io, calls, logs } = refreshFixture({ checkFails: true });
+  const state = await runRefresh(refreshJob, config, name, io);
+  assert.equal(state.phase, "failed");
+  const at = (match) => calls.findIndex(match);
+  assert.ok(calls.some((c) => c.rollback === "before"), "the previous head is restored");
+  const rolled = at((c) => c.argv?.[0] === "push" && c.argv.includes("--rollback"));
+  assert.ok(rolled !== -1, "the rollback is recorded with atelier push --rollback");
+  const failed = at((c) => c.argv?.[0] === "refresh-failed");
+  assert.ok(rolled < failed, "the branch is rolled back before the failure is posted");
+  const argv = calls[failed].argv;
+  assert.equal(argv[argv.indexOf("--kind") + 1], "checks");
+  assert.equal(argv[argv.indexOf("--main-head") + 1], MAIN);
+  const reason = argv[argv.indexOf("--reason") + 1];
+  assert.match(reason, /FAIL npm test @ 11111111/);
+  assert.ok(logs.some((line) => line.includes(reason)), "the reason is logged");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "refreshed" || c.argv?.[0] === "integration-failed"), "no part is charged");
+  assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1);
+});
+
+test("runRefresh aborts a conflicting merge and posts refresh-failed with kind conflict, pushing nothing", async () => {
+  const { io, calls } = refreshFixture({ mergeCode: 1, mergeOutput: "CONFLICT (content): Merge conflict in docs/using-atelier.md" });
+  const state = await runRefresh(refreshJob, config, name, io);
+  assert.equal(state.phase, "failed");
+  assert.ok(calls.some((c) => c.abortMerge));
+  const argv = calls.find((c) => c.argv?.[0] === "refresh-failed").argv;
+  assert.equal(argv[argv.indexOf("--kind") + 1], "conflict");
+  assert.match(argv[argv.indexOf("--reason") + 1], /docs\/using-atelier\.md/);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "push"));
+});
+
+test("runRefresh skips a refresh job that names no main head", async () => {
+  const { io, calls } = refreshFixture();
+  const state = await runRefresh({ ...refreshJob, item: { id: "t1", dispatch: { job: "refresh" } } }, config, name, io);
+  assert.equal(state.skipped, true);
+  assert.equal(calls.filter((c) => c.argv).length, 0);
 });
 
 test("runRunner --integrate offers only the integrate and refresh jobs with no agents", async (t) => {
@@ -202,7 +329,7 @@ test("runIntegrate and runRefresh release the plan item when a step after the cl
     assert.equal(state.phase, "failed", step);
     assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1, step);
   }
-  const refresh = { ...assignment, item: { id: "t1", dispatch: { job: "refresh" } } };
+  const refresh = { ...assignment, item: { id: "t1", dispatch: { job: "refresh", head: MAIN } } };
   for (const step of ["fetch", "push"]) {
     const { io, calls } = fixture();
     io.cli = async (argv) => {
@@ -211,6 +338,8 @@ test("runIntegrate and runRefresh release the plan item when a step after the cl
       return argv[0] === "base-token" ? JSON.stringify({ remote: "r", token: "t", defaultBranch: "main" }) : "{}";
     };
     if (step === "fetch") io[step] = async () => { throw new Error(`${step} failed`); };
+    let heads = 0;
+    io.head = async () => (heads++ ? MA : "before");
     const state = await runRefresh(refresh, config, name, io);
     assert.equal(state.phase, "failed", step);
     assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1, step);
