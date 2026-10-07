@@ -1840,7 +1840,8 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const r = parseRunner(typeof body.runner === "string" ? body.runner : null);
   if (!r) throw new RuleError("bad_runner", "say which runner is asking, e.g. home:studio", 400);
   const agents = Array.isArray(body.agents) ? body.agents : [];
-  // The jobs besides building that the runner runs, such as "plan".
+  // The jobs the runner runs, build among them; an ask naming none is an
+  // older runner's, which takes builds (missingJob in src/dispatch/rules.ts).
   const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
   return {
     runner: r.runner, kind: r.kind, jobs,
