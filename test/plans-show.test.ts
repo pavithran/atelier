@@ -235,3 +235,11 @@ test("plan show lists a merge-main part as added by Atelier for main at its head
   assert.ok(asked.some((l) => l.startsWith("      added by Atelier for main at 11111111, at owner's request")));
   assert.ok(!planText(building, "demo").includes("added by Atelier"));
 });
+
+test("a queued part the project's core files hold says which live item outside the plan it waits on", () => {
+  const held = { id: "t9", owner: "codex/gpt-6-astra", state: "claimed" as const, title: "Other work", core: "src/ledger.ts" };
+  const queued = part("t4", "c", { dispatch: { to: "home", agent: "zcode", model: "glm-5.3", by: "atelier/orchestrator", at: AT, note: "" }, held });
+  const lines = planText({ ...building, parts: [queued] }, "demo").split("\n");
+  assert.ok(lines.includes("      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned"), lines.join("\n"));
+  assert.ok(!planText(building, "demo").includes("held in the queue"));
+});
