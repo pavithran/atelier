@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { checkEnv } from "./check-env.mjs";
@@ -22,11 +22,30 @@ import { unoffered } from "../src/dispatch/rules.ts";
 // process so a failure can still release the lease and record the step. It
 // asks the server for the independent review the gate needs, or the one the
 // owner names with --reviewer whether or not the gate needs it, and waits
-// for the verdict, then accepts and merges. Every step, its duration and the
+// for the verdict, then accepts and merges. It waits for the gate's review
+// only, which the server routes to the review tier first so one review serves
+// both; a separate tier review asked beside it (src/review/tier.ts) stops
+// the landing when it rejects, never holds it, and the server withdraws a
+// tier request still open when the task is accepted. Every step, its duration and the
 // commits that came from main are recorded on the ledger as land.* events
 // (t186 reads them for the integration cost), and the server must be at this
 // CLI's route level or newer, or the landing refuses before it starts,
 // saying to deploy.
+//
+// The merged route level keeps meaning one set of routes (t248): two tasks
+// that each raise it from one base merge cleanly to the number they share
+// (t238 and t240 both set 8, 2026-10-07; t233 and t236 both set 6 earlier,
+// caught by hand), and the number then names the routes of either side
+// alone while the merged CLI calls both. Wherever the workspace's HEAD
+// holds main the landing therefore compares src/route-level.ts at the
+// task's fork point, at the task's head before the merge and at main's
+// head — after its own merge, and on a rerun whose conflicted merge the
+// owner resolved by hand, which finds main already merged and would else
+// skip the comparison — and where each side raised it from the fork
+// point, raises the merged level to main's plus the task's own raise,
+// commits that as its own commit and says to deploy before the next
+// landing, so each number keeps naming the routes of the CLI that
+// reports it.
 //
 // The lease never strands the project (t214): a landing renews it every
 // LEASE_RENEW_MS while it runs, the server treats a lease not renewed for
@@ -38,6 +57,17 @@ import { unoffered } from "../src/dispatch/rules.ts";
 // --wait (t223) queues for it, saying whose landing it waits behind, and
 // starts as soon as the lease is free, so several landings started at once
 // run in turn.
+//
+// A landing queued with --wait takes the lease in its turn, not whichever
+// queued landing's poll happens to land first (t249): t247 once took it
+// ahead of t245, which had waited longer and was the one its plan needed.
+// The server keeps a queue of the landings waiting for the lease, one row
+// per task in the order they queued, and hands the lease to the first of
+// them when it frees. While it waits the landing asks the server again on
+// every poll, which refreshes its place, and a landing that stops asking —
+// killed, or ended by a signal, or gave up after its limit and left the
+// queue — drops out once its last ask is older than the lease's own expiry,
+// so the queue never waits on a peer that is gone.
 //
 // A landing that loses the lease stops (t232): a Mac can sleep through a
 // landing, pausing the timers, so the lease lapses and a landing queued with
@@ -94,6 +124,19 @@ export async function runLand(io) {
   const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
   const dir = io.workspacePath(name, id);
   const since = (lease) => `${String(lease.at).slice(0, 16).replace("T", " ")} UTC`;
+  // The landings queued ahead of this one, as the server's queue holds them
+  // (t249): the rows before this landing's own — all of them when it has not
+  // queued yet. The server prunes the queue before answering (a row whose
+  // landing stopped asking for the expiry's span, or whose task has closed,
+  // no longer counts), so they are read as the server judged them; no clock
+  // here re-judges them, for one running ahead of the server's would drop a
+  // live row. The server decides who takes the lease; this is what the
+  // waiting messages say.
+  const aheadOf = (waiting) => {
+    const rows = Array.isArray(waiting) ? waiting.filter((w) => w && typeof w.item === "string") : [];
+    const mine = rows.findIndex((w) => w.item === id);
+    return rows.slice(0, mine === -1 ? rows.length : mine);
+  };
 
   // --release-lease: the lease is freed before the version check, since a
   // server older than this CLI still answers the cancel, and a stranded
@@ -128,8 +171,9 @@ export async function runLand(io) {
   // The lease is read, not taken, so the checks that only refuse are asked
   // before anything changes. A lease held for another live task refuses the
   // landing with who holds it and since when; with --wait (t223) the landing
-  // queues behind it instead.
-  const { lease } = await request("GET", leasePath);
+  // queues behind it instead. The landings queued for the lease come with
+  // the read, so a dry run can say where it would queue (t249).
+  const { lease, waiting: waitingRows = [] } = await request("GET", leasePath);
   // Whether a lease still guards the project, judged as the server judges
   // it: held for another task, renewed within the expiry, and for a task
   // that is still open. The server decides when the landing asks for the
@@ -150,27 +194,38 @@ export async function runLand(io) {
   // a landing that was killed, each refusal also says how to free it, so no
   // state of the task leaves the lease out of reach (t214). They are asked
   // again after a wait, since the task or its workspace may have changed
-  // while it queued.
+  // while it queued; that second asking throws its refusal instead of ending
+  // the process at once (throwing), so the landing's own ending leaves the
+  // queue it holds a place in, exactly as it releases a lease it took.
   const heldNote = lease && lease.item === id ? ` The landing lease of ${name} is still held for ${id} since ${since(lease)}, from an earlier landing; atelier land ${id} --release-lease frees it.` : "";
   const refuse = (message) => die(message + heldNote);
-  const preflight = async () => {
+  const preflight = async (throwing = false) => {
+    const no = (message) => { if (throwing) throw new StepError(message + heldNote); refuse(message); };
     const d = await request("GET", itemPath);
-    if (["merged", "abandoned"].includes(d.item.state)) refuse(`${id} is ${d.item.state}; there is nothing to land.`);
-    if (d.item.state === "accepted") refuse(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
-    if (!existsSync(join(dir, ".git"))) refuse(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one.`);
+    if (["merged", "abandoned"].includes(d.item.state)) no(`${id} is ${d.item.state}; there is nothing to land.`);
+    // A plan's branch holds only the integrator's recorded integrations and
+    // refreshes; the merge of main a landing makes would put a commit beside
+    // them, and planGate refuses a plan whose head is not its integration head.
+    if (d.item.kind === "plan") no(`${id} is a plan, which atelier land does not land: a plan lands with atelier merge ${id} --head INTEGRATION_HEAD, the integration head atelier plan show ${id} prints, and a plan branch that is behind main takes main through atelier plan refresh ${id}.`);
+    if (d.item.state === "accepted") no(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
+    if (!existsSync(join(dir, ".git"))) no(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one.`);
     const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
-    if (held.project !== name || held.item !== id) refuse(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace.`);
-    if (existsSync(join(dir, ".git", "MERGE_HEAD"))) refuse(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again.`);
-    if (git(["status", "--porcelain"], { cwd: dir })) refuse(`${id}'s workspace has uncommitted changes; commit or set them aside before landing.`);
+    if (held.project !== name || held.item !== id) no(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace.`);
+    if (existsSync(join(dir, ".git", "MERGE_HEAD"))) no(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again.`);
+    if (git(["status", "--porcelain"], { cwd: dir })) no(`${id}'s workspace has uncommitted changes; commit or set them aside before landing.`);
     return d;
   };
   const d0 = await preflight();
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
   if (dryRun) {
+    // Where the dry run would wait: behind the holder of the lease, and
+    // behind the landings queued for it ahead of this one (t249).
+    const ahead = aheadOf(waitingRows);
+    const queuedAhead = ahead.length ? `${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${ahead.map((w) => `${w.item} (queued ${since(w)})`).join(", ")}` : null;
     print(`Dry run: atelier land ${id} in ${name} would:`);
-    print(`  1. ${waitingOn ? `wait behind ${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)}), then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name})`);
-    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch ${id} --job merge-main`);
+    print(`  1. ${waitingOn || queuedAhead ? `wait behind ${[waitingOn ? `${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)})` : null, queuedAhead].filter(Boolean).join(", and ")}, then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name}, in the order the landings queued)`);
+    print(`  2. merge main into ${id}'s workspace (${dir}); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch ${id} --job merge-main; where main and the task each raised the route level (src/route-level.ts) from one base, raise the merged level past both, wherever the workspace's HEAD holds main — this landing's own merge, a rerun of one you resolved by hand, or a merge that brought main in through a side branch`);
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
     print(`  4. push the merged head to ${id}'s fork`);
     print(`  5. run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of the pushed head`);
@@ -207,9 +262,20 @@ export async function runLand(io) {
   // keeps the process alive on its own (unref), and a renewal the server
   // refuses says the lease is no longer this landing's, which is reported
   // once rather than retried.
-  let leased = false, beating = false, takenOverBy = null;
+  let leased = false, beating = false, takenOverBy = null, everQueued = false;
+  // A landing queued with --wait leaves the server's queue when its wait
+  // ends without a lease, so the landings behind it do not wait for a peer
+  // that no longer waits; one that took the lease has no row to leave (its
+  // taking spent it). A leave that cannot be asked only costs the wait, not
+  // the order: the row lapses on its own once the expiry passes without an
+  // ask.
+  const leaveQueue = async () => {
+    try { await request("POST", leasePath, { item: id, queued: true, leave: true }); }
+    catch { /* the row lapses on its own after the expiry */ }
+  };
   const release = async () => {
     beating = false;
+    if (everQueued && !leased) await leaveQueue();
     if (!leased) return;
     leased = false;
     // The cancel names this task: a lease that lapsed, or whose task has
@@ -236,29 +302,47 @@ export async function runLand(io) {
   // conventional status, so a landing stopped by Ctrl-C or kill leaves no
   // lease behind. A Ctrl-C reaches the step's child process through the
   // process group as well. While --wait queues nothing is held, so a signal
-  // then releases nothing.
+  // then releases no lease, but it leaves the queue the landing holds a
+  // place in (t249).
   const onSignal = (signal) => {
     print(`${signal} received; releasing the landing lease of ${name}…`);
     release().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
   };
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, onSignal);
-  // --wait polls the lease until no live task holds it, saying whose landing
-  // it waits behind each time that changes, and gives up after
-  // WAIT_TIMEOUT_MS from when it began to queue. Nothing is taken while it
-  // waits, so ending the command then leaves nothing to release.
+  // --wait polls for the lease until no live task holds it and no landing
+  // queued earlier still waits, saying whose landing it waits behind each
+  // time that changes, and gives up after WAIT_TIMEOUT_MS from when it began
+  // to queue. Each poll asks the server as a landing queued for the lease
+  // (t249): the ask refreshes this landing's place in the server's queue —
+  // the order the landings queued, which the lease is handed down — and
+  // answers the lease and the queue as the server sees them. Nothing is
+  // taken by an ask, so ending the command while it queues leaves no lease
+  // to release, only the queue place, which a leave (above) or the expiry
+  // clears.
   const queuedSince = Date.now();
-  const timedOut = (current) => die(`the landing lease was not free within ${WAIT_TIMEOUT_MS < 60_000 ? `${Math.round(WAIT_TIMEOUT_MS / 1000)} seconds` : `${Math.round(WAIT_TIMEOUT_MS / 60_000)} minutes`}${current ? `: ${current.holder} still holds it for ${current.item}` : ""}. Nothing was changed; run atelier land ${current?.item ?? id} again to finish or release that landing, or free it with atelier land ${current?.item ?? "ID"} --release-lease, then atelier land ${id} again`);
+  const timedOut = async (current, first = null) => {
+    await leaveQueue();
+    die(current || !first
+      ? `the landing lease was not free within ${WAIT_TIMEOUT_MS < 60_000 ? `${Math.round(WAIT_TIMEOUT_MS / 1000)} seconds` : `${Math.round(WAIT_TIMEOUT_MS / 60_000)} minutes`}${current ? `: ${current.holder} still holds it for ${current.item}` : ""}. Nothing was changed; run atelier land ${current?.item ?? id} again to finish or release that landing, or free it with atelier land ${current?.item ?? "ID"} --release-lease, then atelier land ${id} again`
+      : `the landing lease was not ${id}'s within ${WAIT_TIMEOUT_MS < 60_000 ? `${Math.round(WAIT_TIMEOUT_MS / 1000)} seconds` : `${Math.round(WAIT_TIMEOUT_MS / 60_000)} minutes`}: ${first.holder}'s landing of ${first.item} is still first in the queue for it. Nothing was changed; run atelier land ${id} --wait again to queue once more, or wait for ${first.item}'s landing to take the lease and finish`);
+  };
   let shown = null;
   const queue = async () => {
+    everQueued = true;
     for (;;) {
-      const current = await blocking((await request("GET", leasePath)).lease);
-      if (!current) return;
-      const key = `${current.holder} ${current.item} ${current.at}`;
+      const { lease: held, waiting = [] } = await request("POST", leasePath, { item: id, queued: true });
+      const current = await blocking(held);
+      const ahead = aheadOf(waiting);
+      if (!current && !ahead.length) return;
+      const list = ahead.map((w) => `${w.item} (queued ${since(w)})`).join(", ");
+      const key = `${current?.holder ?? ""} ${current?.item ?? ""} ${current?.at ?? ""}|${list}`;
       if (key !== shown) {
-        print(`Waiting behind ${current.holder}'s landing of ${current.item} (since ${since(current)}); ${id} starts as soon as the lease is free.`);
+        print(current
+          ? `Waiting behind ${current.holder}'s landing of ${current.item} (since ${since(current)})${ahead.length ? `, with ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${list}` : ""}; ${id} starts ${ahead.length ? "when its turn comes, in the order the landings queued" : "as soon as the lease is free"}.`
+          : `Waiting for the lease behind ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${list}; ${id} takes the lease when its turn comes, in the order the landings queued.`);
         shown = key;
       }
-      if (Date.now() - queuedSince >= WAIT_TIMEOUT_MS) timedOut(current);
+      if (Date.now() - queuedSince >= WAIT_TIMEOUT_MS) await timedOut(current, ahead[0] ?? null);
       await new Promise((ok) => setTimeout(ok, POLL_MS));
     }
   };
@@ -269,7 +353,7 @@ export async function runLand(io) {
     for (;;) {
       if (queued) {
         await queue();
-        await preflight();
+        await preflight(true);
       }
       // The lease step's duration is the taking alone: time spent queued
       // behind another landing is not this task's cost of landing.
@@ -283,17 +367,18 @@ export async function runLand(io) {
       } catch (error) {
         const refused = /^landing_lease: /.test(error.message);
         // Another queued landing can take the lease between the poll and
-        // this request, or the server can judge live a lease this machine's
-        // clock judged lapsed; with --wait this one waits a beat and queues
-        // again behind it.
+        // this request, the server can judge live a lease this machine's
+        // clock judged lapsed, or a landing that queued earlier can still
+        // be first for it (t249); with --wait this one waits a beat and
+        // queues again behind it.
         if (wait && refused) {
-          if (Date.now() - queuedSince >= WAIT_TIMEOUT_MS) timedOut(null);
+          if (Date.now() - queuedSince >= WAIT_TIMEOUT_MS) await timedOut(null);
           queued = true;
           await new Promise((ok) => setTimeout(ok, POLL_MS));
           continue;
         }
         const why = error.message.replace(/^landing_lease: /, "") || `the landing lease could not be taken: ${error.message}`;
-        throw new StepError(refused ? `${why.replace(/\.$/, "")}; or atelier land ${id} --wait queues behind it and starts as soon as the lease is free` : why);
+        throw new StepError(refused ? `${why.replace(/\.$/, "")}; or atelier land ${id} --wait queues behind it and starts when its turn comes` : why);
       }
     }
     // A renewal the server refuses (a 4xx, such as no_lease) says the lease
@@ -372,7 +457,7 @@ export async function runLand(io) {
     const base = await request("POST", `${itemPath}/base-token`, { scope: "read" });
     git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
     const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
-    let fromMain = [], mergedIn = false, settled = null, settledConflicts = [];
+    let fromMain = [], mergedIn = false, settled = null, settledConflicts = [], routeLevel = null;
     if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
       print(`main at ${short(mainHead)} is already merged into ${id}'s workspace.`);
     } else {
@@ -441,7 +526,59 @@ export async function runLand(io) {
       mergedIn = true;
       print(`Merged main at ${short(mainHead)} into ${id}'s workspace (${fromMain.length} commit${fromMain.length === 1 ? "" : "s"} from main).`);
     }
-    await record("merge", Date.now() - t0, { fromMain, ...(settled ? { conflicts: settledConflicts, resolvedBy: settled } : {}), ...(mergedIn ? {} : { skipped: true }) });
+    // Where main and the task each raised the route level from the fork
+    // point, the merge was clean at the number they share — both sides
+    // wrote the same line — so the merged tree carries both sides' routes
+    // under a number that names either side's alone (t248). The merged
+    // level is compared at the fork point, at the task's head before the
+    // merge and at main's head, and raised to main's plus the task's own
+    // raise, its own commit, so the number the merged CLI reports keeps
+    // meaning the routes it calls. The comparison runs wherever the
+    // workspace's HEAD holds main — the landing's own merge above, and a
+    // rerun whose conflicted merge the owner resolved by hand, which
+    // finds main already merged and would else skip it — and however main
+    // reached HEAD: a merge that brought it through a side branch (main
+    // merged into the side branch, the side branch into the task's line)
+    // lies off HEAD's first-parent line, so a --first-parent rev-list
+    // misses it and the comparison would be skipped exactly where both
+    // sides raised the level. The merge that brought main in is therefore
+    // found by ancestry: HEAD's first-parent line is walked from HEAD
+    // down, each commit tested for holding main
+    // (git merge-base --is-ancestor), and the first commit whose history
+    // does not hold it is the task's head before the merge — the merge
+    // above it on the line, however main reached that merge, is the one
+    // that brought main in. Where that head's merge base with main is
+    // main itself, the task's line already held everything main had to
+    // add, and the levels merge as they always did — as they also do for
+    // a repo with no src/route-level.ts, where the comparison is skipped
+    // and the landing goes on, or a level one side alone raised.
+    const levelAt = (rev) => {
+      const shown = git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
+      const found = /export const ROUTE_LEVEL = (\d+);/.exec(shown.stdout ?? "");
+      return found ? Number(found[1]) : null;
+    };
+    const holdsMain = (rev) => git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true }).status === 0;
+    const line = git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir }).split("\n").map((sha) => sha.trim()).filter(Boolean);
+    let stepped = 0;
+    while (stepped < line.length && holdsMain(line[stepped])) stepped++;
+    const taskHead = stepped > 0 && stepped < line.length ? line[stepped] : null;
+    const based = taskHead ? git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
+    const forkPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
+    if (taskHead && forkPoint && forkPoint !== mainHead) {
+      const baseLevel = levelAt(forkPoint), taskLevel = levelAt(taskHead), mainLevel = levelAt(mainHead), mergedLevel = levelAt("HEAD");
+      if (baseLevel !== null && taskLevel > baseLevel && mainLevel > baseLevel && mergedLevel !== null) {
+        const rightLevel = mainLevel + (taskLevel - baseLevel);
+        if (mergedLevel < rightLevel) {
+          const levelFile = join(dir, "src", "route-level.ts");
+          writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
+          git(["add", "--", "src/route-level.ts"], { cwd: dir });
+          git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
+          routeLevel = { base: baseLevel, main: mainLevel, task: taskLevel, was: mergedLevel, set: rightLevel };
+          print(`main and ${id} each raised the route level from ${baseLevel} (main to ${mainLevel}, ${id} to ${taskLevel}), and the merge left it at ${mergedLevel}: the merged CLI calls both sides' routes, so the level is raised to ${rightLevel}. Deploy the server from a checkout at route level ${rightLevel} or newer (npm run deploy, which records the commit it deploys) before the next landing or runner.`);
+        }
+      }
+    }
+    await record("merge", Date.now() - t0, { fromMain, ...(routeLevel ? { routeLevel } : {}), ...(settled ? { conflicts: settledConflicts, resolvedBy: settled } : {}), ...(mergedIn ? {} : { skipped: true }) });
 
     // The project's fixtures, regenerated now that both lines sit in one
     // tree, so the checks below see fixtures current with them. The command
@@ -521,8 +658,9 @@ export async function runLand(io) {
         // what would change it; a review of t210 routed to fable-5.1 once sat
         // queued for hours this way (plan t197, 2026-10-07).
         let busyLine = null;
+        const tierSeen = new Set();
         const explainWait = async (d) => {
-          const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
+          const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && !e.data?.tier && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
           if (claimed) return;
           let offers = null;
           try { offers = await request("GET", "/runners"); } catch { /* without the offers the wait is explained as before */ }
@@ -549,13 +687,26 @@ export async function runLand(io) {
           // guard first and a verdict that arrived meanwhile is not taken.
           guardLease();
           const d = await request("GET", itemPath);
-          const verdict = (d.reviews ?? []).filter((v) => v.head === head && Date.parse(v.at) >= Date.parse(since)).at(-1);
+          // The landing waits for the gate's review alone. A tier review
+          // (src/review/tier.ts) beside it is a second opinion: its approval
+          // never satisfies the gate, so it is said and the wait goes on; its
+          // rejection sends the task back as any rejection does.
+          const fresh = (d.reviews ?? []).filter((v) => v.head === head && Date.parse(v.at) >= Date.parse(since));
+          for (const v of fresh.filter((v) => v.tier && v.approve && !tierSeen.has(`${v.by}\n${v.at}`))) {
+            tierSeen.add(`${v.by}\n${v.at}`);
+            print(`${v.by} approved ${id} at ${short(head)} as its tier review; the landing still waits for the gate's review.`);
+          }
+          // Any rejection among the fresh verdicts decides, whatever came
+          // after it: a tier rejection and the gate's approval that arrive
+          // between two polls leave the task rejected on the server.
+          const counted = fresh.filter((v) => !(v.tier && v.approve));
+          const verdict = counted.find((v) => !v.approve) ?? counted.at(-1);
           if (verdict) {
             if (!verdict.approve) {
               await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
-              throw new StepError(`${verdict.by} rejected ${id} at ${short(head)}: ${verdict.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
+              throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${verdict.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
             }
-            print(`${verdict.by} approved ${id} at ${short(head)}.`);
+            print(`${verdict.by} approved ${id} at ${short(head)}${verdict.topTier ? ", as the gate review and the top tier's" : ""}.`);
             await record("review", Date.now() - t0, { verdict: "approve", reviewer: verdict.by, resolvedBy: verdict.by });
             break;
           }

@@ -23,6 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { assertEligible, checkApplies, pathCollisions, recordedText } from "../src/rules.ts";
+import { holdText } from "../src/dispatch/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -217,7 +218,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
@@ -264,7 +265,7 @@ export const FLAGS = {
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
   ship: { "dry-run": true, push: true },
-  dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false },
+  dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false, "overlap-ok": true },
   undispatch: {},
   queue: {},
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
@@ -509,6 +510,18 @@ function summaryArg(cmd) {
 function listArg(flag, cmd) {
   const values = args.multi[flag] ?? [];
   if (values.some((v) => typeof v !== "string" || !v.trim())) die(`--${flag} needs text: atelier ${cmd} --${flag} "TEXT", once per entry`);
+  return values.map((v) => v.trim());
+}
+
+// --core, as init sends it: the globs given, once per use, or [] for one
+// --core "" alone, which clears them; null when --core is not given, so the
+// server keeps the recorded ones. Any other empty value is refused as a bare
+// flag is, with the flag table's wording.
+function coreArg() {
+  const values = args.multi.core;
+  if (values === undefined) return null;
+  if (values.length === 1 && values[0] === "") return [];
+  if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS.init.core);
   return values.map((v) => v.trim());
 }
 
@@ -1140,14 +1153,16 @@ const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompar
 // The brief above sums the reviews at the current head into one line and cuts
 // the newest rejection's note to it; this is the record a session reads to
 // learn why a review rejected the task (t173). One flattened line per field,
-// so no note or finding can pose as a line of Atelier's own.
+// so no note or finding can pose as a line of Atelier's own. A separate tier
+// review (src/review/tier.ts), beside the gate's, is labelled, and so is a
+// gate review by a tier model, which gives the tier review too.
 export function formatReviews(reviews, owner = OWNER) {
   const ordered = newestReviews(reviews);
   if (!ordered.length) return "No reviews are recorded.";
   const lines = ["Reviews:"];
   for (const r of ordered) {
     const recorded = recordedText(r, owner);
-    lines.push(`  ${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
+    lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
     for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
   }
@@ -1854,6 +1869,10 @@ const commands = {
     // setting on; given as --sandbox-only=false or --sandbox-only false, off.
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
+    // --core names the core files, once per glob, replacing the recorded
+    // ones; --core "" alone clears them, and --reset without it does too.
+    const core = coreArg();
+    if (core || reset) policy.coreFiles = core ?? [];
     const r = await call("PUT", P(name), {
       ...policy,
       ...(reset ? { reset: true } : {}),
@@ -1863,6 +1882,10 @@ const commands = {
       // What may block a review, stated in every review brief; omitted keeps
       // it, "" restores the default bar.
       ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
+      // The top review tier, harness/model actors separated by commas, each
+      // reviewing every protected change beside the gate's review; omitted
+      // keeps it, "" clears it.
+      ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
       approval: args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title }),
@@ -1921,9 +1944,14 @@ const commands = {
     console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks only for a correctness, security or data-loss defect"}`);
     // A server older than the review bar ignores it and answers without one.
     if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
+    console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
+    if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
     console.log(`Protected:  ${pol.protected.join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
+    console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
+    // A server older than core files ignores them and answers without any.
+    if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   },
 
@@ -2541,6 +2569,19 @@ const commands = {
 
   async merge() {
     const git = landingGit;
+    // A plan's branch is updated only by its integrator, which merges
+    // recorded parts, so an accepted plan that conflicts with main would stay
+    // accepted with no one able to update it. Its merge, already aborted,
+    // puts it back to building through plan refresh instead: the acceptance
+    // is withdrawn and main's head is merged into the branch, or, when that
+    // conflicts, a merge-main part is added for a model to resolve.
+    const planConflicted = async (name, id, item) => {
+      let view;
+      try { view = await request("POST", `${I(name, id)}/plan/refresh`, {}, OWNER); }
+      catch (error) { die(`merge conflicts: ${id}'s branch does not merge with main, so nothing was merged, and ${id} stays accepted at ${short(item.acceptedHead)}: putting it back to building was refused: ${error.message}. Once that is cleared, take main into the branch with atelier plan refresh ${id}`); }
+      const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
+      die(`merge conflicts: ${id}'s branch does not merge with main, so nothing was merged. Its acceptance at ${short(item.acceptedHead)} is withdrawn and the plan is building again: a refresh from main at ${short(main)} is queued for atelier/integrator, and if it conflicts the plan adds a merge-main part whose builder resolves it. The integrator submits the plan again once every part is integrated; then merge it with atelier merge ${id} --head H, H being the integration head atelier plan show ${id} prints`);
+    };
     // An override is recorded only while accepting, which needs the revision.
     if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
     const name = project(), id = itemArg();
@@ -2743,7 +2784,7 @@ const commands = {
           catch(error){journal.clear();die(error.message);}
           if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
-          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
+          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
@@ -2943,9 +2984,12 @@ const commands = {
     const name = project(), id = itemArg();
     if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
     if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
-    const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}) };
+    const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
     const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
     const d = item.dispatch;
+    // A server older than the override ignores it and answers without it.
+    if (args["overlap-ok"] === true && !d.overlapOk) console.log("Warning: the server did not record --overlap-ok; deploy the server, then dispatch again.");
+    else if (d.overlapOk) console.log(`${id} is offered to a runner although its scope may overlap a live item's in a core file.`);
     if (d.job === "merge-main") {
       console.log(`${id} goes back to its builder to merge main at ${d.head.slice(0, 8)} into its workspace and resolve the conflicts: a runner that offers the merge-main job claims it, merges main there and leaves the conflicts for the harness to resolve and commit${d.agent ? ` (built by ${d.agent}${d.model ? ` with ${d.model}` : ""})` : ""}. Then run atelier land ${id} again.`);
       return;
@@ -2971,6 +3015,7 @@ const commands = {
     for (const { project, item } of queued) {
       const d = item.dispatch;
       console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
+      if (item.held) console.log(`  held: ${holdText(item.held)}`);
     }
   },
 
@@ -3049,12 +3094,17 @@ const commands = {
       console.log(part ? `${id}'s attempts count afresh; ${part.dispatch && part.state === "open" ? `it is queued for ${part.dispatch.agent}/${part.dispatch.model}` : `it is ${part.state}`}.${view.blocked ? ` The plan is still blocked: ${flat(view.blocked)}` : ""}` : `${id}'s planner, ${view.planner}, is asked again; the plan job is queued for it.`);
       return;
     }
+    // A plan submitted or accepted is put back to building by a refresh,
+    // which withdraws the submission and any acceptance first; the server
+    // says so with `reopened`.
+    const reopenedLine = (view) => view.reopened ? `${id} was ${view.reopened.from === "accepted" ? `accepted at ${short(view.reopened.acceptedHead)}` : "submitted"}; that is withdrawn, and the plan is building again until its branch holds main. The integrator submits it again once every part is integrated.` : null;
     if (sub === "refresh" && args.resolve === true) {
       if (args.to !== undefined && (typeof args.to !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(args.to.trim()))) die(`--to needs harness/model: atelier plan refresh ${id} --resolve --to claude-code/opus-5.5`);
       const view = await call("POST", `${I(name, id)}/plan/refresh`, { resolve: true, ...(args.to !== undefined ? { to: args.to.trim() } : {}) }, OWNER);
       const main = view.refresh?.main ?? "";
       const part = view.parts.find((p) => p.added?.mainHead === main);
       const who = part?.dispatch && part.state === "open" ? `queued for ${part.dispatch.agent}/${part.dispatch.model}` : part ? `${part.state}, and the plan dispatches it before any other part` : "added";
+      if (view.reopened) console.log(reopenedLine(view));
       console.log(`${view.item.id} has part ${part ? `${part.id} (${part.key})` : "merge-main"} to merge main at ${main.slice(0, 8)} into its branch: ${who}. Its builder resolves the conflicts; no other part is dispatched until it is integrated.`);
       console.log(`Follow it with atelier plan show ${view.item.id} ${flag}`);
       return;
@@ -3062,6 +3112,7 @@ const commands = {
     if (sub === "refresh") {
       if (args.to !== undefined) die(`--to names the builder of the part --resolve adds: atelier plan refresh ${id} --resolve --to H/M`);
       const view = await call("POST", `${I(name, id)}/plan/refresh`, {}, OWNER);
+      if (view.reopened) console.log(reopenedLine(view));
       const main = view.refresh?.last?.mainHead ?? view.refresh?.main ?? "";
       const taken = view.refresh?.taken;
       console.log(`${view.item.id}'s refresh from main at ${main.slice(0, 8)} is queued for atelier/integrator${taken ? `; the branch last took main at ${taken.slice(0, 8)}` : ""}. A runner started with --integrate merges it; parts wait for it before they are dispatched.`);
@@ -3210,7 +3261,8 @@ const commands = {
     // The runner queue and the offers each runner last asked with, so the
     // waiting section can say when a queued job — a review routed to a model
     // no live runner offers, say — can never be claimed, not merely waits
-    // (t240). Either read failing leaves the listing as it was.
+    // (t240), and the Runners section can list what each offers (t246).
+    // Either read failing leaves the listing as it was.
     const [queue, offers] = await Promise.all([
       request("GET", "/queue", undefined, OWNER).catch(() => null),
       request("GET", "/runners", undefined, OWNER).catch(() => null),

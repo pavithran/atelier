@@ -7,9 +7,9 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, validActor, itemFields, type Evidence } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
+import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -27,7 +27,7 @@ import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "
 import { renderUsage } from "./usage/page.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
-import { baseRepoOf, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
+import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
@@ -417,9 +417,10 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
 // head holds nothing of the recorded one. The search stops at a budget of
 // commits and of reads, and then answers null: it has shown neither that
 // the target is held nor that it is not, and recordPush (ledger.ts) refuses
-// such a push unless it declares a rebase.
+// such a push unless it declares a rebase. A caller may pass a smaller
+// budget of commits and reads.
 const HISTORY_COMMITS = 10_000, HISTORY_READS = 100, HISTORY_PAGE = 1000;
-async function holdsCommit(env: Env, repo: string, from: string, target: string): Promise<{ holds: boolean | null; searched: number }> {
+async function holdsCommit(env: Env, repo: string, from: string, target: string, budget = { commits: HISTORY_COMMITS, reads: HISTORY_READS }): Promise<{ holds: boolean | null; searched: number }> {
   if (from === target) return { holds: true, searched: 0 };
   using r = await env.ARTIFACTS.get(repo);
   const seen = new Set<string>();
@@ -428,9 +429,9 @@ async function holdsCommit(env: Env, repo: string, from: string, target: string)
   while (starts.length) {
     const start = starts.shift()!;
     if (seen.has(start)) continue;
-    if (reads >= HISTORY_READS || seen.size >= HISTORY_COMMITS) return { holds: null, searched: seen.size };
+    if (reads >= budget.reads || seen.size >= budget.commits) return { holds: null, searched: seen.size };
     reads++;
-    const page = await r.log({ ref: start, limit: HISTORY_PAGE });
+    const page = await r.log({ ref: start, limit: Math.min(HISTORY_PAGE, budget.commits) });
     const branches: string[] = [];
     let next: string | undefined;
     for (const c of page) {
@@ -537,6 +538,24 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's review tier (src/review/tier.ts) as init sends it: a list
+// of harness/model actors, or one string of them separated by commas. Blank
+// entries are dropped and repeats kept once, in the owner's order; an empty
+// list clears the tier.
+function parseReviewTier(value: unknown): string[] {
+  const raw = typeof value === "string" ? value.split(",") : value;
+  if (!Array.isArray(raw) || !raw.every((a) => typeof a === "string")) {
+    throw new RuleError("bad_review_tier", "the review tier is a list of harness/model actors, such as claude-code/opus-5.5,codex/gpt-6.1-sol, or \"\" to clear it", 400);
+  }
+  const out: string[] = [];
+  for (const entry of raw.map((a) => a.trim()).filter(Boolean)) {
+    if (!validActor(entry) || !entry.includes("/")) throw new RuleError("bad_review_tier", `"${entry}" is not harness/model; the review tier lists actors such as claude-code/opus-5.5`, 400);
+    if (!out.some((a) => sameActor(a, entry))) out.push(entry);
+  }
+  if (out.length > REVIEW_TIER_MAX) throw new RuleError("too_long", `the review tier lists at most ${REVIEW_TIER_MAX} models`, 400);
+  return out;
+}
+
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
@@ -555,6 +574,61 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
   return baseRepoOf(item, baselineRepo, planFork);
 }
 
+// A part whose fork holds nothing beyond the commit it forked from starts
+// from its plan branch's head when that branch has moved since, so its
+// builder sees every part integrated since (docs/orchestrator.md, section 5).
+// Artifacts cannot move a repository's branch, so the fork is deleted and
+// forked again from the plan's fork under the same name, which keeps the
+// workspace's remote, and the Ledger records the new head as the part's base
+// and head. A fork with a head of its own, in the Ledger or in Artifacts, is
+// left as it is; a fork found missing, which a move that did not finish
+// leaves, is forked again. A move that forked again but failed to record it
+// leaves a fork whose head is a later commit of the plan's branch than the
+// recorded base: that head is on the plan's branch and holds the base, so
+// the fork holds nothing of its own, and the move is finished, by recording
+// it when it is the branch's head and by forking again otherwise. A head
+// the search cannot place on the plan's branch within MOVE_BUDGET is taken
+// for the builder's own and kept. The fork's head is read again just before
+// it is deleted, and a head that changed in between, as a push would, is
+// kept. True when the fork was moved: the repository and every token it had
+// are gone. A move that only records the head returns false: the fork and
+// its tokens stand.
+const MOVE_BUDGET = { commits: 500, reads: 5 };
+async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean): Promise<boolean> {
+  if (item.kind !== "part" || !item.plan || !item.fork) return false;
+  if (item.head && item.head !== item.base) return false;
+  const planFork = (await L.item(item.plan)).fork;
+  if (!planFork) return false;
+  const planHead = await headOf(env, planFork);
+  if (!planHead || planHead === item.base) return false;
+  const forkHead = async () => {
+    try {
+      return await headOf(env, item.fork!);
+    } catch (err) {
+      if (!/NOT_FOUND|not found/i.test(codeOf(err))) throw err;
+      return null;
+    }
+  };
+  const observed = await forkHead();
+  if (observed && observed !== item.base) {
+    const onBranch = (await holdsCommit(env, planFork, planHead, observed, MOVE_BUDGET)).holds === true
+      && (!item.base || (await holdsCommit(env, planFork, observed, item.base, MOVE_BUDGET)).holds === true);
+    if (!onBranch) return false;
+    if (observed === planHead) {
+      await L.moveFork(item.id, actor, item.fork, item.base, observed, proved);
+      return false;
+    }
+  }
+  if ((await forkHead()) !== observed) return false;
+  await env.ARTIFACTS.delete(item.fork);
+  using plan = await env.ARTIFACTS.get(planFork);
+  await plan.fork(item.fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
+  const base = await headOf(env, item.fork);
+  if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
+  await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
+  return true;
+}
+
 // Main's head as the baseline holds it now, for the Ledger, which cannot read
 // Artifacts; null when the baseline cannot be read, so a view still renders.
 async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<string | null> {
@@ -565,19 +639,31 @@ async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<strin
 // integrator is sent to merge it (docs/orchestrator.md, section 5). Null when
 // no conflict is predicted or the branch cannot be read, so a failure to read
 // only costs a runner trip, never a blocked integration.
+// The merge base is the newest plan-branch commit the part's head holds: a
+// part head that holds the branch's head merges cleanly; otherwise the base
+// is the plan head the part's last rework merged (`planHead`), when the part
+// head holds it, else the commit the part forked from. The history search is
+// bounded by PREDICT_BUDGET, and a search that stops at it falls back to the
+// fork point.
+const PREDICT_BUDGET = { commits: 500, reads: 5 };
 async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; fork: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
   const key = plan.dispatch?.part, head = plan.dispatch?.head;
   if (!key || !plan.fork || !head) return null;
-  const { part } = await L.integrationTarget(plan.id, key);
+  const { part, planHead } = await L.integrationTarget(plan.id, key);
   if (!part.fork || !part.head || !part.base) return null;
+  const partFork = part.fork, partHead = part.head;
   try {
     using planRepo = await env.ARTIFACTS.get(plan.fork);
-    using partRepo = await env.ARTIFACTS.get(part.fork);
-    const [planTop, baseCommit, partCommit] = await Promise.all([
-      planRepo.log({ limit: 1 }), planRepo.readCommit(part.base), partRepo.readCommit(part.head),
-    ]);
-    if (!planTop[0] || !baseCommit || !partCommit) return null;
-    const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop[0].treeHash, partCommit.treeHash);
+    using partRepo = await env.ARTIFACTS.get(partFork);
+    const [planTop] = await planRepo.log({ limit: 1 });
+    if (!planTop) return null;
+    const holds = (target: string) => holdsCommit(env, partFork, partHead, target, PREDICT_BUDGET);
+    const top = await holds(planTop.hash);
+    if (top.holds === true) return null;
+    const base = mergeBaseFor(top.holds, planHead, part.base, planHead && planHead !== part.base ? (await holds(planHead)).holds : null);
+    const [baseCommit, partCommit] = await Promise.all([planRepo.readCommit(base), partRepo.readCommit(partHead)]);
+    if (!baseCommit || !partCommit) return null;
+    const m = await mergeability(repoReader(planRepo), repoReader(partRepo), baseCommit.treeHash, planTop.treeHash, partCommit.treeHash);
     return m.clean ? null : m.conflicts.map((c) => `${c.path}: ${c.reason}`).join("; ");
   } catch {
     return null;
@@ -733,13 +819,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
-  // The queue across every project. GET lists it for the owner; a runner POSTs
-  // what it can run and gets back the tasks it may claim, with the name to claim under.
+  // The queue across every project. GET lists it for the owner, each dispatch
+  // the project's core files hold carrying `held`, the live item it waits on;
+  // a runner POSTs what it can run and gets back the tasks it may claim, with
+  // the name to claim under, leaving out every held one (coreHold in
+  // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
     // Each ask records what the runner can run (putRunnerOffer), so the
     // server can say when a dispatch names a model or a job no live runner
-    // offers, instead of letting it wait as though merely unclaimed.
+    // offers, instead of letting it wait as though merely unclaimed, and plan
+    // routing picks from the models live runners offer (src/plans/route.ts).
     if (offer) await index(env).putRunnerOffer(offer, new Date().toISOString());
     const projects = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)));
     const unreadable: string[] = [];
@@ -754,6 +844,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
+          if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
           return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
         })
@@ -767,7 +858,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // runner asked the queue for work, newest ask per runner. The owner's
   // surfaces read it to say when a dispatch no live runner offers can never
   // be claimed (unoffered in src/dispatch/rules.ts): atelier land while it
-  // waits for a verdict, plan show for a routed review, status for the queue.
+  // waits for a verdict, plan show for a routed review, status for the queue
+  // and its Runners section. Plan routing reads the same offers on the index
+  // (t246), picking builders and reviewers only from what live runners offer.
   if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
     requireOwner(env, actor);
     return json(await index(env).runnerOffers());
@@ -819,11 +912,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The top review tier: harness/model actors, or [] or "" to clear it.
+      ...(has("reviewTier") ? { reviewTier: body.reviewTier === null ? [] : parseReviewTier(body.reviewTier) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      // The core-file globs the queue holds overlapping dispatches on; [] clears them.
+      ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };
@@ -899,16 +996,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
   // One landing at a time per project (atelier land, t187): GET reads who
-  // holds the lease; POST takes it for one task, refusing while another live
-  // task's landing holds it and naming a lapsed lease it took over,
-  // { item, renew: true } is the holder's heartbeat, and { cancel: true, item }
-  // releases that task's lease, answering which task held it since when, and
-  // leaves another task's lease alone.
+  // holds the lease and the landings queued for it (t249); POST takes it for
+  // one task, refusing while another live task's landing holds it or a
+  // landing that queued earlier still waits for it, and naming a lapsed
+  // lease it took over, { item, renew: true } is the holder's heartbeat, {
+  // item, queued: true } is a waiting landing's ask, which refreshes its
+  // place in the queue and answers the lease and the queue as the server
+  // sees them (with leave: true it gives up its place instead), and {
+  // cancel: true, item } releases that task's lease, answering which task
+  // held it since when, and leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
-    if (m === "GET") return json({ lease: await L.readProjectLanding() });
+    if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
     requireOwner(env, actor);
     if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
+    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
@@ -997,7 +1099,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
       const p = await L.project();
-      let fork = item.fork;
+      let fork = item.fork, moved = false;
       if (needsFork) {
         // Forks are named after the key, like the baseline, whatever the project is called now.
         fork = repoName(ref.key, id);
@@ -1011,6 +1113,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
           throw err;
         }
+      } else {
+        // A part with nothing of its own starts again from the plan's branch.
+        // A failed move gives up a claim this call took; a holder claiming
+        // again keeps the item and can retry.
+        try {
+          moved = await movePartFork(env, L, item, p, actor, !!c.token);
+        } catch (err) {
+          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          throw err;
+        }
       }
       // Re-claiming rotates the token: one live write token per item, ever.
       // If the old one cannot be revoked, the claim fails before a new one
@@ -1020,8 +1132,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // re-claiming, or the claimer of an item nobody holds, gets here, and
       // `replaces` is the token this claim takes over.
       // The workspace and the baseline are both given the project's branch:
-      // the fork's HEAD names it, and headOf reads HEAD.
-      await revoke(env, fork, replaces);
+      // the fork's HEAD names it, and headOf reads HEAD. A moved fork took
+      // its tokens with the repository it replaced.
+      if (!moved) await revoke(env, fork, replaces);
       const branch = await projectBranch(env, p);
       const w = await mint(env, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see
@@ -1371,6 +1484,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "accept":
       requireOwner(env, actor);
       await verifyRevision(env, ref.key, id, String(body.head ?? ""));
+      await assertPlanMergeable(env, L, id);
       // overrideReview, when sent, is the reason for the owner's override of
       // a missing independent review. Anything but text arrives as a blank
       // reason, which the Ledger refuses.
@@ -1489,9 +1603,19 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       const plan = await L.item(id);
       const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
       const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
-      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, await index(env).runnerOffers());
-      else await L.planRefresh(id, actor, main, holds);
-      return json(await L.planView(id, null, main));
+      // A plan submitted or accepted goes back to building first, which ends
+      // the integrator's hold: as for a release, the refresh is checked, the
+      // integrator's write token revoked, and only then the change made.
+      const reopening = await L.checkPlanRefresh(id, actor, main, holds, body.resolve === true, body.to);
+      const oldToken = reopening ? await L.tokenId(id) : undefined;
+      if (reopening) await revoke(env, plan.fork, oldToken ?? null);
+      // The runner offers the Worker read come with the resolve, for the
+      // merge-main part's routing as approval routes it.
+      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, await index(env).runnerOffers(), oldToken);
+      else await L.planRefresh(id, actor, main, holds, oldToken);
+      // `reopened` says what was withdrawn, for the command to say so.
+      const reopened = reopening ? { from: plan.state, acceptedHead: plan.state === "accepted" ? plan.acceptedHead : null } : null;
+      return json({ ...(await L.planView(id, null, main)), ...(reopened ? { reopened } : {}) });
     }
     case "stop": {
       const targets = await L.stopTargets(id, actor);
@@ -1672,6 +1796,28 @@ async function onMainLine(env: Env, repo: string, commit: string): Promise<boole
   return head ? (await holdsCommit(env, repo, head, commit)).holds : false;
 }
 
+// A plan is accepted only where its branch would merge with main as main is
+// now, previewed from the plan's fork as the merge preview reads a task's
+// workspace (previewAgainstMain). A conflict would stop atelier merge after
+// the acceptance, so the owner is told to take main into the branch first,
+// with plan refresh. A preview that cannot be read holds nothing back:
+// atelier merge still stops on a conflict, and withdraws the acceptance then.
+async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<void> {
+  const item = await L.item(id);
+  if (item.kind !== "plan" || !item.fork) return;
+  const { repo } = await L.project();
+  let preview: Awaited<ReturnType<typeof previewAgainstMain>>;
+  try {
+    preview = await previewAgainstMain(env.ARTIFACTS, repo, item.fork);
+  } catch (err) {
+    console.error("plan merge preview unavailable", err);
+    return;
+  }
+  if (!preview || preview.merge.clean) return;
+  const paths = preview.merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ");
+  throw new RuleError("conflicts_with_main", `${id}'s branch would conflict with main at ${preview.head.slice(0, 8)}: ${paths}. Take main into the branch first with atelier plan refresh ${id}, which puts the plan back to building and merges main's head, adding a merge-main part whose builder resolves the conflict when it does not merge cleanly (--resolve adds that part at once); the integrator submits the plan again once every part is integrated, and it is accepted then`, 409);
+}
+
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
@@ -1738,6 +1884,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
     if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
     // A change of owner takes the write token with it, as on the API routes:
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
