@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
+import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 export function offerFrom(config, name) {
@@ -172,12 +173,24 @@ export const removeBrief = ({ file }) => rmSync(file, { force: true });
 const NOTE_MAX = 2000;
 const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
 
-// The diff a review job writes for the reviewer, a sibling of the workspace
-// as the brief is, so neither can be committed. The verdict file is where the
-// harness writes its reply; the runner names it in the command and reads it
-// after the harness ends.
+// The diff a review job writes for the reviewer: REVIEW_DIFF inside the
+// review's own clone, under .scratch/, which the clone's .git/info/exclude
+// keeps out of Git. It is inside the clone because a harness confined to its
+// workspace (opencode refuses every outside path) can read it there, so a
+// wrapper hands the reviewer the file's path rather than the diff's text as
+// a command-line argument, which the operating system caps near 1 MB. The
+// brief names the same path. The verdict file is where the harness writes
+// its reply, outside the clone; the runner names it in the command and reads
+// it after the harness ends.
+export const REVIEW_DIFF = ".scratch/atelier-review.diff";
 export function writeDiff(workspace, text) {
-  const file = join(dirname(workspace), `.atelier-diff-${randomUUID()}.txt`);
+  mkdirSync(join(workspace, ".scratch"), { recursive: true });
+  const info = join(workspace, ".git", "info");
+  mkdirSync(info, { recursive: true });
+  const exclude = join(info, "exclude");
+  const held = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
+  if (!held.split("\n").includes(".scratch/")) appendFileSync(exclude, `${held && !held.endsWith("\n") ? "\n" : ""}.scratch/\n`);
+  const file = join(workspace, REVIEW_DIFF);
   writeFileSync(file, text, { mode: 0o600, flag: "wx" });
   return { file };
 }
@@ -577,17 +590,35 @@ export async function runReview(assignment, config, name, io) {
     const compare = await reviewBase(io, workspace, claimed);
     if (io.stopped()) throw new Error("interrupted");
     if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
-    const diff = await io.diff(workspace, compare.from, claimed.head);
+    // A merge-main job's merge is reviewed by what it resolved (mergeReview);
+    // every other head by the diff from `compare`.
+    const merged = await mergeReview(io, workspace, claimed);
+    if (io.stopped()) throw new Error("interrupted");
+    if (merged?.skipped) io.log(`merge-main review read as a plain diff: ${merged.skipped}`);
+    const diff = merged?.diff ?? await io.diff(workspace, compare.from, claimed.head);
+    // A task outside a plan is approved as a whole at this head, and its own
+    // change may never have been reviewed (its landing stopped on the
+    // conflict before any review), so its review also carries that change,
+    // from the merge base with main, which leaves main's work out. A
+    // merge-main part has no change of its own beside the merge.
+    let ownDiff = null;
+    if (merged?.compare) {
+      if (!claimed.plan && claimed.item.kind !== "part" && compare.branch && compare.from) {
+        merged.compare.merge.own = { from: compare.from, branch: compare.branch };
+        ownDiff = await io.diff(workspace, compare.from, claimed.head);
+      }
+      io.log(`merge-main review: the merge's conflict resolution, with ${merged.compare.merge.files.length} file(s) main brought in${ownDiff !== null ? ", and the task's own change" : ""}`);
+    }
     if (!claimed.need) {
       await release("the review request no longer needs an answer");
       return { phase: "failed", reason: "the review request no longer needs an answer", taskFailure: true };
     }
     const text = reviewBrief({
-      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner, compare,
-      bar: claimed.reviewBar ?? null,
+      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, ownDiff, owner: claimed.owner,
+      compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
     });
     brief = await io.brief(workspace, text);
-    diffFile = await io.writeDiff(workspace, diff);
+    diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     // A review gets its own data folder for the length of the harness, as a
@@ -658,6 +689,54 @@ export async function reviewBase(io, workspace, claimed) {
   } catch (error) {
     return forkPoint(`the merge base with ${target.branch} could not be found: ${error.message}`);
   }
+}
+
+// The conflict resolution of a merge commit: its diff from the merge git
+// would make on its own, with nothing of the commit's message.
+export const REMERGE_DIFF_ARGS = (head) => ["git", "show", "--remerge-diff", "--format=", "--no-color", head];
+
+// The main head a merge-main job merged, as far as the review claim tells
+// it, or null when the reviewed item is no merge-main job. The signals are
+// the ones the server and the build side already use: the item's dispatch
+// naming the merge-main job (a task's under t243, or a part's, whose
+// dispatch names the main head it merges and is kept once claimed), or a
+// plan part whose key is a merge-main part's (mergeMainKey in
+// src/plans/state.ts), which carries main's head's first 8 characters.
+// `main` is that head, full or a prefix, or null when neither names it.
+export function mergeMainJob(claimed) {
+  const d = claimed?.item?.dispatch;
+  const hash = (h) => typeof h === "string" && /^[a-f0-9]{8,64}$/.test(h) ? h : null;
+  if (d?.job === "merge-main") return { main: hash(d.head) };
+  const key = claimed?.plan?.part?.key ?? claimed?.item?.partKey;
+  if (typeof key === "string" && key.startsWith(MERGE_MAIN)) return { main: hash(key.slice(MERGE_MAIN.length)) };
+  return null;
+}
+
+// A merge-main job's head is a merge of main into the part or task: its first
+// parent is the builder's previous head and its second is main. Diffed from
+// the branch the item merges into, as other reviews are (reviewBase), such a
+// head shows all of main's work since the item forked, often more than a
+// reviewer can read or a harness can be handed. It is reviewed instead by what
+// the merge resolved, `git show --remerge-diff HEAD` (how the committed merge
+// differs from the merge git makes on its own, conflict markers included),
+// with the names of the files the merge brought in from main
+// (`git diff --name-only HEAD^1 HEAD`), so the reviewer knows what else came
+// in. Returns null for an item that is no merge-main job; `{ skipped }` with
+// the reason when the head is not that merge (a builder's later commit on
+// top, say), and the review reads today's diff; otherwise the diff and the
+// brief's `compare`.
+export async function mergeReview(io, workspace, claimed) {
+  const job = mergeMainJob(claimed);
+  if (!job) return null;
+  const [self, ...parents] = (await io.parents(workspace, claimed.head)).trim().split(/\s+/);
+  if (self !== claimed.head || parents.length !== 2 || !parents.every((p) => /^[a-f0-9]{40,64}$/.test(p))) {
+    return { skipped: `the head ${claimed.head.slice(0, 8)} is not a merge of two parents` };
+  }
+  const [previous, main] = parents;
+  if (job.main && !main.startsWith(job.main)) return { skipped: `the head's second parent ${main.slice(0, 8)} is not main at ${job.main.slice(0, 8)}, the head the job merged` };
+  const diff = await io.remergeDiff(workspace, claimed.head);
+  const files = (await io.diffNames(workspace, previous, claimed.head)).split("\n").filter(Boolean);
+  return { diff, compare: { from: previous, merge: { main, files } } };
 }
 
 // The integrate job (docs/orchestrator.md, section 5): the runner claims the
@@ -1093,6 +1172,11 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
+    // A merge-main review's git reads (mergeReview): the head's parents, the
+    // merge's conflict resolution, and the files the merge brought in.
+    parents: (dir, head) => checked(["git", "rev-list", "--parents", "-n", "1", head], { cwd: dir, capture: true, signal: controller.signal, step: "parents" }, executeChild),
+    remergeDiff: (dir, head) => checked(REMERGE_DIFF_ARGS(head), { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
+    diffNames: (dir, from, head) => checked(["git", "diff", "--name-only", from, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     // The integrate and refresh jobs' git operations: fetch a head, merge it
     // onto the plan's branch, and reset the workspace for a rollback. Their
     // pushes go through atelier push.

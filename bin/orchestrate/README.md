@@ -12,8 +12,8 @@ for `land.sh` and `queue.sh` (default `atelier`).
 
 | Script | What it does |
 | --- | --- |
-| `run-agent.sh WHICH WORKSPACE OUTFILE PROMPT` | Runs an opencode agent (`glm`, `deepseek` or `openrouter:VENDOR/MODEL`) in a task's workspace, with its own data folder and empty standard input. |
-| `review.sh WORKSPACE OUTBASE CONTEXT [MODEL]` | Has an Antigravity model review the task's commits in a throwaway clone where it may run commands, and writes its answer to `OUTBASE.md`. |
+| `run-agent.sh WHICH WORKSPACE OUTFILE BRIEF` | Runs an opencode agent (`glm`, `deepseek` or `openrouter:VENDOR/MODEL`) in a task's workspace, with its own data folder. BRIEF is the file holding the prompt, which reaches opencode on standard input; text that names no file is taken as the prompt and written to the workspace's `.scratch/` first. Pass the file, as in `run-agent.sh glm WS OUT brief.md`: `"$(cat brief.md)"` is itself an argument, and fails once the brief nears 1 MB. |
+| `review.sh WORKSPACE OUTBASE CONTEXT [MODEL]` | Has an Antigravity model review the task's commits in a throwaway clone where it may run commands, and writes its answer to `OUTBASE.md`. The prompt, written to `OUTBASE.prompt.md`, goes to `agy` on standard input. |
 | `queue.sh TASK CONTEXT NOTE` | Takes this machine's landing lock for the project, merges main into the task, and hands it to `land.sh` when the merge is clean and type-checks. |
 | `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits and reviews the head it read before the review; records the verdict with the reviewer's own summary and its findings either way, and on approval accepts at that head with NOTE on the acceptance and merges, then type-checks main. `REVIEW_MODEL` is `gemini-3.1-pro-high` (recorded as `antigravity/gemini-3.1-pro`) or `gpt-oss-120b-medium` (`antigravity/gpt-oss-120b`); any other is refused. |
 | `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON; `land.sh` records them. |
@@ -100,7 +100,7 @@ starts the harness:
 | `{brief_file}` | A file holding the brief, the text the agent is to act on. |
 | `{workspace}` | The task's workspace folder, a Git clone where the agent works. |
 | `{plan_file}` | A plan job only: the file, inside the workspace, to write the plan document to. |
-| `{diff_file}` | A review job only: a file holding the diff under review. |
+| `{diff_file}` | A review job only: a file holding the diff under review, at `.scratch/atelier-review.diff` inside the review's clone (the workspace), where a harness confined to its workspace can read it. |
 | `{verdict_file}` | A review job only: the file, outside the workspace, to write the answer to. |
 
 A placeholder the job does not use is passed as the text `undefined`, so a
@@ -128,7 +128,12 @@ the job is judged by what it leaves behind:
   document, as JSON, to that file and commits nothing. The runner reads the file
   back and posts it.
 - A review job: VERDICT is set. The workspace is a fresh clone of the part's
-  head, DIFF holds the change, and the agent must not edit anything. The wrapper
+  head, DIFF holds the change, and the agent must not edit anything. The
+  brief says which kind of diff DIFF holds: the change from the merge base of
+  the head and the branch the item merges into, or, for a merge-main job's
+  merge, the merge's conflict resolution (`git show --remerge-diff HEAD`),
+  with the files main brought in listed in the brief and, for a task outside
+  a plan, the task's own change after it. The wrapper
   writes the agent's answer to the VERDICT file, which lies outside the
   workspace, in the reply format of `src/review/verdict.ts`: lines
   `VERDICT: APPROVE` or `VERDICT: REJECT`, `SUMMARY: ...` and one
@@ -139,12 +144,20 @@ the job is judged by what it leaves behind:
 A harness that exits nonzero, or runs past `taskTimeoutMs`, fails the job.
 The runner ends the harness's whole process group when it finishes.
 
+A brief and a diff can be large, and the operating system caps the total
+size of a command's arguments near 1 MB: a review of t241 on 2026-10-07 came
+back with no verdict twice while its diff was 888 KB. So a wrapper never puts
+the diff, or a prompt holding it, on a command line, as `"$(cat "$diff")"`
+inside an argument does. It pipes the prompt on standard input, which each
+harness here reads: `claude -p` with no prompt argument, `codex exec -`,
+`opencode run` with no message (it reads standard input when that is not a
+terminal), and `agy` (as `cli/agy-review.mjs` runs it). Or it tells the
+reviewer the diff's path, which lies inside the workspace. The brief itself
+is bounded (its diff is cut at 40,000 characters) and names that path.
+
 Here is a generic wrapper for a harness whose command is `my-agent`, which
 takes a model on its command line, reads its prompt on standard input and
-prints its answer. A brief and a diff can be large, and the operating system
-caps the total size of a command's arguments, so pass the prompt on standard
-input where the harness accepts it, and on the command line only where it
-does not:
+prints its answer:
 
 ```sh
 #!/bin/sh
