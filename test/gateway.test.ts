@@ -189,6 +189,7 @@ test("the metrics module writes a typed point and queries the SQL API", async ()
   assert.equal(sent!.init?.body, "SELECT 1");
   assert.equal(new Headers(sent!.init?.headers).get("authorization"), "Bearer test-analytics-token");
   await assert.rejects(query({ account: "a", token: "t" }, "SELECT 1", (async () => new Response("no", { status: 401 })) as typeof fetch), /answered 401/);
+  await assert.rejects(query({ account: "a", token: "t" }, "SELECT 1", (async () => new Response("Table atelier_metrics not found\n", { status: 422 })) as typeof fetch), /answered 422: Table atelier_metrics not found$/);
   assert.equal(sqlString("it's"), "'it''s'");
 });
 
