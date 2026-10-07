@@ -424,6 +424,7 @@ export async function runReview(assignment, config, name, io) {
     }
     const text = reviewBrief({
       need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, owner: claimed.owner, compare,
+      bar: claimed.reviewBar ?? null,
     });
     brief = await io.brief(workspace, text);
     diffFile = await io.writeDiff(workspace, diff);
@@ -588,7 +589,11 @@ export async function runIntegrate(assignment, config, name, io) {
     }
     return { phase: "integrated", part: partKey };
   } catch (error) {
-    io.log(`failed: ${error.message}`);
+    // A claim the server refuses (the owner's token where the integrator's
+    // own is required, say) holds nothing to release and is not the job's
+    // failure; the loop's refused set keeps this head, as for a build.
+    if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else io.log(`failed: ${error.message}`);
     // A merge pushed but neither integrated nor reported goes back off the
     // branch, so the next run starts from the plan's integrated head.
     if (pushed && !released) {
@@ -597,7 +602,7 @@ export async function runIntegrate(assignment, config, name, io) {
     }
     // Any error after the claim gives the plan item back, so the job can run again.
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -689,13 +694,16 @@ export async function runRefresh(assignment, config, name, io) {
     await release("main merged into the plan's branch");
     return { phase: "refreshed" };
   } catch (error) {
-    io.log(`failed: ${error.message}`);
+    // As in runIntegrate: a refused claim is the caller's, not the job's.
+    if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else io.log(`failed: ${error.message}`);
+    // A merge pushed but neither recorded nor reported goes back off the branch.
     if (pushed && !released) {
       try { await rollback(); }
       catch (rollbackError) { io.log(`rollback failed: ${rollbackError.message}`); }
     }
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 

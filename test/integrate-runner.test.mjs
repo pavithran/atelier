@@ -179,6 +179,54 @@ function refreshFixture(options = {}) {
   return f;
 }
 
+// The owner's token cannot claim as atelier/integrator: the server answers
+// integrator_token (403), the CLI exits 3, and the job reports a refused
+// claim rather than a failure, so the runner skips that head instead of
+// counting three consecutive infrastructure failures and skipping the task
+// for the process.
+const REFUSAL = "atelier: integrator_token: atelier/integrator claims only through a token bound to it";
+
+test("runIntegrate and runRefresh report a refused claim and release nothing", async () => {
+  // The refresh job checks its dispatch names main's head before it claims.
+  for (const [job, run] of [[assignment, runIntegrate], [refreshJob, runRefresh]]) {
+    const { io, calls, logs } = fixture();
+    io.cli = async (argv) => {
+      calls.push({ argv });
+      if (argv[0] === "claim") throw Object.assign(new Error(REFUSAL), { claimRefused: true });
+      return "{}";
+    };
+    const state = await run(job, config, name, io);
+    assert.equal(state.phase, "failed");
+    assert.equal(state.claimRefused, true);
+    assert.ok(!state.taskFailure);
+    assert.ok(logs.includes(`claim refused: ${REFUSAL}`), job.item.dispatch.job);
+    assert.ok(!logs.some((s) => s.startsWith("failed:")), job.item.dispatch.job);
+    assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "a refused claim holds nothing to release");
+  }
+});
+
+test("an --integrate runner whose claims are refused tries each head once, not three times", async () => {
+  const calls = [], logs = [];
+  let polls = 0;
+  const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true };
+  await runRunner(args, {
+    workspacePath: () => "/cache/work/atelier/t1", wait: async () => {},
+    taskIO: { log: (s) => logs.push(s) },
+    async queue() {
+      polls++;
+      if (polls === 4) process.emit("SIGTERM");
+      return polls === 4 ? [] : [assignment];
+    },
+    async executeChild(argv) {
+      if (argv[2] === "claim") { calls.push(argv[2]); return { code: 3, stderr: REFUSAL }; }
+      return { code: 0, output: "{}" };
+    },
+  });
+  assert.equal(calls.length, 1, "the refused head is not claimed again");
+  assert.ok(logs.includes(`claim refused: ${REFUSAL}`));
+  assert.ok(!logs.some((s) => s.includes("infrastructure")), "a refused claim is not an infrastructure failure");
+});
+
 test("runRefresh claims, merges the dispatched main head, pushes with atelier push, checks and posts refreshed, then releases", async () => {
   const { io, calls } = refreshFixture();
   const state = await runRefresh(refreshJob, config, name, io);
