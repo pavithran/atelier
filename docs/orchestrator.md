@@ -184,7 +184,7 @@ Add one helper, `baseRepoOf(item)`, and a `base-token` route. Without this, ever
 
 **The integrate job.** It is dispatched on the plan item with `{job:"integrate", part, head}`, to a reserved actor, `atelier/integrator`. Because the plan item has exactly one owner, integrations are serialized.
 
-Before dispatching, the Worker runs `mergeability()` from `src/preview/merge.ts`. Its inputs are the part's base, the plan's head and the part's head. A predicted conflict goes straight back to the builder, without a runner trip.
+Before dispatching, the Worker runs `mergeability()` from `src/preview/merge.ts`. Its inputs are a merge base, the plan's head and the part's head. A part head that already holds the plan's head merges cleanly and is not checked. Otherwise the base is the plan head the part's last rework after a conflict merged (the `planHead` its dispatch named), when the part's head holds it, else the part's base; the history search is bounded, and one that stops at its bound uses the part's base. A predicted conflict goes straight back to the builder, without a runner trip.
 
 **The runner side.** `atelier runner --integrate` runs on the Studio and uses no model:
 1. Claim the plan item, fetch the part's head and run `git merge --no-ff`.

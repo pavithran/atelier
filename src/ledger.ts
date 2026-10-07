@@ -2808,13 +2808,19 @@ export class Ledger extends DurableObject<Env> {
   // What the Worker needs to verify an integration: the plan item, the part
   // to integrate, and the integration head the merge must sit on.
   // For a merge-main part, `mainHead` is the main head it merges, which the
-  // Worker looks for under the merge; null for any other part.
-  integrationTarget(id: string, partKey: string): { plan: Item; part: Item; integrationHead: string | null; mainHead: string | null } {
+  // Worker looks for under the merge; null for any other part. `planHead` is
+  // the plan branch's head named by the part's latest dispatch that named
+  // one, the head its rework merged after a conflict; null when none did.
+  integrationTarget(id: string, partKey: string): { plan: Item; part: Item; integrationHead: string | null; mainHead: string | null; planHead: string | null } {
     const plan = this.planItem(id);
     const part = this.planParts(id).find((p) => p.partKey === partKey);
     if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
     const record = this.planRecord(id);
-    return { plan, part, integrationHead: record.integrationHead ?? null, mainHead: addedPart(record, partKey)?.mainHead ?? null };
+    const named = this.sql.exec(
+      `SELECT json_extract(data, '$.planHead') AS planHead FROM events WHERE item_id = ? AND kind = 'item.dispatched' AND json_extract(data, '$.planHead') IS NOT NULL ORDER BY seq DESC LIMIT 1`, part.id,
+    ).toArray()[0];
+    const planHead = typeof named?.planHead === "string" ? named.planHead : null;
+    return { plan, part, integrationHead: record.integrationHead ?? null, mainHead: addedPart(record, partKey)?.mainHead ?? null, planHead };
   }
 
   // Records a verified integration: the part becomes integrated with its head
