@@ -726,7 +726,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   const opts = (values: readonly string[]) => values.map((v) => `<option>${e(v)}</option>`).join("");
   return page("Models", `<div class="page-width">
   <header><h1>Models</h1><p class="lead">${plural(entries.length, "model")} in the pool. The runner on your machine checks each one and reports what it found.</p>
-  <p class="meta">Each model's record counts the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? `; ${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted` : ""}.</p></header>
+  <p class="meta">Each model's record counts all ${window.events.toLocaleString("en")} events of every project${window.unread.length ? `; ${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted` : ""}.</p></header>
   ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
   ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
@@ -848,7 +848,7 @@ function comparisonTable(rows: ModelReliability[]): string {
 export function reliabilitySection(models: Reliability, ownerName: string | null, window: { events: number; unread: string[] }): string {
   const who = ownerName || "the owner";
   const rows = [...models.values()];
-  const lead = `Each model's record across the most recent ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. A finding the owner adjudicated measures the reviewer's precision: kept means confirmed or marked fixed, refuted means the code already did what it asked. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
+  const lead = `Each model's record across all ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. A finding the owner adjudicated measures the reviewer's precision: kept means confirmed or marked fixed, refuted means the code already did what it asked. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
   return `<section class="reliability" aria-label="Reliability by model">
   <h2 class="section-title">Reliability by model · ${rows.length}</h2>
   <p class="meta">${lead}</p>
