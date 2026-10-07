@@ -4,7 +4,7 @@
 // claim it through the ordinary atomic claim. A runner at home therefore only
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
-import { RuleError, validActor, type Item } from "../rules.ts";
+import { RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState } from "../rules.ts";
 import { assertLength, OWNER_TEXT_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -45,6 +45,11 @@ export interface Dispatch {
   // such an assignment, so only a runner that offers the "merge-main-task"
   // job takes it.
   task?: true;
+  // The owner's override of the core-file hold (coreHold): the queue offers
+  // the dispatch although its scope overlaps a live item's within a core
+  // file. Set only by the owner's own dispatch (atelier dispatch ID
+  // --overlap-ok); a plan's dispatches never carry it.
+  overlapOk?: true;
 }
 
 // What a runner says it can run when it asks for work. `jobs` names the
@@ -86,7 +91,7 @@ export function parseRunner(header: string | null): { runner: string; kind: Runn
   return { runner: header.toLowerCase(), kind: kind.toLowerCase() as RunnerKind };
 }
 
-export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown; job?: unknown; head?: unknown }, by: string, at: string): Dispatch {
+export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown; job?: unknown; head?: unknown; overlapOk?: unknown }, by: string, at: string): Dispatch {
   const to = String(input.to ?? "any");
   if (to !== "any" && !RUNNER_KINDS.includes(to as RunnerKind)) {
     throw new RuleError("bad_dispatch", `send to cloud, home or any, not "${to}"`, 400);
@@ -120,7 +125,53 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   // to read, so one over its limit is refused, never cut.
   const note = String(input.note ?? "");
   assertLength(note, OWNER_TEXT_MAX, "the dispatch note");
-  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}) };
+  if (input.overlapOk !== undefined && input.overlapOk !== null && typeof input.overlapOk !== "boolean") {
+    throw new RuleError("bad_dispatch", "overlapOk must be true or false", 400);
+  }
+  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
+}
+
+// The live item a held dispatch waits on: its id, holder, state and title,
+// and the core-file glob both scopes reach.
+export interface CoreHold {
+  id: string;
+  owner: string | null;
+  state: ItemState;
+  title: string;
+  core: string;
+}
+
+// Why the queue does not offer a dispatch yet, or null when it may. A
+// dispatch that builds — a task's or a part's, the merge-main job and a
+// part's merge of the plan's branch included — is held while its scope
+// overlaps, within one of the project's core files (policy.coreFiles), the
+// scope of a live item: one claimed, submitted or accepted, so its changes
+// have not reached main. The oldest such item is named. A plan item claimed
+// by its planner or the integrator writes the plan or merges a part onto the
+// plan's branch, neither of which changes main, so it holds nothing; its
+// parts do. Items of one plan never hold each other: a plan's parts whose
+// scopes overlap are ordered by their dependencies (src/plans/validate.ts),
+// which already serialises them. The plan, integrate, refresh and review
+// jobs change no workspace of their own and are never held, and the owner's
+// override (overlapOk) lets a dispatch through.
+export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined): CoreHold | null {
+  const d = item.dispatch;
+  if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return null;
+  if (d.job !== undefined && d.job !== "merge-main") return null;
+  for (const o of items) {
+    if (o.id === item.id || samePlan(item, o)) continue;
+    if (o.state !== "claimed" && o.state !== "submitted" && o.state !== "accepted") continue;
+    if (o.kind === "plan" && o.state === "claimed") continue;
+    const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
+    if (core) return { id: o.id, owner: o.owner, state: o.state, title: o.title, core };
+  }
+  return null;
+}
+
+// What a held dispatch waits on, in words: the item, its holder and state,
+// and the core-file glob both scopes reach.
+export function holdText(h: CoreHold): string {
+  return `waits on ${h.id} (${h.state}${h.owner ? ` by ${h.owner}` : ""}): both scopes reach core file ${h.core}`;
 }
 
 export function assertDispatchable(item: Item): void {

@@ -413,3 +413,21 @@ test("the runners section lists live runners first, and formatStatus appends it 
   assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }]).includes("Runners:"));
   assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { offers: [] }).includes("Runners:"), "no runner recorded yet says nothing");
 });
+
+test("a queued task the core files hold says what it waits on and how to let it through; a held part takes no override", () => {
+  const held = { id: "t1", owner: "codex/gpt-6", state: "claimed", title: "Task t1", core: "src/ledger.ts" };
+  const d = { to: "home", agent: "codex", model: "gpt-6" };
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "claimed", { owner: "codex/gpt-6" }), item("t2", "open", { dispatch: d }), item("t3", "open", { dispatch: d, kind: "part", plan: "t8" }), item("t4", "open", { dispatch: d })],
+    inbox: [],
+  }], { queue: [
+    { project: "demo", item: { ...item("t2", "open", { dispatch: d }), held } },
+    { project: "demo", item: { ...item("t3", "open", { dispatch: d, kind: "part", plan: "t8" }), held } },
+    { project: "demo", item: item("t4", "open", { dispatch: d }) },
+    { project: "other", item: { ...item("t4", "open", { dispatch: d }), held } },
+  ] }).split("\n");
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned."));
+  assert.equal(out.filter((l) => l.includes("Held:")).length, 2, "t4 is not held here, only in another project");
+});
