@@ -1,0 +1,42 @@
+atelier atelier/t259 "A top review tier (PAVI, 2026-10-07): opus-5.5, gpt-6.1-sol and gemini-3.1-pro review every protected change in addition to the cross-family review that decides the gate, even when their family worked on it. The project policy names the tier (atelier init --review-tier H/M,...); when a change is submitted, a review request goes to a tier model that did not build it, in parallel with the gate's request, served by runners like any review; its verdict and findings are recorded and shown, and a blocking finding from it sends the change back like any rejection, but its approval alone never satisfies the gate and land never waits on it once the gate's review is in. PAVI: 'make it fast, effective, and not sacrifice that on the principle of no overlap'"
+accepted head cc43ab99e21144088fcba397c6ee11721d825b53
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T16:51:15.042Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T16:51:18.706Z
+REVIEW approve by antigravity/gemini-3.1-pro at cc43ab99e21144088fcba397c6ee11721d825b53, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T15:48:45.386Z pavi item.created
+2026-10-07T15:55:55.331Z claude-code/opus-5.5 item.claimed
+2026-10-07T15:56:12.447Z claude-code/opus-5.5 fork.created
+2026-10-07T16:22:16.604Z pavi land.lease
+2026-10-07T16:22:19.418Z pavi land.merge
+2026-10-07T16:22:27.456Z pavi land.regenerate
+2026-10-07T16:22:32.468Z claude-code/opus-5.5 push.observed
+2026-10-07T16:22:32.720Z pavi land.push
+2026-10-07T16:25:12.698Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:25:15.487Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:25:16.027Z pavi land.check
+2026-10-07T16:25:16.535Z claude-code/opus-5.5 item.submitted
+2026-10-07T16:25:16.877Z pavi land.submit
+2026-10-07T16:25:17.050Z pavi review.requested
+2026-10-07T16:25:21.469Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T16:29:15.772Z antigravity/gemini-3.1-pro review.rejected
+2026-10-07T16:29:18.685Z pavi land.review
+2026-10-07T16:33:15.465Z pavi review.finding
+2026-10-07T16:37:01.220Z pavi land.lease
+2026-10-07T16:37:16.906Z pavi land.merge
+2026-10-07T16:48:29.126Z pavi land.lease
+2026-10-07T16:48:30.086Z pavi land.merge
+2026-10-07T16:48:38.497Z pavi land.regenerate
+2026-10-07T16:48:41.917Z claude-code/opus-5.5 push.observed
+2026-10-07T16:48:42.059Z pavi land.push
+2026-10-07T16:51:16.443Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:51:19.299Z claude-code/opus-5.5 evidence.observed
+2026-10-07T16:51:19.799Z pavi land.check
+2026-10-07T16:51:20.234Z claude-code/opus-5.5 item.submitted
+2026-10-07T16:51:20.541Z pavi land.submit
+2026-10-07T16:51:20.711Z pavi review.requested
+2026-10-07T16:51:36.721Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T16:55:14.719Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T16:55:19.100Z pavi land.review
+2026-10-07T16:55:20.000Z pavi item.accepted
+2026-10-07T16:55:20.158Z pavi land.accept
+2026-10-07T16:55:20.692Z pavi land.merged
