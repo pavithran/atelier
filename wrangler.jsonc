@@ -6,13 +6,19 @@
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
-  // Cloudflare Access in front of the owner's pages (src/access.ts): set
-  // both, as vars or secrets, and the Worker verifies the Access assertion
-  // on every owner route against the keys the team publishes. The issuer is
-  // the team's URL; the audience is the Access application's AUD tag.
+  // Cloudflare Access in front of the owner's pages (src/access.ts): set all
+  // three, as vars or secrets, and the Worker verifies the Access assertion
+  // on every owner route — /login and its token form among them — against the
+  // keys the team publishes, matching the issuer, the audience and the
+  // owner's email claim. The issuer is the team's URL; the audience is the
+  // Access application's AUD tag; the email is the one person the pages are
+  // for. The application itself needs Bypass policies on /api/*, /showcase
+  // and /live.js, whose bearer tokens and visitors never pass Access (the
+  // README's setup says how).
   //   "vars": {
   //     "CF_ACCESS_ISS": "https://TEAM.cloudflareaccess.com",
-  //     "CF_ACCESS_AUD": "<the application's AUD tag>"
+  //     "CF_ACCESS_AUD": "<the application's AUD tag>",
+  //     "CF_ACCESS_OWNER_EMAIL": "owner@example.com"
   //   }
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
