@@ -3,7 +3,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
-import type { PlanPart } from "../src/plans/schema.ts";
+import { PLAN_LIMITS, type PlanPart } from "../src/plans/schema.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
 // Plans on the Ledger, end to end over Durable Object RPC with real SQLite
@@ -133,6 +133,46 @@ it("a goal becomes a plan item dispatched as a plan job, and the planner's valid
   expect(await view(L, "t1")).toMatchObject({ phase: "proposed", proposal: { hash, count: 1, by: PLANNER, answered: true }, plan: { parts: [{ key: "a" }, { key: "b" }] } });
   expect(await inbox(L)).toEqual(["t1:approve-plan:95"]);
   expect(await kinds(L, "t1")).toEqual(["item.created", "item.dispatched", "item.claimed", "plan.invalid", "plan.proposed", "item.released"]);
+});
+
+for (const length of [501, PLAN_LIMITS.goal]) it(`a ${length}-character goal stays in the plan record and brief through planner redispatches`, async () => {
+  const L = await setup(`plan-long-goal-${length}`);
+  const goal = "Build a feature with care. ".repeat(100).slice(0, length - 1) + "!";
+  const { item } = await L.newPlan(goal, ["src/**"], "owner", PLANNER, []);
+  const check = async (planner: string) => {
+    const stored = await L.item(item.id);
+    expect(stored.title).toHaveLength(PLAN_LIMITS.title);
+    expect(stored.dispatch).toMatchObject({ job: "plan", note: "Read the goal in the plan brief and propose a plan." });
+    expect((await view(L, item.id)).goal).toBe(goal);
+    await L.claim(item.id, planner, RUNNER);
+    const brief = await L.jobBrief(item.id, planner);
+    expect(brief.job).toBe("plan");
+    expect(brief.text).toContain(goal);
+  };
+  await check(PLANNER);
+  const post = await L.postPlan(item.id, PLANNER, { ...doc(part("a")), goal });
+  expect(post.valid).toBe(true);
+  expect((await view(L, item.id)).plan?.goal).toBe(goal);
+  await L.release(item.id, PLANNER, "proposed");
+
+  await L.revisePlan(item.id, "owner", "Split the work in two");
+  await check(PLANNER);
+  expect((await L.jobBrief(item.id, PLANNER)).text).toContain("Split the work in two");
+  await L.release(item.id, PLANNER, "stuck");
+  await L.retryPlan(item.id, "owner");
+  await check(PLANNER);
+  await L.release(item.id, PLANNER, "stuck");
+  await L.reroutePlan(item.id, "owner", GPT);
+  await check(GPT);
+});
+
+it("an oversized goal is refused before creating an item or dispatch", async () => {
+  const L = await setup("plan-oversized-goal");
+  const before = await events(L);
+  await refusal(L.newPlan("x".repeat(PLAN_LIMITS.goal + 1), [], "owner", PLANNER, []), "bad_goal", /a goal is at most 2000 characters/);
+  expect(await events(L)).toEqual(before);
+  expect(await waiting(L)).toEqual([]);
+  expect((await L.newPlan("A valid goal", [], "owner", PLANNER, [])).item.id).toBe("t1");
 });
 
 it("a newer proposal makes the older hash unapprovable, and after approval nothing is posted or approved again", async () => {

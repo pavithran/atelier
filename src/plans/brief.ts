@@ -185,6 +185,23 @@ async function sha256(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+// The rework section that quotes a rejecting review: the reviewer, its
+// summary and each finding, blocking ones first. A part's brief and an
+// ordinary task's rework brief both carry it.
+export function findingsSection(review: { by: string; head: string; summary?: string | null; findings: readonly ResolvedFinding[] }, limit: number = JOB_BRIEF_LIMITS.findings): string {
+  const { by, head, summary, findings } = review;
+  const blocking = findings.filter((f) => f.severity === "blocking");
+  const followUps = findings.filter((f) => f.severity !== "blocking");
+  return [
+    "## Rework: the review's findings",
+    "",
+    `${inline(by)} reviewed ${short(head)} and rejected it. Fix every blocking finding; the same reviewer reads your next head first and repeats any that still holds.`,
+    ...(summary ? ["The reviewer's summary:", block(summary)] : []),
+    ...(blocking.length ? findingList("Blocking findings", blocking, limit) : ["The review recorded no blocking findings."]),
+    ...(followUps.length ? findingList("Follow-ups, which do not block; address them when the fix is cheap", followUps, limit) : []),
+  ].join("\n");
+}
+
 function resolve(input: JobBriefInput): Resolved {
   const strings = (list: readonly string[] | null | undefined) => [...(list ?? [])];
   const limit = (value: number | null | undefined, fallback: number) =>
@@ -307,19 +324,7 @@ function render(r: Resolved): string {
     );
   }
 
-  if (r.findings) {
-    const { by, head, summary, findings } = r.findings;
-    const blocking = findings.filter((f) => f.severity === "blocking");
-    const followUps = findings.filter((f) => f.severity !== "blocking");
-    section(
-      "## Rework: the review's findings",
-      "",
-      `${inline(by)} reviewed ${short(head)} and rejected it. Fix every blocking finding; the same reviewer reads your next head first and repeats any that still holds.`,
-      ...(summary ? ["The reviewer's summary:", block(summary)] : []),
-      ...(blocking.length ? findingList("Blocking findings", blocking, r.limits.findings) : ["The review recorded no blocking findings."]),
-      ...(followUps.length ? findingList("Follow-ups, which do not block; address them when the fix is cheap", followUps, r.limits.findings) : []),
-    );
-  }
+  if (r.findings) section(findingsSection(r.findings, r.limits.findings));
 
   if (r.failure) {
     const { claim, head, output } = r.failure;
