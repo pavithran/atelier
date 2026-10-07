@@ -20,7 +20,9 @@ export function offerFrom(config, name) {
   // section 2), and whatever else the config lists, such as "review". A
   // dispatch for any other job is never offered to it. A merge-main part
   // (startMergeMain) is a build this runner knows how to set up.
-  return { runner: name.toLowerCase(), kind: "home", jobs: [...new Set(["build", "plan", "merge-main", ...(config.jobs ?? [])])], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  // A part sent back after its integration conflicted (startMergePlan) is
+  // too, under "merge-plan".
+  return { runner: name.toLowerCase(), kind: "home", jobs: [...new Set(["build", "plan", "merge-main", "merge-plan", ...(config.jobs ?? [])])], agents: agents.map(({ agent, models }) => ({ agent, models })) };
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
@@ -306,24 +308,55 @@ export async function startMergeMain(assignment, workspace, io) {
   const { project, item, actor } = assignment;
   const mainHead = item.dispatch.head;
   const base = JSON.parse(await io.cli(["base-token", item.plan, "--project", project, "--as", actor]));
-  await io.fetch(workspace, base.remote, base.token, mainHead);
-  const before = await io.head(workspace);
-  const merged = await io.mergeMain(workspace, mainHead, `Merge main at ${mainHead.slice(0, 8)} into the plan's branch\n\nAgent: ${actor}`);
-  const files = await io.conflicts(workspace);
-  if (files.length) return { state: "conflicts", mainHead, files };
-  if (merged.code !== 0) throw new Error(`merging main at ${mainHead.slice(0, 8)} failed: ${oneLine(merged.output ?? "").slice(0, 500) || `git exited ${merged.code}`}`);
-  const head = await io.head(workspace);
-  return head === before ? { state: "held", mainHead } : { state: "merged", mainHead, head };
+  return { mainHead, ...await mergeHead(workspace, io, base, mainHead, `Merge main at ${mainHead.slice(0, 8)} into the plan's branch\n\nAgent: ${actor}`, `main at ${mainHead.slice(0, 8)}`) };
 }
 
-// The section the runner adds to a merge-main part's brief: the files the
-// merge left in conflict, or that the workspace already held main.
-export function conflictsSection(merge) {
-  const short = merge.mainHead.slice(0, 8);
-  if (merge.state !== "conflicts") return `## Conflicts in this workspace\n\nThe workspace already holds main at ${short}; no merge was left in progress.`;
-  const body = merge.files.map(oneLine).join("\n");
-  const fence = "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map((m) => m[0].length + 1)));
-  return `## Conflicts in this workspace\n\nThe merge of main at ${short} is in progress and left conflicts in ${merge.files.length === 1 ? "this file" : `these ${merge.files.length} files`}:\n${fence}\n${body}\n${fence}`;
+// A part sent back because its integration conflicted with the plan's
+// branch (docs/orchestrator.md, section 5): its dispatch names the plan
+// branch's head (`planHead`), and before the harness runs the runner reads
+// it through the part's own base token, which reads the plan item's fork,
+// and merges it as startMergeMain merges main, with the same three outcomes.
+// With `merge` false, as when a merge-main part's merge of main is still in
+// progress, it is fetched and not merged: "skipped".
+export async function startMergePlan(assignment, workspace, io, { merge = true } = {}) {
+  const { project, item, actor } = assignment;
+  const planHead = item.dispatch.planHead;
+  const base = JSON.parse(await io.cli(["base-token", item.id, "--project", project, "--as", actor]));
+  if (!merge) {
+    await io.fetch(workspace, base.remote, base.token, planHead);
+    return { planHead, state: "skipped" };
+  }
+  return { planHead, ...await mergeHead(workspace, io, base, planHead, `Merge the plan's branch at ${planHead.slice(0, 8)} into part ${item.id}\n\nAgent: ${actor}`, `the plan's branch at ${planHead.slice(0, 8)}`) };
+}
+
+async function mergeHead(workspace, io, base, target, message, what) {
+  await io.fetch(workspace, base.remote, base.token, target);
+  const before = await io.head(workspace);
+  const merged = await io.mergeMain(workspace, target, message);
+  const files = await io.conflicts(workspace);
+  if (files.length) return { state: "conflicts", files };
+  if (merged.code !== 0) throw new Error(`merging ${what} failed: ${oneLine(merged.output ?? "").slice(0, 500) || `git exited ${merged.code}`}`);
+  const head = await io.head(workspace);
+  return head === before ? { state: "held" } : { state: "merged", head };
+}
+
+// What a merge (startMergeMain, startMergePlan) brought in, for the log and
+// the brief.
+const mergedWhat = (merge) => merge.mainHead ? `main at ${merge.mainHead.slice(0, 8)}` : `the plan's branch at ${merge.planHead.slice(0, 8)}`;
+
+// The section the runner adds to the brief after its merges: for each, the
+// files the merge left in conflict, or that the workspace already held what
+// it merges. A merge-main part whose main merge left conflicts has no plan
+// merge, which is said too.
+export function conflictsSection(...merges) {
+  const lines = merges.filter(Boolean).map((merge) => {
+    if (merge.state === "skipped") return `The plan's branch at ${merge.planHead.slice(0, 8)} is fetched but not merged, since the merge of main is in progress: commit that merge first, then run git merge --no-ff ${merge.planHead}, resolve its conflicts the same way and commit it with the same final Agent line.`;
+    if (merge.state !== "conflicts") return `The workspace already holds ${mergedWhat(merge)}; no merge was left in progress.`;
+    const body = merge.files.map(oneLine).join("\n");
+    const fence = "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+    return `The merge of ${mergedWhat(merge)} is in progress and left conflicts in ${merge.files.length === 1 ? "this file" : `these ${merge.files.length} files`}:\n${fence}\n${body}\n${fence}`;
+  });
+  return `## Conflicts in this workspace\n\n${lines.join("\n\n")}`;
 }
 
 // Dependencies keep the task lifecycle testable without a server or a harness.
@@ -343,6 +376,10 @@ export async function runTask(assignment, config, name, io) {
     if (merging && (!/^[a-f0-9]{40,64}$/.test(item.dispatch.head ?? "") || !/^t[0-9]+$/.test(item.plan ?? ""))) {
       throw Object.assign(new Error("the queue returned an invalid merge-main assignment"), { skipped: true });
     }
+    const mergingPlan = item.dispatch?.planHead != null;
+    if (mergingPlan && (item.kind !== "part" || !/^[a-f0-9]{40,64}$/.test(item.dispatch.planHead ?? ""))) {
+      throw Object.assign(new Error("the queue returned an invalid plan head to merge"), { skipped: true });
+    }
     workspace = io.workspacePath(project, item.id);
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
@@ -354,16 +391,26 @@ export async function runTask(assignment, config, name, io) {
     await io.reset(workspace);
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
-    // The merge-main part's merge comes after the reset, and nothing after it
-    // resets the workspace, so the conflicts stay for the harness.
-    const merge = merging ? await startMergeMain(assignment, workspace, io) : null;
-    if (merge) io.log(merge.state === "conflicts" ? `main at ${merge.mainHead.slice(0, 8)} merged with conflicts in ${merge.files.join(", ")}` : merge.state === "merged" ? `main at ${merge.mainHead.slice(0, 8)} merged cleanly as ${merge.head.slice(0, 8)}` : `the workspace already holds main at ${merge.mainHead.slice(0, 8)}`);
+    // The merges, of main for a merge-main part and of the plan's branch for
+    // a part whose integration conflicted, come after the reset, and nothing
+    // after them resets the workspace, so the conflicts stay for the harness.
+    const merges = [];
+    const logMerge = (m) => io.log(m.state === "conflicts" ? `${mergedWhat(m)} merged with conflicts in ${m.files.join(", ")}` : m.state === "merged" ? `${mergedWhat(m)} merged cleanly as ${m.head.slice(0, 8)}` : m.state === "skipped" ? `${mergedWhat(m)} fetched, not merged, while the merge of main is in progress` : `the workspace already holds ${mergedWhat(m)}`);
+    if (merging) merges.push(await startMergeMain(assignment, workspace, io));
+    if (merges[0]) logMerge(merges[0]);
     if (io.stopped()) throw new Error("interrupted");
-    if (merge?.state === "merged") {
+    if (mergingPlan) {
+      merges.push(await startMergePlan(assignment, workspace, io, { merge: merges[0]?.state !== "conflicts" }));
+      logMerge(merges.at(-1));
+      if (io.stopped()) throw new Error("interrupted");
+    }
+    const merged = merges.some((m) => m.state === "merged") && !merges.some((m) => m.state === "conflicts" || m.state === "skipped");
+    if (merged) {
       // A clean merge is the part's work: the job finishes with it, no harness.
+      const head = await io.head(workspace);
       advance({ type: "start" });
       taskFailure = true;
-      advance({ type: "exit", code: 0, before, head: merge.head });
+      advance({ type: "exit", code: 0, before, head });
       await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
       advance({ type: "finish" });
       return state;
@@ -378,7 +425,7 @@ export async function runTask(assignment, config, name, io) {
     const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
     if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
     const local = briefFor({ ...item, owner: actor }, project);
-    brief = await io.brief(workspace, serverBrief ? (merge ? `${serverBrief.text}\n\n${conflictsSection(merge)}\n` : serverBrief.text) : reworked?.text ? `${local}\n${reworked.text}\n` : local);
+    brief = await io.brief(workspace, serverBrief ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text) : reworked?.text ? `${local}\n${reworked.text}\n` : local);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
     // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
