@@ -27,6 +27,8 @@ export const OWNER_TEXT_MAX = 500;
 // The project's review bar, which every review brief states: a paragraph,
 // longer than a note on a dispatch, short beside the brief it sits in.
 export const REVIEW_BAR_MAX = 1000;
+// The most models a project's review tier lists (`atelier init --review-tier`).
+export const REVIEW_TIER_MAX = 10;
 
 export function assertLength(text: string, max: number, what: string): void {
   if (text.length > max) {
