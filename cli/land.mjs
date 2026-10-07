@@ -43,6 +43,16 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 // and the server refuses a merge while another task's landing holds the
 // lease (beginLanding), so two landings never race on main however the
 // loss is missed.
+//
+// The release at the end can find the lease another landing's (t237): the
+// server treats a merged task's lease as free (landingLive, src/ledger.ts),
+// so a landing queued with --wait takes it in the moment between the merge
+// and this landing's release, and the cancel is refused naming the landing
+// that holds it now. That refusal is the handover working as designed, said
+// as such rather than warned of: the lease is left with the landing that
+// took it, which renews it. Only a release that cannot ask the server
+// warns, for then the lease really does stand in this task's name until it
+// lapses.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // The review wait outlasts a build on the runner (its task timeout is 45
@@ -192,15 +202,30 @@ export async function runLand(io) {
   // keeps the process alive on its own (unref), and a renewal the server
   // refuses says the lease is no longer this landing's, which is reported
   // once rather than retried.
-  let leased = false, heartbeat = null;
+  let leased = false, heartbeat = null, takenOverBy = null;
   const release = async () => {
     if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     if (!leased) return;
     leased = false;
-    // The cancel names this task: a lease that lapsed and was taken over by
-    // another landing is that landing's now, and the server leaves it.
+    // The cancel names this task: a lease that lapsed, or whose task has
+    // merged, was free for another landing to take, and the server leaves
+    // the taker's lease alone. A refusal naming that landing is the
+    // handover (t237) — a landing queued with --wait took the lease in the
+    // moment after this task's merge, before this release — so it is said
+    // as such, not warned of: the lease stands with the landing that took
+    // it, which renews it. Any other failure (the server unreachable or
+    // failing) warns as before, for then the lease is still this task's
+    // until it lapses.
     try { await request("POST", leasePath, { cancel: true, item: id }); }
-    catch (error) { print(`Warning: the landing lease could not be released; a later landing of ${id} takes it over, and it lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes: ${error.message}`); }
+    catch (error) {
+      const taken = error.status === 409 ? /^landing_lease: the landing lease is held for ([^,\s]+), not /.exec(error.message) : null;
+      if (taken) {
+        takenOverBy = taken[1];
+        print(`The landing lease of ${name} is held for ${takenOverBy}'s landing now, so this release left it alone: the server treats a merged task's lease (a lapsed one the same way) as free, so a landing queued with --wait takes it in the moment after the merge, and that landing holds and renews it. Nothing of ${id}'s landing is stranded.`);
+        return;
+      }
+      print(`Warning: the landing lease could not be released; a later landing of ${id} takes it over, and it lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes: ${error.message}`);
+    }
   };
   // A signal releases the lease, then ends the command with the signal's
   // conventional status, so a landing stopped by Ctrl-C or kill leaves no
@@ -525,5 +550,7 @@ export async function runLand(io) {
   }
   await release();
   for (const signal of ["SIGINT", "SIGTERM"]) process.off(signal, onSignal);
-  print(`The landing lease for ${name} is released; another task may land.`);
+  // When another landing took the lease over, release() has said where it
+  // stands; claiming a release here would say what did not happen.
+  if (takenOverBy === null) print(`The landing lease for ${name} is released; another task may land.`);
 }
