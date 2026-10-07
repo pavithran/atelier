@@ -25,6 +25,7 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, rollbackFor, verifyIntegration, type LogCommit } from "./plans/integrate.ts";
 import { INTEGRATOR } from "./plans/state.ts";
@@ -954,7 +955,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
-          await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict);
+          await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict, "conflict");
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
         }
       }
@@ -1132,8 +1133,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
       return json({ runId, state }, 202);
     }
-    case "dispatch":
-      return json(await L.dispatch(id, actor, body));
+    case "dispatch": {
+      // A held task is released as it is queued, so its holder's write token
+      // is revoked first, as for a release.
+      const oldToken = await L.tokenId(id);
+      const before = await L.checkDispatch(id, actor, body);
+      if (before.owner) await revoke(env, before.fork, oldToken);
+      return json(await L.dispatch(id, actor, body, oldToken));
+    }
     case "undispatch":
       return json(await L.undispatch(id, actor));
     // The owner's framing of a task: agentRoute gives an agent token no edit
@@ -1161,10 +1168,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-claim": {
       const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
       // The review job clones the part read-only, so the claim also carries a
-      // read token for the fork, as the read-token route mints one.
+      // read token for the fork, as the read-token route mints one. It also
+      // carries a read token for the branch the item merges into (the plan's
+      // integration branch for a part, the baseline's for any other item, as
+      // base-token chooses), so the job can diff from the merge base of the
+      // head and that branch rather than from the fork point, which a merge
+      // of main into the task leaves behind (t230).
       if (claim.item.fork) {
-        const t = await mint(env, claim.item.fork, "read", await projectBranch(env, await L.project()));
-        return json({ ...claim, readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch } });
+        const p = await L.project();
+        const branch = await projectBranch(env, p);
+        const t = await mint(env, claim.item.fork, "read", branch);
+        const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
+        return json({
+          ...claim,
+          readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
+          target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
+        });
       }
       return json(claim);
     }
@@ -1211,9 +1230,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "integration-failed": {
       // The integrator reports a failed merge. The Worker checks the branch was
       // restored to its integration head before the part is sent back, so a
-      // failure never leaves another part's commits discarded.
+      // failure never leaves another part's commits discarded. `kind` names a
+      // failure that is the part's own, a merge conflict or failing checks,
+      // which charges its builder an attempt; a report without it charges none.
       const partKey = String(body.part ?? "");
       const reason = String(body.reason ?? "");
+      if (body.kind !== undefined && !chargesBuilder(body.kind)) {
+        throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
+      }
       const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
       if (plan.fork && part.head) {
         using repo = await env.ARTIFACTS.get(plan.fork);
@@ -1221,7 +1245,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", part.head);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
       }
-      return json(await L.integrationFailed(id, actor, partKey, reason));
+      return json(await L.integrationFailed(id, actor, partKey, reason, body.kind ?? null));
     }
     case "submit":
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.
@@ -1611,15 +1635,16 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // one the token was made for, even if a claim made both after `before`
     // was read. With `before.fork` that token would go unrevoked, and the
     // change would then take it off the record while it still works.
-    const moving = verb === "abandon" || verb === "release" || verb === "handoff";
+    const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
     if (moving) {
-      if (verb === "abandon") await L.checkAbandon(id, owner, note);
+      if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+      else if (verb === "abandon") await L.checkAbandon(id, owner, note);
       else if (verb === "release") await L.checkRelease(id, owner, note);
       else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
       const { fork } = await L.item(id);
       await revoke(env, fork, oldToken);
     }
-    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
     else if (verb === "undispatch") await L.undispatch(id, owner);
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing

@@ -22,7 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
-import { assertEligible, checkApplies, pathCollisions } from "../src/rules.ts";
+import { assertEligible, checkApplies, pathCollisions, recordedText } from "../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -227,10 +227,10 @@ export const FLAGS = {
   block: {},
   unblock: {},
   ls: { all: true, json: true },
-  show: { json: true },
+  show: { reviews: true, json: true },
   start: { runner: false },
   claim: { runner: false },
-  push: { force: true },
+  push: { force: true, rollback: true },
   update: {},
   check: { sandbox: true, merged: true },
   gc: { "dry-run": true, apply: true },
@@ -243,7 +243,7 @@ export const FLAGS = {
   "read-token": {},
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
-  "integration-failed": { part: false, reason: false },
+  "integration-failed": { part: false, reason: false, kind: false },
   handoff: { to: false, note: false },
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
@@ -257,7 +257,7 @@ export const FLAGS = {
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
-  land: { reviewer: false, "no-review": true, "dry-run": true, "release-lease": true },
+  land: { reviewer: false, "no-review": true, "dry-run": true, wait: true, "release-lease": true },
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
@@ -1127,6 +1127,29 @@ export function formatBrief(project, id, brief, origin) {
     ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief), ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
+}
+
+// Every review, newest first: the order `show --reviews` prints them and its
+// JSON carries them, so the review that decides the current head leads.
+const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompare(a.at));
+
+// Each review of a task, at each head it was made at, in full: who reviewed,
+// the verdict, when, how it was recorded, the whole note and every finding.
+// The brief above sums the reviews at the current head into one line and cuts
+// the newest rejection's note to it; this is the record a session reads to
+// learn why a review rejected the task (t173). One flattened line per field,
+// so no note or finding can pose as a line of Atelier's own.
+export function formatReviews(reviews, owner = OWNER) {
+  const ordered = newestReviews(reviews);
+  if (!ordered.length) return "No reviews are recorded.";
+  const lines = ["Reviews:"];
+  for (const r of ordered) {
+    const recorded = recordedText(r, owner);
+    lines.push(`  ${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
+    lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
+    for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+  }
+  return lines.join("\n");
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
@@ -2004,9 +2027,16 @@ const commands = {
   },
 
   async show() {
-    const name = project(), id = itemArg();
-    const brief = await call("GET", `${I(name, id)}/brief`, undefined, await actor(OWNER));
-    console.log(args.json ? JSON.stringify(brief, null, 2) : formatBrief(name, id, brief, server()));
+    const name = project(), id = itemArg(), as = await actor(OWNER);
+    const brief = await call("GET", `${I(name, id)}/brief`, undefined, as);
+    // The brief sums the reviews at the current head into one line and carries
+    // none of their findings. The item's own record holds every review at
+    // every head; --reviews prints it in full and --json carries it, so a
+    // session can read why a review rejected the task (t173).
+    const d = args.reviews || args.json ? await call("GET", I(name, id), undefined, as) : null;
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
+    const text = formatBrief(name, id, brief, server());
+    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
   },
 
   async start() {
@@ -2053,9 +2083,22 @@ const commands = {
     // merge itself. The push then declares the head it rebased from, so the
     // Ledger can tell this rewrite from one it must refuse (recordPush in
     // src/ledger.ts).
+    // --rollback returns the fork to an earlier commit of the history Atelier
+    // recorded, dropping what was recorded after it, as the plan integrator
+    // does when a merged part fails the plan's checks: HEAD must be an
+    // ancestor of the recorded head, and the push declares the head it
+    // replaces, under the same lease as --force.
     let rebasedFrom = null, known = null;
     const lease = [];
-    if (args.force === true) {
+    if (args.rollback === true) {
+      known = (await call("GET", I(name, id), undefined, as)).item.head;
+      if (!known) die(`nothing is recorded for ${id} yet; there is nothing to roll back`);
+      if (!hasCommit(known)) die(`Atelier recorded ${id}'s head as ${short(known)}, which this workspace does not hold; nothing was pushed`);
+      if (head === known) die(`${id}'s workspace is at the recorded head ${short(known)}; reset it to the commit to roll back to first. Nothing was pushed.`);
+      if (!holds(head, known)) die(`push --rollback returns ${id} to a commit of its recorded history, and ${short(head)} is not an ancestor of the recorded head ${short(known)}. Nothing was pushed.`);
+      rebasedFrom = known;
+      lease.push(`--force-with-lease=${branch}:${known}`);
+    } else if (args.force === true) {
       known = (await call("GET", I(name, id), undefined, as)).item.head;
       if (!known) die(`nothing is recorded for ${id} yet; push without --force`);
       if (!hasCommit(known)) die(`Atelier recorded ${id}'s head as ${short(known)}, which this workspace does not hold; run atelier update to take what the fork holds, then push again`);
@@ -2292,8 +2335,9 @@ const commands = {
 
   async "integration-failed"() {
     const name = project(), id = itemArg(), as = await actor();
-    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT");
-    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "" }, as);
+    if (typeof args.part !== "string" || !args.part.trim()) die("usage: atelier integration-failed tP --part KEY --reason TEXT [--kind conflict|checks]");
+    if (args.kind !== undefined && args.kind !== "conflict" && args.kind !== "checks") die("--kind is conflict or checks");
+    const r = await call("POST", `${I(name, id)}/integration-failed`, { part: args.part, reason: args.reason ?? "", ...(args.kind ? { kind: args.kind } : {}) }, as);
     console.log(JSON.stringify(r));
   },
 
