@@ -1,0 +1,44 @@
+atelier atelier/t228 "The CLI cannot show a review's findings in full: atelier show cuts the reviewer's note short and its --json carries no reviews or findings, so a session cannot read why a runner-served review rejected a task (t173, 2026-10-07). atelier show ID --reviews (and --json) prints each review at each head with its full note, its findings (severity, file, line, text), who recorded it and whether it answered a claimed request"
+accepted head 0a946a85659086dad0f81a52f62f92e269ef8baa
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T04:06:00.784Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T04:06:04.521Z
+REVIEW approve by antigravity/gemini-3.1-pro at 0a946a85659086dad0f81a52f62f92e269ef8baa, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T02:57:10.089Z pavi item.created
+2026-10-07T02:57:27.658Z pavi item.dispatched
+2026-10-07T02:57:40.558Z opencode/glm-5.3 item.claimed
+2026-10-07T02:57:52.258Z opencode/glm-5.3 fork.created
+2026-10-07T03:11:50.743Z opencode/glm-5.3 push.observed
+2026-10-07T03:14:48.290Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:14:52.150Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:14:52.919Z opencode/glm-5.3 item.submitted
+2026-10-07T03:19:03.158Z pavi land.lease
+2026-10-07T03:19:07.273Z pavi land.merge
+2026-10-07T03:19:23.633Z pavi land.regenerate
+2026-10-07T03:19:26.753Z opencode/glm-5.3 push.observed
+2026-10-07T03:19:26.877Z pavi land.push
+2026-10-07T03:22:44.473Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:22:47.303Z opencode/glm-5.3 evidence.observed
+2026-10-07T03:22:47.885Z pavi land.check
+2026-10-07T03:22:48.340Z opencode/glm-5.3 item.submitted
+2026-10-07T03:22:48.641Z pavi land.submit
+2026-10-07T03:22:48.824Z pavi review.requested
+2026-10-07T03:22:55.371Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T03:27:18.687Z antigravity/gemini-3.1-pro review.rejected
+2026-10-07T03:27:19.068Z pavi land.review
+2026-10-07T03:43:52.009Z pavi review.finding
+2026-10-07T04:03:21.863Z pavi land.lease
+2026-10-07T04:03:23.665Z pavi land.merge
+2026-10-07T04:03:32.188Z pavi land.regenerate
+2026-10-07T04:03:34.940Z opencode/glm-5.3 push.observed
+2026-10-07T04:03:35.040Z pavi land.push
+2026-10-07T04:06:01.703Z opencode/glm-5.3 evidence.observed
+2026-10-07T04:06:04.755Z opencode/glm-5.3 evidence.observed
+2026-10-07T04:06:05.312Z pavi land.check
+2026-10-07T04:06:05.793Z opencode/glm-5.3 item.submitted
+2026-10-07T04:06:05.990Z pavi land.submit
+2026-10-07T04:06:06.099Z pavi review.requested
+2026-10-07T04:06:11.767Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T04:10:51.954Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T04:10:53.927Z pavi land.review
+2026-10-07T04:10:54.423Z pavi item.accepted
+2026-10-07T04:10:54.526Z pavi land.accept
