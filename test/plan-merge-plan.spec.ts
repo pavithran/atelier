@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
+import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
@@ -150,4 +151,114 @@ it("a merge-main part whose integration conflicted keeps its merge-main job and 
   const text = (await L.jobBrief(m.id, builder)).text;
   expect(text).toContain("## Merging main\n\n");
   expect(text).toContain(`The runner has merged the plan's branch at ffffffff (${MB}) into this workspace before you start.`);
+});
+
+// ── the integrator's conflict pre-check, through the Worker ─────────────
+
+// A stand-in Artifacts over one object store: commits with their parents and
+// root trees, trees as path-to-content maps, and each repository's head.
+type Commit = { parents: string[]; files: Record<string, string> };
+function artifacts(commits: Record<string, Commit>, heads: Record<string, string>): Artifacts {
+  const treeOf = (hash: string) => `tree:${hash}`;
+  const meta = (hash: string) => ({ hash, treeHash: treeOf(hash), parents: commits[hash].parents, message: "", author: { name: "", email: "" }, committer: { name: "", email: "" }, authoredAt: 0, committedAt: 0 });
+  return {
+    get: async (name: string) => ({
+      log: async ({ ref, limit = 50 }: { ref?: string; limit?: number } = {}) => {
+        const out = [];
+        for (let at: string | undefined = ref ?? heads[name]; at && commits[at] && out.length < limit; at = commits[at].parents[0]) out.push(meta(at));
+        return out;
+      },
+      readCommit: async (hash: string) => (commits[hash] ? meta(hash) : null),
+      readTree: async (tree: string) => {
+        const c = commits[tree.replace(/^tree:/, "")];
+        return c ? Object.entries(c.files).map(([path, text]) => ({ name: path, mode: "100644", hash: `blob:${text}`, type: "blob" })) : null;
+      },
+      readBlob: async (hash: string) => (hash.startsWith("blob:") ? new Blob([hash.slice(5)]) : null),
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts;
+}
+
+const TOKEN = "merge-plan-token";
+function claimAsIntegrator(name: string, id: string, ARTIFACTS: Artifacts) {
+  return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/claim`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": INTEGRATOR, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
+  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+}
+// The pre-check's verdict: conflict_predicted when it refuses; otherwise the
+// claim goes on to the Ledger, which refuses an integrator without its token.
+const verdict = async (res: Response) => ((await res.json()) as { error: string }).error;
+
+const MC = "4".repeat(40);
+const BASE = { "x.md": "base\n", "y.md": "base\n" };
+
+// Part b is sent back after a conflict, dispatched with planHead MA, and
+// resubmitted at PART_B2; its integrate job is queued again.
+async function reworked(name: string) {
+  const L = await setup(name);
+  const { id, b, builder } = await plan(L);
+  await failIntegration(L, id, "b", "conflict");
+  expect((await L.item(b)).dispatch).toMatchObject({ planHead: MA });
+  await L.claim(b, builder, RUNNER);
+  await L.recordPush(b, builder, PART_B2, PART_B2);
+  await L.addEvidence(observed(b, PART_B2, "x.md"));
+  await L.submit(b, builder);
+  const waiting = (await L.reviewWaiting()).filter((w) => w.id === b);
+  const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
+  await L.claimReview(b, reviewer, RUNNER);
+  await L.addReview({ itemId: b, by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
+  expect((await L.item(id)).dispatch).toMatchObject({ job: "integrate", part: "b", head: PART_B2 });
+  return { id, b };
+}
+
+it("a part whose head holds the plan branch's head is not refused as a predicted conflict", async () => {
+  const name = "mp-predict-holds";
+  const { id, b } = await reworked(name);
+  // MA changed x.md; b changed it too, then merged MA and resolved it.
+  const commits: Record<string, Commit> = {
+    [H0]: { parents: [], files: BASE },
+    [MA]: { parents: [H0, PART_A], files: { ...BASE, "x.md": "plan\n" } },
+    [PART_B]: { parents: [H0], files: { ...BASE, "x.md": "part\n" } },
+    [PART_B2]: { parents: [PART_B, MA], files: { ...BASE, "x.md": "resolved\n" } },
+  };
+  const res = await claimAsIntegrator(name, id, artifacts(commits, { [`fork-${id}`]: MA, [`fork-${b}`]: PART_B2 }));
+  expect(await verdict(res)).toBe("integrator_token");
+});
+
+it("a part that merged an older plan head is measured from it: newer plan work is refused only where it conflicts", async () => {
+  const name = "mp-predict-older";
+  const { id, b } = await reworked(name);
+  const base = {
+    [H0]: { parents: [], files: BASE },
+    [MA]: { parents: [H0, PART_A], files: { ...BASE, "x.md": "plan\n" } },
+    [PART_B]: { parents: [H0], files: { ...BASE, "x.md": "part\n" } },
+    [PART_B2]: { parents: [PART_B, MA], files: { ...BASE, "x.md": "resolved\n" } },
+  };
+  const heads = { [`fork-${id}`]: MC, [`fork-${b}`]: PART_B2 };
+  // The plan's branch moved on to MC, changing only y.md: no conflict.
+  const elsewhere = { ...base, [MC]: { parents: [MA], files: { "x.md": "plan\n", "y.md": "newer\n" } } };
+  expect(await verdict(await claimAsIntegrator(name, id, artifacts(elsewhere, heads)))).toBe("integrator_token");
+  // MC changes x.md again, which b resolved differently: refused.
+  const clash = { ...base, [MC]: { parents: [MA], files: { ...BASE, "x.md": "newer\n" } } };
+  const res = await claimAsIntegrator(name, id, artifacts(clash, heads));
+  expect(res.status).toBe(409);
+  expect((await res.json()) as { error: string; message?: string }).toMatchObject({ error: "conflict_predicted" });
+  expect((await ledger(name).item(b)).state).toBe("open");
+});
+
+it("a part with no merges is measured from its fork point, as before", async () => {
+  const name = "mp-predict-plain";
+  const L = await setup(name);
+  const { id, b } = await plan(L);
+  const commits: Record<string, Commit> = {
+    [H0]: { parents: [], files: BASE },
+    [MA]: { parents: [H0, PART_A], files: { ...BASE, "x.md": "plan\n" } },
+    [PART_B]: { parents: [H0], files: { ...BASE, "y.md": "part\n" } },
+  };
+  const heads = { [`fork-${id}`]: MA, [`fork-${b}`]: PART_B };
+  expect(await verdict(await claimAsIntegrator(name, id, artifacts(commits, heads)))).toBe("integrator_token");
+  const clash = { ...commits, [PART_B]: { parents: [H0], files: { ...BASE, "x.md": "part\n" } } };
+  const res = await claimAsIntegrator(name, id, artifacts(clash, heads));
+  expect([res.status, await verdict(res)]).toEqual([409, "conflict_predicted"]);
+  expect((await L.item(b)).state).toBe("open");
 });
