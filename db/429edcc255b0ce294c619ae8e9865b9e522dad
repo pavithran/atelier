@@ -1,0 +1,41 @@
+atelier atelier/t235 "A runner stopped mid-build leaves its job behind (2026-10-07): restarting home:mbp and home:mbp-2 killed the builds of t219 and t229 after their agents had committed; nothing submitted the commits, the claims stayed with the dead runs, and atelier land still reported both runners busy with them hours later, which made reviews look queued behind dead work. A runner starting under a name first settles what its earlier run left: a committed head is pushed, checked and submitted as the build's result, uncommitted work is saved under refs/atelier/rescue/ and the claim released, and the server's busy record for that runner name is cleared; a runner that receives SIGINT or SIGTERM finishes the same way before it exits; status ages out a busy record not renewed for the runner's poll interval"
+accepted head 2ae6d60167cba4ca02e0d53cdcd3eebec1c4522a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-07T23:10:55.398Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-07T23:10:58.181Z
+REVIEW approve by antigravity/gemini-3.1-pro at 2ae6d60167cba4ca02e0d53cdcd3eebec1c4522a, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T06:28:09.018Z pavi item.created
+2026-10-07T06:28:13.169Z pavi item.dispatched
+2026-10-07T06:28:18.388Z opencode/glm-5.3 item.claimed
+2026-10-07T06:28:23.586Z opencode/glm-5.3 fork.created
+2026-10-07T07:00:05.836Z opencode/glm-5.3 push.observed
+2026-10-07T07:01:43.225Z opencode/glm-5.3 evidence.observed
+2026-10-07T07:01:45.494Z opencode/glm-5.3 evidence.observed
+2026-10-07T17:03:12.048Z pavi land.lease
+2026-10-07T17:03:24.079Z pavi land.merge
+2026-10-07T17:03:33.298Z pavi item.released
+2026-10-07T17:03:33.298Z pavi item.dispatched
+2026-10-07T22:20:19.138Z opencode/glm-5.3 item.claimed
+2026-10-07T22:38:15.548Z opencode/glm-5.3 push.observed
+2026-10-07T22:43:35.522Z opencode/glm-5.3 evidence.observed
+2026-10-07T22:43:38.712Z opencode/glm-5.3 evidence.observed
+2026-10-07T22:43:39.383Z opencode/glm-5.3 item.submitted
+2026-10-07T22:52:02.945Z pavi land.lease
+2026-10-07T22:52:18.042Z pavi land.merge
+2026-10-07T23:06:51.129Z pavi land.lease
+2026-10-07T23:07:01.808Z pavi land.merge
+2026-10-07T23:08:15.178Z pavi land.lease
+2026-10-07T23:08:16.210Z pavi land.merge
+2026-10-07T23:08:23.804Z pavi land.regenerate
+2026-10-07T23:08:28.536Z opencode/glm-5.3 push.observed
+2026-10-07T23:08:28.747Z pavi land.push
+2026-10-07T23:10:56.072Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:10:58.515Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:10:59.004Z pavi land.check
+2026-10-07T23:10:59.405Z opencode/glm-5.3 item.submitted
+2026-10-07T23:10:59.678Z pavi land.submit
+2026-10-07T23:10:59.825Z pavi review.requested
+2026-10-07T23:11:13.858Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T23:15:40.512Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T23:15:44.495Z pavi land.review
+2026-10-07T23:15:45.284Z pavi item.accepted
+2026-10-07T23:15:45.443Z pavi land.accept
