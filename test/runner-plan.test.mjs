@@ -331,3 +331,13 @@ test("a stale plan document is cleaned from the workspace before the harness run
   assert.equal(git("status", "--porcelain"), "?? .atelier-plan.json", "the plan document is left uncommitted");
   assert.ok(existsSync(join(workspace, "tracked")));
 });
+
+test("a task sent back with an earlier attempt gets the server's review findings after its local brief", async (t) => {
+  const back = fixture(t);
+  back.io.jobBrief = async (project, id, actor) => { back.calls.push({ jobBrief: [project, id, actor] }); return { job: "rework", text: "## Rework: the review's findings\nFINDING-1", hash: "h" }; };
+  const job = { ...ordinaryJob, item: { ...ordinaryJob.item, base: "a1", head: "b2" } };
+  assert.equal((await runTask(job, buildConfig, "home:studio", back.io)).phase, "submitted");
+  assert.deepEqual(back.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t6", "opencode/glm-5.3"]);
+  const text = back.calls.find((c) => c.brief).brief;
+  assert.ok(text.includes("npm test") && text.includes("An earlier attempt is committed") && text.includes("FINDING-1"));
+});
