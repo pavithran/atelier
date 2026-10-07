@@ -22,6 +22,8 @@ import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
+import { duration, type GatewayView } from "./usage/gateway.ts";
+import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
@@ -694,7 +696,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map()): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -731,6 +733,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
+  ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
       <label>Model id, as the harness names it<input name="id" required maxlength="128" placeholder="gemini-3.1-pro, GLM-5.3-Flash-4_8bit"></label>
@@ -746,6 +749,33 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
     </form>
   </details>
 </div>`, "Models", ownerName);
+}
+
+// ── AI Gateway ─────────────────────────────────────────────────────────────
+// Each model's calls through the AI Gateway over the view's window
+// (src/usage/gateway.ts): calls, tokens, cost and median duration, the
+// median's sample size beside it, and when the logs were last pulled.
+
+export function gatewaySection(g: GatewayView): string {
+  const head = `<h2 class="section-title">AI Gateway · last ${g.days} days</h2>`;
+  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p></section>`;
+  const pull = g.pull
+    ? g.pull.error
+      ? `The last pull, ${e(stamp(g.pull.at))}, failed: ${e(g.pull.error)}.`
+      : `Logs last pulled ${e(stamp(g.pull.at))}, ${plural(g.pull.added, "new call")}.`
+    : "No logs pulled yet; the Worker pulls them every five minutes.";
+  const row = (m: GatewayView["models"][number]) => `<tr><th scope="row"><code>${e(m.model)}</code><span class="meta"> ${e(m.provider)}</span></th>
+    <td class="num">${e(m.calls.toLocaleString("en"))}${m.failures ? ` <span class="meta">${e(m.failures.toLocaleString("en"))} failed</span>` : ""}</td>
+    <td class="num">${e(tokens(m.tokensIn))} in · ${e(tokens(m.tokensOut))} out</td>
+    <td class="num">${m.cost === null ? '<span class="meta">not priced</span>' : e(money(m.cost))}</td>
+    <td class="num">${m.medianMs === null ? '<span class="meta">none</span>' : `${e(duration(m.medianMs))} <span class="meta">n=${m.sample}</span>`}</td></tr>`;
+  return `<section class="gateway" aria-label="AI Gateway costs">${head}
+  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from the gateway's own logs. ${pull}</p>
+  ${g.models.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median duration</th></tr></thead>
+    <tbody>${g.models.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">No calls through the gateway in the last ${g.days} days.</p>`}
+</section>`;
 }
 
 // ── reliability ────────────────────────────────────────────────────────────

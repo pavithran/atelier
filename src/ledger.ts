@@ -17,6 +17,7 @@ import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
+import type { GatewayMark, GatewayPull } from "./usage/gateway.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
@@ -680,6 +681,28 @@ export class Ledger extends DurableObject<Env> {
       this.log(null, this.owner, "usage.cleared", { key, runner: report.runner }, at);
     }
     return { report, alerts };
+  }
+
+  // ── AI Gateway pulls ─────────────────────────────────────────────────────
+  // The scheduled pull of the AI Gateway's logs writes each log to Analytics
+  // Engine (src/usage/gateway.ts); the index instance keeps the newest log
+  // written, where the next pull stops, and how the last pull went.
+
+  // The newest log written; null before any.
+  gatewayMark(): GatewayMark | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'gateway_mark'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  gatewayPull(): GatewayPull | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'gateway_pull'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  // Records a pull, and the newest log it wrote when it wrote any.
+  recordGatewayPull(pull: GatewayPull, mark: GatewayMark | null): void {
+    if (mark) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('gateway_mark', ?)`, JSON.stringify(mark));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('gateway_pull', ?)`, JSON.stringify(pull));
   }
 
   // ── runs ─────────────────────────────────────────────────────────────────
