@@ -182,6 +182,9 @@ export interface ProjectPolicy {
   // task's workspace after it merges main (atelier land) and before its
   // checks, so the checks see fixtures current with both lines.
   regenerate?: string;
+  // What may block a review, as every review brief states it; absent, the
+  // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
+  reviewBar?: string;
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
