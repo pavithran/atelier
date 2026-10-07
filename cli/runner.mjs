@@ -569,6 +569,27 @@ export function infrastructureFailureCount(count, state) {
 // harness left it.
 export const planFilePath = (workspace) => join(workspace, ".atelier-plan.json");
 
+// The last non-empty line of a harness's stderr, or of its standard output
+// when stderr is empty, cleaned as the runner cleans task text (controls and
+// invisible separators as spaces, whitespace collapsed). It is the harness's
+// own word on what failed, so a plan job's release note and run report carry it.
+export function lastErrorLine(result) {
+  const text = String(result?.stderr ?? "") || String(result?.output ?? "");
+  const lines = text.replace(/\r/g, "").split("\n").map((line) => oneLine(line).replace(/\s+/g, " ").trim()).filter(Boolean);
+  return (lines.at(-1) ?? "").slice(0, 500);
+}
+
+// A plan job's harness failing is not an invalid proposal: the planner gave
+// the model nothing to refuse. The failure's reason names the harness's last
+// error line, or the fallback when it wrote none, and its detail is that line
+// alone for the run report.
+export function planHarnessFailure(result, fallback) {
+  const detail = lastErrorLine(result) || fallback;
+  const error = new Error(`the harness failed: ${detail}`);
+  error.detail = detail;
+  return error;
+}
+
 // A plan job (docs/orchestrator.md, section 2): the runner claims the plan
 // item as the planner, fetches the planner's brief from the server's
 // job-brief route, and runs the harness with a {plan_file} placeholder
@@ -606,19 +627,22 @@ export async function runPlanTask(assignment, config, name, io) {
     let result;
     taskFailure = true;
     try {
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+      // The plan job's harness output is captured, so a harness that fails
+      // before writing the plan leaves its last error line for the release
+      // note and the run report; a build's harness output still streams.
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env, { capture: true, captureError: true });
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
         catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
       }
     }
-    if (result.timedOut) throw new Error("harness timed out");
+    if (result.timedOut) throw planHarnessFailure(result, "timed out");
     if (io.stopped()) throw new Error("interrupted");
-    if (result.code !== 0) throw new Error(`harness exited ${result.signal ?? result.code}`);
+    if (result.code !== 0) throw planHarnessFailure(result, `exited ${result.signal ?? result.code}`);
     let document;
     try { document = readFileSync(planFile, "utf8"); }
-    catch { throw new Error(`the harness wrote no plan document at ${planFile}`); }
+    catch { throw planHarnessFailure(result, "wrote no plan document"); }
     const posted = await io.postPlan(project, item.id, actor, document);
     if (posted && posted.valid) {
       state = { phase: "submitted", head: posted.hash };
@@ -635,6 +659,7 @@ export async function runPlanTask(assignment, config, name, io) {
     state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
+    if (error.detail) state.detail = error.detail;
     if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
     else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
     else io.log(`failed: ${state.reason}`);
@@ -661,12 +686,14 @@ export async function runPlanTask(assignment, config, name, io) {
 // claim, the workspace, an interrupt, a harness that could not start, or a
 // step after the harness. A harness past its time limit timed out; one that
 // exited cleanly without a new commit stalled; one that exited with an error
-// was refused, by the harness or its provider.
+// was refused, by the harness or its provider; a plan job whose harness
+// failed before posting a plan failed as a harness, not as an invalid proposal.
 export function runOutcome(state) {
   if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
   if (state.reason === "harness timed out") return "timed-out";
   if (state.reason === "harness made no new commit") return "stalled";
   if (/^harness exited /.test(state.reason ?? "")) return "refused";
+  if (/^the harness failed: /.test(state.reason ?? "")) return "harness_failed";
   return null;
 }
 
@@ -720,7 +747,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
-    harness: (argv, cwd, env) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env }),
+    harness: (argv, cwd, env, { capture = false, captureError = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
     env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to
@@ -772,7 +799,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
             try {
               // The report names the job that ran: a plan, a review, or a build.
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : "build";
-              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
+              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.detail ?? state.reason }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }

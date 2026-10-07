@@ -46,6 +46,7 @@ export interface PlanView {
   parts: PlanPartView[];
   preview: PartRoute[] | null;    // before approval: the routing an approval would fix now
   integration: { integrationHead: string | null };  // the plan branch's integration head; null when none is recorded
+  harnessFailure: string | null;  // the release note when the harness failed, shown while the plan waits for the planner
 }
 
 const flat = (text: string) => text.replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim();
@@ -113,6 +114,7 @@ export function planText(v: PlanView, project: string): string {
     lines.push(v.proposal && v.plan
       ? `Proposal ${v.proposal.count}, by ${v.proposal.by} at ${when(v.proposal.at)}: ${count(v.plan.parts.length, "part")}. Hash: ${v.proposal.hash}`
       : "No valid proposal yet.");
+    if (v.harnessFailure) lines.push(flat(v.harnessFailure));
   } else {
     lines.push(`Approved by ${a.by} at ${when(a.at)}, ${a.allowPaid ? "paid models allowed" : "no paid models"}. Hash: ${a.hash}`);
     lines.push(`Limits: ${a.limits.maxParallel} parts live at once, ${a.limits.attempts} attempts a part, deadline ${when(a.deadline)}. Part dispatches: ${a.jobsUsed} of ${a.limits.maxJobs}.`);

@@ -9,10 +9,10 @@ export function itemJson(i) {
     createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt };
 }
 
-// The queue as JSON: each project with its own decisions and its items, every
-// item carrying its times and its overlapping pairs of tasks each pair once
-// and sorted. Merged and abandoned items are included; a reader that wants
-// only live work filters by state.
+// The queue as JSON: each project with its own decisions, its items each
+// carrying its times, and the project's overlapping pairs of tasks, each
+// pair once and sorted. Merged and abandoned items are included; a reader
+// that wants only live work filters by state.
 export function statusJson(views) {
   return views.map((v) => {
     const mine = v.inbox.filter((x) => x.project === v.name);
@@ -26,6 +26,13 @@ export function statusJson(views) {
   });
 }
 
+// The other task an overlap entry's reason names, or null when the reason is
+// worded another way or names the entry's own item: no pair comes of it.
+function overlapOther(x) {
+  const other = /^scope overlaps (\S+) \(/.exec(x.reason)?.[1];
+  return other && other !== x.itemId ? other : null;
+}
+
 // The unordered pairs of tasks whose scopes overlap, each pair once, sorted,
 // whether the decisions name it from one side or both. One side is the
 // entry's item, the other the id its reason names ("scope overlaps t186
@@ -36,8 +43,8 @@ function overlapPairs(entries) {
   const pairs = [];
   for (const x of entries) {
     if (x.kind !== "overlap") continue;
-    const other = /^scope overlaps (\S+) \(/.exec(x.reason)?.[1];
-    if (!other || other === x.itemId) continue;
+    const other = overlapOther(x);
+    if (!other) continue;
     const [a, b] = [x.itemId, other].sort();
     const key = `${a} ${b}`;
     if (seen.has(key)) continue;
@@ -105,13 +112,19 @@ export function formatStatus(views) {
     const mine = v.inbox.filter((x) => x.project === v.name);
     // An overlap notice is not a wait: it says a conflict is likely, not that
     // the owner must decide anything, so it leaves the decisions and stands
-    // under its own heading below them.
-    const decisions = mine.filter((x) => x.kind !== "overlap");
+    // under its own heading below them. One whose reason names no other task
+    // stands under no heading, so it stays among the decisions and the
+    // server's word is not lost.
+    const decisions = mine.filter((x) => x.kind !== "overlap" || !overlapOther(x));
     const overlaps = overlapPairs(mine);
     const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
     const waiting = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
-    if (!decisions.length && !working.length && !waiting.length) lines.push("  Nothing waiting.");
+    if (!decisions.length && !working.length && !waiting.length) {
+      // Only overlaps follow, so the idle line is worded for the owner: it
+      // would otherwise read against the heading printed under it.
+      lines.push(overlaps.length ? "  Nothing waiting on you." : "  Nothing waiting.");
+    }
     if (decisions.length) {
       lines.push("  Waiting for you");
       for (const x of decisions) {
