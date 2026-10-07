@@ -43,7 +43,7 @@ const READ_TTL = 3600;
 
 // `ref` is the project an API path names, resolved once at the entry (see
 // resolveProject); null when the path names none.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null };
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -828,6 +828,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
+    // Every runner polls here, so a signed-in poll also starts a due AI
+    // Gateway pull in the background; its failure never touches this answer.
+    if (m === "POST") c.waitUntil?.(pullGatewayIfDue(env).catch((err) => console.error("AI Gateway pull failed", err instanceof Error ? err.message : String(err))));
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -1729,6 +1732,21 @@ export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fe
   return { added, error };
 }
 
+// How often a pull may start. The cron asks every five minutes; requests
+// ask too (the queue route every runner polls), because on 2026-10-07 the
+// cron was listed but never ran. A little under five minutes, so the cron's
+// own tick is never refused for a request's pull a moment before it.
+export const GATEWAY_PULL_EVERY_MS = 4.5 * 60_000;
+
+// Pulls when no pull was started in the last GATEWAY_PULL_EVERY_MS, and
+// otherwise does nothing; the index grants one attempt per interval. Nothing
+// is asked of the index when the gateway is off.
+export async function pullGatewayIfDue(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
+  if (typeof gatewayConfig(env) === "string") return null;
+  if (!(await index(env).claimGatewayPull(now, GATEWAY_PULL_EVERY_MS))) return null;
+  return pullGateway(env, now, fetcher);
+}
+
 export async function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
   const cfg = gatewayConfig(env);
   if (typeof cfg === "string") return gatewayView(cfg, [], [], null, [], now);
@@ -2245,7 +2263,7 @@ const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "u
 export default {
   // The cron in wrangler.jsonc pulls the AI Gateway's new logs.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(pullGateway(env));
+    ctx.waitUntil(pullGatewayIfDue(env));
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
@@ -2276,7 +2294,7 @@ export default {
       } catch (error) { console.error("push event retry", error); message.retry(); }
     }
   },
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const pathname = url.pathname.endsWith("/") && url.pathname.length > 1 ? url.pathname.slice(0, -1) : url.pathname;
     // Pages show times in the owner's zone (src/time.ts).
@@ -2349,7 +2367,7 @@ export default {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
-        const res = await api({ env, req, url, actor, body, token, ref }, parts.slice(1));
+        const res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         if (ref?.former) res.headers.set("x-atelier-project", ref.name);
         return res;
       }
