@@ -1021,6 +1021,55 @@ test("the reset before a harness saves uncommitted work under refs/atelier/rescu
   assert.equal(existsSync(join(workspace, "draft")), false);
 });
 
+// t296: a harness killed at its time limit can leave a file git cannot index
+// (a nested repository with no commit, say). `git add --all` fails whole on
+// such a file, so the reclaiming run's rescue staged nothing: the stash held
+// only the tracked edits, and the clean deleted every untracked file, none of
+// them in the rescue — GLM's t283 lost a timed-out run's 524 lines this way
+// when home:mbp-2 reclaimed it (2026-10-07). The staging now ignores errors,
+// so a file git cannot index costs only itself.
+test("the rescue stages around a file git cannot index, so every other untracked file is saved", async (t) => {
+  const { workspace, git, args } = gitWorkspace(t);
+  const logs = [];
+  let polls = 0, attempts = 0;
+  await runRunner(args, {
+    workspacePath: () => workspace, wait: async () => {},
+    queue: async () => {
+      if (++polls === 3) { process.emit("SIGINT"); return []; }
+      // The second poll offers the claim back, as the queue does a runner that
+      // already holds it (t235); the timed-out run committed nothing, so the
+      // workspace is at the recorded head and the model builds again.
+      return polls === 1 ? [assignment] : [{ ...assignment, item: heldItem({ head: git("rev-parse", "HEAD") }) }];
+    },
+    taskIO: {
+      log: (s) => logs.push(s),
+      harness: async () => {
+        if (++attempts === 1) {
+          // The timed-out run's uncommitted work, beside the file git cannot
+          // index: a nested repository with no commit.
+          writeFileSync(join(workspace, "tracked"), "draft edit");
+          writeFileSync(join(workspace, "draft.test.mjs"), "the new work");
+          git("init", "--quiet", join(workspace, "vendor", "dep"));
+          return { timedOut: true };
+        }
+        writeFileSync(join(workspace, "rebuilt"), "by the reclaiming run");
+        git("add", "rebuilt");
+        git("commit", "--quiet", "-m", "rebuilt");
+        return { code: 0 };
+      },
+    },
+    executeChild: async (argv, options) => execute(argv[0] === "git" ? argv : [process.execPath, "-e", ""], options),
+  });
+  assert.equal(attempts, 2);
+  const refs = git("for-each-ref", "--format=%(refname)", "refs/atelier/rescue/").split("\n").filter(Boolean);
+  assert.equal(refs.length, 1, "only the reclaiming run's reset had anything to save");
+  assert.match(refs[0], /^refs\/atelier\/rescue\/t13-\d{8}T\d{6}Z$/);
+  assert.equal(git("show", `${refs[0]}:tracked`), "draft edit");
+  assert.equal(git("show", `${refs[0]}:draft.test.mjs`), "the new work");
+  assert.ok(logs.some((l) => l.includes("could not be staged for the rescue")), logs.join("\n"));
+  assert.equal(readFileSync(join(workspace, "tracked"), "utf8"), "original");
+});
+
 // t213: a runner that offers reviews needs a command that can write a verdict.
 test("parseConfig refuses review jobs for an agent whose command has no {verdict_file}", () => {
   const errors = parseConfig({ ...config, jobs: ["review"] }).errors.join(" ");
