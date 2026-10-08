@@ -605,7 +605,9 @@ export async function runLand(io) {
     await renewBeforePublish();
     await step("accept", ["accept", id], p.path);
     const landed = await step("merged", ["merge", id], p.path, () => ({ mergeCommit: git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path }) }));
-    print(`${id} landed.`);
+    const mergeOutput = landed.output.split("\n").filter(Boolean);
+    const summary = mergeOutput.filter((line) => line !== "The project branch was not pushed to its own remotes. Nothing was deployed.").at(-1);
+    print(`${id} landed: ${summary ?? "merged"}`);
   } catch (error) {
     await release();
     die(error.message);
