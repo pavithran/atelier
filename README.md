@@ -90,7 +90,7 @@ path in the project that day.
 | GraphQL Analytics API | The Models page and `atelier runner --usage` read the gateway's calls from it (`src/usage/gateway.ts`): each model's calls, failures, tokens, cost, and median and p90 duration over the last 7 days. | Live once the secrets under [AI Gateway costs](#ai-gateway-costs) are set |
 | Workers Logs | `observability` is enabled in `wrangler.jsonc`, so the Worker's logs are kept. | Live |
 | Queues | A consumer for Artifacts push notices (`cf.artifacts.repo.pushed`) is written in `src/index.ts`, but `wrangler.jsonc` declares no consumer, so no notice is delivered; the CLI reports each push to the Worker instead. | Written, not configured |
-| Cloudflare Access | In front of the owner's pages (t270). | Task filed; not in the code |
+| Cloudflare Access | In front of the owner's pages: the Worker verifies the Access assertion and the owner's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-owners-pages)). | Built; on once the owner sets up the Access application |
 | Browser Rendering | Checks of `/how` and the showcase as a browser renders them (t283). | Task filed; not in the code |
 | R2 | Storage for large check logs and review diffs (t284). | Task filed; not in the code |
 | Workflows | The landing pipeline, which `atelier land` runs from the owner's machine today (t280). | Task filed; not in the code |
