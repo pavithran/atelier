@@ -40,6 +40,7 @@ import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
 export { LandingWorkflow } from "./landing-workflow.ts";
+import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow.ts";
 import { renderHow } from "./how.ts";
 
 const WRITE_TTL = 8 * 3600;
@@ -1462,6 +1463,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         }
         return json({ sent: true, instance: remembered.instance });
       }
+      // Where the checks run (t305): "local" or "container" as the CLI
+      // sends it; absent is "container", since a CLI older than the mode
+      // runs no checks on its machine.
+      if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
+      const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
       const live = async () => remembered ? await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null) : null;
       const standing = await live();
       if (standing && ["queued", "running", "waiting", "waitingForPause", "paused"].includes(standing.status)) {
@@ -1479,15 +1485,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // created, so the stage it writes from its first step is never
       // written ahead of the record (and dropped as a stale instance's).
       const instanceId = `land-${id}-${Date.now()}`;
-      const record = await L.setLandingWorkflow(id, instanceId, actor);
+      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
       const instance = await env.LANDING_WORKFLOW.create({
         id: instanceId,
         params: {
           project, key: ref.key, item: id, actor,
           ...(typeof body.reviewer === "string" && body.reviewer ? { reviewer: body.reviewer } : {}),
           ...(body.noReview === true ? { noReview: true } : {}),
-          origin: c.url.origin,
-          ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
+          origin: c.url.origin, checks,
+          ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
         },
       });
       return json({ ...record, created: true, status: await instance.status() }, 201);

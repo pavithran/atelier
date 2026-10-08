@@ -192,10 +192,9 @@ landing. In order:
 3. Wait for the workspace (stage `workspace`, below), then see the pushed
    head in the Ledger.
 4. Renew the lease (a lease another landing took over stops this one), and
-   run the required checks in a Cloudflare container, the same CheckRunner
-   that `atelier check --sandbox` starts, polling the run to its end. A
-   check the container refuses (one that deploys, installs or pushes) ends
-   the Workflow; land such a project without `--workflow`.
+   settle the required checks in the landing's checks mode (below): in the
+   `local` mode, read their observed results at the pushed head from the
+   Ledger; in the `container` mode, run them in a Cloudflare container.
 5. Submit the task in its holder's name, as `atelier submit` in the
    workspace does.
 6. Request the review and wait for the verdict, polling the Ledger and
@@ -218,13 +217,59 @@ Ledger (`lease`, `workspace`, `conflict`, `checks`, `review`, `merge`,
 two of them:
 
 - At `workspace` the Workflow holds the lease, and the command merges main,
-  regenerates and pushes with the same code as the plain landing, renewing
-  the lease meanwhile, then reports the pushed head as a `workspace` event.
+  regenerates and pushes with the same code as the plain landing, in the
+  `local` checks mode runs the required checks in a clean clone (the plain
+  landing's `atelier check` step), renewing the lease meanwhile, then
+  reports the pushed head as a `workspace` event. A check that fails is
+  reported as a failed workspace step instead, which ends the Workflow with
+  the check's output.
   Every report names its round, so a report the Workflow buffered from an
   earlier round is passed over.
 - At `merge` the Workflow has accepted, and the command runs `atelier merge
   t9` in the registered checkout, retrying while another landing holds the
   lease.
+
+### Where the checks run
+
+`atelier land t9 --workflow --checks local|container` chooses where the
+required checks run; `local` is the default. The mode is a flag only: the
+project's policy holds no default for it (adding an `atelier init` field
+was more than this change needed, t305).
+
+- `local`: after the push, the command runs the required checks on the
+  owner's machine in a clean clone of the pushed head, exactly as the plain
+  landing does, and the server records each result as observed evidence at
+  the head it reads from Artifacts (only the task's holder can record a
+  check, and only at that head). Only then does the command report the
+  head. The Workflow starts no container: it reads the task's evidence from
+  the Ledger and judges it with `evidenceAt` (`src/rules.ts`), the gate's
+  own reading, so only an observed result at exactly the pushed head counts
+  (never a report, a merged run, or a run at another head; under
+  `sandboxOnly`, which counts only container runs, the local mode is
+  refused and points at `--checks container`). Every required check that
+  applies must pass. A failing one ends the landing, recorded as a failed
+  `land.check`, with the lease released and nothing submitted. Checks with
+  no result are waited for, polling and renewing the lease, for up to 30
+  minutes (`checksTimeoutMs` on the route), and then end the landing,
+  naming them. The command records the `land.check` step it ran, as the
+  plain landing does.
+- `container`: the Workflow runs the checks in the same CheckRunner that
+  `atelier check --sandbox` starts, polling the run to its end, and records
+  `land.check`. A check the container refuses (one that deploys, installs
+  or pushes) ends the Workflow; land such a project without `--workflow`.
+  This suits a project whose suite finishes in the container's default
+  instance; Atelier's own suite does not (2026-10-08: stopped at the 600 s
+  step limit, then interrupted with no result after 62 minutes), which is
+  why `local` is the default.
+
+The server records the mode with the instance (`checks` in `GET
+.../landing-workflow`), so a rerun that attaches to a live landing follows
+the mode it was started with. A start that names no mode, as a command
+older than the modes sends, runs the checks in the container, since that
+command runs none itself; against a server older than the modes the
+command warns that the checks run in the container.
+
+### Conflicts and what the Workflow protects against
 
 A merge of main that stops on conflicts is reported as such. The Workflow
 releases the lease and pauses at stage `conflict`, naming the files, for up
@@ -238,9 +283,10 @@ What this protects against, and what it does not:
 
 - A closed laptop or a killed command stops only the view. The Workflow
   keeps its place, and the same command run again attaches to the live
-  instance and goes on from its stage. The checks, the submission and the
-  review wait proceed with no machine attached; the workspace steps and the
-  final merge wait for one. While the Workflow waits for the workspace,
+  instance and goes on from its stage. The submission, the review wait and
+  the container mode's checks proceed with no machine attached; the
+  workspace steps (with the local mode's checks) and the final merge wait
+  for one. While the Workflow waits for the workspace,
   the lease is renewed only by a live executor, and while it waits for the
   merge it is not renewed at all, so a machine that is gone lets the lease
   lapse after 15 minutes rather than hold the project. Once the workspace
@@ -260,8 +306,10 @@ The routes the command calls (`landing-workflow`, GET and POST) raised the
 route level to 14. The Workflow is tested in workerd with the Workflows test
 helpers (`test/landing-workflow.spec.ts`: the step sequence, a retry after a
 transient failure, a failure that outlasts the retries, the pause on a
-conflict and its resume, and the routes), and the command against a
-stand-in server (`test/land.test.mjs`). No test yet drives the command
+conflict and its resume, the local checks mode with evidence present,
+arriving late, missing or untrusted, and failing, and the routes), and the
+command against a stand-in server (`test/land.test.mjs`, including the
+local mode's checks run after the push and before the report). No test yet drives the command
 against a running Workflow, and none has run on Cloudflare itself.
 
 ## Integration basis
