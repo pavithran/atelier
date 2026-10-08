@@ -1,0 +1,31 @@
+atelier atelier/t284 "After 2026-10-14: keep large check logs and review diffs in R2 (PAVI, 2026-10-07) and pass references in briefs and the ledger, instead of carrying them inline (an 888 KB review diff broke a review on 2026-10-07); check the R2 docs first"
+accepted head ed895e5f8a8b487edbda3c1144e9472cc0632b0c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T01:25:31.969Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T01:25:35.186Z
+REVIEW approve by antigravity/gemini-3.1-pro at ed895e5f8a8b487edbda3c1144e9472cc0632b0c, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T20:30:29.918Z pavi item.created
+2026-10-07T22:26:22.535Z pavi item.dispatched
+2026-10-07T23:23:25.929Z pavi item.undispatched
+2026-10-07T23:23:38.826Z pavi item.dispatched
+2026-10-07T23:53:44.685Z opencode/glm-5.3 item.claimed
+2026-10-07T23:53:58.386Z opencode/glm-5.3 fork.created
+2026-10-08T00:35:52.138Z opencode/glm-5.3 push.observed
+2026-10-08T00:38:28.238Z opencode/glm-5.3 evidence.observed
+2026-10-08T00:38:31.222Z opencode/glm-5.3 evidence.observed
+2026-10-08T00:38:31.786Z opencode/glm-5.3 item.submitted
+2026-10-08T01:21:17.854Z pavi land.lease
+2026-10-08T01:21:21.382Z pavi land.merge
+2026-10-08T01:21:29.706Z pavi land.regenerate
+2026-10-08T01:21:33.177Z opencode/glm-5.3 push.observed
+2026-10-08T01:21:33.327Z pavi land.push
+2026-10-08T01:25:33.031Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:25:35.759Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:25:36.269Z pavi land.check
+2026-10-08T01:25:36.698Z opencode/glm-5.3 item.submitted
+2026-10-08T01:25:36.964Z pavi land.submit
+2026-10-08T01:25:37.122Z pavi review.requested
+2026-10-08T01:25:44.940Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T01:31:09.277Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T01:31:12.307Z pavi land.review
+2026-10-08T01:31:13.181Z pavi item.accepted
+2026-10-08T01:31:13.317Z pavi land.accept
