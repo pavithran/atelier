@@ -1441,7 +1441,7 @@ test("land without --workflow never reaches the landing Workflow, and --dry-run 
   assert.equal(r.status, 0, r.output);
   assert.doesNotMatch(r.output, /Merge it with: atelier merge t1/);
   assert.equal((r.output.match(/The project branch was not pushed to its own remotes\. Nothing was deployed\./g) ?? []).length, 1);
-  assert.match(r.output, /t1 landed\./);
+  assert.match(r.output, /t1 landed: t1 merged as [0-9a-f]{8}/);
   assert.ok(f.box.requests.every((x) => !x.path.includes("landing-workflow")));
   assert.equal(f.box.states.t1, "merged");
   const both = await f.run(f.checkout, "land", "t2", "--workflow", "--dry-run");
