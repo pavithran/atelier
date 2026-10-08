@@ -15,7 +15,12 @@ const TOKEN = "claim-concurrency-owner";
 const H0 = "0".repeat(40);
 
 type Tok = { id: string; repo: string; scope: string; revoked: boolean };
-type Faults = { forkBefore: (n: number) => boolean; forkAfter: (n: number) => boolean; inProgress: number; mint: (n: number) => boolean };
+// `info` fails the nth repository info read (the project's branch, then each
+// token's remote); `revoke` the nth token revocation.
+type Faults = {
+  forkBefore: (n: number) => boolean; forkAfter: (n: number) => boolean; inProgress: number; mint: (n: number) => boolean;
+  info?: (n: number) => boolean; revoke?: (n: number) => boolean;
+};
 
 const artifactsError = (code: string, message: string) => Object.assign(new Error(message), { code });
 const tick = () => new Promise<void>((ok) => setTimeout(ok, Math.random() * 20));
@@ -23,7 +28,7 @@ const tick = () => new Promise<void>((ok) => setTimeout(ok, Math.random() * 20))
 function fakeArtifacts(faults: Faults) {
   const repos = new Map<string, { reads: number }>();
   const tokens = new Map<string, Tok>();
-  let forks = 0, mints = 0, n = 0;
+  let forks = 0, mints = 0, infos = 0, revokes = 0, n = 0;
   const artifacts = {
     get: async (repo: string) => {
       await tick();
@@ -43,7 +48,11 @@ function fakeArtifacts(faults: Faults) {
           if (r.reads++ < faults.inProgress) throw artifactsError("FORK_IN_PROGRESS", "fork in progress");
           return [{ hash: H0 }];
         },
-        info: async () => { known(); return { remote: `https://git.test/${repo}.git`, defaultBranch: "main" }; },
+        info: async () => {
+          known();
+          if (faults.info?.(++infos)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
+          return { remote: `https://git.test/${repo}.git`, defaultBranch: "main" };
+        },
         createToken: async (scope: string) => {
           known();
           await tick();
@@ -52,7 +61,10 @@ function fakeArtifacts(faults: Faults) {
           tokens.set(id, { id, repo, scope, revoked: false });
           return { id, plaintext: `art_secret_${id}`, scope, expiresAt: new Date(Date.now() + 8 * 3600e3).toISOString() };
         },
-        revokeToken: async (id: string) => { const t = tokens.get(id); if (t) t.revoked = true; return !!t; },
+        revokeToken: async (id: string) => {
+          if (faults.revoke?.(++revokes)) throw artifactsError("UNAVAILABLE", "token service unavailable");
+          const t = tokens.get(id); if (t) t.revoked = true; return !!t;
+        },
         [Symbol.dispose]() {},
       };
     },
@@ -108,7 +120,7 @@ it("100 simultaneous claims of 100 tasks all succeed through transient Artifacts
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   const { L, fa, actors, callers, claim } = await setup("concurrency-hundred", 100, 100, {
-    forkBefore: (k) => k % 7 === 0, forkAfter: (k) => k % 5 === 0, inProgress: 1, mint: (k) => k % 6 === 0,
+    forkBefore: (k) => k % 7 === 0, forkAfter: (k) => k % 5 === 0, inProgress: 1, mint: (k) => k % 6 === 0, info: (k) => k % 4 === 0,
   });
   const retries = { n: 0 };
   const answers = await Promise.all(callers.map((call, i) => claimRetrying(call, claim(`t${i + 1}`), retries)));
@@ -194,6 +206,58 @@ it("a token that cannot be made answers 503; the claimer keeps the task and its 
   const again = await callers[0]("POST", claim("t1"));
   expect(again.status).toBe(200);
   expect(fa.live("concurrency-mint--t1")).toEqual([await L.tokenId("t1")]);
+});
+
+it("a project branch lookup that fails once is retried within the claim, which succeeds", async () => {
+  const warnings: string[] = [];
+  vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => { warnings.push(args.map(String).join(" ")); });
+  // The record names no branch, so the claim reads the baseline's info for it first.
+  const { L, fa, actors, callers, claim } = await setup("concurrency-branch-once", 1, 1, {
+    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, info: (k) => k === 1,
+  });
+  expect((await L.project()).branch).toBeFalsy();
+  const res = await callers[0]("POST", claim("t1"));
+  expect(res.status).toBe(200);
+  expect((await L.item("t1")).owner).toBe(actors[0]);
+  expect(fa.live("concurrency-branch-once--t1")).toEqual([await L.tokenId("t1")]);
+  expect(warnings.join("\n")).toContain(`read the branch of concurrency-branch-once (attempt 1, retrying) failed: Error code=UNAVAILABLE message="repository service unavailable"`);
+});
+
+it("a project branch lookup that stays unavailable answers 503 with Retry-After, logs the code and message, and the claimer's retry succeeds", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const errors: string[] = [];
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
+  let down = true;
+  const { L, fa, actors, callers, claim } = await setup("concurrency-branch", 1, 1, {
+    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, info: () => down,
+  });
+  const first = await callers[0]("POST", claim("t1"));
+  expect(first.status).toBe(503);
+  expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
+  const body = await first.text();
+  expect(JSON.parse(body).error).toBe("artifacts_unavailable");
+  expect(body).not.toContain("art_secret_");
+  expect(errors.join("\n")).toContain(`read the branch of concurrency-branch failed: Error code=UNAVAILABLE message="repository service unavailable"`);
+  expect(fa.live("concurrency-branch--t1")).toEqual([]);
+  expect((await L.item("t1")).owner).toBe(actors[0]);
+  down = false;
+  const again = await callers[0]("POST", claim("t1"));
+  expect(again.status).toBe(200);
+  expect(fa.live("concurrency-branch--t1")).toEqual([await L.tokenId("t1")]);
+});
+
+it("a holder's claim again whose revocation fails once is retried, and the old token is revoked before the new one is given", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, callers, claim } = await setup("concurrency-revoke", 1, 1, {
+    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, revoke: (k) => k === 1,
+  });
+  expect((await callers[0]("POST", claim("t1"))).status).toBe(200);
+  const old = await L.tokenId("t1");
+  const again = await callers[0]("POST", claim("t1"));
+  expect(again.status).toBe(200);
+  const now = await L.tokenId("t1");
+  expect(now).not.toBe(old);
+  expect(fa.live("concurrency-revoke--t1")).toEqual([now]);
 });
 
 it("a request that fails for an unforeseen reason logs the error's code and message, not only its stack", async () => {
