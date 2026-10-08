@@ -11,8 +11,11 @@ import assert from "node:assert/strict";
 //
 // The gateway lives at a reserved host that only Atelier's check sandbox can
 // reach: the container's egress is otherwise the npm registry alone, and it
-// holds no credential. On any other machine the host answers nothing, and
+// holds no credential. On any other machine the host does not exist, and
 // this check says so and skips — it cannot render, so it claims nothing.
+// Where the host answers, every answer but 200 fails the check: a gateway
+// with no browser, a render that failed, or a run past its renders is a
+// render that did not happen, not a page that passed.
 
 const HOST = "https://render.atelier.test";
 
@@ -77,10 +80,7 @@ test("the public pages render in a browser without a broken diagram or layout (t
     t.skip("no render gateway on this machine; only Atelier's check sandbox answers one");
     return;
   }
-  if (probe.status !== 200) {
-    t.skip(`the render gateway answered ${probe.status}, so nothing was rendered`);
-    return;
-  }
+  assert.equal(probe.status, 200, `the render gateway answered ${probe.status}: ${(await probe.text()).slice(0, 300)}`);
   const pages = await buildPages();
   for (const { page, html } of pages) {
     const res = await fetch(`${HOST}/check`, {
@@ -89,10 +89,7 @@ test("the public pages render in a browser without a broken diagram or layout (t
       body: JSON.stringify({ page, html }),
       signal: AbortSignal.timeout(180_000),
     });
-    if (res.status !== 200) {
-      t.skip(`${page}: the renderer could not load it (${res.status} ${(await res.text()).slice(0, 300)})`);
-      return;
-    }
+    assert.equal(res.status, 200, `${page}: the render gateway could not render it (${res.status} ${(await res.text()).slice(0, 300)})`);
     const { problems } = await res.json();
     assert.deepEqual(problems, [], `${page} as a browser renders it:\n${(problems ?? []).join("\n")}`);
   }
