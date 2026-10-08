@@ -370,16 +370,31 @@ const ask = (runner, agents, secondsAgo, jobs) =>
 test("a runner is live while it asked within the offer window; a line says who offered what and when", () => {
   const studio = ask("home:studio", [{ agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }], 30, ["build", "plan", "review"]);
   assert.ok(isLive(studio, NOW));
-  assert.equal(runnerLine(studio, NOW), "home:studio  live, asked 30s ago  offers claude-code/opus-5.5, claude-code/sonnet-5.5  jobs: build, plan, review");
+  assert.equal(runnerLine(studio, NOW), "home:studio  live, asked 30s ago  offers claude-code/opus-5.5, claude-code/sonnet-5.5  jobs: build, plan, review (not merge-main, merge-main-task, merge-plan)");
   const gone = ask("home:laptop", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 60 * 60);
   assert.equal(isLive(gone, NOW), false);
   assert.equal(runnerLine(gone, NOW), "home:laptop  not live, last asked 3h ago  offers zcode/glm-5.3");
   // A runner that offers no model says so, and an unreadable time is not live.
-  assert.equal(runnerLine({ ...studio, agents: [] }, NOW), "home:studio  live, asked 30s ago  offers no model  jobs: build, plan, review");
+  assert.equal(runnerLine({ ...studio, agents: [] }, NOW), "home:studio  live, asked 30s ago  offers no model  jobs: build, plan, review (not merge-main, merge-main-task, merge-plan)");
   assert.equal(isLive({ ...studio, at: "not a time" }, NOW), false);
   // A runner busy on a task asks again only when it ends, so an hour and a half
   // since its last ask is still live (OFFER_LIVE_MS).
   assert.ok(isLive(ask("home:busy", [], 90 * 60), NOW));
+});
+
+// t289: a runner's line names the jobs it leaves out, as the runner's own
+// first line does at start (jobsLine in cli/runner.mjs). The 2026-10-07
+// incident: both build runners ran a config written before t252 with jobs:
+// ["plan"] — which then meant the plan job besides building — and claimed
+// nothing for about an hour while seven dispatches waited; the Runners
+// section said only "jobs: plan", so the narrowing read as a preference,
+// not as the runner taking no build at all.
+test("a runner's line names the jobs it leaves out, as its own first line does", () => {
+  const incident = ask("home:studio", [{ agent: "opencode", models: ["glm-5.3"] }], 30, ["plan"]);
+  assert.equal(runnerLine(incident, NOW), "home:studio  live, asked 30s ago  offers opencode/glm-5.3  jobs: plan (not build, merge-main, merge-main-task, merge-plan, review)");
+  // A runner taking every known job names no omission.
+  const every = ask("home:all", [{ agent: "opencode", models: ["glm-5.3"] }], 30, ["build", "plan", "merge-main", "merge-main-task", "merge-plan", "review"]);
+  assert.equal(runnerLine(every, NOW), "home:all  live, asked 30s ago  offers opencode/glm-5.3  jobs: build, plan, merge-main, merge-main-task, merge-plan, review");
 });
 
 test("the runners section lists live runners first, and formatStatus appends it once, after the projects", () => {

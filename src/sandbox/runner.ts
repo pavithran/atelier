@@ -5,7 +5,11 @@
 // the Worker reads the item's exact tree from Artifacts and streams it into
 // `tar -x`. The container starts with the Internet off; the only host it can
 // reach is the npm registry, through a pass-through gateway that allows GET and
-// HEAD. Results are written to the Ledger by this code alone, marked "sandbox",
+// HEAD, and the reserved render host, answered by the Worker itself: the
+// render check (src/render-check.ts) POSTs a page there to be rendered by
+// Browser Run, with JavaScript off and every request but the pages' fonts
+// blocked, a few times per run at most, and gets back only problems.
+// Results are written to the Ledger by this code alone, marked "sandbox",
 // which nothing posted to the public API can claim.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -13,6 +17,7 @@ import { againstMain, changedPaths, pairReader, repoReader, type Reader } from "
 import { mergePatch, mergeTrees, type Patch } from "../preview/merge";
 import { refusalOf, refusalText } from "../checks.ts";
 import { checkApplies, type CheckPaths } from "../rules.ts";
+import { MAX_RENDERS, renderGateway, RENDER_HOST } from "../render-check.ts";
 import { capLarge, putLarge, LARGE_MAX, type LargeRef } from "../large.ts";
 import { END_OF_ARCHIVE } from "./tar";
 import { writeTree } from "./tree";
@@ -75,14 +80,28 @@ export interface RunState {
   error?: string;
 }
 
-// Pass-through egress: the npm registry only, reads only, nothing added.
-export class Egress extends WorkerEntrypoint<Env> {
+// Pass-through egress: the npm registry only, reads only, nothing added. One
+// reserved host is not passed through but answered here: the render gateway,
+// which the sandbox's render check POSTs a rendered page to and which holds
+// the browser, so the container never holds a credential of its own. The
+// gateway is answered only for the run named in this entrypoint's props,
+// which CheckRunner sets when it starts its own container, and draws on that
+// run's render allowance (CheckRunner.takeRenders); without a run it refuses.
+export async function routeEgress(env: Env, request: Request, runId?: string): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.hostname === RENDER_HOST) {
+    const runner = runId ? env.RUNNER.get(env.RUNNER.idFromName(runId)) : null;
+    return renderGateway(env.BROWSER, request, runner ? { take: (n) => runner.takeRenders(n) } : null);
+  }
+  if (!EGRESS_HOSTS.includes(url.hostname) || (request.method !== "GET" && request.method !== "HEAD")) {
+    return new Response(`Atelier's check sandbox may not reach ${request.method} ${url.hostname}`, { status: 403 });
+  }
+  return fetch(request);
+}
+
+export class Egress extends WorkerEntrypoint<Env, { runId?: string }> {
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (!EGRESS_HOSTS.includes(url.hostname) || (request.method !== "GET" && request.method !== "HEAD")) {
-      return new Response(`Atelier's check sandbox may not reach ${request.method} ${url.hostname}`, { status: 403 });
-    }
-    return fetch(request);
+    return routeEgress(this.env, request, this.ctx.props.runId);
   }
 }
 
@@ -104,6 +123,22 @@ export class CheckRunner extends DurableObject<Env> {
 
   async state(): Promise<RunState | null> {
     return (await this.ctx.storage.get<RunState>("state")) ?? null;
+  }
+
+  // The render gateway's allowance for this run: n more renders are granted
+  // only while the run is running and the run has used fewer than
+  // MAX_RENDERS with them. Read and counted in one synchronous step, so two
+  // requests at once cannot both take the last ones.
+  async takeRenders(n: number): Promise<boolean> {
+    if (!Number.isInteger(n) || n < 1) return false;
+    const state = await this.ctx.storage.get<RunState>("state");
+    if (state?.status !== "running") return false;
+    return this.ctx.storage.transactionSync(() => {
+      const used = this.ctx.storage.kv.get<number>("renders") ?? 0;
+      if (used + n > MAX_RENDERS) return false;
+      this.ctx.storage.kv.put("renders", used + n);
+      return true;
+    });
   }
 
   async alarm(): Promise<void> {
@@ -179,7 +214,7 @@ export class CheckRunner extends DurableObject<Env> {
 
     const container = this.ctx.container;
     if (!container) throw new Error("no container is configured for CheckRunner");
-    for (const host of EGRESS_HOSTS) await container.interceptOutboundHttps(host, this.ctx.exports.Egress({ props: {} }));
+    for (const host of [...EGRESS_HOSTS, RENDER_HOST]) await container.interceptOutboundHttps(host, this.ctx.exports.Egress({ props: { runId: req.runId } }));
     container.start({
       image: IMAGE,
       entrypoint: ["sleep", "infinity"],

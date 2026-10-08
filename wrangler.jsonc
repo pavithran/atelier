@@ -3,6 +3,12 @@
   "name": "atelier",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-03",
+  // Workers Logs: the account keeps every invocation and every console.*
+  // line the Worker writes (seven days, three on the free plan) — read them
+  // in the dashboard under Workers & Pages → atelier → Observability, or
+  // live with wrangler tail; docs/orchestrating.md, "Reading the server's
+  // logs", says how a session queries them. test/workers-logs.test.mjs
+  // keeps the logs free of tokens and keys.
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
@@ -31,6 +37,14 @@
   // Atelier's own metrics (src/metrics.ts).
   "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "atelier_metrics" }],
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
+  // Cloudflare Browser Run (Browser Rendering until 2026): the render check
+  // (src/render-check.ts) scrapes each page the sandbox sends with
+  // JavaScript off and allowRequestPattern set to the pages' Google Fonts
+  // stylesheet URL and fonts.gstatic.com font files only, so the page loads
+  // nothing else; a check run may render at most MAX_RENDERS times, and the
+  // answer holds no text the browser got from anywhere but the sent HTML.
+  // The binding holds no credential the sandbox could read.
+  "browser": { "binding": "BROWSER" },
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   // Large payloads by reference (t284): whole check logs and review diffs are
   // kept in R2 and named by their key in briefs and the ledger, instead of
