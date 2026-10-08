@@ -76,6 +76,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
     requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], runners: null, renewFails: false, kinds: {},
+    wf: { instance: null, stage: null, round: 0, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
   };
   // The tasks fork from the baseline before main moves, so a landing has
   // main's commits to merge; each has a workspace in the cache's layout.
@@ -119,6 +120,20 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     let answer = item ? detail(item) : {};
     const fail = (status, error, detailText) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ error, detail: detailText })); };
     if (url === "/api/version") answer = { commit: box.version ?? repoHead, ...(box.routeLevel === null ? {} : { routeLevel: box.routeLevel }) };
+    else if (url.endsWith("/landing-workflow")) {
+      // A stand-in for the landing Workflow (t280): the instance the route
+      // remembers, its stage and round, and its status. A test moves it on
+      // through `wf.tick` (after each read) and `wf.onEvent` (each event).
+      const wf = box.wf;
+      const view = () => ({ instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.files ? { files: wf.files } : {}), status: { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
+      if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
+      else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
+      else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status)) answer = { ...view(), created: false };
+      else { Object.assign(wf, { instance: `land-${item}-${wf.started.length + 1}`, stage: "lease", round: 0, status: "running", files: null, error: null }); wf.started.push(body); answer = { ...view(), created: true }; }
+      res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
+      if (req.method === "GET") wf.tick?.(box);
+      return;
+    }
     else if (url === "/api/projects/proj/landing-lease") {
       // The lease and the queue of waiting landings as the server keeps
       // them (t249): a renewal moves renewedAt on, a lease not renewed for
@@ -177,7 +192,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     } else if (url === "/api/projects/proj/items") answer = box.items;
     else if (url === "/api/queue") answer = box.queue;
     else if (url === "/api/runners") answer = box.runners;
-    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") answer = { remote: baseline, token: "fixture", defaultBranch: "main" };
+    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") (box.wf.baseTokenAt.push(box.wf.stage), answer = { remote: baseline, token: "fixture", defaultBranch: "main" });
     else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
     else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
     else if (url.endsWith("/evidence")) answer = item ? { ...detail(item), evidence: [] } : {};
@@ -1298,4 +1313,117 @@ test("a landing that merged says the handover, not a warning, when a queued land
   assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true && x.body.item === "t1"));
   assert.equal(f.box.lease?.item, "t2");
   assert.equal(f.box.states.t1, "merged");
+});
+
+// ── atelier land --workflow (t280) ──────────────────────────────────────────
+
+// The stand-in landing Workflow as the real one moves (src/landing-workflow.ts):
+// it queues for the lease, then holds it and asks for the workspace (on its
+// second read, so the executor sees the queueing first); a report of the
+// round's pushed head makes it accept (as the review and the checks would on
+// the server) and ask for the merge; a report of conflicts pauses it with the
+// lease released; a resume starts the next round; the recorded merge
+// completes it.
+function scriptWorkflow(f) {
+  const wf = f.box.wf;
+  let leaseReads = 0;
+  wf.tick = (box) => {
+    if (wf.stage === "lease" && ++leaseReads >= 2) {
+      const now = new Date().toISOString();
+      wf.stage = "workspace"; box.lease = { item: "t1", holder: "owner", at: now, renewedAt: now };
+    }
+    if (wf.stage === "merge" && box.states.t1 === "merged") { wf.stage = "done"; wf.status = "complete"; wf.output = { landed: true }; box.lease = null; }
+  };
+  wf.onEvent = (event, box) => {
+    if (event.type === "workspace" && event.payload.round !== wf.round) return;
+    if (event.type === "workspace" && event.payload.conflict) { wf.stage = "conflict"; wf.files = event.payload.files; box.lease = null; }
+    else if (event.type === "workspace" && event.payload.failed) { wf.stage = "failed"; wf.status = "errored"; wf.error = event.payload.reason; box.lease = null; }
+    else if (event.type === "workspace") { wf.stage = "merge"; box.states.t1 = "accepted"; }
+    else if (event.type === "resume" && event.payload.round === wf.round) { wf.stage = "lease"; wf.round++; leaseReads = 0; }
+  };
+  return wf;
+}
+
+test("land --workflow starts the Workflow, merges main and pushes only once the Workflow holds the lease, reports the head, and merges when it accepts", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const wf = scriptWorkflow(f);
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Landing t1 as a Cloudflare Workflow \(instance land-t1-1\)/);
+  assert.match(r.output, /The landing Workflow queues for the landing lease\./);
+  assert.match(r.output, /The landing Workflow holds the lease and waits for this machine to merge main and push\./);
+  assert.match(r.output, /t1 landed through the landing Workflow/);
+  // The merge of main began only when the Workflow held the lease (the
+  // merge in the checkout reads the baseline's token later, at `merge`).
+  assert.equal(wf.baseTokenAt[0], "workspace");
+  assert.ok(!wf.baseTokenAt.includes("lease"));
+  // The workspace report names the round, the pushed head and main's head.
+  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
+  assert.equal(f.forkHead("t1"), head);
+  assert.deepEqual(wf.events, [{ type: "workspace", payload: { round: 0, head, mainHead: f.mainCommit, mergedIn: true } }]);
+  // The server's steps are the Workflow's: this machine ran no check and
+  // made no submission, review request or acceptance of its own.
+  for (const route of ["/submit", "/review-request", "/accept", "/sandbox"]) assert.deepEqual(f.posts(route), [], route);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "merged"]);
+  // The merge in the registered checkout holds the pushed head.
+  assert.equal(f.box.states.t1, "merged");
+  assert.deepEqual(git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [before, head]);
+});
+
+test("land --workflow pauses the Workflow on a conflict, and the rerun after the owner resolves it resumes the landing in a new round", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits the same file" } });
+  const wf = scriptWorkflow(f);
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
+  assert.match(r.output, /The landing Workflow is paused at its conflict stage and has released the lease\. Once the conflicts are resolved and committed, run atelier land t1 --workflow again: it resumes this landing\./);
+  assert.equal(wf.events.length, 1);
+  assert.deepEqual({ ...wf.events[0].payload, reason: undefined }, { round: 0, conflict: true, files: ["work.txt"], reason: undefined });
+  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
+  assert.deepEqual(f.posts("/push"), []);
+  assert.equal(wf.stage, "conflict");
+  // The owner resolves and commits; the rerun attaches, resumes round 0's
+  // pause, and does the workspace steps of round 1 when the Workflow asks.
+  writeFileSync(join(f.workspace("t1"), "work.txt"), "task and main\n");
+  git(f.workspace("t1"), "add", "-A"); git(f.workspace("t1"), "commit", "--no-edit", "-q");
+  const again = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(again.status, 0, again.output);
+  assert.match(again.output, /Attached to t1's landing Workflow \(instance land-t1-1, at conflict\)/);
+  assert.match(again.output, /Resumed the landing after the conflicts of round 1/);
+  assert.equal(wf.started.length, 1);
+  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
+  assert.deepEqual(wf.events.slice(1), [{ type: "resume", payload: { round: 0 } }, { type: "workspace", payload: { round: 1, head, mainHead: f.mainCommit, mergedIn: false } }]);
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("land --workflow ends with the Workflow's own reason when the Workflow fails", async (t) => {
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  wf.onEvent = (event, box) => { wf.stage = "failed"; wf.status = "errored"; wf.error = "the required checks failed at abcdef12 in the Cloudflare container: npm test"; box.lease = null; };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the landing Workflow land-t1-1 failed: the required checks failed at abcdef12 in the Cloudflare container: npm test/);
+  assert.deepEqual(f.posts("/merged"), []);
+});
+
+test("land --workflow refuses an accepted task with no live Workflow, as the plain landing does, and starts nothing", async (t) => {
+  const f = await landFixture(t);
+  scriptWorkflow(f);
+  f.box.states.t1 = "accepted";
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /t1 is accepted at \w+; merge it with: atelier merge t1\./);
+  assert.deepEqual(f.posts("/landing-workflow"), []);
+});
+
+test("land without --workflow never reaches the landing Workflow, and --dry-run with --workflow is refused", async (t) => {
+  const f = await landFixture(t);
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.ok(f.box.requests.every((x) => !x.path.includes("landing-workflow")));
+  assert.equal(f.box.states.t1, "merged");
+  const both = await f.run(f.checkout, "land", "t2", "--workflow", "--dry-run");
+  assert.equal(both.status, 1, both.output);
+  assert.match(both.output, /--dry-run and --workflow together say two things/);
 });
