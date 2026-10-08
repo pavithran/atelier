@@ -5,10 +5,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { COMMON, FLAGS } from "../cli/atelier.mjs";
-import { COMMAND_HELP, COMMAND_USAGE, HELP_FORMS, commandUsage } from "../src/usage.ts";
+import { COMMAND_HELP, COMMAND_USAGE, HELP_FORMS, commandUsage } from "../cli/help.mjs";
 
 // The flag table in cli/atelier.mjs is what the parser accepts; the help in
-// src/usage.ts is what the CLI says it accepts. These tests hold the two
+// cli/help.mjs is what the CLI says it accepts. These tests hold the two
 // together: every flag the parser takes is in the command's help, the help
 // names no flag the parser refuses, and every command answers --help with
 // usage of its own.

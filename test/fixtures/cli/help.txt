@@ -29,3 +29,4 @@ Docs       guide   (paste into a project's AGENTS.md)
 
 Tokens     token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --sandbox-only is on when named alone. It takes the word true or false after it and never any other word: --sandbox-only false or --sandbox-only=false turns it off.
+Undo: revert ID
