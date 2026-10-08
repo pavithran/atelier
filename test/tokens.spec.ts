@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { parseRuleError } from "../src/rules.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
@@ -90,7 +91,7 @@ for (const transfer of ["handoff", "release"]) {
     await L(name).recordPush("t1", next, head, null);
     await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: next, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
     await L(name).submit("t1", next);
-    const review = { itemId: "t1", by: ACTOR, head, approve: true, note: "", at: new Date().toISOString() };
+    const review = { itemId: "t1", by: ACTOR, head, criteria: NO_CRITERIA, approve: true, note: "", at: new Date().toISOString() };
     await L(name).addReview(review);
     expect((await L(name).detail("t1") as unknown as ReturnType<Ledger["detail"]>).gate).toMatchObject({ ready: false, needsAssessor: true });
     await refusal(L(name).accept("t1", "owner", head), "not_ready", /protected path/);
@@ -242,7 +243,7 @@ it("an agent claims, pushes, records checks, hands off and reviews as itself", a
     expect((await L(name).item("t1")).owner).toBe(ACTOR);
   }
   expect((await post("handoff", { to: "claude-code/opus-5.5" })).status).toBe(200);
-  expect((await post("review", { head, approve: true, note: "Reviewed" })).status).toBe(200);
+  expect((await post("review", { head, criteria: NO_CRITERIA, approve: true, note: "Reviewed" })).status).toBe(200);
   const events = await L(name).events("t1") as unknown as { actor: string; proved?: true; kind: string }[];
   for (const kind of ["item.claimed", "fork.created", "push.observed", "evidence.observed", "item.submitted", "item.handoff", "review.approved"]) {
     expect(events.find((e) => e.kind === kind)).toMatchObject({ actor: ACTOR, proved: true });
@@ -260,12 +261,12 @@ it("agent reviews cannot reopen accepted work but the owner can", async () => {
   await L(name).submit("t1", "claude-code/opus-5.5");
   await L(name).accept("t1", "owner", head);
   for (const approve of [true, false]) {
-    expect((await call("POST", `/projects/${name}/items/t1/review`, token, undefined, { head, approve })).status).toBe(403);
-    await refusal(L(name).addReview({ itemId: "t1", by: ACTOR, head, approve, note: "", at: new Date().toISOString() }, undefined, true), "accepted", /only the owner token may reopen/);
+    expect((await call("POST", `/projects/${name}/items/t1/review`, token, undefined, { head, criteria: NO_CRITERIA, approve })).status).toBe(403);
+    await refusal(L(name).addReview({ itemId: "t1", criteria: await L(name).criteria("t1"), by: ACTOR, head, approve, note: "", at: new Date().toISOString() }, undefined, true), "accepted", /only the owner token may reopen/);
     expect((await L(name).item("t1")).state).toBe("accepted");
     expect(await L(name).reviewsFor("t1")).toEqual([]);
   }
-  expect((await call("POST", `/projects/${name}/items/t1/review`, OWNER_TOKEN, "owner", { head, approve: false })).status).toBe(200);
+  expect((await call("POST", `/projects/${name}/items/t1/review`, OWNER_TOKEN, "owner", { head, criteria: NO_CRITERIA, approve: false })).status).toBe(200);
   expect((await L(name).item("t1")).state).toBe("submitted");
 });
 
@@ -280,7 +281,7 @@ it("handoffs cannot erase push contributors from the acceptance gate", async () 
   await L(name).observePush("t1", head, "a".repeat(40));
   await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L(name).submit("t1", "claude-code/opus-5.5");
-  await L(name).addReview({ itemId: "t1", by: ACTOR, head, approve: true, note: "", at: new Date().toISOString() });
+  await L(name).addReview({ itemId: "t1", criteria: await L(name).criteria("t1"), by: ACTOR, head, approve: true, note: "", at: new Date().toISOString() });
   const detail = await L(name).detail("t1") as unknown as { item: { pushActors: string[] }; gate: { needsAssessor: boolean } };
   expect(detail.item.pushActors).toEqual([ACTOR, "claude-code/opus-5.5"]);
   expect(detail.gate.needsAssessor).toBe(true);

@@ -726,6 +726,11 @@ export async function runReview(assignment, config, name, io) {
       return { phase: "failed", reason: parsed.error, taskFailure: true };
     }
     const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
+    // The verdict is bound to the criteria the brief carried and to the
+    // request claimed, as the claim gave them, so a verdict on criteria that
+    // changed while the harness ran is refused rather than counted.
+    if (claimed.criteria) argv.push("--criteria", claimed.criteria);
+    if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
     if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${parsed.verdict}`);
