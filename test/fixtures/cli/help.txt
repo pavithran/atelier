@@ -7,7 +7,7 @@ Items      new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]...
            ls [--all] [--json] · show ID [--reviews] [--json] · receipt ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--json] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] [--runner home:NAME] · done "summary" [--sandbox]
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push [--force | --rollback] · update · check [--sandbox] [--merged] [-- CMD] · report [ID] "what you verified and how" [--item ID] [--project P] · submit [--summary T]
-           handoff ID --to H/M [--note TEXT] · release ID [--note TEXT] · block [ID] "what it is waiting on" · unblock [ID] · diff ID · review ID --approve|--reject [--note TEXT] [--head SHA] [--findings JSON] · review-claim ID [--runner home:NAME] · review-release ID [--note T]
+           handoff ID --to H/M [--note TEXT] · release ID [--note TEXT] · block [ID] "what it is waiting on" · unblock [ID] · diff ID · review ID --approve|--reject --criteria BINDING [--request N] [--note TEXT] [--head SHA] [--findings JSON] · review-claim ID [--runner home:NAME] · review-release ID [--note T]
            read-token ID · base-token ID · integrated ID --part KEY --merge-commit SHA · integration-failed ID --part KEY --reason TEXT [--kind conflict|checks] · refreshed ID --main-head SHA [--merge-commit SHA] · refresh-failed ID --main-head SHA --reason TEXT [--kind conflict|checks]
 Owner      accept ID [--head SHA] [--override-review REASON] [--note TEXT] · merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON]] [--policy-changed-ok] · merge ID --cancel [--discard-local] · land ID [--reviewer H/M] [--no-review] [--wait] [--dry-run] [--release-lease] [--workflow [--checks local|container]] · abandon ID [--note TEXT] [--delivered-by tN] · defect ID --note TEXT [--found-in ID] · finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT]
            run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT] · served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply] · approve ACTION --head SHA [--note T] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
@@ -25,7 +25,7 @@ Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME 
            runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
            runner --usage [--name home:NAME] [--dry-run] [--config PATH]   (each tool's windows, served models, costs and balances)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
-Docs       guide   (paste into a project's AGENTS.md)
+Docs       guide [--role build|review|plan|orchestrate]   (paste into a project's AGENTS.md)
 
 Tokens     token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --sandbox-only is on when named alone. It takes the word true or false after it and never any other word: --sandbox-only false or --sandbox-only=false turns it off.
