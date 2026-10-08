@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
@@ -595,10 +596,10 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
   expect(early.status).toBe(409);
   expect(await early.json()).toMatchObject({ error: "not_ready" });
   // The agent cannot supply the review itself; another model can.
-  const own = await agent("POST", "/items/t1/review", { head: H1, approve: true, note: "mine" });
+  const own = await agent("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: true, note: "mine" });
   expect(own.status).toBe(403);
   expect(await own.json()).toMatchObject({ error: "self_review" });
-  expect((await reviewer("POST", "/items/t1/review", { head: H1, approve: true, note: "read the instructions" })).status).toBe(200);
+  expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: true, note: "read the instructions" })).status).toBe(200);
   const accepted = await owner("POST", "/items/t1/accept", { head: H1 });
   expect(accepted.status, await accepted.clone().text()).toBe(200);
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1 });
@@ -691,7 +692,7 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   const owner = as(TOKEN, "owner");
   const reason = "No model of another family is available";
 
-  expect((await owner("POST", "/items/t1/review", { head: H1, approve: true, note: "looks right" })).status).toBe(200);
+  expect((await owner("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: true, note: "looks right" })).status).toBe(200);
   const plain = await owner("POST", "/items/t1/accept", { head: H1 });
   expect(plain.status).toBe(409);
   expect(await plain.json()).toMatchObject({ error: "not_ready" });
@@ -1180,4 +1181,69 @@ it("the showcase draws a named project's short title, never its brief, and neith
       expect(html, name).toContain("a fix");
     } else expect(html, name).toContain("Fix the quokka parser");
   }
+});
+
+// t326: the review route records a verdict only with the binding of the
+// criteria it judged, as they are now, and the edit route says what a change
+// of the criteria withdrew; edits that leave them as they are say nothing.
+it("a verdict on criteria that changed while its reviewer ran is refused with how to refresh, and leaves the replacement request unanswered", async () => {
+  const name = "routes-criteria", A = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra";
+  const H0 = "0".repeat(40), H1 = "a".repeat(40);
+  const ONE = ["Nested lists parse"], TWO = ["Nested lists parse", "Errors name the line"];
+  await project(name, ["AGENTS.md"]);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Parse nested lists", [], "owner", { accept: ONE });
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.submit("t1", A);
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: "1".repeat(40) }] }, {});
+  const api = (actor: string) => (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+  }), { ...testEnv, ARTIFACTS } as typeof env);
+  const owner = api("owner"), reviewer = api(GPT);
+  type Detail = { criteria: string; gate: { ready: boolean }; reviews: unknown[] };
+  const one = (await (await owner("GET", "/items/t1")).json() as Detail).criteria;
+  await L.requestReview("t1", "owner", GPT, []);
+  const claim = await L.claimReview("t1", GPT, { runner: "home:studio", kind: "home" }) as unknown as { criteria: string; request: number };
+  expect(claim.criteria).toBe(one);
+
+  // Edits that leave the criteria as they are, the field cleaning included, say nothing of them.
+  for (const body of [{ title: "Parse lists" }, { nonGoals: ["No new syntax"] }, { accept: ONE }, { accept: [" Nested lists\u0007parse "] }, { brief: "All of it", nextGate: "Owner" }]) {
+    const res = await owner("POST", "/items/t1/edit", body);
+    expect(res.status, JSON.stringify(body)).toBe(200);
+    const edited = await res.json() as { accept: string[]; criteriaChange?: unknown };
+    expect(edited.criteriaChange, JSON.stringify(body)).toBeUndefined();
+    expect(edited.accept).toEqual(ONE);
+  }
+  expect((await L.reviewRequests("t1")).map((r) => r.state)).toEqual(["claimed"]);
+
+  // The owner changes the criteria while the reviewer runs: the claim is
+  // withdrawn and the same reviewer is asked again at the same head.
+  const changed = await (await owner("POST", "/items/t1/edit", { accept: TWO })).json() as { criteriaChange: { reviews: number; requests: number; asked: string[] } };
+  expect(changed.criteriaChange).toMatchObject({ reviews: 0, requests: 1, asked: [GPT] });
+  expect((await L.reviewRequests("t1")).map((r) => [r.head, r.state])).toEqual([[H1, "withdrawn"], [H1, "open"]]);
+  // The old verdict, with or without its request, and one with no binding, are refused, saying to refresh.
+  for (const [body, error] of [
+    [{ head: H1, criteria: claim.criteria, request: claim.request, approve: true, note: "old" }, "stale_criteria"],
+    [{ head: H1, criteria: claim.criteria, approve: true, note: "old" }, "stale_criteria"],
+    [{ head: H1, approve: true, note: "unbound" }, "criteria_unbound"],
+  ] as const) {
+    const res = await reviewer("POST", "/items/t1/review", body);
+    expect(res.status).toBe(409);
+    const answer = await res.json() as { error: string; detail: string };
+    expect(answer.error).toBe(error);
+    expect(answer.detail).toMatch(/refresh: read t1's acceptance criteria and their binding with atelier show t1/);
+  }
+  expect((await L.reviewRequests("t1")).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+  expect((await L.reviewsFor("t1")).length).toBe(0);
+  // A fresh claim binds the new criteria, and its verdict stands.
+  const fresh = await L.claimReview("t1", GPT, { runner: "home:studio", kind: "home" }) as unknown as { criteria: string; request: number };
+  const two = (await (await owner("GET", "/items/t1")).json() as Detail).criteria;
+  expect(fresh.criteria).toBe(two);
+  expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: fresh.criteria, request: fresh.request, approve: true, note: "read them" })).status).toBe(200);
+  expect((await (await owner("GET", "/items/t1")).json() as Detail).gate.ready).toBe(true);
+  // The brief route gives the criteria and their binding, as atelier show prints them.
+  expect(await (await owner("GET", "/items/t1/brief")).json()).toMatchObject({ accept: TWO, partAccept: null, criteria: two });
 });

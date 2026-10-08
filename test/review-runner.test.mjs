@@ -535,3 +535,25 @@ test("the runner writes the review diff into the clone's .scratch/, kept out of 
   assert.equal(seen.status, "", "the diff file is not seen by Git");
   assert.ok(seen.brief.includes("The whole diff is also in the file `.scratch/atelier-review.diff` in your clone."), seen.brief);
 });
+
+// t326: the verdict carries the binding of the criteria the claim's brief
+// carried and the request it claimed, exactly as the claim gave them, so a
+// verdict on criteria that changed while the harness ran is refused.
+test("runReview names the claim's criteria binding and request with the verdict, as the claim gave them", async () => {
+  const C = "c".repeat(64);
+  const { io, calls } = fixture({ claim: { ...claimed, item: { ...claimed.item, accept: ["Reviews are bound"] }, criteria: C, request: 42 } });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "reviewed");
+  const posted = calls.find((c) => c.argv && c.argv[0] === "review").argv;
+  assert.equal(posted[posted.indexOf("--criteria") + 1], C);
+  assert.equal(posted[posted.indexOf("--request") + 1], "42");
+  // The brief the harness read carried both lists the binding names.
+  const brief = calls.find((c) => c.brief).brief;
+  assert.ok(brief.includes("1. Reviews are bound") && brief.includes("1. Tests pass"));
+  // A claim from a server that gave no binding sends none: the server refuses
+  // the verdict rather than the runner filling one in.
+  const older = fixture();
+  await runReview(assignment, config, "home:studio", older.io);
+  const unbound = older.calls.find((c) => c.argv && c.argv[0] === "review").argv;
+  assert.ok(!unbound.includes("--criteria") && !unbound.includes("--request"));
+});

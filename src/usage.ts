@@ -41,7 +41,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Items", lines: [[
     { form: 'new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates a task with a short title (at most 80 characters, what every list shows), and optionally its brief (the whole task, shown on its page and given to the agents that build and review it), its acceptance criteria (a change that fails one is rejected in review), the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. One long text with no --brief is kept as the brief, and the title is derived from its first clause. The brief, `atelier start` and the task's page show them." },
-    { form: "edit ID [--title TEXT] [--brief TEXT] [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's title, brief, acceptance criteria, non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared." },
+    { form: "edit ID [--title TEXT] [--brief TEXT] [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's title, brief, acceptance criteria, non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared. Changing the acceptance criteria (their text, order or entries) withdraws every review and open or claimed review request of the old ones, an acceptance (the task goes back to claimed) and an override of the review, and says so: a fresh review of the new criteria is needed. The same list again changes nothing. The criteria of an integrated part, or of a task being landed, cannot change." },
   ], [
     { form: "ls [--all] [--json]", about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them." },
     { form: "show ID [--reviews] [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--reviews` also prints each review at each head with its whole note and findings; `--json` prints the brief, carrying the reviews, for scripts." },
@@ -68,8 +68,8 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: 'block [ID] "what it is waiting on"', about: "The holder or the project owner blocks the task with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed, submitted, reviewed, handed off or released, and sits in the owner's inbox with the reason until it is unblocked." },
     { form: "unblock [ID]", about: "The holder or the project owner lifts the block, and the task returns to the state it was in." },
     { form: "diff ID", about: "For a reviewer: prints the task's commits and diff against the baseline, from a clean read-only clone." },
-    { form: "review ID --approve|--reject [--note TEXT] [--head SHA] [--findings JSON]", about: "Records a verdict on the task's current head, with `--note` giving the reason. `--head` names the revision the verdict is for, and the server refuses one for any head but the current. `--findings` attaches a reviewer's structured findings. The rules say whose approval counts." },
-    { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the task's open review request and gets the part, its brief's inputs and a read token for its fork." },
+    { form: "review ID --approve|--reject --criteria BINDING [--request N] [--note TEXT] [--head SHA] [--findings JSON]", about: "Records a verdict on the task's current head, with `--note` giving the reason. `--head` names the revision the verdict is for, and the server refuses one for any head but the current. `--criteria` names the binding of the acceptance criteria the verdict judged, as `atelier show` or the review claim gives it; the server refuses a verdict that names none, or criteria the task no longer has, and the reviewer must read them again. `--request` names the review request the reviewer claimed, which the verdict then answers alone. `--findings` attaches a reviewer's structured findings. The rules say whose approval counts." },
+    { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the task's open review request and gets the part, its brief's inputs, the binding of the acceptance criteria the brief carries and the request's number, which the verdict names, and a read token for its fork." },
     { form: "review-release ID [--note T]", about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it." },
   ], [
     { form: "read-token ID", about: "Reads a token for the task's own fork, with its head and base, for a job that clones it outside a task or a review." },
@@ -344,9 +344,11 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--reject": "records a rejection",
       "--note TEXT": "the reason, shown with the verdict",
       "--head SHA": "the revision the verdict is for; the task's current head unless given, and any other is refused",
+      "--criteria BINDING": "the binding of the acceptance criteria the verdict judged, as atelier show or the review claim gives it; required, and refused once the criteria change",
+      "--request N": "the review request the reviewer claimed, as the claim gives it; the verdict answers it alone, and is refused once it is withdrawn",
       "--findings JSON": "a JSON list of the reviewer's findings, kept with the verdict",
     },
-    example: 'atelier review t3 --approve --note "The tests cover the new form" --as claude-code/opus-5.5',
+    example: 'atelier review t3 --approve --criteria BINDING --note "The tests cover the new form" --as claude-code/opus-5.5',
   },
   accept: {
     flags: {
