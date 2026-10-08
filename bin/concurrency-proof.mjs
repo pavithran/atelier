@@ -41,6 +41,10 @@ every task it created.
   --json            print the report as one JSON object instead of prose
   -h, --help        print this
 
+Owner calls (creating and abandoning tasks) name ATELIER_OWNER, the
+project owner's actor (as `atelier` is configured with it); without it the
+clean-up is refused and the tasks must be abandoned by hand.
+
 The owner token is sent only to the server named, over https (plain http is
 accepted for a server on this machine alone, as the CLI accepts it).
 `;
@@ -95,9 +99,13 @@ const base = server().replace(/\/$/, "");
 // The CLI's request helper, mirrored: the owner token as a bearer header, the
 // actor in x-atelier-actor, a JSON body, and an error carrying the server's
 // code and detail when it refuses.
-async function request(method, path, body, actor) {
+// Owner calls (creating and abandoning tasks) name the owner's actor, as the
+// CLI does; the server refuses an owner-token request that names no actor.
+const OWNER_ACTOR = process.env.ATELIER_OWNER || "owner";
+
+async function request(method, path, body, actor = OWNER_ACTOR) {
   const headers = { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" };
-  if (actor) headers["x-atelier-actor"] = actor;
+  headers["x-atelier-actor"] = actor;
   let res, text;
   try {
     res = await fetch(`${base}/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
