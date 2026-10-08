@@ -857,7 +857,7 @@ test("reviewBrief: an item outside a plan, with no diff and no summary", () => {
   assert.ok(!text.includes("## The plan"));
   assert.ok(text.includes("Change class: protected, because it touches a protected path. It needs an independent review before the project owner can accept it."));
   assert.ok(text.includes("The item has no scope, so no changed file is outside it."));
-  assert.ok(text.includes("- `npm test`, on the agent's machine"));
+  assert.ok(text.includes("- `npm test`, on a runner, in a clean clone"));
   assert.ok(text.includes("The builder gave no summary with this submission."));
   assert.ok(text.includes(`The diff is not included here. Read it in your clone: git diff ${H0} ${H2}`));
   const unbased = brief({ need, plan: null, diff: null, events: [], item: item({ base: null }) });

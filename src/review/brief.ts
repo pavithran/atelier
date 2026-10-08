@@ -80,7 +80,7 @@ export interface BriefInput {
   bar?: string | null;                     // the project's review bar; absent or null, DEFAULT_REVIEW_BAR
 }
 
-const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on the agent's machine" } as const;
+const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const CLASS_GLOSS: Record<ChangeClass, string> = {
   protected: "it touches a protected path",
   coordinated: "it touches no protected path, and not only paths the project lets agents change directly",
