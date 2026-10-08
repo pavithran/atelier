@@ -11,7 +11,7 @@ const cli = resolve("cli/atelier.mjs");
 const actor = "codex/test";
 const brief = {
   title: "Small edit", decided: "Review t1 at abcdef01: Small edit.", summary: "Edited docs",
-  evidence: ["Required checks at this revision: 1 passed on the agent's machine.", "Reviews at this revision: opus approved."],
+  evidence: ["Required checks at this revision: 1 passed on a runner, in a clean clone.", "Reviews at this revision: opus approved."],
   recommendation: { verdict: "review", reason: "A protected path needs approval." },
 };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();

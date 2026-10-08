@@ -12,7 +12,7 @@ import { appliesText, checkClasses, classText, type CheckClass } from "./checks.
 import theme from "./theme.css";
 import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
-import type { FileChange, ItemDiff } from "./diff";
+import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
@@ -38,7 +38,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
+  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -186,24 +186,25 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
 };
 
 // ── where evidence came from ───────────────────────────────────────────────
-// The distinction between a check Atelier ran in a Cloudflare container and one
-// an agent's own machine ran is the point of graded evidence, so every summary
-// that says "passed" also says where.
+// Both places are Atelier's own runs: a Cloudflare container started by the
+// Worker, or Atelier's command in a clean clone of the pushed head on a runner.
+// Neither is the agent running its own tests, so every summary that says
+// "passed" also says where.
 
 const WHERE: Record<"sandbox" | "runner", [string, string]> = {
   sandbox: ["in a Cloudflare container", "cloud"],
-  runner: ["on the agent's machine", "laptop"],
+  runner: ["on a runner, in a clean clone", "laptop"],
 };
 
 function whereChip(where: "sandbox" | "runner" | undefined): string {
   const [label, glyph] = WHERE[where ?? "runner"];
-  return `<span class="where ${where === "sandbox" ? "cloud" : "local"}">${icon(glyph)}${e(where === "sandbox" ? "Cloudflare" : "Agent's machine")}<span class="visually-hidden"> (${e(label)})</span></span>`;
+  return `<span class="where ${where === "sandbox" ? "cloud" : "local"}">${icon(glyph)}${e(where === "sandbox" ? "Cloudflare container" : "Runner, clean clone")}<span class="visually-hidden"> (${e(label)})</span></span>`;
 }
 
 function trustLine(checks: { grade: string; passed: boolean | null; where?: "sandbox" | "runner" }[]): string {
   if (!checks.length || !checks.every((c) => c.grade === "observed" && c.passed)) return "";
   const places = new Set(checks.map((c) => c.where ?? "runner"));
-  const where = places.size > 1 ? "partly in a Cloudflare container, partly on the agent's machine" : WHERE[[...places][0]][0];
+  const where = places.size > 1 ? "partly in a Cloudflare container, partly on a runner, in a clean clone" : WHERE[[...places][0]][0];
   return `${icon("check")}<span>Checks passed ${e(where)}</span><span aria-hidden="true">·</span>`;
 }
 
@@ -303,10 +304,15 @@ export function renderInbox(
   live?: Live,
 ): string {
   const names = titleMap(projects);
+  // The lead developer's own decisions come first, under the heading the page
+  // has always used; the rest — what the orchestrator and runners handle — is
+  // listed apart, so only the human's calls read as needing the human.
   const groups = new Map<string, InboxEntry[]>();
+  const handledGroups = new Map<string, InboxEntry[]>();
   for (const x of entries) {
     const key = `${x.project}/${x.itemId}`;
-    groups.set(key, [...(groups.get(key) ?? []), x]);
+    const bucket = isOwnCall(x.kind) ? groups : handledGroups;
+    bucket.set(key, [...(bucket.get(key) ?? []), x]);
   }
   const rows = [...groups.values()].map(([lead, ...more]) => {
     const [label, tone] = KIND[lead.kind];
@@ -316,6 +322,11 @@ export function renderInbox(
       ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a>`;
     const detail = details.get(`${lead.project}/${lead.itemId}`);
     return detail ? decisionCard(row, lead.project, detail, lead) : `<li>${row}</li>`;
+  }).join("");
+  const handledRows = [...handledGroups.values()].map(([lead, ...more]) => {
+    const [label, tone] = KIND[lead.kind];
+    const extra = more.length ? `<span class="meta">${more.map((m) => e(KIND[m.kind][0])).join(" · ")}</span>` : "";
+    return `<li><a class="decision-row" href="${href("p", lead.project, lead.itemId)}">${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a></li>`;
   }).join("");
 
   const needs = new Set(entries.map((x) => `${x.project}/${x.itemId}`));
@@ -334,6 +345,7 @@ export function renderInbox(
   ${floorStrip(floor, now)}
   <h2 class="section-title">Needs your attention</h2>
   ${rows ? `<ul class="decision-list">${rows}</ul>` : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
+  ${handledRows ? `<h2 class="section-title">Handled by the orchestrator</h2><ul class="decision-list">${handledRows}</ul>` : ""}
   ${workingList}
   ${queued.length ? `<h2 class="section-title">Waiting for a runner</h2><ul class="decision-list">${queued.map(({ project, item }) =>
     `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("studio")}<span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.id)} · for ${e(describeDispatch(item.dispatch!))}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>` : ""}
@@ -613,13 +625,15 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
 // One shown project as the portfolio draws it: the project's record (for its
-// title when named), how it is shown, its story, and its two weeks of moves
-// for the card's bar graph when the events were read.
+// title when named), how it is shown, its story, its two weeks of moves
+// for the card's bar graph when the events were read, and every merge it has
+// ever had, from its whole item list.
 export interface ShownProject {
   project: ProjectRecord;
   mode: "named" | "anonymous";
   story: Story;
   pulse?: Pulse;
+  allTimeMerged?: number;
 }
 
 // The task stories under the cards: two or three threads from different shown
@@ -643,6 +657,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   // as the portfolio themselves, shown named.
   const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
   const total = drawnTotal(stories);
+  const allMerged = cards.some((c) => c.allTimeMerged !== undefined) ? cards.reduce((n, c) => n + (c.allTimeMerged ?? 0), 0) : undefined;
   const who = ownerName || "the owner";
   const { moments, journey, shown: drawn } = flowParts(stories, total, owner, undefined, who, imported);
   const body = drawn.length
@@ -659,7 +674,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     return `<li class="show-card" id="card-${i + 1}">
     <h2>${e(shownLabel(c))}</h2>
     ${c.pulse ? pulseGraph(c.pulse) : ""}
-    <p class="card-tally"><span><b>${t.merges}</b>merged</span><span><b>${t.sentBack}</b>sent back</span><span><b>${inProgress}</b>in progress</span></p>
+    <p class="card-tally"><span><b>${t.merges}</b>merged, last two weeks</span>${c.allTimeMerged === undefined ? "" : `<span><b>${c.allTimeMerged}</b>merged, all time</span>`}<span><b>${t.sentBack}</b>sent back, last two weeks</span><span><b>${inProgress}</b>in progress, last two weeks</span></p>
     ${families ? `<ul class="legend-line" aria-label="Families that worked on it">${families}</ul>` : '<p class="meta">No agent has worked here yet.</p>'}
   </li>`;
   }).join("");
@@ -678,8 +693,8 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>A Git platform for many coding agents</h1>
-      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its real two weeks of activity; under them, task stories drawn as threads, from claim to merge.</p>
-      <p class="subhead">${headline(total, who)}</p></div>
+      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
+      <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
     ${tallyBlock(total, who)}
   </header>
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
@@ -977,7 +992,7 @@ const MARK_NAMES: Record<MarkKind, string> = {
   handoff: "Handed off",
   push: "Pushed",
   "observed-cloud": "Check passed in Cloudflare",
-  "observed-local": "Check passed on the agent's machine",
+  "observed-local": "Check passed on a runner, in a clean clone",
   failed: "Check failed",
   reported: "Reported, not verified",
   submit: "Submitted",
@@ -1149,10 +1164,12 @@ export interface HomeView extends ProjectView {
 export function renderHome(views: HomeView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER, showcase: Record<string, "named" | "anonymous"> = {}): string {
   const vendors = new Set<Vendor>();
   const ranked = views.map((v) => {
-    // Failing checks are the holder's to fix, not the owner's decision, so
-    // the card counts what the owner must act on (as buildStanding does).
-    const waiting = [...new Set((v.waiting ?? []).filter((x) => x.kind !== "failing").map((x) => x.itemId))];
-    return { v, waiting, lastAt: "" };
+    // The lead developer's own decisions are what the card counts as waiting
+    // on the human; the rest the orchestrator and runners handle on their own.
+    const entries = v.waiting ?? [];
+    const waiting = [...new Set(entries.filter((x) => isOwnCall(x.kind)).map((x) => x.itemId))];
+    const handled = [...new Set(entries.filter((x) => !isOwnCall(x.kind)).map((x) => x.itemId))];
+    return { v, waiting, handled, lastAt: "" };
   });
   for (const { v } of ranked) {
     const p = buildPulse(v.events ?? [], owner, now, !!v.cut);
@@ -1162,7 +1179,7 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
   // portfolio still reads newest first.
   const order = ranked.map((r) => ({ ...r, lastAt: buildPulse(r.v.events ?? [], owner, now, !!r.v.cut).lastAt ?? "" }))
     .sort((a, b) => b.waiting.length - a.waiting.length || b.lastAt.localeCompare(a.lastAt));
-  const cards = order.map(({ v, waiting }) => {
+  const cards = order.map(({ v, waiting, handled }) => {
     const { project, items, unavailable, events, cut } = v;
     const count = (states: string[]) => items.filter((i) => states.includes(i.state)).length;
     const p = buildPulse(events ?? [], owner, now, !!cut);
@@ -1173,14 +1190,21 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
     const line = p.moves || p.decisions
       ? `${plural(p.moves, "move")} by ${plural(p.agents.length, "agent")} and ${plural(p.decisions, "decision")} in two weeks${p.cut ? ", from the most recent part of the record" : ""}${last}.`
       : `No moves in the last two weeks${last}.`;
-    const waitingRows = (v.waiting ?? []).filter((x) => x.kind !== "failing");
+    const waitingRows = v.waiting ?? [];
     const waitRows = waiting.slice(0, 3).map((id) => {
       // The entry's own title, so the row stands even when the items list
-      // was read apart from it.
-      const w = waitingRows.find((x) => x.itemId === id);
+      // was read apart from it. A task may carry both an own call and a
+      // handled one, so each list finds the entry of its own kind, not merely
+      // the first entry that names the item.
+      const w = waitingRows.find((x) => x.itemId === id && isOwnCall(x.kind));
       return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
     }).join("");
     const more = waiting.length > 3 ? `<li class="meta">and ${waiting.length - 3} more</li>` : "";
+    const handledRows = handled.slice(0, 3).map((id) => {
+      const w = waitingRows.find((x) => x.itemId === id && !isOwnCall(x.kind));
+      return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
+    }).join("");
+    const handledMore = handled.length > 3 ? `<li class="meta">and ${handled.length - 3} more</li>` : "";
     const runRows = running.slice(0, 3).map((i) =>
       `<li><a href="${href("p", project.name, i.id)}">${e(i.title)}</a><span class="meta">${e(stateLabel[i.state])} · ${e(i.owner ?? "nobody")}</span></li>`).join("");
     const mergeLine = lastMerge
@@ -1190,6 +1214,7 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
       ? '<p class="meta">Temporarily unavailable. Open to retry.</p>'
       : `${pulseGraph(p)}<p class="meta">${line}</p>
     ${waitRows ? `<h3>Waiting on you</h3><ul class="home-rows">${waitRows}${more}</ul>` : ""}
+    ${handledRows ? `<h3>Handled by the orchestrator</h3><ul class="home-rows">${handledRows}${handledMore}</ul>` : ""}
     ${runRows ? `<h3>Running</h3><ul class="home-rows">${runRows}</ul>` : ""}
     ${mergeLine}`;
     const mode = showcase[project.name];
@@ -1515,7 +1540,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
   const policy = `<dl>
     <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
-    <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or the agent's machine"}</dd>
+    <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
@@ -1812,7 +1837,7 @@ ${framing}${openScope}
     const detail = last
       ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}`
       : uncounted
-        ? "This check ran on the agent's machine, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
+        ? "This check ran on a runner, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
         : "The task owner must run this required check.";
     return `<details class="check-row"${c.passed === false ? " open" : ""}>
       <summary>${status}<code>${e(c.claim)}</code>${where}</summary>
@@ -1897,6 +1922,7 @@ export function renderFile(f: FileChange, open: boolean): string {
 function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null, merged?: MergedCheckView): string {
   if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
   if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
+  if (diff.merged) return renderMergedDiff(diff, diff.merged);
   if (!diff.files.length) return `<p class="empty">No changes: the workspace at <span class="mono">${short(diff.head)}</span> holds the same tree as main at <span class="mono">${short(diff.base)}</span>.</p>`;
   const added = diff.files.reduce((n, f) => n + f.added, 0);
   const removed = diff.files.reduce((n, f) => n + f.removed, 0);
@@ -1912,6 +1938,21 @@ function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string 
     : "";
   return `${moved}<p class="meta">${summary}${behind}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
 ${renderMainPreview(diff.main, merged)}
+${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
+}
+
+// A merged task's change as it landed (mergedDiff in src/diff.ts): main has
+// moved on since, so there is no comparison with today's main, no merge
+// preview and no conflict warning (t321).
+function renderMergedDiff(diff: ItemDiff, m: Landed): string {
+  const against = m.from === "first-parent"
+    ? `its first parent <span class="mono">${short(diff.base)}</span>`
+    : `the task's fork point <span class="mono">${short(diff.base)}</span>`;
+  if (!diff.files.length) return `<p class="empty">Merged at <span class="mono">${short(m.commit)}</span>, which holds the same tree as ${against}.</p>`;
+  const added = diff.files.reduce((n, f) => n + f.added, 0);
+  const removed = diff.files.reduce((n, f) => n + f.removed, 0);
+  const summary = `${tag("Merged", "go")} ${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} changed by the merge <span class="mono">${short(m.commit)}</span> against ${against}, +${added} −${removed}.`;
+  return `<p class="meta">${summary}${diff.truncated ? " Only the first files are listed." : ""}</p>
 ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 }
 
