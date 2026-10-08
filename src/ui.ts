@@ -102,7 +102,8 @@ const ACCOUNT: [string, string][] = [
 // the two never say different things.
 const TAGLINE = "Many agents, one owner per task.";
 
-const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
+// src/render-check.ts lets the render check's browser load exactly this URL.
+export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
 // `signedIn` draws the sign-out form in the rail; the sign-in page has none.
 // `live` adds the script under its nonce; with a refresh, <main> says how
