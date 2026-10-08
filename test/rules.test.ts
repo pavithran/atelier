@@ -804,7 +804,7 @@ test("a merged check never satisfies the head's own check, and is read beside th
   assert.equal(mergedChecksAt(policy, [merged], H1, M0).checks[0].stale, true, "stale once main has moved past the head it merged with");
   assert.equal(mergedChecksAt(policy, [merged], H2, M1).run, false, "a new head retires every merged run");
   assert.deepEqual(mergedChecksAt(policy, [], H1, M1), { checks: [{ claim: "npm test", grade: "pending", passed: null, stale: false }], run: false });
-  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on the agent's machine does not count");
+  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on a runner does not count");
   // The head's own run records main's head too, and is still the head's check.
   const own = pass({ mainHead: M0 });
   assert.deepEqual(evidenceAt(policy, [own], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "runner", mainHead: M0 }]);
@@ -834,7 +834,7 @@ test("a failing merged check blocks only when main moved after the head's own ch
   // While the head's own check is pending or failing, that check is the blocker.
   assert.deepEqual(gate(item(), policy, [failing], []).blockers.filter((b) => b.includes("merge")), []);
   assert.deepEqual(gate(item(), policy, [own, pass({ passed: false, mainHead: M0, at: "2026-10-03T12:30:00.000Z" }), failing], []).blockers.filter((b) => b.includes("merge")), []);
-  // Under sandboxOnly, a merged run on the agent's machine neither blocks nor counts.
+  // Under sandboxOnly, a merged run on a runner neither blocks nor counts.
   const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
   assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), failing], []).ready, true);
   assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), { ...failing, where: "sandbox" }], []).ready, false);

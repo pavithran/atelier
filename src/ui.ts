@@ -12,7 +12,7 @@ import { appliesText, checkClasses, classText, type CheckClass } from "./checks.
 import theme from "./theme.css";
 import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
-import type { FileChange, ItemDiff } from "./diff";
+import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
@@ -186,24 +186,25 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
 };
 
 // ── where evidence came from ───────────────────────────────────────────────
-// The distinction between a check Atelier ran in a Cloudflare container and one
-// an agent's own machine ran is the point of graded evidence, so every summary
-// that says "passed" also says where.
+// Both places are Atelier's own runs: a Cloudflare container started by the
+// Worker, or Atelier's command in a clean clone of the pushed head on a runner.
+// Neither is the agent running its own tests, so every summary that says
+// "passed" also says where.
 
 const WHERE: Record<"sandbox" | "runner", [string, string]> = {
   sandbox: ["in a Cloudflare container", "cloud"],
-  runner: ["on the agent's machine", "laptop"],
+  runner: ["on a runner, in a clean clone", "laptop"],
 };
 
 function whereChip(where: "sandbox" | "runner" | undefined): string {
   const [label, glyph] = WHERE[where ?? "runner"];
-  return `<span class="where ${where === "sandbox" ? "cloud" : "local"}">${icon(glyph)}${e(where === "sandbox" ? "Cloudflare" : "Agent's machine")}<span class="visually-hidden"> (${e(label)})</span></span>`;
+  return `<span class="where ${where === "sandbox" ? "cloud" : "local"}">${icon(glyph)}${e(where === "sandbox" ? "Cloudflare container" : "Runner, clean clone")}<span class="visually-hidden"> (${e(label)})</span></span>`;
 }
 
 function trustLine(checks: { grade: string; passed: boolean | null; where?: "sandbox" | "runner" }[]): string {
   if (!checks.length || !checks.every((c) => c.grade === "observed" && c.passed)) return "";
   const places = new Set(checks.map((c) => c.where ?? "runner"));
-  const where = places.size > 1 ? "partly in a Cloudflare container, partly on the agent's machine" : WHERE[[...places][0]][0];
+  const where = places.size > 1 ? "partly in a Cloudflare container, partly on a runner, in a clean clone" : WHERE[[...places][0]][0];
   return `${icon("check")}<span>Checks passed ${e(where)}</span><span aria-hidden="true">·</span>`;
 }
 
@@ -624,13 +625,15 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
 // One shown project as the portfolio draws it: the project's record (for its
-// title when named), how it is shown, its story, and its two weeks of moves
-// for the card's bar graph when the events were read.
+// title when named), how it is shown, its story, its two weeks of moves
+// for the card's bar graph when the events were read, and every merge it has
+// ever had, from its whole item list.
 export interface ShownProject {
   project: ProjectRecord;
   mode: "named" | "anonymous";
   story: Story;
   pulse?: Pulse;
+  allTimeMerged?: number;
 }
 
 // The task stories under the cards: two or three threads from different shown
@@ -654,6 +657,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   // as the portfolio themselves, shown named.
   const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
   const total = drawnTotal(stories);
+  const allMerged = cards.some((c) => c.allTimeMerged !== undefined) ? cards.reduce((n, c) => n + (c.allTimeMerged ?? 0), 0) : undefined;
   const who = ownerName || "the owner";
   const { moments, journey, shown: drawn } = flowParts(stories, total, owner, undefined, who, imported);
   const body = drawn.length
@@ -670,7 +674,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     return `<li class="show-card" id="card-${i + 1}">
     <h2>${e(shownLabel(c))}</h2>
     ${c.pulse ? pulseGraph(c.pulse) : ""}
-    <p class="card-tally"><span><b>${t.merges}</b>merged</span><span><b>${t.sentBack}</b>sent back</span><span><b>${inProgress}</b>in progress</span></p>
+    <p class="card-tally"><span><b>${t.merges}</b>merged, last two weeks</span>${c.allTimeMerged === undefined ? "" : `<span><b>${c.allTimeMerged}</b>merged, all time</span>`}<span><b>${t.sentBack}</b>sent back, last two weeks</span><span><b>${inProgress}</b>in progress, last two weeks</span></p>
     ${families ? `<ul class="legend-line" aria-label="Families that worked on it">${families}</ul>` : '<p class="meta">No agent has worked here yet.</p>'}
   </li>`;
   }).join("");
@@ -689,8 +693,8 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>A Git platform for many coding agents</h1>
-      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its real two weeks of activity; under them, task stories drawn as threads, from claim to merge.</p>
-      <p class="subhead">${headline(total, who)}</p></div>
+      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
+      <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
     ${tallyBlock(total, who)}
   </header>
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
@@ -988,7 +992,7 @@ const MARK_NAMES: Record<MarkKind, string> = {
   handoff: "Handed off",
   push: "Pushed",
   "observed-cloud": "Check passed in Cloudflare",
-  "observed-local": "Check passed on the agent's machine",
+  "observed-local": "Check passed on a runner, in a clean clone",
   failed: "Check failed",
   reported: "Reported, not verified",
   submit: "Submitted",
@@ -1536,7 +1540,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
   const policy = `<dl>
     <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
-    <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or the agent's machine"}</dd>
+    <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
@@ -1833,7 +1837,7 @@ ${framing}${openScope}
     const detail = last
       ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}`
       : uncounted
-        ? "This check ran on the agent's machine, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
+        ? "This check ran on a runner, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
         : "The task owner must run this required check.";
     return `<details class="check-row"${c.passed === false ? " open" : ""}>
       <summary>${status}<code>${e(c.claim)}</code>${where}</summary>
@@ -1918,6 +1922,7 @@ export function renderFile(f: FileChange, open: boolean): string {
 function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null, merged?: MergedCheckView): string {
   if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
   if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
+  if (diff.merged) return renderMergedDiff(diff, diff.merged);
   if (!diff.files.length) return `<p class="empty">No changes: the workspace at <span class="mono">${short(diff.head)}</span> holds the same tree as main at <span class="mono">${short(diff.base)}</span>.</p>`;
   const added = diff.files.reduce((n, f) => n + f.added, 0);
   const removed = diff.files.reduce((n, f) => n + f.removed, 0);
@@ -1933,6 +1938,21 @@ function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string 
     : "";
   return `${moved}<p class="meta">${summary}${behind}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
 ${renderMainPreview(diff.main, merged)}
+${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
+}
+
+// A merged task's change as it landed (mergedDiff in src/diff.ts): main has
+// moved on since, so there is no comparison with today's main, no merge
+// preview and no conflict warning (t321).
+function renderMergedDiff(diff: ItemDiff, m: Landed): string {
+  const against = m.from === "first-parent"
+    ? `its first parent <span class="mono">${short(diff.base)}</span>`
+    : `the task's fork point <span class="mono">${short(diff.base)}</span>`;
+  if (!diff.files.length) return `<p class="empty">Merged at <span class="mono">${short(m.commit)}</span>, which holds the same tree as ${against}.</p>`;
+  const added = diff.files.reduce((n, f) => n + f.added, 0);
+  const removed = diff.files.reduce((n, f) => n + f.removed, 0);
+  const summary = `${tag("Merged", "go")} ${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} changed by the merge <span class="mono">${short(m.commit)}</span> against ${against}, +${added} −${removed}.`;
+  return `<p class="meta">${summary}${diff.truncated ? " Only the first files are listed." : ""}</p>
 ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 }
 
