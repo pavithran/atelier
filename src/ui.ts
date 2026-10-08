@@ -76,6 +76,7 @@ const ICONS: Record<string, string> = {
   usage: '<path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 17 4-6"/><circle cx="12" cy="17" r="1.2"/>',
   flow: '<path d="M3 6h18"/><path d="M6 6c3 0 2 6 5 6h7c3 0 2-6 5-6M6 6c3 0 2 12 5 12h4"/>',
   arrow: '<path d="m9 6 6 6-6 6"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 11.5 3.3 3.3 0 0 0 7 18Z"/>',
   laptop: '<path d="M4 6h16v10H4zM2 19h20"/>',
@@ -337,12 +338,18 @@ export function renderInbox(
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
   ${!projects.length ? '<div class="empty"><h3>Bring your first project.</h3><p>In its checkout, run <code>atelier init</code> to register it.</p></div>' : ""}
 </section>`;
+  // On a phone the desk is two views: the list, or the selected decision with
+  // a back link to the list. The back link is drawn only there (layout.css
+  // hides it on wider screens), so the desktop's side-by-side desk keeps both.
+  const back = selected
+    ? `<a class="review-back" href="/decisions">${icon("back")}<span>All decisions</span></a>`
+    : "";
   const sheet = selected
-    ? `<section class="review-sheet" id="review" aria-label="Selected task">${reviewBody(selected)}</section>`
+    ? `<section class="review-sheet" id="review" aria-label="Selected task">${back}${reviewBody(selected)}</section>`
     : latest?.story.threads.length
       ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
-  return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
+  return page("Decisions", `<div class="desk${selected ? " has-selection" : ""}">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
 
 // ── flow ───────────────────────────────────────────────────────────────────

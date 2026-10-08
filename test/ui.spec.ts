@@ -541,6 +541,17 @@ it('a waiting entry without its record stays a plain row, and an empty inbox ren
  const selected=renderInbox(entries,[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
  expect(selected).toContain('aria-current="true"');expect(selected).toContain('aria-label="Selected task"');
 });
+it('a selected decision marks the desk and carries a back link; without one, the list stands alone',()=>{
+ const entries=[{project:'example',itemId:'t1',title:'First',kind:'accept' as const,reason:'r',weight:100}];
+ const selected=renderInbox(entries,[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
+ expect(selected).toContain('class="desk has-selection"');
+ expect(selected).toContain('class="review-back" href="/decisions"');
+ expect(selected).toContain('>All decisions</span>');
+ const rest=renderInbox(entries,[project],'PAVI');
+ expect(rest).toContain('class="desk">');
+ expect(rest).not.toContain('class="desk has-selection"');
+ expect(rest).not.toContain('class="review-back"');
+});
 it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
  const {renderMainPreview}=await import('../src/ui');
  expect(renderMainPreview(undefined)).toBe('');
