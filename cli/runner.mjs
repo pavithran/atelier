@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { excludeScratch } from "./scratch.mjs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -183,18 +184,7 @@ const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
 // its reply, outside the clone; the runner names it in the command and reads
 // it after the harness ends.
 export const REVIEW_DIFF = ".scratch/atelier-review.diff";
-
-// Keeps .scratch/ out of Git in a workspace or clone, through its own
-// .git/info/exclude, once: a harness's logs and an agent's notes go there,
-// and finish refuses a workspace with untracked files, so without this an
-// agent that committed its work would still be refused (t257).
-export function excludeScratch(workspace) {
-  const info = join(workspace, ".git", "info");
-  mkdirSync(info, { recursive: true });
-  const exclude = join(info, "exclude");
-  const held = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
-  if (!held.split("\n").includes(".scratch/")) appendFileSync(exclude, `${held && !held.endsWith("\n") ? "\n" : ""}.scratch/\n`);
-}
+export { excludeScratch };
 
 export function writeDiff(workspace, text) {
   mkdirSync(join(workspace, ".scratch"), { recursive: true });
