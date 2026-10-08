@@ -1,0 +1,39 @@
+atelier atelier/t275 "atelier land fails mid-landing when the task's write token has expired ('Invalid or expired token' on push; t219, claimed 9 hours earlier, 2026-10-07): land checks the token's expiry before it takes the lease and refreshes it by re-claiming as the holder (as atelier claim ID does), or says how, instead of failing after the merge of main"
+accepted head f9a5e85d10fb01de929d33fe4825b1c756684407
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T15:31:00.124Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T15:31:03.287Z
+REVIEW approve by antigravity/gemini-3.1-pro at f9a5e85d10fb01de929d33fe4825b1c756684407, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T17:50:30.091Z pavi item.created
+2026-10-08T14:15:55.260Z pavi item.dispatched
+2026-10-08T14:16:12.603Z opencode/kimi-k2.7-code item.claimed
+2026-10-08T14:16:29.482Z opencode/kimi-k2.7-code fork.created
+2026-10-08T14:25:31.809Z opencode/kimi-k2.7-code item.released
+2026-10-08T14:25:58.511Z pavi item.dispatched
+2026-10-08T14:36:54.631Z opencode/kimi-k2.7-code item.claimed
+2026-10-08T14:42:41.115Z opencode/kimi-k2.7-code item.released
+2026-10-08T14:42:45.940Z opencode/kimi-k2.7-code item.claimed
+2026-10-08T14:43:01.254Z opencode/kimi-k2.7-code item.released
+2026-10-08T14:43:05.444Z pavi item.undispatched
+2026-10-08T14:43:14.898Z pavi item.dispatched
+2026-10-08T14:43:42.413Z opencode/deepseek-v4-pro item.claimed
+2026-10-08T15:03:11.170Z opencode/deepseek-v4-pro item.released
+2026-10-08T15:03:34.630Z pavi item.undispatched
+2026-10-08T15:03:35.094Z claude-code/opus-5.5 item.claimed
+2026-10-08T15:15:28.512Z claude-code/opus-5.5 push.observed
+2026-10-08T15:20:25.083Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:20:28.835Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:20:37.262Z claude-code/opus-5.5 item.submitted
+2026-10-08T15:26:21.281Z pavi land.lease
+2026-10-08T15:26:25.459Z pavi land.merge
+2026-10-08T15:26:35.949Z pavi land.regenerate
+2026-10-08T15:26:38.812Z claude-code/opus-5.5 push.observed
+2026-10-08T15:26:38.967Z pavi land.push
+2026-10-08T15:31:00.852Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:31:03.602Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:31:04.190Z pavi land.check
+2026-10-08T15:31:05.629Z pavi review.requested
+2026-10-08T15:31:08.589Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T15:35:51.297Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T15:35:57.548Z pavi land.review
+2026-10-08T15:35:58.173Z pavi item.accepted
+2026-10-08T15:35:58.233Z pavi land.accept
