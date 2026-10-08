@@ -155,7 +155,7 @@ it('the flow route is served behind sign-in, under a policy that admits the font
  // Decisions and a task's page are live too; the public pages and the Studio carry no script and admit none.
  const decisions=await worker.fetch(new Request('https://atelier.test/decisions',{headers:{cookie:signedIn}}),testEnv);
  liveChecks(await decisions.text(),decisions.headers.get('content-security-policy')!);
- for(const path of ['/studio','/','/how']){
+ for(const path of ['/studio','/home','/how']){
   const r=await worker.fetch(new Request(`https://atelier.test${path}`,{headers:{cookie:signedIn}}),testEnv);
   expect(r.status).toBe(200);
   expect(r.headers.get('content-security-policy')).not.toContain('script-src');
@@ -342,7 +342,7 @@ it('the showcase route is public only when the owner names projects, and caches 
  const only=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown'} as typeof env);
  expect(await only.text()).not.toContain('could not be read just now');
  const login=await worker.fetch(new Request('https://atelier.test/login'),{...env,SHOWCASE:'shown'} as typeof env);
- expect(await login.text()).toContain('href="/showcase"');
+ expect(await login.text()).toContain('<a href="/">See the public showcase</a>');
 });
 
 it('the Models page lists the pool by where it runs, escapes it, and adds through a same-origin form',async()=>{
@@ -370,15 +370,36 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:signedIn}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  expect(await page.text()).toContain('deepseek-chat');
 });
-it('the front door: visitors see the showcase, the owner signs in to Home',async()=>{
+it('the front door: / is the public showcase for everyone, and the owner signs in to Home at /home',async()=>{
  const TOKEN='door-test-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
- const go=(path:string,extra:Record<string,string>={},signed=false)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:signedIn}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,...extra} as typeof env);
- await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject({name:'door',repo:'door',policy:{checks:[],protected:[]},createdAt:time});
- expect((await go('/',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/showcase');
- expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
+ const go=(path:string,extra:Record<string,string>={},signed=false,method='GET')=>worker.fetch(new Request(`https://atelier.test${path}`,{method,headers:signed?{cookie:signedIn}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,OWNER_NAME:'Door Owner',...extra} as typeof env);
+ const record={name:'door',repo:'door',title:'Door project',policy:{checks:[],protected:[]},createdAt:time};
+ const L=env.LEDGER.get(env.LEDGER.idFromName('project:door'));
+ await L.setProject(record,'owner');
+ await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
+ await L.newItem('Door work',[],'owner');await L.claim('t1','codex/gpt-6');
+ // No session at all: / answers the showcase itself, 200, as /showcase does,
+ // anonymised and with none of the owner's pages or forms in it (the owner's
+ // display name is public there by design), its header offering Sign in.
+ const front=await go('/',{SHOWCASE:'door:anonymous'});
+ expect(front.status).toBe(200);
+ expect(front.headers.get('cache-control')).toBe('public, max-age=60, s-maxage=60');
+ const page=await front.text();
+ expect(page).toContain('<title>Atelier · public showcase</title>');
+ expect(page).toContain('<a href="/login">Sign in</a>');
+ expect(page).toContain('<a class="brand" href="/">Atelier</a>');
+ for(const secret of ['Door project','Door work','class="rail"','href="/home"','href="/p/','action="/projects/showcase"'])expect(page).not.toContain(secret);
+ expect(await (await go('/showcase',{SHOWCASE:'door:anonymous'})).text()).toBe(page);
+ expect((await go('/',{SHOWCASE:'door:anonymous'},false,'HEAD')).status).toBe(200);
+ // Signed in, / is still the public front; Home moved to /home.
+ const signedFront=await go('/',{SHOWCASE:'door:anonymous'},true);
+ expect(signedFront.status).toBe(200);
+ expect(await signedFront.text()).toBe(page);
+ // Home and the other owner pages send a visitor to sign in.
+ expect((await go('/home')).headers.get('location')).toBe('https://atelier.test/login');
  expect((await go('/flow',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/login');
- const home=await go('/',{},true);
+ const home=await go('/home',{},true);
  expect(home.status).toBe(200);
  expect(await home.text()).toContain('<title>Home · Atelier</title>');
  const decisions=await go('/decisions',{},true);
@@ -649,11 +670,11 @@ it('the front door and the login link follow a showcase only while its project i
  const go=(path:string)=>worker.fetch(new Request(`https://atelier.test${path}`,{redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,SHOWCASE:'vanishing'} as typeof env);
  const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
  await index.registerProject({name:'vanishing',repo:'vanishing',policy:{checks:[],protected:[]},createdAt:time});
- expect((await go('/')).headers.get('location')).toBe('https://atelier.test/showcase');
- expect(await (await go('/login')).text()).toContain('href="/showcase"');
+ expect((await go('/')).status).toBe(200);
+ expect(await (await go('/login')).text()).toContain('See the public showcase');
  expect(await index.removeProject('vanishing')).toBe(true);
- expect((await go('/')).headers.get('location')).toBe('https://atelier.test/login');
- expect(await (await go('/login')).text()).not.toContain('href="/showcase"');
+ expect((await go('/')).status).toBe(404);
+ expect(await (await go('/login')).text()).not.toContain('See the public showcase');
  expect((await go('/showcase')).status).toBe(404);
 });
 
@@ -1074,7 +1095,7 @@ it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing foc
  const html=renderLogin(undefined,true,{stories:[s],owner:'pavi',who:'PAVI'});
  expect(html).toContain('<section class="login over-graph"><div class="login-backdrop" aria-hidden="true"><svg class="graph"');
  expect(html).not.toContain('tabindex="0"');expect(html).not.toContain('href="/p/');expect(html).not.toContain('secret reviewer note');
- expect(html).toContain('<a href="/showcase">See the public showcase</a>');
+ expect(html).toContain('<a href="/">See the public showcase</a>');
  expect(html).toContain('<form method="post" action="/login" class="login-form">');
  const bare=buildStory('bare',[],[],'pavi',false,'Bare',{redact:true});
  expect(renderLogin(undefined,true,{stories:[bare],owner:'pavi',who:'PAVI'})).not.toContain('class="login-backdrop"');
@@ -1108,7 +1129,7 @@ it('the navigation holds the owner\'s cross-project views in order, with Models 
  const nav=html.split('<nav aria-label="Main navigation">')[1].split('</nav>')[0];
  const labels=[...nav.matchAll(/<span>([^<]+)<\/span>/g)].map((m)=>m[1]);
  expect(labels).toEqual(['Home','Decisions','Studio']);
- expect(nav).toContain('href="/"');expect(nav).toContain('href="/decisions"');expect(nav).toContain('href="/studio"');
+ expect(nav).toContain('href="/home"');expect(nav).not.toContain('href="/"');expect(nav).toContain('href="/decisions"');expect(nav).toContain('href="/studio"');
  // Models and Usage are the account menu's, out of the work navigation.
  expect(nav).not.toContain('/models');expect(nav).not.toContain('/usage');
  const account=html.split('<details class="account">')[1].split('</details>')[0];
@@ -1139,10 +1160,10 @@ it('a project\'s area has its tabs on every page, with the page\'s own tab curre
  expect(tabs(renderProjectShip(project,''),'')).toContain('href="/p/example/ship" aria-current="page">Ship');
  expect(tabs(renderProjectSettings(project),'')).toContain('href="/p/example/settings" aria-current="page">Settings');
  // The area hangs from Home, and the task page sits inside it.
- expect(over.split('<aside class="rail">')[1]).toContain('href="/" aria-current="page"');
+ expect(over.split('<aside class="rail">')[1]).toContain('href="/home" aria-current="page"');
  const task=renderItem(project,detail(),'PAVI',null);
  expect(tabs(task,'')).toContain('href="/p/example/tasks" aria-current="page">Tasks');
- expect(task).toContain('<a href="/">Home</a>');
+ expect(task).toContain('<a href="/home">Home</a>');
 });
 
 it('Tasks is one list of every task with state, holder and time; the Overview tab no longer repeats it',async()=>{

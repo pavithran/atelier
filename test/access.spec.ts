@@ -49,11 +49,11 @@ it("owner pages are refused without an assertion Access signed for the owner, wi
   try {
     const cookie = await signIn(TOKEN, bindings, { "cf-access-jwt-assertion": await assertion() });
     for (const headers of [{}, { cookie }] as Record<string, string>[]) {
-      const page = await get("/", headers);
+      const page = await get("/home", headers);
       expect(page.status).toBe(401);
       expect(await page.text()).toContain("behind Cloudflare Access");
     }
-    expect((await get("/", { "cf-access-jwt-assertion": "not-a-jwt", cookie })).status).toBe(401);
+    expect((await get("/home", { "cf-access-jwt-assertion": "not-a-jwt", cookie })).status).toBe(401);
     expect((await get("/models", { cookie })).status).toBe(401);
     // /login is behind the check too, form and token form: the server token
     // cannot be tried, let alone guessed, without Access's sign-in first.
@@ -67,10 +67,10 @@ it("owner pages are refused without an assertion Access signed for the owner, wi
     // A teammate's assertion — a token Access signed, for someone else —
     // vouches for no owner route either.
     const teammate = await assertion("5m", "someone.else@example.com");
-    expect((await get("/", { cookie, "cf-access-jwt-assertion": teammate })).status).toBe(401);
+    expect((await get("/home", { cookie, "cf-access-jwt-assertion": teammate })).status).toBe(401);
     expect((await get("/login", { "cf-access-jwt-assertion": teammate })).status).toBe(401);
     // An assertion Access did not sign for this hour does not pass either.
-    expect((await get("/", { cookie, "cf-access-jwt-assertion": await assertion("-1m") })).status).toBe(401);
+    expect((await get("/home", { cookie, "cf-access-jwt-assertion": await assertion("-1m") })).status).toBe(401);
   } finally { send.mockRestore(); }
 });
 
@@ -78,8 +78,8 @@ it("a signed assertion lets the owner's pages through, and the session still dec
   const send = serveKeys();
   try {
     const jwt = await assertion();
-    // Behind Access but not signed in: the front door still asks for the token.
-    const door = await get("/", { "cf-access-jwt-assertion": jwt });
+    // Behind Access but not signed in: Home still asks for the token.
+    const door = await get("/home", { "cf-access-jwt-assertion": jwt });
     expect(door.status).toBe(303);
     expect(door.headers.get("location")).toBe("https://atelier.test/login");
     // /login serves behind Access: Access first, the server token after.
@@ -89,9 +89,16 @@ it("a signed assertion lets the owner's pages through, and the session still dec
       method: "POST", body: new URLSearchParams({ token: "no" }), headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual",
     }), bindings);
     expect(wrong.status).toBe(401);
+    // The sign-in lands on Home, at /home.
+    const right = await worker.fetch(new Request("https://atelier.test/login", {
+      method: "POST", body: new URLSearchParams({ token: TOKEN }), headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual",
+    }), bindings);
+    expect(right.status).toBe(303);
+    expect(right.headers.get("location")).toBe("/home");
     const cookie = await signIn(TOKEN, bindings, { "cf-access-jwt-assertion": jwt });
-    const home = await get("/", { cookie, "cf-access-jwt-assertion": jwt });
+    const home = await get("/home", { cookie, "cf-access-jwt-assertion": jwt });
     expect(home.status).toBe(200);
+    expect(await home.text()).toContain("<title>Home · Atelier</title>");
     const models = await get("/models", { cookie, "cf-access-jwt-assertion": jwt });
     expect(models.status).toBe(200);
   } finally { send.mockRestore(); }
@@ -107,7 +114,8 @@ it("the public pages, the sign-out form and the API routes stand as before, with
       method: "POST", headers: { origin: "https://atelier.test" }, redirect: "manual",
     }), bindings);
     expect(out.status).toBe(303);
-    expect(out.headers.get("location")).toBe("/login");
+    // Signed out, the browser goes to the public front.
+    expect(out.headers.get("location")).toBe("/");
     expect((await get("/api/version")).status).toBe(200);
     // A bearer token reaches the API as the CLI does, never passing Access.
     const projects = await get("/api/projects", { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" });
@@ -116,9 +124,53 @@ it("the public pages, the sign-out form and the API routes stand as before, with
   } finally { send.mockRestore(); }
 });
 
-it("an unconfigured server leaves every page as it was", async () => {
+it("an unconfigured server sends a visitor to sign in for Home, and signing in lands there", async () => {
   const plain = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
-  const res = await worker.fetch(new Request("https://atelier.test/", { redirect: "manual" }), plain);
+  const res = await worker.fetch(new Request("https://atelier.test/home", { redirect: "manual" }), plain);
   expect(res.status).toBe(303);
   expect(res.headers.get("location")).toBe("https://atelier.test/login");
+  const login = await worker.fetch(new Request("https://atelier.test/login", { method: "POST", body: new URLSearchParams({ token: TOKEN }), redirect: "manual" }), plain);
+  expect(login.status).toBe(303);
+  expect(login.headers.get("location")).toBe("/home");
+});
+
+// The front door (t314): the whole domain is public at the edge, so the
+// Worker's own check is the guard. / is the showcase for anyone, with no
+// assertion and no session; every owner route, each method its forms use,
+// is refused without Access's vouching, even with a session cookie.
+it("with Access on, / is the public showcase to anyone, and every owner route still needs Access", async () => {
+  const send = serveKeys();
+  try {
+    const record = { name: "front-door", repo: "front-door", title: "Front door secret title", policy: { checks: [], protected: [] }, createdAt: "2026-10-08T00:00:00.000Z" };
+    const L = env.LEDGER.get(env.LEDGER.idFromName("project:front-door"));
+    await L.setProject(record, "owner");
+    await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+    await L.newItem("Front door secret task", [], "owner");
+    await L.claim("t1", "codex/gpt-6");
+    const shown = { ...bindings, SHOWCASE: "front-door:anonymous", OWNER_NAME: "Front Owner" } as typeof env;
+    const at = (path: string, method = "GET", headers: Record<string, string> = {}) =>
+      worker.fetch(new Request(`https://atelier.test${path}`, { method, headers, redirect: "manual" }), shown);
+    for (const method of ["GET", "HEAD"]) {
+      const front = await at("/", method);
+      expect(front.status, method).toBe(200);
+    }
+    const page = await (await at("/")).text();
+    expect(page).toContain("<title>Atelier · public showcase</title>");
+    expect(page).toContain('<a href="/login">Sign in</a>');
+    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="rail"', 'href="/home"']) expect(page).not.toContain(secret);
+    expect((await at("/showcase")).status).toBe(200);
+    const cookie = await signIn(TOKEN, shown, { "cf-access-jwt-assertion": await assertion() });
+    const form = { origin: "https://atelier.test", cookie };
+    const owner: [string, string][] = [
+      ["GET", "/home"], ["GET", "/login"], ["POST", "/login"], ["GET", "/decisions"], ["GET", "/studio"],
+      ["GET", "/flow"], ["GET", "/history"], ["GET", "/models"], ["POST", "/models/add"], ["GET", "/usage"],
+      ["GET", "/projects"], ["POST", "/projects/showcase"], ["POST", "/ui/front-door/t1/accept"],
+      ["GET", "/p/front-door"], ["GET", "/p/front-door/tasks"], ["GET", "/p/front-door/t1"], ["GET", "/p/front-door/code"], ["POST", "/"],
+    ];
+    for (const [method, path] of owner) {
+      const res = await at(path, method, form);
+      expect(res.status, `${method} ${path}`).toBe(401);
+      expect(await res.text(), `${method} ${path}`).not.toContain("Front door secret");
+    }
+  } finally { send.mockRestore(); }
 });
