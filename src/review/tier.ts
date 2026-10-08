@@ -12,6 +12,7 @@
 // in src/rules.ts), and a landing never waits for it: an open tier request is
 // withdrawn when the change is accepted, integrated or closed.
 
+import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
 import { sameActor } from "../rules.ts";
 import { independenceRefusal } from "./independence.ts";
 
@@ -22,12 +23,13 @@ export function gateServesTier(tier: readonly string[] | undefined, reviewer: st
   return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors) === null;
 }
 
-// The tier model asked for a change's separate tier review: the first in the
-// tier's order that is no contributor, is not asked or answering for the
+// The tier model asked for a change's separate tier review: the first, in
+// descending review precision (src/models/precision.ts) and then the tier's
+// order, that is no contributor, is not asked or answering for the
 // gate (`gate`: a model asked for the gate already reviews the change, and
 // one actor's later verdict at a head replaces its earlier one), and may
 // review under the project's policy. Null when none remains, and then no
 // tier review is asked for.
-export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean): string | null {
-  return tier.find((a) => !contributors.some((c) => sameActor(c, a)) && !gate.some((g) => sameActor(g, a)) && mayReview(a)) ?? null;
+export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null): string | null {
+  return byPrecision(tier, (a) => [a], precision).find((a) => !contributors.some((c) => sameActor(c, a)) && !gate.some((g) => sameActor(g, a)) && mayReview(a)) ?? null;
 }
