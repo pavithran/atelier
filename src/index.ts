@@ -39,6 +39,7 @@ import { actionForm, actionsApi } from "./actions-api.ts";
 import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
+export { LandingWorkflow } from "./landing-workflow.ts";
 import { renderHow } from "./how.ts";
 
 const WRITE_TTL = 8 * 3600;
@@ -1126,6 +1127,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     return json(await L.planView(id, await index(env).models(), await mainHeadOf(env, L), await index(env).runnerOffers()));
   }
+  // The landing Workflow of one task (t280): GET answers the instance the
+  // ledger remembers, the stage the Workflow last wrote (lease, workspace,
+  // conflict, checks, review, merge, done or failed, with its round and,
+  // for a conflict, the files) and the instance's own status (complete or
+  // errored among them) — nulls when none is remembered — so the CLI shows
+  // the landing's progress, does the workspace steps when they are its to
+  // do, and re-attaches to a live instance.
+  if (verb === "landing-workflow" && parts.length === 5 && m === "GET") {
+    requireOwner(env, actor);
+    const remembered = await L.landingWorkflowOf(id);
+    if (!remembered) return json({ instance: null, status: null, stage: null });
+    const status = await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null);
+    return json({ ...remembered, status });
+  }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
@@ -1419,6 +1434,63 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       delete data.step;
       delete data.ms;
       return json({ item: await L.landEvent(id, actor, String(body.step ?? ""), body.ms, data, !!c.token) });
+    }
+    // The landing Workflow behind atelier land --workflow (t280). With
+    // { event: { type, payload } } the executor sends the instance the ledger
+    // remembers its workspace report or the owner's resume after a conflict,
+    // each naming its round; an event sent before the Workflow reaches its
+    // wait is buffered, so the report never races it. Otherwise the owner starts a
+    // landing: a live instance for the task is returned as it stands (the
+    // executor re-attaches to it, however it was started), and with none live
+    // a fresh instance is created and remembered, taking the same options the
+    // command was given.
+    case "landing-workflow": {
+      requireOwner(env, actor);
+      const remembered = await L.landingWorkflowOf(id);
+      if (body.event !== undefined) {
+        const event = body.event as { type?: unknown; payload?: unknown };
+        if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404);
+        // The two events the Workflow waits for: the executor's report of
+        // the workspace steps, and the owner's resume after a conflict.
+        if (event.type !== "workspace" && event.type !== "resume") throw new RuleError("bad_event", "a landing Workflow takes a workspace or a resume event", 400);
+        if (typeof event.payload !== "object" || event.payload === null || !Number.isInteger((event.payload as { round?: unknown }).round)) throw new RuleError("bad_event", "an event's payload names the round it answers", 400);
+        const type: string = event.type;
+        try {
+          await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.sendEvent({ type, payload: event.payload ?? {} }));
+        } catch (error) {
+          throw new RuleError("workflow_not_listening", `the landing Workflow ${remembered.instance} could not take the ${type} event (${(error as Error).message}); it may have finished or failed. Read it with GET again, or run atelier land ${id} --workflow to start or attach the landing`, 409);
+        }
+        return json({ sent: true, instance: remembered.instance });
+      }
+      const live = async () => remembered ? await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null) : null;
+      const standing = await live();
+      if (standing && ["queued", "running", "waiting", "waitingForPause", "paused"].includes(standing.status)) {
+        return json({ ...remembered!, created: false, status: standing });
+      }
+      // The timeouts the landing waits with, each a positive number of
+      // milliseconds; anything else keeps the Workflow's default.
+      const ms = (name: string) => Number.isInteger(body[name]) && (body[name] as number) > 0 ? { [name]: body[name] as number } : {};
+      // A new instance for a closed or accepted task would only fail its
+      // first step; it is refused here with the same words, before one is made.
+      const item = await L.item(id);
+      if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
+      if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
+      // The instance is recorded under the id chosen here before it is
+      // created, so the stage it writes from its first step is never
+      // written ahead of the record (and dropped as a stale instance's).
+      const instanceId = `land-${id}-${Date.now()}`;
+      const record = await L.setLandingWorkflow(id, instanceId, actor);
+      const instance = await env.LANDING_WORKFLOW.create({
+        id: instanceId,
+        params: {
+          project, key: ref.key, item: id, actor,
+          ...(typeof body.reviewer === "string" && body.reviewer ? { reviewer: body.reviewer } : {}),
+          ...(body.noReview === true ? { noReview: true } : {}),
+          origin: c.url.origin,
+          ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
+        },
+      });
+      return json({ ...record, created: true, status: await instance.status() }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
