@@ -1,0 +1,24 @@
+atelier atelier/t308 "After a Workflow landing merges (t293, t307 on 2026-10-08) the CLI says 'the landing Workflow of tN can no longer be read (instance none); its lease lapses on its own' because the merged task no longer reports an instance; when this CLI did the merge itself (mergedHere) and the instance is gone, say the landing finished and release the lease at once"
+accepted head 68c4503c4de5f4393dda40d0c834aaa6cabee413
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T12:50:09.218Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T12:50:12.158Z
+REVIEW approve by antigravity/gemini-3.1-pro at 68c4503c4de5f4393dda40d0c834aaa6cabee413, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T12:42:55.564Z pavi item.created
+2026-10-08T12:42:55.929Z claude-code/opus-5.5 item.claimed
+2026-10-08T12:43:15.494Z claude-code/opus-5.5 fork.created
+2026-10-08T12:47:06.894Z pavi land.lease
+2026-10-08T12:47:11.480Z pavi land.merge
+2026-10-08T12:47:19.147Z pavi land.regenerate
+2026-10-08T12:47:22.035Z claude-code/opus-5.5 push.observed
+2026-10-08T12:47:22.159Z pavi land.push
+2026-10-08T12:50:10.121Z claude-code/opus-5.5 evidence.observed
+2026-10-08T12:50:12.325Z claude-code/opus-5.5 evidence.observed
+2026-10-08T12:50:12.763Z pavi land.check
+2026-10-08T12:50:13.625Z claude-code/opus-5.5 item.submitted
+2026-10-08T12:50:13.662Z pavi land.submit
+2026-10-08T12:50:13.873Z pavi review.requested
+2026-10-08T12:50:38.798Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T12:52:57.483Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T12:53:01.045Z pavi land.review
+2026-10-08T12:53:01.594Z pavi item.accepted
+2026-10-08T12:53:01.627Z pavi land.accept
