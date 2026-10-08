@@ -1030,7 +1030,7 @@ it("the framing is stored with the item, carried by its brief, and edited only b
   expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
 
   await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the project owner edits/);
-  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --non-goal, --stop-when or --next-gate/);
+  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --accept, --non-goal, --stop-when or --next-gate/);
   // A field given replaces; one left out is kept; an empty list or a null gate clears.
   const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
   expect(edited).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: ["a check fails twice"], nextGate: null });
@@ -1043,6 +1043,54 @@ it("the framing is stored with the item, carried by its brief, and edited only b
 
   await L.abandon(item.id, "owner", "done elsewhere");
   await refusal(L.editItem(item.id, "owner", { nextGate: "x" }), "closed", /its fields stay as they were/);
+});
+
+// t315: a task's short title, its brief and its acceptance criteria. The
+// title is what lists show; the brief and criteria are stored apart.
+const LONG = "Short titles for tasks (from studying Pullboard, 2026-10-08): every task's title is its whole brief, sixty to a hundred and fifty words, so the task page's heading runs seven lines and every list overflows on a phone.";
+
+it("a task stores a short title, its brief and its acceptance criteria apart, and an old CLI's long title becomes the brief", async () => {
+  const L = await setup("item-text");
+  const made = await L.newItem("Short titles", ["src/**"], "owner", { brief: LONG, accept: ["Lists show the short title", "The brief is on the task page"] });
+  expect(made).toMatchObject({ title: "Short titles", brief: LONG, accept: ["Lists show the short title", "The brief is on the task page"] });
+  expect((made as { derived?: boolean }).derived).toBeUndefined();
+  // What an older CLI sends: the whole text as the title, nothing else.
+  const old = await L.newItem(LONG, [], "owner");
+  expect(old).toMatchObject({ title: "Short titles for tasks", brief: LONG, accept: [], derived: true });
+  // A title that fits is kept whole, with no brief.
+  expect(await L.newItem("Plain", [], "owner")).toMatchObject({ title: "Plain", brief: null, accept: [] });
+  await refusal(L.newItem("x".repeat(81), [], "owner", { brief: "the rest" }), "bad_title", /a title is at most 80 characters; put the rest in the brief/);
+  await refusal(L.newItem("  ", [], "owner"), "bad_title", /an item needs a title/);
+  const events = (await L.events(old.id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "item.created")?.data).toMatchObject({ title: "Short titles for tasks", brief: LONG });
+
+  // edit replaces the title, the brief and the criteria; "" and [] clear.
+  const edited = await L.editItem(old.id, "owner", { title: "Short task titles", accept: ["One"] });
+  expect(edited).toMatchObject({ title: "Short task titles", brief: LONG, accept: ["One"] });
+  expect(await L.editItem(old.id, "owner", { brief: null, accept: [] })).toMatchObject({ title: "Short task titles", brief: null, accept: [] });
+  await refusal(L.editItem(old.id, "owner", { title: "y".repeat(81) }), "bad_title", /at most 80 characters/);
+  await refusal(L.editItem(old.id, "owner", { title: " " }), "bad_title", /cannot be empty/);
+  // Lists carry the short title.
+  expect((await L.items()).map((i) => i.title)).toEqual(["Short titles", "Short task titles", "Plain"]);
+});
+
+it("items made while the title held the whole text are split once: the text becomes the brief and a short title is derived", async () => {
+  const stub = env.LEDGER.get(env.LEDGER.idFromName("project:item-briefs-migration"));
+  await runInDurableObject(stub, async (_instance, state) => {
+    const L = new Ledger(state, env);
+    L.initProject({ name: "item-briefs-migration", repo: "item-briefs-migration", reset: false, checks: [], protected: [] }, "owner");
+    L.newItem("Short already", [], "owner");
+    L.newItem("Placeholder", [], "owner");
+    // The rows as a ledger before t315 left them: the whole text as the title, no brief.
+    state.storage.sql.exec(`UPDATE items SET title = ?, brief = NULL WHERE id = 't2'`, LONG);
+    state.storage.sql.exec(`DELETE FROM meta WHERE key = 'item-briefs'`);
+    const after = new Ledger(state, env);
+    expect(after.item("t1")).toMatchObject({ title: "Short already", brief: null });
+    expect(after.item("t2")).toMatchObject({ title: "Short titles for tasks", brief: LONG });
+    // Once: a later edit is not undone by the next start.
+    after.editItem("t2", "owner", { title: "Edited" });
+    expect(new Ledger(state, env).item("t2")).toMatchObject({ title: "Edited", brief: LONG });
+  });
 });
 
 it("a task sent back for rework gets the rejecting review's findings in its job brief", async () => {

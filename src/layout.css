@@ -159,6 +159,10 @@ ul { padding-left: var(--space-xl); }
 .review-back { display: none; align-items: center; gap: 8px; margin: 0 0 var(--space-lg); font-weight: 600; color: var(--text); text-decoration: none; }
 .review-back svg { width: 16px; height: 16px; }
 .review-header h2 { font: 38px/1.12 var(--font-display); letter-spacing: -.025em; color: var(--text-bright); overflow-wrap: anywhere; margin: 0 0 18px; }
+/* A task's brief and criteria on its own page: body text under the short title. */
+.task-text { max-width: 70ch; margin: 0 0 var(--space-lg); }
+.task-brief { font-size: 16px; line-height: 1.55; color: var(--text); white-space: pre-line; overflow-wrap: anywhere; margin: 0 0 var(--space-md); }
+.task-accept { margin: var(--space-sm) 0 0; padding-left: 1.4em; overflow-wrap: anywhere; }
 .context { font-size: 13px; color: var(--text-muted); margin: 0 0 var(--space-md); }
 .review-description { color: var(--text-muted); font-size: 17px; max-width: 65ch; }
 .decision-status { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; font-size: 15px; margin: var(--space-xl) 0; }
