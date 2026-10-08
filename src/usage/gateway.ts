@@ -16,14 +16,17 @@
 // as the status.
 //
 // The same query's second selection reads calls per task: it groups the
-// dataset by metadataKey and metadataValue, and only the rows whose
-// metadataKey is "task" are kept. Runners tag every pay-per-use call with
-// the cf-aig-metadata header (CF_AIG_METADATA in cli/runner.mjs) naming
+// dataset by the value of each call's "task" metadata entry, asked for as
+// metadataValue(key: "task"), because the metadataValue dimension takes
+// the entry's key as its argument and the API refuses the query whole
+// without it (2026-10-08: 'argument "key" is required', and every gateway
+// figure was missing). Runners tag every pay-per-use call with the
+// cf-aig-metadata header (CF_AIG_METADATA in cli/runner.mjs) naming
 // the task, the role and the runner, and a call carries at most one task
-// entry, so the task rows count each call once whatever else its metadata
-// names; a call with no metadata, or none naming a task, counts under no
-// task. The task is the item's id alone, so the same id under two projects
-// is one task in these figures.
+// entry, so the task row counts each call once whatever else its metadata
+// names; a call with no metadata, or none naming a task, has no task value
+// and counts under no task. The task is the item's id alone, so the same
+// id under two projects is one task in these figures.
 
 import { plain } from "./report.ts";
 
@@ -76,17 +79,17 @@ export function gatewayConfig(env: { CF_ACCOUNT_ID?: string; AI_GATEWAY_ID?: str
   return { account, gateway: env.AI_GATEWAY_ID?.trim() || "atelier", token };
 }
 
-// The query for the window from `since`. Account, gateway and time are
-// written as JSON strings, which are valid GraphQL string literals, so no
-// setting can change the query's shape. Two selections of the same dataset:
-// the models grouped by model and provider, the tasks by metadataKey and
-// metadataValue.
+// The query for the window from `since`. Account, gateway, metadata key
+// and time are written as JSON strings, which are valid GraphQL string
+// literals, so no setting can change the query's shape. Two selections of
+// the same dataset: the models grouped by model and provider, the tasks by
+// the value of the "task" metadata entry.
 export function gatewayQuery(cfg: Pick<GatewayConfig, "account" | "gateway">, since: string): string {
   const s = (v: string) => JSON.stringify(v);
   const filter = `{ datetime_geq: ${s(since)}, gateway: ${s(cfg.gateway)} }`;
   const sum = "{ cost uncachedTokensIn uncachedTokensOut cachedTokensIn cachedTokensOut erroredRequests }";
   const group = (dimensions: string, extra = "") => `aiGatewayRequestsAdaptiveGroups(limit: ${GROUP_LIMIT}, filter: ${filter}) { count dimensions ${dimensions} sum ${sum}${extra} }`;
-  return `{ viewer { accounts(filter: { accountTag: ${s(cfg.account)} }) { models: ${group("{ model provider }", " quantiles { durationMsP50 durationMsP90 }")} tasks: ${group("{ metadataKey metadataValue }")} } } }`;
+  return `{ viewer { accounts(filter: { accountTag: ${s(cfg.account)} }) { models: ${group("{ model provider }", " quantiles { durationMsP50 durationMsP90 }")} tasks: ${group(`{ task: metadataValue(key: ${s(TASK_METADATA_KEY)}) }`)} } } }`;
 }
 
 // The API may give a number as a string.
@@ -114,16 +117,18 @@ export function parseGroup(raw: unknown): GatewayModel {
   };
 }
 
-// One group of the metadata selection as a task's figures, or null when the
-// group names no task: only a metadataKey of "task" does, so the rows a call
-// lands in for its other metadata entries (role, runner) are left out.
+// One group of the task selection as a task's figures, or null when the
+// group names no task: the selection groups calls by their task value (the
+// task alias of metadataValue(key: "task")), and the group whose value is
+// empty holds the calls that carry no task entry.
 export function parseTaskGroup(raw: unknown): GatewayTask | null {
   const g = obj(raw), dims = obj(g.dimensions), sum = obj(g.sum);
-  if (name(dims.metadataKey, 64) !== TASK_METADATA_KEY) return null;
+  const task = typeof dims.task === "string" ? plain(dims.task, 64) : "";
+  if (!task) return null;
   const cost = num(sum.cost);
   const calls = count(g.count);
   return {
-    task: name(dims.metadataValue, 64),
+    task,
     calls, failures: Math.min(count(sum.erroredRequests), calls),
     tokensIn: count(sum.uncachedTokensIn) + count(sum.cachedTokensIn),
     tokensOut: count(sum.uncachedTokensOut) + count(sum.cachedTokensOut),

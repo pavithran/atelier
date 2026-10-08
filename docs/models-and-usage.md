@@ -195,16 +195,19 @@ its message; it answers a refusal with HTTP 200 and an `errors` list), and
 when the gateway had no calls in the window.
 
 The same query's second selection reads calls per task: it groups the
-dataset by `metadataKey` and `metadataValue`, and only the rows whose
-`metadataKey` is `task` are kept. Runners tag every pay-per-use call with
-the `cf-aig-metadata` header naming the task, the role (build, review or
-plan) and the runner, and a call carries at most one task entry, so the
-task rows count each call once whatever else its metadata names; a call
-with no metadata, or none naming a task, counts under no task, and the
-Models page says so while there are none. A task's value is its id alone,
-so the same id in two projects is one task in these figures. The Models
-page shows each task's calls and failed calls, tokens and cost under
-"Calls per task", and `atelier runner --usage` prints the same lines.
+dataset by the value of each call's `task` metadata entry, asked for as
+`metadataValue(key: "task")` in the selection's dimensions, because the
+`metadataValue` dimension takes the entry's key as its argument and the
+API refuses the query whole without it. Runners tag every pay-per-use
+call with the `cf-aig-metadata` header naming the task, the role (build,
+review or plan) and the runner, and a call carries at most one task
+entry, so each call counts once whatever else its metadata names; a call
+with no metadata, or none naming a task, has no task value and counts
+under no task, and the Models page says so while there are none. A task's
+value is its id alone, so the same id in two projects is one task in
+these figures. The Models page shows each task's calls and failed calls,
+tokens and cost under "Calls per task", and `atelier runner --usage`
+prints the same lines.
 
 The two settings that turn the figures on (`CF_ACCOUNT_ID` and
 `ANALYTICS_TOKEN`) are in the README, under "AI Gateway costs".
