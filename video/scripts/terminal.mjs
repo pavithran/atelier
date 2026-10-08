@@ -19,3 +19,9 @@ const checkout = JSON.parse(readFileSync(homedir() + "/.config/atelier/config.js
 const note = execFileSync("git", ["-C", checkout, "notes", "--ref=atelier", "show", "5af22431"], { encoding: "utf8" });
 writeFileSync(out + "note-5af22431.txt", note.split("\n").slice(1, 5).join("\n") + "\n");
 console.log("captured the provenance note of 5af22431");
+
+// The commit message of t278's last revision, as Git holds it, with any
+// e-mail address elided.
+const msg = execFileSync("git", ["-C", checkout, "log", "-1", "--format=commit %H%n%n%B", "de67194"], { encoding: "utf8" });
+writeFileSync(out + "commit-de67194.txt", msg.replace(/<[^>]*@[^>]*>/g, "<…>").trimEnd() + "\n");
+console.log("captured the commit message of de67194");

@@ -1,15 +1,15 @@
 {
  "facts": {
-  "cutoff": "2026-10-08T00:30:00.000Z",
-  "tasks": 295,
+  "cutoff": "2026-10-08T01:30:00.000Z",
+  "tasks": 299,
   "firstTaskAt": "2026-10-03T22:29:33.467Z",
   "states": {
    "abandoned": 60,
-   "merged": 211,
-   "open": 12,
-   "blocked": 6,
-   "submitted": 2,
-   "claimed": 4
+   "merged": 212,
+   "open": 11,
+   "claimed": 8,
+   "blocked": 4,
+   "submitted": 4
   },
   "mergedByDay": {
    "2026-10-04": 23,
@@ -17,10 +17,10 @@
    "2026-10-05": 37,
    "2026-10-06": 77,
    "2026-10-07": 70,
-   "2026-10-08": 1
+   "2026-10-08": 2
   },
   "mergedBuilderFamilies": {
-   "zai": 55,
+   "zai": 56,
    "anthropic": 146,
    "openai": 15,
    "deepseek": 13,
@@ -28,7 +28,7 @@
    "xiaomi": 1
   },
   "mergedBuilderModels": {
-   "glm-5.3": 48,
+   "glm-5.3": 49,
    "opus-5.5": 105,
    "gpt-5.5": 1,
    "gpt-6": 3,
@@ -44,10 +44,10 @@
    "gpt-6.1-sol": 2,
    "gemini-3.1-pro": 2
   },
-  "modelReviews": 310,
-  "modelRejections": 92,
+  "modelReviews": 312,
+  "modelRejections": 93,
   "reviewsByModel": {
-   "opus-5.5": 18,
+   "opus-5.5": 20,
    "glm-5.3": 51,
    "gpt-6-astra": 40,
    "gemini-3.1-pro-preview": 7,
@@ -57,7 +57,7 @@
    "gpt-oss-120b": 1
   },
   "rejectionsByModel": {
-   "opus-5.5": 8,
+   "opus-5.5": 9,
    "glm-5.3": 21,
    "gpt-6-astra": 20,
    "gemini-3.1-pro-preview": 5,
@@ -65,22 +65,27 @@
    "sonnet-5.5": 2
   },
   "reviewerFamilies": {
-   "anthropic": 29,
+   "anthropic": 31,
    "zai": 51,
    "openai": 41,
    "google": 189
   },
-  "findings": 188,
-  "blockingFindings": 59,
-  "mergedWithCrossFamilyApprovalAtFinalHead": 163,
-  "observedChecks": 1012,
+  "findings": 196,
+  "blockingFindings": 60,
+  "mergedWithCrossFamilyApprovalAtFinalHead": 164,
+  "observedChecks": 1024,
   "handoffs": 15,
+  "findingVerdicts": {
+   "refuted": 15,
+   "confirmed": 10,
+   "fixed": 11
+  },
   "lastMergeWithoutCrossApproval": {
    "id": "t193",
    "at": "2026-10-06T22:11:16.254Z"
   },
   "mergesSinceThenAllCross": true,
-  "mergesSinceThen": 75
+  "mergesSinceThen": 76
  },
  "stories": {
   "t278": {
@@ -2576,6 +2581,97 @@
   ],
   "mergedAt": "2026-10-07T18:14:16.500Z"
  },
+ "selfTasks": {
+  "t296": {
+   "title": "A runner that claims a task back (t235) resets the workspace and removes untracked files, so a run that timed out with uncommitted work loses it: on 2026-10-07 GLM's t283 (524 lines, its tests passing) was deleted when home:mbp-2 reclaimed the task, and was recovered only from a patch the orchestrator had saved. Before resetting, keep any uncommitted work: commit it to a recovery ref (refs/atelier/recovered/ID/TIME) or save it as a patch the brief names, and tell the next run to start from it",
+   "createdAt": "2026-10-08T00:33:30.307Z",
+   "state": "submitted"
+  },
+  "t298": {
+   "title": "Two tests fail under load and pass alone (2026-10-07, this Mac running several suites at once): test/lists.spec.ts 'a project's checks, protected paths and eligible agents must each be a list of non-empty strings' hit vitest's 5 s timeout, and test/runner.test.mjs 'a child's background processes end with it…' failed at 8.9 s. A landing's required check can fail at random the same way. Make both independent of machine load (wait on the event, not a fixed time; raise a per-test timeout where the work is genuinely long)",
+   "createdAt": "2026-10-08T01:08:58.413Z",
+   "state": "claimed"
+  }
+ },
+ "localPool": [
+  {
+   "id": "glm-5.3-flash",
+   "harness": "opencode",
+   "family": "zai",
+   "addedAt": "2026-10-08T01:53:29.914Z"
+  },
+  {
+   "id": "minimax-m3",
+   "harness": "opencode",
+   "family": "minimax",
+   "addedAt": "2026-10-08T01:53:31.060Z"
+  },
+  {
+   "id": "qwen3-coder-next",
+   "harness": "opencode",
+   "family": "qwen",
+   "addedAt": "2026-10-08T01:53:30.285Z"
+  },
+  {
+   "id": "qwen3.8-27b",
+   "harness": "opencode",
+   "family": "qwen",
+   "addedAt": "2026-10-08T01:53:30.666Z"
+  }
+ ],
+ "localDispatches": [
+  {
+   "id": "t258",
+   "model": "qwen3-coder-next",
+   "at": "2026-10-08T01:54:04.480Z",
+   "state": "open"
+  },
+  {
+   "id": "t273",
+   "model": "glm-5.3-flash",
+   "at": "2026-10-08T01:54:04.881Z",
+   "state": "open"
+  }
+ ],
+ "localMerged": [
+  {
+   "id": "t27",
+   "builders": [
+    "opencode/DeepSeek-V4-Flash-0731-MXFP4-MLX",
+    "opencode/GLM-5.3-Flash-4_8bit"
+   ],
+   "mergedAt": "2026-10-04T20:31:41.547Z"
+  },
+  {
+   "id": "t44",
+   "builders": [
+    "opencode/gemini-3.1-pro-preview",
+    "opencode/GLM-5.3-Flash-4_8bit"
+   ],
+   "mergedAt": "2026-10-05T16:28:41.720Z"
+  },
+  {
+   "id": "t64",
+   "builders": [
+    "opencode/GLM-5.3-Flash-4_8bit"
+   ],
+   "mergedAt": "2026-10-05T15:44:09.508Z"
+  },
+  {
+   "id": "t65",
+   "builders": [
+    "opencode/GLM-5.3-Flash-4_8bit"
+   ],
+   "mergedAt": "2026-10-05T01:26:57.835Z"
+  },
+  {
+   "id": "t84",
+   "builders": [
+    "opencode/GLM-5.3-Flash-4_8bit"
+   ],
+   "mergedAt": "2026-10-05T18:35:41.845Z"
+  }
+ ],
  "tasks": [
   {
    "id": "t1",
@@ -10677,14 +10773,18 @@
   },
   {
    "id": "t260",
-   "state": "blocked",
+   "state": "claimed",
    "kind": "task",
    "createdAt": "2026-10-07T15:48:45.834Z",
    "claimedAt": null,
    "mergedAt": null,
    "abandonedAt": null,
-   "builders": [],
-   "builderFamilies": [],
+   "builders": [
+    "claude-code/opus-5.5"
+   ],
+   "builderFamilies": [
+    "anthropic"
+   ],
    "reviews": [],
    "crossAtFinal": false,
    "crossBy": [],
@@ -10757,14 +10857,18 @@
   },
   {
    "id": "t263",
-   "state": "blocked",
+   "state": "claimed",
    "kind": "task",
    "createdAt": "2026-10-07T16:12:02.495Z",
    "claimedAt": null,
    "mergedAt": null,
    "abandonedAt": null,
-   "builders": [],
-   "builderFamilies": [],
+   "builders": [
+    "claude-code/opus-5.5"
+   ],
+   "builderFamilies": [
+    "anthropic"
+   ],
    "reviews": [],
    "crossAtFinal": false,
    "crossBy": [],
@@ -10917,11 +11021,11 @@
   },
   {
    "id": "t270",
-   "state": "submitted",
+   "state": "merged",
    "kind": "task",
    "createdAt": "2026-10-07T17:36:36.534Z",
    "claimedAt": "2026-10-07T18:04:16.857Z",
-   "mergedAt": null,
+   "mergedAt": "2026-10-08T01:15:36.702Z",
    "abandonedAt": null,
    "builders": [
     "opencode/glm-5.3"
@@ -10938,19 +11042,30 @@
      "cross": true,
      "blocking": 3,
      "findings": 5
+    },
+    {
+     "by": "claude-code/opus-5.5",
+     "family": "anthropic",
+     "approve": true,
+     "at": "2026-10-08T01:15:24.522Z",
+     "cross": true,
+     "blocking": 0,
+     "findings": 3
     }
    ],
-   "crossAtFinal": false,
-   "crossBy": [],
+   "crossAtFinal": true,
+   "crossBy": [
+    "anthropic"
+   ],
    "handoffs": 0,
-   "observedChecks": 6
+   "observedChecks": 8
   },
   {
    "id": "t271",
    "state": "claimed",
    "kind": "task",
    "createdAt": "2026-10-07T17:36:37.228Z",
-   "claimedAt": null,
+   "claimedAt": "2026-10-08T00:33:38.395Z",
    "mergedAt": null,
    "abandonedAt": null,
    "builders": [
@@ -11239,7 +11354,7 @@
   },
   {
    "id": "t283",
-   "state": "claimed",
+   "state": "submitted",
    "kind": "task",
    "createdAt": "2026-10-07T20:30:29.343Z",
    "claimedAt": "2026-10-07T23:43:42.858Z",
@@ -11251,15 +11366,25 @@
    "builderFamilies": [
     "zai"
    ],
-   "reviews": [],
+   "reviews": [
+    {
+     "by": "claude-code/opus-5.5",
+     "family": "anthropic",
+     "approve": false,
+     "at": "2026-10-08T01:21:15.788Z",
+     "cross": true,
+     "blocking": 1,
+     "findings": 5
+    }
+   ],
    "crossAtFinal": false,
    "crossBy": [],
    "handoffs": 0,
-   "observedChecks": 0
+   "observedChecks": 2
   },
   {
    "id": "t284",
-   "state": "claimed",
+   "state": "submitted",
    "kind": "task",
    "createdAt": "2026-10-07T20:30:29.918Z",
    "claimedAt": "2026-10-07T23:53:44.685Z",
@@ -11275,7 +11400,7 @@
    "crossAtFinal": false,
    "crossBy": [],
    "handoffs": 0,
-   "observedChecks": 0
+   "observedChecks": 4
   },
   {
    "id": "t285",
@@ -11391,19 +11516,23 @@
   },
   {
    "id": "t289",
-   "state": "open",
+   "state": "claimed",
    "kind": "task",
    "createdAt": "2026-10-07T22:20:27.846Z",
-   "claimedAt": null,
+   "claimedAt": "2026-10-08T00:39:02.785Z",
    "mergedAt": null,
    "abandonedAt": null,
-   "builders": [],
-   "builderFamilies": [],
+   "builders": [
+    "opencode/glm-5.3"
+   ],
+   "builderFamilies": [
+    "zai"
+   ],
    "reviews": [],
    "crossAtFinal": false,
    "crossBy": [],
    "handoffs": 0,
-   "observedChecks": 0
+   "observedChecks": 2
   },
   {
    "id": "t290",
@@ -11568,6 +11697,86 @@
    ],
    "handoffs": 0,
    "observedChecks": 2
+  },
+  {
+   "id": "t296",
+   "state": "submitted",
+   "kind": "task",
+   "createdAt": "2026-10-08T00:33:30.307Z",
+   "claimedAt": "2026-10-08T01:00:49.726Z",
+   "mergedAt": null,
+   "abandonedAt": null,
+   "builders": [
+    "opencode/glm-5.3"
+   ],
+   "builderFamilies": [
+    "zai"
+   ],
+   "reviews": [],
+   "crossAtFinal": false,
+   "crossBy": [],
+   "handoffs": 0,
+   "observedChecks": 2
+  },
+  {
+   "id": "t297",
+   "state": "claimed",
+   "kind": "task",
+   "createdAt": "2026-10-08T00:47:22.187Z",
+   "claimedAt": "2026-10-08T00:47:22.611Z",
+   "mergedAt": null,
+   "abandonedAt": null,
+   "builders": [
+    "claude-code/opus-5.5"
+   ],
+   "builderFamilies": [
+    "anthropic"
+   ],
+   "reviews": [],
+   "crossAtFinal": false,
+   "crossBy": [],
+   "handoffs": 0,
+   "observedChecks": 0
+  },
+  {
+   "id": "t298",
+   "state": "claimed",
+   "kind": "task",
+   "createdAt": "2026-10-08T01:08:58.413Z",
+   "claimedAt": "2026-10-08T01:26:17.550Z",
+   "mergedAt": null,
+   "abandonedAt": null,
+   "builders": [
+    "opencode/glm-5.3"
+   ],
+   "builderFamilies": [
+    "zai"
+   ],
+   "reviews": [],
+   "crossAtFinal": false,
+   "crossBy": [],
+   "handoffs": 0,
+   "observedChecks": 0
+  },
+  {
+   "id": "t299",
+   "state": "claimed",
+   "kind": "task",
+   "createdAt": "2026-10-08T01:21:56.706Z",
+   "claimedAt": "2026-10-08T01:21:57.710Z",
+   "mergedAt": null,
+   "abandonedAt": null,
+   "builders": [
+    "claude-code/opus-5.5"
+   ],
+   "builderFamilies": [
+    "anthropic"
+   ],
+   "reviews": [],
+   "crossAtFinal": false,
+   "crossBy": [],
+   "handoffs": 0,
+   "observedChecks": 0
   }
  ]
 }

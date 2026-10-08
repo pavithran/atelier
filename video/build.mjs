@@ -11,7 +11,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { synth, wavSeconds, spendSoFar, VOICE, wordTimes } from "./scripts/tts.mjs";
+import { synthAtTempo as synth, wavSeconds, spendSoFar, VOICE, wordTimes } from "./scripts/tts.mjs";
 import { writeScore } from "./scripts/music.mjs";
 
 const HERE = new URL(".", import.meta.url).pathname;
@@ -25,7 +25,7 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const ONLY = opt("--only");
 const PREVIEW = flag("--preview");
 const WORKERS = Number(opt("--workers") ?? 8);
-const NAME = opt("--name") ?? "atelier-v2";
+const NAME = opt("--name") ?? "atelier-v3";
 
 // ── the script ─────────────────────────────────────────────────────────────
 
@@ -102,9 +102,9 @@ function captionCue(text, words, dur) {
 
 // Seconds before the first cue, between cues, and after the last; some
 // scenes hold longer after their narration to show a real page.
-const LEAD = { cold: 12.4, default: 0.8 };
-const GAP = 0.42;
-const TAIL = { default: 1.2, cold: 3.4, gate: 6.2, catches: 1.6, plan: 4.8, replay: 4.8, runners: 3.2, cloud: 1.8, close: 4.5 };
+const LEAD = { cold: 12.2, why: 3.0, commit: 1.2, default: 0.7 };
+const GAP = 0.32;
+const TAIL = { default: 1.0, cold: 3.2, why: 1.4, commit: 2.0, gate: 5.0, plan: 4.4, replay: 4.4, metrics: 2.4, cloud: 1.6, close: 4.0 };
 
 async function timeline(scenes) {
   let t = 0;
@@ -211,7 +211,7 @@ for (const s of tl.scenes) console.log(`  ${s.id.padEnd(9)} ${fmt(s.start).padSt
 console.log(`Total ${fmt(tl.total)} (${tl.total.toFixed(1)} s). TTS so far: ${JSON.stringify(spendSoFar())}`);
 
 const data = JSON.parse(readFileSync(HERE + "data/ledger.json", "utf8"));
-data.terminal = { t278: readFileSync(HERE + "data/terminal/show-t278.txt", "utf8"), t197: readFileSync(HERE + "data/terminal/show-t197.txt", "utf8"), note: readFileSync(HERE + "data/terminal/note-5af22431.txt", "utf8") };
+data.terminal = { t278: readFileSync(HERE + "data/terminal/show-t278.txt", "utf8"), t197: readFileSync(HERE + "data/terminal/show-t197.txt", "utf8"), note: readFileSync(HERE + "data/terminal/note-5af22431.txt", "utf8"), commit: readFileSync(HERE + "data/terminal/commit-de67194.txt", "utf8") };
 data.screens = JSON.parse(readFileSync(CACHE + "screens/meta.json", "utf8"));
 writeFileSync(CACHE + "timeline.json", JSON.stringify(tl, null, 1));
 

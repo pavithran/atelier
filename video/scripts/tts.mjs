@@ -9,8 +9,10 @@ import { homedir } from "node:os";
 const CACHE = new URL("../.cache/tts/", import.meta.url).pathname;
 const LEDGER = CACHE + "spend.json";
 export const MODEL = "gpt-4o-mini-tts";
-export const VOICE = process.env.VIDEO_VOICE ?? "ash";
-export const INSTRUCTIONS = process.env.VIDEO_INSTRUCTIONS ?? "Voice: a warm, confident documentary narrator with a quiet sense of wonder. Pacing: unhurried but steady, about 150 words a minute, with short natural pauses between sentences and a slight lift on the key fact of each sentence. Tone: calm and assured, never salesy or excited. Pronounce 'Atelier' as 'a-tel-yay'. Read identifiers like t278 as 't two seventy-eight', UTC as 'U T C', GLM as 'G L M', and gpt-6.1-sol as 'G P T six point one sol'.";
+export const VOICE = process.env.VIDEO_VOICE ?? "coral";
+// The spoken audio is sped up by this factor, pitch kept, for a brisker read.
+export const TEMPO = Number(process.env.VIDEO_TEMPO ?? 1.07);
+export const INSTRUCTIONS = process.env.VIDEO_INSTRUCTIONS ?? "Voice: a clear, upbeat, confident product-demo presenter; conversational, with a slight smile in the voice. Pacing: brisk, about 165 words a minute, crisp consonants, short pauses only between sentences; not solemn, not a documentary. Pronounce 'Atelier' as 'a-tel-yay'. Say 'Artifacts' plainly as the word artifacts. Read identifiers like t278 as 't two seventy-eight', UTC as 'U T C', GLM as 'G L M', and gpt-6.1-sol as 'G P T six point one sol'.";
 
 // Estimated price: $0.60 per million text tokens in and $12 per million audio
 // tokens out, which OpenAI gives as about $0.015 a minute of speech.
@@ -82,4 +84,15 @@ export async function wordTimes(file) {
   s.transcriptionUsd = s.transcribedSeconds / 60 * 0.006;
   writeFileSync(LEDGER, JSON.stringify(s, null, 1));
   return words;
+}
+
+// The cue at the film's tempo: the synthesised audio through ffmpeg's
+// atempo, which keeps the pitch, cached beside the original.
+import { execFileSync } from "node:child_process";
+export async function synthAtTempo(text, opts) {
+  const file = await synth(text, opts);
+  if (TEMPO === 1) return file;
+  const out = file.replace(/\.wav$/, `.t${TEMPO}.wav`);
+  if (!existsSync(out)) execFileSync(existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpeg" : "ffmpeg", ["-y", "-loglevel", "error", "-i", file, "-af", `atempo=${TEMPO}`, "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", out]);
+  return out;
 }

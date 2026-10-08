@@ -38,8 +38,12 @@ const tasks = items.map((d) => {
   const finalHead = it.acceptedHead ?? it.head;
   const crossBy = [...new Set(d.reviews.filter((r) => r.at < CUTOFF && r.approve && isModel(r.by) && !bf.has(familyOf(r.by)) && r.head === finalHead).map((r) => familyOf(r.by)))];
   const crossAtFinal = crossBy.length > 0;
+  // The state as of the cut-off: a merge or an abandonment after it is not counted.
+  let state = it.state;
+  if (state === "merged" && !at("item.merged")) state = "submitted";
+  if (state === "abandoned" && !at("item.abandoned")) state = "open";
   return {
-    id: it.id, state: it.state, kind: it.kind ?? "task",
+    id: it.id, state, kind: it.kind ?? "task",
     createdAt: it.createdAt, claimedAt: at("item.claimed"), mergedAt: at("item.merged"), abandonedAt: at("item.abandoned"),
     builders, builderFamilies: [...bf], reviews, crossAtFinal, crossBy,
     handoffs: ev.filter((e) => e.kind === "item.handoff").length,
@@ -70,6 +74,8 @@ const facts = {
   observedChecks: tasks.reduce((s, t) => s + t.observedChecks, 0),
   handoffs: tasks.reduce((s, t) => s + t.handoffs, 0),
 };
+// The owner's verdicts on review findings (atelier finding), by verdict.
+facts.findingVerdicts = count(items.flatMap((d) => d.events.filter((e) => e.kind === "review.finding" && e.at < CUTOFF)), (e) => e.data.verdict);
 // From which merge on every merge carried a cross-family approval.
 const sorted = [...merged].sort((a, b) => a.mergedAt < b.mergedAt ? -1 : 1);
 const lastWithout = sorted.filter((t) => !t.crossAtFinal && t.kind !== "plan").at(-1);
@@ -91,6 +97,16 @@ const story = (id) => {
     mergedAt: d.events.find((e) => e.kind === "item.merged")?.at ?? null,
   };
 };
+// Local models: the pool's home entries served by the owner's own server,
+// the dispatches to them, and merged work earlier local builds did.
+const LOCAL = /(\d+(_\d+)?bit|mlx|mxfp4|gguf|q\d_k|:studio)/i;   // LOCAL_BUILD in src/models/pool.ts
+const poolRaw = JSON.parse(readFileSync(new URL("../.cache/models.json", import.meta.url), "utf8"));
+const poolList = Array.isArray(poolRaw) ? poolRaw : (poolRaw.models ?? poolRaw.pool ?? []);
+const localPool = poolList.filter((e) => e.where === "home" && e.provider === "ai-studio").map((e) => ({ id: e.id, harness: e.harness, family: e.family, addedAt: e.addedAt }));
+const localDispatches = items.flatMap((d) => d.events.filter((e) => e.kind === "item.dispatched" && localPool.some((p) => p.id === e.data?.model)).map((e) => ({ id: d.item.id, model: e.data.model, at: e.at, state: d.item.state })));
+const localMerged = tasks.filter((t) => t.state === "merged" && t.builders.some((b) => LOCAL.test(b))).map((t) => ({ id: t.id, builders: t.builders, mergedAt: t.mergedAt }));
+// Two tasks Atelier filed against itself on 2026-10-07 and 08, by title.
+const selfTasks = Object.fromEntries(["t296", "t298"].filter((id) => byId[id]).map((id) => [id, { title: byId[id].item.title, createdAt: byId[id].item.createdAt, state: tasks.find((t) => t.id === id).state }]));
 const stories = Object.fromEntries(["t278", "t219", "t252", "t50"].map((id) => [id, story(id)]));
 
 // Who held which task at one moment: the five tasks held at once at
@@ -124,5 +140,5 @@ const plan = {
   mergedAt: byId.t197.events.find((e) => e.kind === "item.merged")?.at ?? null,
 };
 
-writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, moment, plan, tasks }, null, 1) + "\n");
+writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, moment, plan, selfTasks, localPool, localDispatches, localMerged, tasks }, null, 1) + "\n");
 console.log(JSON.stringify(facts, null, 1));

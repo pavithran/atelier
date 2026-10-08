@@ -15,4 +15,5 @@ for (let i = 0; i < ids.length; i += 8) {
   }));
 }
 writeFileSync(new URL("../.cache/plan-t197.json", import.meta.url), JSON.stringify(await get("/projects/atelier/items/t197/plan")));
+writeFileSync(new URL("../.cache/models.json", import.meta.url), JSON.stringify(await get("/models")));
 console.log(`fetched ${n} items`);
