@@ -33,7 +33,13 @@ export interface ItemDiff {
   baseTree?: string;     // main's tree and the head's
   headTree?: string;
   main?: MainPreview | null;  // how far main has moved since the fork point, and whether it merges; absent when not read
+  merged?: Landed;       // set on a merged item's diff, which shows the change as it landed (mergedDiff)
 }
+
+// How a merged item's diff was read: from the merge commit's first parent to
+// the merge, or, when the merge is the accepted head itself (a fast-forward),
+// from the item's fork point to that head.
+export interface Landed { commit: string; from: "first-parent" | "fork-point" }
 
 export const LIMITS = {
   files: 60,             // changed files listed
@@ -396,4 +402,54 @@ export async function itemDiff(artifacts: Artifacts, baselineRepo: string, works
   if (m.mainTree === m.headTree) return { base: m.main, head: m.head, files: [], truncated: false, baseTree: m.mainTree, headTree: m.headTree };
   const { files, truncated } = await treeDiff(pairReader(fork, baseline), m.mainTree, m.headTree);
   return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
+}
+
+// ── merged items ───────────────────────────────────────────────────────────
+
+// Where a merged item landed, read from its record: the merge commit of its
+// last `item.merged` event, with the head merged and where the item forked.
+// A part merged through its plan landed on the plan's branch first, so its
+// change is the merge that integrated it there (`part.integrated`), in the
+// plan's fork, and not the plan's merge onto main, which carries every part.
+// Null for an item not merged.
+export interface Landing { commit: string; head: string | null; base: string | null; onPlanBranch: boolean }
+
+export function landingOf(
+  item: { id: string; state: string; base: string | null; acceptedHead: string | null },
+  events: { itemId: string | null; kind: string; data: Record<string, unknown> }[],
+): Landing | null {
+  if (item.state !== "merged") return null;
+  const own = events.filter((e) => e.itemId === item.id);
+  const merge = own.findLast((e) => e.kind === "item.merged" && typeof e.data.mergeCommit === "string");
+  if (!merge) return null;
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  const integrated = merge.data.via ? own.findLast((e) => e.kind === "part.integrated" && typeof e.data.mergeCommit === "string") : undefined;
+  if (integrated) return { commit: integrated.data.mergeCommit as string, head: str(integrated.data.head), base: item.base, onPlanBranch: true };
+  return { commit: merge.data.mergeCommit as string, head: str(merge.data.head) ?? item.acceptedHead, base: item.base, onPlanBranch: false };
+}
+
+// A merged item's diff as it landed (t321), never against main as it is now:
+// main has moved on since, and against today's main every file added after
+// the merge would be listed as the item deleting it. A merge commit with its
+// own first parent, a true merge or a squash, is diffed from that parent;
+// one that is the merged head itself, a fast-forward, is diffed from the
+// item's fork point, since its first parent is only the head's last commit's.
+// `repoName` holds the merge commit; the workspace, when there is one, is
+// read too for a fork point main does not hold. A merge that cannot be read
+// throws, so the page says the diff is unavailable rather than empty.
+export async function mergedDiff(artifacts: Artifacts, repoName: string, workspaceRepo: string | null, landing: Landing): Promise<ItemDiff> {
+  using repo = await artifacts.get(repoName);
+  using fork = workspaceRepo ? await artifacts.get(workspaceRepo) : null;
+  const reader = fork ? pairReader(fork, repo) : repoReader(repo);
+  const commit = async (h: string) => (await repo.readCommit(h)) ?? (fork ? await fork.readCommit(h) : null);
+  const merge = await commit(landing.commit);
+  if (!merge) throw new Error(`merge commit ${landing.commit} is not readable`);
+  const fastForward = merge.hash === landing.head && merge.parents.length < 2;
+  const baseHash = fastForward ? landing.base : merge.parents[0] ?? null;
+  const base = baseHash ? await commit(baseHash) : null;
+  if (!base) throw new Error(`the commit ${landing.commit} landed on is not readable`);
+  const from: Landed["from"] = fastForward ? "fork-point" : "first-parent";
+  const shown = { base: base.hash, head: merge.hash, baseTree: base.treeHash, headTree: merge.treeHash, merged: { commit: merge.hash, from } };
+  if (base.treeHash === merge.treeHash) return { ...shown, files: [], truncated: false };
+  return { ...shown, ...(await treeDiff(reader, base.treeHash, merge.treeHash)) };
 }
