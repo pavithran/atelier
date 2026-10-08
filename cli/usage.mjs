@@ -33,7 +33,6 @@
 // name a record supplies is cleaned before it is printed or reported
 // (cleanBody).
 
-import { pullReadText } from "../src/usage/gateway.ts";
 import { existsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 
@@ -241,22 +240,22 @@ export function describeReport(tool, body, now) {
 }
 
 // What the server read of the AI Gateway (GET /api/usage, field gateway;
-// src/usage/gateway.ts): each model's calls, tokens, cost and median
-// duration over its window, or why it is off. Every name is cleaned with
-// `safe` before it is printed.
+// src/usage/gateway.ts): each model's calls, tokens, cost, and median and
+// p90 duration over its window with the calls they are taken over, or why
+// there are none. A server older than this CLI sends no p90 (and a pull
+// record this CLI no longer prints), so only what is there is shown. Every
+// name is cleaned with `safe` before it is printed.
 export function describeGateway(view, safe) {
   if (!view || typeof view !== "object") return ["AI Gateway: the server reports no gateway figures; it runs routes older than this CLI."];
-  const lines = view.off ? [`AI Gateway: ${safe(view.off, 200)}.`] : [`AI Gateway, last ${view.days} days:`];
-  if (!view.off && !view.models?.length) lines.push("  no calls");
+  if (view.off) return [`AI Gateway: ${safe(view.off, 300)}.`];
+  const lines = [`AI Gateway, last ${view.days} days:`];
+  if (!view.models?.length) lines.push("  no calls");
+  const time = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+  const dollars = (n) => (n > 0 && n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
   for (const m of view.models ?? []) {
-    const ms = m.medianMs === null ? "no durations" : `median ${m.medianMs < 1000 ? `${m.medianMs} ms` : `${(m.medianMs / 1000).toFixed(1)} s`} (n=${m.sample})`;
-    lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out${m.cost === null ? "" : `, $${m.cost.toFixed(2)}`}, ${ms}`);
-  }
-  for (const g of view.gaps ?? []) lines.push(`  incomplete: at least ${g.atLeast} call${g.atLeast === 1 ? "" : "s"} between ${stamp(Date.parse(g.from))} and ${stamp(Date.parse(g.to))} not read; totals undercount`);
-  if (view.pull?.error) lines.push(`  last pull ${stamp(Date.parse(view.pull.at))} failed: ${safe(view.pull.error, 200)}`);
-  else if (view.pull) {
-    const read = pullReadText(view.pull);
-    lines.push(`  logs last pulled ${stamp(Date.parse(view.pull.at))}${read ? `; ${safe(read, 400)}` : ""}`);
+    const p90 = typeof m.p90Ms === "number" ? `, p90 ${time(m.p90Ms)}` : "";
+    const ms = typeof m.medianMs === "number" ? `median ${time(m.medianMs)}${p90} (n=${m.sample})` : "no durations";
+    lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out, ${typeof m.cost === "number" ? dollars(m.cost) : "not priced"}, ${ms}`);
   }
   return lines;
 }

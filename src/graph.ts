@@ -119,12 +119,14 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd
 // than addressed. Titles, models, kinds and times stay, titles without any
 // email address in them. `anon` goes further, for a project the owner shows
 // anonymously: each task's title becomes its kind of work (src/kind.ts), so
-// no title the project wrote is drawn; the caller titles the story itself
-// with the project's neutral kind label.
+// no title the project wrote is drawn, and no commit hash is drawn either —
+// a hash searched in a public repository would name the project; the caller
+// titles the story itself with the project's neutral kind label.
 export interface StoryOptions { redact?: boolean; ownerLabel?: string; since?: string; family?: string; anon?: boolean }
 
 export function buildStory(project: string, items: Item[], events: LedgerEvent[], owner: string, partial = false, title = project, opts: StoryOptions = {}): Story {
   const R = !!opts.redact;
+  const anon = !!opts.anon;
   const you = opts.ownerLabel ?? "You";
   // An event the owner annotated as served by another model is drawn and
   // counted under that model; the annotations are not drawn.
@@ -218,7 +220,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         say(`${id} handed from ${name(str(d.from))} to ${name(to)}`);
         break;
       }
-      case "push.observed": t.pushes++; bead("push", `${name(actor)} pushed ${sha8(d.head)}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}/commit/${encodeURIComponent(String(d.head))}`); break;
+      case "push.observed": t.pushes++; bead("push", `${name(actor)} pushed${anon ? "" : ` ${sha8(d.head)}`}`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}/commit/${encodeURIComponent(String(d.head))}`); break;
       case "evidence.observed": {
         t.checks++;
         if (d.where === "sandbox") t.inCloud++;
@@ -228,7 +230,7 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
         break;
       }
       case "evidence.reported": bead("reported", R ? `${name(ev.actor)} reported on its work` : `${name(ev.actor)} reported: ${clip(str(d.claim), 160)}`); break;
-      case "item.submitted": bead("submit", `${name(ev.actor)} submitted ${sha8(d.head)}`); say(`${name(ev.actor)} submitted ${id} for review`); break;
+      case "item.submitted": bead("submit", `${name(ev.actor)} submitted${anon ? "" : ` ${sha8(d.head)}`}`); say(`${name(ev.actor)} submitted ${id} for review`); break;
       case "review.approved": t.approvals++; bead("approve", `${name(ev.actor)} approved`, R ? undefined : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}#checks`); break;
       case "review.rejected":
         t.sentBack++;
@@ -238,12 +240,12 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       // The owner's override of a missing independent review is told with its
       // reason, since it is the record of why no review was needed.
       case "review.overridden": say(`${name(ev.actor)} overrode the independent review of ${id}${d.reason && !R ? `: ${clip(str(d.reason), 140)}` : ""}`, ev.actor === owner ? "you" : ""); break;
-      case "item.accepted": t.accepts++; bead("accept", `${name(ev.actor)} accepted ${sha8(d.head)}`); say(`${name(ev.actor)} accepted ${id}`, ev.actor === owner ? "you" : ""); break;
+      case "item.accepted": t.accepts++; bead("accept", `${name(ev.actor)} accepted${anon ? "" : ` ${sha8(d.head)}`}`); say(`${name(ev.actor)} accepted ${id}`, ev.actor === owner ? "you" : ""); break;
       case "item.dispatched": say(`${name(ev.actor)} sent ${id} to ${str(d.to) === "any" ? "any runner" : `a ${str(d.to)} runner`}`, ev.actor === owner ? "you" : ""); break;
       case "item.merged":
         // Only a merge whose thread is drawn is counted, so the numbers match the picture.
-        if (th) { t.merges++; th.end = pos; th.ending = "merged"; th.merge = { pos, sha: str(d.mergeCommit) }; }
-        say(`${id} merged into main${d.mergeCommit ? ` as ${sha8(d.mergeCommit)}` : ""}`, "merge");
+        if (th) { t.merges++; th.end = pos; th.ending = "merged"; th.merge = { pos, sha: anon ? "" : str(d.mergeCommit) }; }
+        say(`${id} merged into main${d.mergeCommit && !anon ? ` as ${sha8(d.mergeCommit)}` : ""}`, "merge");
         break;
       case "item.abandoned":
         if (th) { th.end = pos; th.ending = "closed"; }
@@ -427,7 +429,7 @@ export function drawStory(s: Story, owner: string, o: DrawOptions = {}): string 
     out.push(`<g class="g-task${closed ? " closed" : ""}${live ? " live" : ""}" data-task="${tkey}">${title}${band}${o.href ? `<a href="${esc(o.href(th))}" data-key="${tkey}">${label}</a>` : label}${g.join("")}</g>`);
     if (th.merge) {
       const mx = r1(xe + R);
-      out.push(`<g class="pop" style="--d:${at(end)}" data-pos="${end}" data-say="${esc(`${th.id} merged into main${th.merge.sha ? ` as ${th.merge.sha.slice(0, 8)}` : ""}`)}" data-ev="${esc(`${th.id} merged`)}"><circle class="g-merge" cx="${mx}" cy="${MAIN}" r="${compact ? 4 : 5.5}"><title>${esc(`${th.id} merged as ${th.merge.sha.slice(0, 12)}`)}</title></circle>${
+      out.push(`<g class="pop" style="--d:${at(end)}" data-pos="${end}" data-say="${esc(`${th.id} merged into main${th.merge.sha ? ` as ${th.merge.sha.slice(0, 8)}` : ""}`)}" data-ev="${esc(`${th.id} merged`)}"><circle class="g-merge" cx="${mx}" cy="${MAIN}" r="${compact ? 4 : 5.5}"><title>${esc(`${th.id} merged${th.merge.sha ? ` as ${th.merge.sha.slice(0, 12)}` : ""}`)}</title></circle>${
         !compact && th.merge.sha && mx - lastLabel > 62 ? `<text class="g-sha" x="${mx}" y="${MAIN - 11}" text-anchor="middle">${esc(th.merge.sha.slice(0, 7))}</text>` : ""}</g>`);
       if (!compact && th.merge.sha && mx - lastLabel > 62) lastLabel = mx;
     }
