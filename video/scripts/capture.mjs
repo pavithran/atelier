@@ -12,6 +12,8 @@ mkdirSync(OUT, { recursive: true });
 
 export const SHOTS = [
   { name: "showcase", path: "/showcase", public: true },
+  // The front page, public since 2026-10-08: it serves the showcase.
+  { name: "front", path: "/", public: true },
   { name: "how", path: "/how", public: true },
   { name: "flow", path: "/p/atelier/flow" },
   { name: "plans", path: "/p/atelier/plans" },

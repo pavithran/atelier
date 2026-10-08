@@ -25,7 +25,11 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const ONLY = opt("--only");
 const PREVIEW = flag("--preview");
 const WORKERS = Number(opt("--workers") ?? 8);
-const NAME = opt("--name") ?? "atelier-v6";
+// The theme: "dark" (the Night theme, two scenes on the light ground) or
+// "bright" (the light theme throughout). One timeline serves both.
+const THEME = opt("--theme") ?? "dark";
+if (!["dark", "bright"].includes(THEME)) throw new Error("--theme is dark or bright");
+const NAME = opt("--name") ?? `atelier-v7-${THEME}`;
 
 // ── the script ─────────────────────────────────────────────────────────────
 
@@ -102,9 +106,11 @@ function captionCue(text, words, dur) {
 
 // Seconds before the first cue, between cues, and after the last; some
 // scenes hold longer after their narration to show a real page.
-const LEAD = { cold: 1.2, default: 0.8 };
-const GAP = 0.38;
-const TAIL = { default: 1.4, cold: 6.5, why: 4.2, cast: 2.4, gate: 3.0, stories: 2.0, plan: 2.0, metrics: 2.0, who: 2.2, cloud: 2.0, close: 3.5 };
+// A chapter's first scene opens on its chapter card (scenes/film.js CARD),
+// so its narration waits for the card; the midpoint card is longer.
+const LEAD = { cold: 1.2, why: 1.9, cast: 1.9, gate: 1.9, plan: 3.2, metrics: 1.9, who: 1.9, cloud: 1.9, default: 0.8 };
+const GAP = 0.32;
+const TAIL = { default: 1.4, cold: 1.6, why: 3.6, cast: 1.6, gate: 2.6, stories: 1.6, plan: 1.4, metrics: 1.4, who: 1.6, cloud: 1.4, close: 2.6 };
 
 async function timeline(scenes) {
   let t = 0;
@@ -166,7 +172,7 @@ async function renderSegment(index, from, to, tl, data, size, segFile) {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: size });
   await page.goto("file://" + HERE + "scenes/film.html");
-  await page.evaluate(async ([tl, data]) => { await window.film.init(tl, data); }, [tl, data]);
+  await page.evaluate(async ([tl, data, theme]) => { await window.film.init(tl, data, theme); }, [tl, data, THEME]);
   const w = Math.round(1920 * size), h = Math.round(1080 * size);
   const ff = spawn(FFMPEG, ["-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "mjpeg", "-i", "-",
     "-c:v", "libx264", "-preset", PREVIEW ? "veryfast" : "medium", "-crf", PREVIEW ? "26" : "17", "-tune", "animation",
@@ -238,7 +244,7 @@ if (flag("--stills")) {
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   page.on("pageerror", (e) => console.error("page error:", e.message));
   await page.goto("file://" + HERE + "scenes/film.html");
-  await page.evaluate(async ([tl, data]) => { await window.film.init(tl, data); }, [tl, data]);
+  await page.evaluate(async ([tl, data, theme]) => { await window.film.init(tl, data, theme); }, [tl, data, THEME]);
   const dir = CACHE + "stills/";
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
@@ -274,7 +280,7 @@ narrationTrack(tl, work + "narration.wav");
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   await page.goto("file://" + HERE + "scenes/film.html");
-  await page.evaluate(async ([tl, data]) => { await window.film.init(tl, data); }, [tl, data]);
+  await page.evaluate(async ([tl, data, theme]) => { await window.film.init(tl, data, theme); }, [tl, data, THEME]);
   const sounds = await page.evaluate(() => window.film.sounds());
   await browser.close();
   writeScore(work + "score.wav", tl, sounds);
@@ -294,6 +300,10 @@ if (range) {
     "-filter_complex", mixFilter, "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", String(tl.total), "-movflags", "+faststart", final], { stdio: "inherit" });
 }
 console.log("Wrote " + final);
+if (!range) {
+  execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-i", final, "-vf", "scale=1280:720", "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-c:a", "copy", "-movflags", "+faststart", OUT + NAME + "-720p.mp4"]);
+  console.log("Wrote " + OUT + NAME + "-720p.mp4");
+}
 
 // One frame per scene, taken a little past the middle, as a contact sheet.
 if (!range) {

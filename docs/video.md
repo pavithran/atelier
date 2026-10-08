@@ -5,9 +5,14 @@ reads. `cd video && npm ci && npm run build` turns it into the film: each
 scene's narration below is spoken by text-to-speech, captioned, and laid over
 the scene of the same id in `video/scenes/film.js`, with a score composed by
 `video/scripts/music.mjs` from the same timeline. Change the words here, not
-in the build. This is the sixth cut, `atelier-v6.mp4`, built as task t320
-from a first-time viewer's review of the fifth and the lead developer's plan
-of 2026-10-08; the earlier cuts are in the history of this file. The voice
+in the build. This is the seventh cut, built as task t320 from the lead
+developer's notes on the sixth (2026-10-08: key words larger, the structure
+visible, the film memorable, a bright version). It renders twice from one
+timeline: `npm run build -- --theme dark` writes `atelier-v7-dark.mp4`, the
+Night theme with two scenes on the light ground, and `--theme bright` writes
+`atelier-v7-bright.mp4`, the light theme throughout, with the terminal and
+the captured pages kept as dark insets; each build also writes a 720p copy.
+The earlier cuts are in the history of this file. The voice
 is OpenAI's `marin`, chosen by the lead developer on 2026-10-08 from four
 samples; the delivery instructions and the score are the fourth cut's. Unstretched
 (tempo 1), marin reads this script at 149 words a minute, near the fifth
@@ -24,9 +29,10 @@ listed with its source in "Claims and their sources" at the end.
 Real footage: two crops of t278's live page (its Thread, and its Checks and
 reviews), captured signed in on 2026-10-08 and kept out of Git under
 `video/public/footage/`; the public showcase at `atelier.zone/showcase`,
-captured signed out by `video/scripts/capture.mjs` the same day (the front
-page `/` answers with a Cloudflare Access sign-in, so the showcase is shown
-instead); and real terminal output, captured by `video/scripts/terminal.mjs`
+and the public front page `/` (public since 2026-10-08), both captured
+signed out by `video/scripts/capture.mjs` the same day; the film shows the
+front page's headline, cropped to leave out its counts, whose window is not
+the film's, then its latest moves; and real terminal output, captured by `video/scripts/terminal.mjs`
 with read-only git commands.
 
 Format, for the build: each scene is a level-two heading ending in its id
@@ -46,7 +52,18 @@ the models are "agents"; an agent "holds" a task; a model's "family" is the
 company that made it; a "head" is the latest commit an agent pushed.
 Captured pages of the product may still say "owner".
 
-The build of 2026-10-08 runs 6:26. The competition's rules ask for five to
+Every scene shares one frame: a chapter bar across the top (the seven
+chapters, the current one lit, with its progress), a badge naming the judged
+quality on screen, the source tag, then the key words of the moment in
+92 px type as they are spoken, and the content below; body text is at least
+44 px and footnotes at least 30 px. Each chapter opens on a card with its
+name and one line of what came before; the card at chapter 4, the midpoint,
+repeats the three things to remember and the line "Git keeps the code.
+Atelier keeps the record.", which also opens and closes the film. The four
+biggest numbers (15 tasks held at once, 99 send-backs, 30 of 52 findings,
+240 merged) each get a beat of their own with one plain line of meaning.
+
+The build of 2026-10-08 runs 6:38. The competition's rules ask for five to
 ten minutes; this cut aims at six to six and a half.
 
 ## 1. Opening {#cold}
@@ -61,6 +78,8 @@ without proof · 4 Big goals become plans · 5 It measures, and it learns ·
 6 Who it is for · 7 It runs on Cloudflare.
 
 > Many AI agents, one repository. When their work merges, what can you trust?
+>
+> Three things to remember: checks Atelier observed itself; approval by another model family; and a record of every agent, kept on Cloudflare.
 
 ## 2. Why Git alone isn't enough {#why}
 
@@ -212,7 +231,7 @@ On screen, dark: the field of light returns. Four lines, then "Git keeps
 the code. Atelier keeps the record.", 321 tasks and 240 merged counting up,
 with the rest beneath; then atelier.zone and the repository's address.
 
-> One holder per task. Checks observed, not claimed. Another family's approval. A record of every agent.
+> Checks Atelier observed itself. Approval by another model family. A record of every agent, kept on Cloudflare.
 >
 > Git keeps the code. Atelier keeps the record. It built itself this way: 321 tasks, 240 merged.
 >
