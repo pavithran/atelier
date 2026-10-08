@@ -118,13 +118,28 @@ test("rework carries the failing check's output, and says where it ran", async (
     "An earlier attempt at this part was sent back: a required check failed. What came back is under \"Rework\" below.",
     "## Rework: the failing check\n\n`npm test` failed at bbbbbbbb, in a Cloudflare container. Make it pass.\nIts output:\n```\nTAP version 13\nnot ok 1 - reviewNeeded fires\n# fail 1\n```",
   );
-  lacks(brief, "## Rework: the review's findings");
+  lacks(brief, "## Rework: the review's findings", "kept in R2");
   has(await text({ job: "rework", failure: { claim: "npm test", output } }), "`npm test` failed. Make it pass.");
   has(await text({ job: "rework", failure: { claim: "npm test", where: "runner", output: "" } }), "`npm test` failed, on the agent's machine. Make it pass.\nThe check printed nothing.");
   // Both at once.
   const both = await text({ job: "rework", findings: { by: GPT, head: H2, findings: [finding()] }, failure: { claim: "npm test", output } });
   has(both, "sent back: a reviewer rejected it and a required check failed.", "## Rework: the review's findings", "## Rework: the failing check");
   assert.ok(both.indexOf("## Rework: the review's findings") < both.indexOf("## Rework: the failing check"));
+});
+
+test("rework names the whole failing output by its R2 reference, beside the tail it carries (t284)", async () => {
+  const sha = "e".repeat(64);
+  const log = { key: `logs/atelier/t22/${sha}`, bytes: 2_411_008, sha256: sha };
+  const brief = await text({ job: "rework", failure: { claim: "npm test", head: H2, where: "sandbox", output: "# fail 1\n", log } });
+  has(brief,
+    "## Rework: the failing check\n\n`npm test` failed at bbbbbbbb, in a Cloudflare container. Make it pass.\nIts output:\n```\n# fail 1\n```",
+    `Its whole output is kept in R2 by reference: 2411008 bytes, sha256 ${"e".repeat(12)}, key \`logs/atelier/t22/${sha}\`.`,
+  );
+  // The hash covers the reference: the same brief without it is another brief.
+  const failure = (log?: object) => ({ claim: "npm test", head: H2, where: "sandbox" as const, output: "# fail 1\n", ...(log ? { log } : {}) });
+  assert.notEqual(await hash({ failure: failure(log) }), await hash({ failure: failure() }));
+  const without = await text({ job: "rework", failure: failure() });
+  assert.ok(!without.includes("kept in R2"));
 });
 
 test("findings and output are capped, and the brief says when they are cut", async () => {

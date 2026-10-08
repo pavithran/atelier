@@ -20,6 +20,13 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
+  // Large payloads by reference (t284): whole check logs and review diffs are
+  // kept in R2 and named by their key in briefs and the ledger, instead of
+  // carried inline — an 888 KB review diff broke a review on 2026-10-07. The
+  // owner creates the bucket before deploying: npx wrangler r2 bucket create
+  // atelier-large. Where no bucket answers the binding, nothing large is
+  // stored and briefs and the ledger carry what they always did.
+  "r2_buckets": [{ "binding": "LARGE", "bucket_name": "atelier-large" }],
   "durable_objects": {
     "bindings": [
       { "name": "LEDGER", "class_name": "Ledger" },
