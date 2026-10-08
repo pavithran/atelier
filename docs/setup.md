@@ -51,16 +51,25 @@ command line argument, and login prints no token.
 The owner's pages can also sit behind Cloudflare Access, so the person
 reaching them has signed in with whatever the Zero Trust account asks (a
 one-time code, a passkey, an identity provider) before the Worker is reached
-at all. Add a self-hosted Access application for the server's domain that
-covers every path, then give it Bypass policies (action Bypass, selector
-Include, Everyone) for `/api/*`, `/showcase`, `/how` and `/live.js`. The CLI
-and the runners send bearer tokens that never pass Access, and the public
-showcase, the explainer and the live script are for everyone, so those paths
-must reach the Worker without Access's prompt. Every other path, `/login`
-included, meets the sign-in at the edge. Then give the Worker the team's URL,
-the application's audience tag (both shown on the application's page in the
-Zero Trust dashboard) and the owner's email as the identity provider reports
-it, each pasted at wrangler's prompt:
+at all. Access picks the application whose path is most specific, and a
+policy applies to its whole application, so this takes five self-hosted
+applications in the Zero Trust dashboard, made before the secrets below so the
+owner is never locked out:
+
+1. One for the server's domain with no path, covering everything, with an
+   Allow policy that includes the owner's email.
+2. One each for `atelier.zone/api/*`, `atelier.zone/showcase`,
+   `atelier.zone/how` and `atelier.zone/live.js` (with the server's own
+   domain), each with a single Bypass policy that includes Everyone. The CLI
+   and the runners send bearer tokens that never pass Access, and the public
+   showcase, the explainer and the live script are for everyone, so those
+   paths must reach the Worker without Access's prompt.
+
+Every other path, `/login` included, then meets the sign-in at the edge. Last,
+give the Worker the team's URL (`https://TEAM.cloudflareaccess.com`, shown
+under Zero Trust's settings), the first application's audience tag (on its
+overview) and the owner's email as the identity provider reports it, each
+pasted at wrangler's prompt:
 
 ```bash
 npx wrangler secret put CF_ACCESS_ISS
