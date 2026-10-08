@@ -1624,8 +1624,13 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
       <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${href("p", p.name, item.id)}">Reload this task</a>. If the revision changed, the task owner should run <code>atelier push</code> and rerun checks.</p></div>`
     : "";
   const reviewWanted = decision.action === "review" || latestReviews(d.reviews, item.head).some((r) => !r.approve);
+  // While the gate needs the independent review, the owner's approval cannot
+  // satisfy it — the decision line and the protected note below both say so —
+  // so Approve records the owner's own opinion as a secondary action, never
+  // the primary one. Where the owner's approval counts, on a revision a review
+  // at this head sent back, it stays primary.
   const approve = evidenceVisible && live && item.head && reviewWanted
-    ? `<form method="post" action="${action("approve")}">${revision}<button class="primary">Approve revision</button></form>`
+    ? `<form method="post" action="${action("approve")}">${revision}<button${gate.needsAssessor ? "" : ' class="primary"'}>Approve revision</button></form>`
     : "";
   const accept = evidenceVisible && decision.action === "accept"
     ? `<form method="post" action="${action("accept")}">${revision}<button class="primary">Accept revision</button></form>`
@@ -1641,6 +1646,16 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
         <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review.</p>
         <button>Override the review and accept</button>
       </form></details>`
+    : "";
+  // The primary action while the gate waits for the independent review is the
+  // move that settles it: asking a qualifying reviewer, which a landing does
+  // (it requests the review and waits for its verdict), or waiting for one.
+  // The owner's Approve cannot satisfy the gate, so it is not that action,
+  // and the override above stays the way on when no reviewer qualifies.
+  const askReview = decision.action === "review"
+    ? `<div class="merge-command"><p>To move this task, ask a model of another family to review the revision. In the registered checkout, run:</p>
+      <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
+      <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one of another family than every contributor — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
     : "";
   const merge = decision.action === "merge"
     ? `<div class="merge-command"><p>In the registered checkout, run:</p>
@@ -1702,7 +1717,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
-  ${merge}${reaccept}
+  ${askReview}${merge}${reaccept}
   <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
 
