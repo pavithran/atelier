@@ -76,6 +76,12 @@ const HEAD = ${JSON.stringify(head)}, BASELINE = ${JSON.stringify(baseline)};
 const TIMES = { createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-10-05T09:30:00.000Z", lastPushAt: "2026-10-05T09:00:00.000Z" };
 // t3 is open and held by nobody; every other item is submitted by codex/test.
 const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null, ...TIMES });
+const CHANGES = {
+  t4: { reviews: 2, requests: 1, acceptance: false, override: false, asked: ["codex/gpt-6-astra"] },
+  t5: { reviews: 0, requests: 1, acceptance: false, override: false, asked: [] },
+  t6: { reviews: 0, requests: 0, acceptance: false, override: false, asked: [] },
+  t7: { reviews: 1, requests: 0, acceptance: true, override: true, asked: [] },
+};
 const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
@@ -99,7 +105,11 @@ globalThis.fetch = async (url, options = {}) => {
       else if (verb === "dispatch") data = { ...item(id), dispatch: { to: body.to ?? "any", agent: body.agent ?? null, model: body.model ?? null, ...(body.job !== undefined ? { job: body.job, head: body.head ?? "5".repeat(40) } : {}) } };
       else if (verb === "block") data = { ...item(id), state: "blocked", blocked: { reason: body.reason, by: "codex/test" } };
       else if (verb === "unblock") data = { ...item(id), state: "claimed" };
-      else if (verb === "edit") data = { ...item(id), ...body };
+      // t326: a change of criteria answers with what it withdrew; t4 had
+      // standing reviews and a request, t5 a request alone, t6 neither, t7
+      // was accepted with the owner's override; t1 and t2 report no change.
+      else if (verb === "edit") data = { ...item(id), ...body, ...(CHANGES[id] && body.accept ? { criteriaChange: { from: "a".repeat(64), to: "b".repeat(64), ...CHANGES[id] } } : {}) };
+      else if (verb === "brief") data = { decided: "Wait on " + id, summary: null, nonGoals: [], stopWhen: [], nextGate: null, accept: ["Nested lists parse"], partAccept: ["It works"], criteria: "c".repeat(64), evidence: [], recommendation: { verdict: "wait", reason: "In progress." } };
       else data = detail(id);
     }
   }
@@ -445,4 +455,58 @@ test("new sends a title, a brief and repeatable criteria; one long string alone 
   const cleared = f.run(f.checkout, ["edit", "t1", "--accept", "", "--project", "demo"]);
   assert.equal(cleared.status, 0, cleared.stderr);
   assert.deepEqual(f.requests().map((q) => q.body), [{ accept: [] }]);
+});
+
+// t326: the review command sends the binding of the criteria it judged and
+// the request it claimed only as given, never the task's own; edit says what
+// a change of the criteria withdrew; show prints the criteria and their binding.
+test("review sends the criteria binding and the request only as given, and refuses malformed ones before any request", (t) => {
+  const f = fixture(t);
+  const C = "c".repeat(64);
+  const r = f.run(f.workspace, ["review", "t2", "--approve", "--criteria", C, "--request", "7", "--note", "read them"], { ATELIER_ACTOR: "claude-code/opus" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/review")).map((q) => q.body), [{ approve: true, note: "read them", head: f.head, criteria: C, request: 7 }]);
+  f.clear();
+  // Without --criteria none is sent, and the server refuses it with how to refresh.
+  const bare = f.run(f.workspace, ["review", "t2", "--approve"], { ATELIER_ACTOR: "claude-code/opus" });
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.equal(f.requests().find((q) => q.path.endsWith("/review")).body.criteria, undefined);
+  f.clear();
+  for (const [argv, message] of [
+    [["review", "t2", "--approve", "--criteria", "abc"], /--criteria needs the 64-digit binding atelier show prints/],
+    [["review", "t2", "--approve", "--criteria", C, "--request", "x"], /--request needs the request number the review claim gave/],
+  ]) {
+    const bad = f.run(f.workspace, argv, { ATELIER_ACTOR: "claude-code/opus" });
+    assert.equal(bad.status, 1, argv.join(" "));
+    assert.match(bad.stderr, message);
+  }
+  assert.equal(f.requests().filter((q) => q.path.endsWith("/review")).length, 0);
+});
+
+test("edit says when the acceptance criteria changed, what that withdrew, and that a fresh review is needed; otherwise nothing of them", (t) => {
+  const f = fixture(t);
+  const edit = (id, ...flags) => {
+    const r = f.run(f.checkout, ["edit", id, ...flags, "--project", "demo"]);
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout;
+  };
+  assert.equal(edit("t4", "--accept", "One", "--accept", "Two"), [
+    "t4 edited.", "Acceptance criterion 1: One", "Acceptance criterion 2: Two",
+    "The acceptance criteria of t4 changed (binding bbbbbbbbbbbb, was aaaaaaaaaaaa).",
+    "Withdrawn: 2 reviews, 1 review request. They stay in the record and never count again, even if the criteria change back; t4 needs a fresh review of the new criteria.",
+    "Asked again at the same head: codex/gpt-6-astra.", "",
+  ].join("\n"));
+  assert.match(edit("t5", "--accept", "One"), /\nWithdrawn: 1 review request\. They stay in the record and never count again, even if the criteria change back; t5 needs a fresh review of the new criteria\.\n$/);
+  assert.match(edit("t6", "--accept", ""), /^t6 edited\. No framing is set now\.\nThe acceptance criteria of t6 changed \(binding bbbbbbbbbbbb, was aaaaaaaaaaaa\)\.\nNo review or review request stood, so nothing was withdrawn; any review of t6 from now on judges the new criteria\.\n$/);
+  assert.match(edit("t7", "--accept", "One"), /Withdrawn: 1 review, the acceptance, the override of the review\..*\nt7 is claimed again: its holder submits it, and it is reviewed and accepted again before it can merge\.\n$/s);
+  // The same criteria again, or an unrelated edit: no word of the criteria.
+  for (const flags of [["--accept", "One"], ["--next-gate", "Owner"]]) assert.doesNotMatch(edit("t1", ...flags), /criteria of|Withdrawn|fresh review/);
+  assert.deepEqual(f.requests().map((q) => q.body).filter((b) => b.accept !== undefined).map((b) => b.accept), [["One", "Two"], ["One"], [], ["One"], ["One"]]);
+});
+
+test("show prints the task's criteria, the plan's for a part, and their binding a review names", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.checkout, ["show", "t2", "--project", "demo"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /\nAcceptance criterion 1: Nested lists parse\nPlan acceptance criterion 1: It works\nCriteria binding: c{64} \(a review of these criteria names it with --criteria\)\n/);
 });

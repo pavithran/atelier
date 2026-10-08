@@ -38,7 +38,7 @@ async function secretProject(name: string, title: string) {
   await l.claim("t1", "codex/gpt-6");
   await l.setFork("t1", `${name}--t1`, head, "codex/gpt-6");
   await l.addEvidence({ itemId: "t1", claim: "npm run hush-suite", grade: "observed", head, passed: true, by: "codex/gpt-6", at: time, changedPaths: ["src/auth.ts"] });
-  await l.addReview({ itemId: "t1", by: "zcode/glm-5.3", head, approve: false, note: "secret reviewer note", at: time });
+  await l.addReview({ itemId: "t1", criteria: await l.criteria("t1"), by: "zcode/glm-5.3", head, approve: false, note: "secret reviewer note", at: time });
 }
 
 it("shows nothing by default, and the setting says which projects appear and how", async () => {

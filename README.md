@@ -394,7 +394,13 @@ A plan's part gets its review request automatically on submission. A single
 task gets one when the owner lands it. A runner that offers review jobs
 claims the request with `atelier review-claim ID [--runner home:NAME]`,
 reads the diff, writes a verdict and findings, and records them with
-`atelier review ID --approve|--reject --head SHA --findings JSON`. Every
+`atelier review ID --approve|--reject --head SHA --criteria BINDING
+--request N --findings JSON`. A review is bound to the head and to the
+acceptance criteria its reviewer was given, the task's and a part's from
+the approved plan: the claim names their binding, `atelier show` prints
+it, and a verdict that names none, or criteria the task no longer has, is
+refused. Changing a task's criteria withdraws every review and live review
+request of the old ones, and an acceptance, and they never count again. Every
 review brief states the project's review bar; unset, the default bar blocks
 only for a correctness, security or data-loss defect that the change
 introduces, or fails to fix while claiming to. `atelier init --review-tier
