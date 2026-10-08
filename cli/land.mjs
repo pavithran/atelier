@@ -604,10 +604,9 @@ export async function runLand(io) {
     // the lease now (t232).
     await renewBeforePublish();
     await step("accept", ["accept", id], p.path);
-    const landed = await step("merged", ["merge", id], p.path, () => ({ mergeCommit: git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path }) }));
-    const mergeOutput = landed.output.split("\n").filter(Boolean);
-    const summary = mergeOutput.filter((line) => line !== "The project branch was not pushed to its own remotes. Nothing was deployed.").at(-1);
-    print(`${id} landed: ${summary ?? "merged"}`);
+    const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
+    await step("merged", ["merge", id], p.path, () => ({ mergeCommit: mergeHead() }));
+    print(`${id} landed: merged as ${short(mergeHead())}.`);
   } catch (error) {
     await release();
     die(error.message);
