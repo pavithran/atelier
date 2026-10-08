@@ -578,6 +578,31 @@ it("a dispatch is withdrawn only from an open task, and a refusal says why and w
   await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is abandoned, so its dispatch no longer applies and there is nothing to withdraw$`));
 });
 
+// t235: a runner's dead run leaves its claims behind. The jobs the queue can
+// offer back to a restarted runner are the dispatched claims that runner
+// holds, and nothing else.
+it("held jobs are the dispatched claims the named runner holds, alone", async () => {
+  const L = await setup("held-jobs");
+  const item = await L.newItem("Build", ["a/**"], "owner");
+  await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash" });
+  const actor = "opencode/glm-5.3-flash";
+  const studio = { runner: "home:studio", kind: "home" as const };
+  await L.claim(item.id, actor, studio);
+  await L.setFork(item.id, "held-jobs--t1", H0, actor);
+  expect((await L.heldJobs("home:studio")).map((i) => i.id)).toEqual([item.id]);
+  // The hold matches without case, as claim compares it; another runner holds nothing.
+  expect((await L.heldJobs("HOME:STUDIO")).map((i) => i.id)).toEqual([item.id]);
+  expect(await L.heldJobs("home:laptop")).toEqual([]);
+  // A claim no dispatch routes, though a runner made it, is not a job to offer.
+  const byHand = await L.newItem("By hand", ["b/**"], "owner");
+  await L.claim(byHand.id, A, studio);
+  expect((await L.heldJobs("home:studio")).map((i) => i.id)).toEqual([item.id]);
+  // A released task waits in the queue again rather than staying with the runner.
+  await L.release(item.id, actor, "the run died");
+  expect(await L.heldJobs("home:studio")).toEqual([]);
+  expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
+});
+
 it("a submit records the summary in its event, cleaned, refuses one over its limit, and only the latest submit at a head speaks", async () => {
   const L = await setup("summary");
   await L.newItem("Summarise", ["src/**"], "owner");

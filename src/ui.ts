@@ -594,8 +594,9 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 // The public page: the portfolio the owner chose to show, read only. Stories
 // arrive redacted (graph.ts), and for a project shown anonymously they arrive
 // anonymised as well: titled by a neutral label from the project's kind, each
-// task titled by its kind of work, so no project name, task title, path,
-// commit message, review note, person or address reaches the HTML.
+// task titled by its kind of work, and no commit hash anywhere, so no project
+// name, task title, path, commit message, commit hash, review note, person or
+// address reaches the HTML.
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
@@ -685,7 +686,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     ${layersFigure()}
     <p class="meta">How a task goes from claim to merge, and the rules each step enforces: <a href="/how#the-loop">How it works</a>.</p>
   </section>
-  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message or address in them. Review notes, reports and diffs stay private in every case.</p>
+  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
 `,
   });
 }
@@ -752,31 +753,24 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
 }
 
 // ── AI Gateway ─────────────────────────────────────────────────────────────
-// Each model's calls through the AI Gateway over the view's window
-// (src/usage/gateway.ts): calls, tokens, cost and median duration, the
-// median's sample size beside it, and when the logs were last pulled.
+// Each model's calls through the AI Gateway over the view's window, from the
+// GraphQL Analytics API (src/usage/gateway.ts): calls and failures, tokens,
+// cost, and the median and 90th percentile duration with the number of calls
+// they are taken over. Off, refused or empty, the section says which.
 
 export function gatewaySection(g: GatewayView): string {
   const head = `<h2 class="section-title">AI Gateway · last ${g.days} days</h2>`;
-  const pull = g.pull
-    ? g.pull.error
-      ? `The last pull, ${e(stamp(g.pull.at))}, failed: ${e(g.pull.error)}.`
-      : `Logs last pulled ${e(stamp(g.pull.at))}, ${plural(g.pull.added, "new call")}.`
-    : "No logs pulled yet; the Worker pulls them every five minutes.";
-  // When the figures cannot be read, the last pull still says whether the
-  // gateway's logs are reachable.
-  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p>${g.pull ? `<p class="meta">${pull}</p>` : ""}</section>`;
+  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p></section>`;
+  const ms = (v: number | null) => (v === null ? '<span class="meta">none</span>' : e(duration(v)));
   const row = (m: GatewayView["models"][number]) => `<tr><th scope="row"><code>${e(m.model)}</code><span class="meta"> ${e(m.provider)}</span></th>
     <td class="num">${e(m.calls.toLocaleString("en"))}${m.failures ? ` <span class="meta">${e(m.failures.toLocaleString("en"))} failed</span>` : ""}</td>
     <td class="num">${e(tokens(m.tokensIn))} in · ${e(tokens(m.tokensOut))} out</td>
     <td class="num">${m.cost === null ? '<span class="meta">not priced</span>' : e(money(m.cost))}</td>
-    <td class="num">${m.medianMs === null ? '<span class="meta">none</span>' : `${e(duration(m.medianMs))} <span class="meta">n=${m.sample}</span>`}</td></tr>`;
-  const gaps = g.gaps.map((x) => `<p role="status" class="error">Incomplete: the pull at ${e(stamp(x.pulledAt))} read its limit of logs before reaching the last one written, so at least ${plural(x.atLeast, "call")} logged between ${e(stamp(x.from))} and ${e(stamp(x.to))} ${x.atLeast === 1 ? "was" : "were"} not read. The figures below undercount that stretch.</p>`).join("");
+    <td class="num">${ms(m.medianMs)} · ${ms(m.p90Ms)} <span class="meta">n=${e(m.sample.toLocaleString("en"))}</span></td></tr>`;
   return `<section class="gateway" aria-label="AI Gateway costs">${head}
-  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from the gateway's own logs. Calls, tokens and cost count every call; ${g.sampled ? "the medians are taken over the newest durations only, n of them" : "each median is taken over n calls"}. ${pull}</p>
-  ${gaps}
+  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from Cloudflare's GraphQL Analytics. The median and 90th percentile durations are taken over n calls in that window. A model whose calls all cost $0 shows "not priced": the gateway records a call it could not price as $0, so the two cannot be told apart.</p>
   ${g.models.length ? `<table class="usage-table">
-    <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median duration</th></tr></thead>
+    <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median · p90 duration</th></tr></thead>
     <tbody>${g.models.map(row).join("")}</tbody>
   </table>` : `<p class="empty">No calls through the gateway in the last ${g.days} days.</p>`}
 </section>`;
