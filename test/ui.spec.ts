@@ -28,6 +28,30 @@ it('acceptance renders only after an independent approval and passing evidence; 
  expect(independent).toContain('Accept revision');expect(independent).not.toContain('Accept without an independent review');
  d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
 });
+it('while the gate waits for the independent review, asking a reviewer is the primary action and the owner\'s Approve is secondary',()=>{
+  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+  const html=renderItem(project,detail(),'PAVI',diff);
+  // The owner's approval cannot satisfy the gate, so its button is not the primary one.
+  expect(html).not.toContain('<button class="primary">Approve revision</button>');
+  expect(html).toContain('<button>Approve revision</button>');
+  // The primary action is the move that settles it: the landing that requests the review and waits, above the diff.
+  expect(html).toContain('ask a model of another family to review the revision');
+  expect(html).toContain('atelier land t1 --project');
+  expect(html.indexOf('atelier land t1')).toBeLessThan(html.indexOf('id="changes"'));
+  // The override stays available for when no reviewer qualifies.
+  expect(html).toContain('Accept without an independent review');
+});
+it('where the owner\'s approval counts, Approve stays the primary action and no landing is asked for',()=>{
+  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+  const d=detail();
+  // A revision outside the protected paths, sent back by the owner's own review: approving it is the owner's move.
+  d.gate={ready:false,needsAssessor:false,blockers:['rejected by pavi: tighten'],outOfScope:[]};
+  d.reviews=[{itemId:'t1',head,approve:false,by:'pavi',note:'tighten',at:time}];
+  d.evidence[0].changedPaths=['docs/a.md'];
+  const html=renderItem(project,d,'PAVI',diff);
+  expect(html).toContain('<button class="primary">Approve revision</button>');
+  expect(html).not.toContain('atelier land t1');
+});
  it('the owner\'s override is shown with its reason, apart from the reviews, and only at its head',()=>{
   const diff={head,base:'b'.repeat(40),files:[],truncated:false};
   const reviewOverride={head,by:'pavi',reason:'No <b>other</b> family is available',at:time};

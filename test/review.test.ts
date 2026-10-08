@@ -618,6 +618,25 @@ test("reviewBrief: the task's title and the plan's text are labelled the request
   assert.ok(!task.includes("The plan's text is the request"), task);
 });
 
+// t315: a task outside a plan carries its brief and its acceptance criteria,
+// numbered and binding exactly as a plan part's are.
+test("reviewBrief: a task's brief and acceptance criteria are carried, the criteria numbered with the plan's instruction", () => {
+  const task = (over: Partial<Item>) => brief({ need: required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), plan: null, item: item(over) });
+  const text = task({ title: "Short titles", brief: "Every list shows the short title.\nThe brief stays on the task page.", accept: ["Lists show the short title", "The brief is on the task page"] });
+  assert.ok(text.includes("Title, as written for the item. The title asks for the change; it is not a claim the change or its commits make:\n```\nShort titles\n```\nThe task's brief, as written for the item. Like the title, it asks for the change:\n```\nEvery list shows the short title.\nThe brief stays on the task page.\n```\nAcceptance criteria. A change that fails one has a correctness fault, which blocks:\n```\n1. Lists show the short title\n2. The brief is on the task page\n```"), text);
+  // The same words and numbering as a plan part's criteria.
+  const part = brief();
+  assert.ok(part.includes("Acceptance criteria. A change that fails one has a correctness fault, which blocks:\n```\n1. "), part);
+  const rules = text.slice(text.indexOf("## Rules for blocking"), text.indexOf("## Reply format"));
+  assert.ok(rules.includes("The task's title, its brief and the plan's text are the request the change answers, not claims the change makes"), rules);
+  assert.ok(rules.includes("The acceptance criteria, the task's and the plan's, bind as criteria, not as claims."), rules);
+  // A task with neither carries neither, and the rule reads as before.
+  const plain = task({});
+  assert.ok(!plain.includes("The task's brief"), plain);
+  assert.ok(!plain.includes("Acceptance criteria"), plain);
+  assert.ok(plain.includes("The plan's acceptance criteria bind as criteria, not as claims."), plain);
+});
+
 test("reviewBrief: a re-review carries the earlier findings and says the builder has pushed since", () => {
   const findings: Finding[] = [blocker, { file: "README.md", line: null, severity: "follow-up", text: "Mention t39." }];
   const need = required({ reviews: [

@@ -47,8 +47,14 @@ dispatch note, which is capped there (task t198).
 One clear change becomes a task:
 
 ```sh
-atelier new "title" --scope "path/**"
+atelier new "short title" --brief "the whole task" --accept "what must be true" --scope "path/**"
 ```
+
+The title, at most 80 characters, is what every list shows; the brief and the
+acceptance criteria appear on the task's page and in the briefs its builder
+and reviewer get, and a reviewer blocks a change that fails a criterion. One
+long text with no `--brief` becomes the brief, with its first clause as the
+title; `atelier edit ID --title T --brief B --accept A` changes them.
 
 Give it to a session ("get this done"), or queue it for a runner with
 `atelier dispatch ID`.
