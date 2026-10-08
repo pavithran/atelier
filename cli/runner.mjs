@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { excludeScratch } from "./scratch.mjs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -29,6 +30,20 @@ export function offerFrom(config, name) {
   // the loop below passes such builds by when the offer does not name
   // "build" (jobOf).
   return { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+}
+
+// The runner's first line at start (runRunner): the jobs it takes, with the
+// known jobs it does not take named behind them. t252 made a config's jobs
+// the exact list a runner takes, so a config written before it — jobs:
+// ["plan"], which then meant the plan job besides building — silently
+// stopped taking builds and merge-main jobs: on 2026-10-07 both build
+// runners claimed nothing for about an hour while seven dispatches waited,
+// and nothing where the runners ran said why. Said at start, the narrowing
+// is the first line of the runner's own output, not an hour of the queue's
+// silence.
+export function jobsLine(jobs, known = [...DEFAULT_JOBS, "review"]) {
+  const not = known.filter((job) => !jobs.includes(job));
+  return `jobs: ${jobs.join(", ")}${not.length ? ` (not ${not.join(", ")})` : ""}`;
 }
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
@@ -183,13 +198,11 @@ const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
 // its reply, outside the clone; the runner names it in the command and reads
 // it after the harness ends.
 export const REVIEW_DIFF = ".scratch/atelier-review.diff";
+export { excludeScratch };
+
 export function writeDiff(workspace, text) {
   mkdirSync(join(workspace, ".scratch"), { recursive: true });
-  const info = join(workspace, ".git", "info");
-  mkdirSync(info, { recursive: true });
-  const exclude = join(info, "exclude");
-  const held = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
-  if (!held.split("\n").includes(".scratch/")) appendFileSync(exclude, `${held && !held.endsWith("\n") ? "\n" : ""}.scratch/\n`);
+  excludeScratch(workspace);
   const file = join(workspace, REVIEW_DIFF);
   writeFileSync(file, text, { mode: 0o600, flag: "wx" });
   return { file };
@@ -914,7 +927,12 @@ export function checkFailures(output) {
 // integrated, as for a plan put back to building to take main. A merge that
 // conflicts, or checks that fail, rolls the branch back with atelier push
 // --rollback, logs the reason and posts refresh-failed with its kind; the
-// refresh is the plan's, so no part's builder is charged. Any other error is
+// refresh is the plan's, so no part's builder is charged. The posted
+// refresh-failed is the plan's recorded outcome, and the server handles it:
+// the tick does not try the same main head again, and a conflict adds the
+// merge-main part. So the runner counts it toward neither failure cap
+// (`recorded`, t273) and keeps serving the plan item's jobs — the integrate
+// job that merges the part a conflict added, among them. Any other error is
 // the integrator's: the merge is rolled back if it was pushed and the plan
 // item is released, with nothing posted.
 export async function runRefresh(assignment, config, name, io) {
@@ -948,7 +966,13 @@ export async function runRefresh(assignment, config, name, io) {
     await io.cli(["refresh-failed", item.id, ...at, "--main-head", mainHead, "--kind", kind, "--reason", reason]);
     io.log(`refresh-failed recorded on ${item.id}; no part is charged, and the plan's parts are dispatched without it`);
     await release(reason);
-    return { phase: "failed", reason, taskFailure: true };
+    // The failure is recorded (refresh-failed), so the server handles it:
+    // the tick does not try the same main head again, and a conflict adds
+    // the merge-main part. It is the plan's recorded outcome, not a failure
+    // for the runner to count (t273): `recorded` counts toward neither cap,
+    // so the loop keeps serving the plan item's jobs — the integrate job
+    // that merges the part a conflict added, among them.
+    return { phase: "failed", reason, recorded: true };
   };
   try {
     if (actor !== "atelier/integrator") throw new Error("the refresh job runs as atelier/integrator");
@@ -1023,12 +1047,16 @@ export function queueBackoffMs(misses) {
   return misses <= 1 ? 30_000 : Math.min(30_000 * 2 ** (misses - 1), 5 * 60_000);
 }
 
+// A failure the job recorded on the item (`recorded`: runRefresh posted
+// refresh-failed, and the server handles it) counts toward neither cap
+// (t273): it is no task failure and no infrastructure failure, so the loop
+// keeps serving the item's jobs.
 export function failureCount(count, state) {
-  return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
+  return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? 1 : 0);
 }
 
 export function infrastructureFailureCount(count, state) {
-  return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped ? count + 1 : 0;
+  return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
 // The file a plan job's harness writes the plan document to, inside the
@@ -1207,7 +1235,9 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       ...((argv[0] === "release" || argv[0] === "review-release") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
-    reset: (cwd) => resetTo(cwd, "HEAD"),
+    // Every build, plan and merge job's workspace keeps .scratch/ out of Git
+    // after the reset (excludeScratch).
+    reset: async (cwd) => { await resetTo(cwd, "HEAD"); excludeScratch(cwd); },
     // The integrate and refresh jobs' reset: to the fork's copy of the branch
     // the claim names (atelier.branch), which the claim has just fetched.
     resetToRemote: async (cwd) => {
@@ -1254,6 +1284,11 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       const refusal = versionRefusal(await version(controller.signal));
       if (refusal) throw new Error(refusal);
     }
+    // Said once, before the first poll (t289): the jobs this runner takes
+    // and the ones its config leaves out, so an offer narrowed by t252's
+    // exact jobs is read where the runner runs, not inferred from the
+    // queue's silence.
+    io.log(jobsLine(offer.jobs));
     // Transient queue failures in a row (transientQueueError): the first is
     // logged, the rest are quiet until the queue answers again, and each
     // lengthens the wait before the next poll (queueBackoffMs).

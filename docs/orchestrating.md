@@ -70,6 +70,34 @@ says it does.
 The scripts this handbook refers to are in `bin/orchestrate/`, with their
 setup in its README.
 
+## Reading the server's logs
+
+The Worker writes Workers Logs (`observability` in wrangler.jsonc): every
+invocation — a fetch, a queue delivery, the five-minute cron tick — and every
+`console.error` it prints is kept for seven days, three on the free plan, and
+can be queried after the fact. That is the first tool for diagnosing the
+server, not `wrangler tail`: on 7 October 2026 the queue's timeouts had to be
+caught with ninety seconds of tail by hand, and the same lines sat in the
+stored logs all along. In the Cloudflare dashboard, open Workers & Pages,
+select the `atelier` Worker, and open **Observability**; filter by time, by
+outcome (an invocation that errored), or by message text — a task or run id,
+or one of the Worker's own lines: `AI Gateway pull failed`, `Atelier plan
+tick failed`, `Artifacts could not revoke a write token`. What is happening
+right now can still be watched live — `wrangler tail` from a checkout of this
+repository, or the dashboard's Logs → Live — but the tail shows only what
+arrives while it runs; read the stored logs first.
+
+When the queue is slow, `GET /api/queue` (and a runner's POST of the same
+route) answers with a `server-timing` header — `index`, `projects`, `total`,
+in milliseconds — so a slow poll can be measured while it happens.
+
+Anything the Worker logs is kept in the account's logs, so no log may carry
+a token or a key. The Worker logs error codes and messages only — the AI
+Gateway token travels in the authorization header, never in a logged URL or
+message (src/usage/gateway.ts) — and test/workers-logs.test.mjs fails the
+suite if a `console.*` call in `src/` names one. Add logs the same way:
+messages and identifiers, never a bearer token, a cookie, or a secret.
+
 ## Briefing an agent
 
 A brief is the whole of what an agent knows. Write it so it cannot be
