@@ -6,7 +6,11 @@
 // protected change in a project with a review tier, the tier's models in the
 // tier's order, so one review serves the gate and the tier (src/review/tier.ts);
 // then the plan's routed reviewer for the part; then the part's alternates;
-// then the rest of the pool. Each choice carries its reasons in the words src/plans/route.ts
+// then the rest of the pool. Given the reviewers' precision on blocking
+// findings (src/models/precision.ts), the tier's models and the rest of the
+// pool are each asked in descending precision term, keeping the tier's own
+// order and model id order between equal terms; precision orders only, and
+// every rule below still applies to each candidate. Each choice carries its reasons in the words src/plans/route.ts
 // uses for the same rules, and when no model qualifies the result says why,
 // naming each model passed over.
 //
@@ -18,6 +22,7 @@
 
 import type { ModelEntry } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
+import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
 import { assertEligible, DEFAULT_OWNER, hasRole, parseRuleError, sameActor, type Item, type ProjectPolicy } from "../rules.ts";
@@ -37,6 +42,7 @@ export interface PickInput {
   avoid?: readonly { actor: string; reason: string }[];       // reviewers to pass over, such as one whose claim lapsed
   profiles?: readonly ModelProfile[];           // context windows; MODEL_PROFILES by default
   owner?: string;
+  precision?: PrecisionRecord | null;           // reviewers' precision on blocking findings; orders the tier and the pool only
 }
 
 // The invariant: unpicked is null exactly when reviewer is set.
@@ -67,10 +73,13 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   // tie-break, so the result never depends on the order the pool arrives in.
   const wanted: { actor: string; source: Source }[] = [];
   if (input.previous) wanted.push({ actor: input.previous, source: { kind: "previous" } });
-  for (const actor of input.tier ?? []) wanted.push({ actor, source: { kind: "tier" } });
+  const precision = input.precision ?? null;
+  // A tier model's names: its pool entry's id and aliases when the pool has it.
+  const tierNames = (actor: string) => { const entry = findEntry(input.pool, actor); return entry ? namesOf(entry) : [actor]; };
+  for (const actor of byPrecision(input.tier ?? [], tierNames, precision)) wanted.push({ actor, source: { kind: "tier" } });
   if (input.route?.reviewer) wanted.push({ actor: input.route.reviewer.actor, source: { kind: "routed" } });
   input.route?.alternates.forEach((c, index) => wanted.push({ actor: c.actor, source: { kind: "alternate", index } }));
-  const pool = [...input.pool].sort((a, b) => a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b)));
+  const pool = byPrecision([...input.pool].sort((a, b) => a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b))), namesOf, precision);
   for (const entry of pool) wanted.push({ actor: actorOf(entry), source: { kind: "pool" } });
 
   const seen = new Set<string>();
@@ -92,7 +101,8 @@ export function pickReviewer(input: PickInput): ReviewerPick {
       if (source.kind === "routed") lead.push(`The plan routed ${actor} to review this part; ${why}`);
       continue;
     }
-    return { reviewer: { actor: actorOf(entry), reasons: [...lead, position(source, input), ...judged.passed] }, passedOver, unpicked: null };
+    const said = precision ? [precisionLine(precisionOf(precision, namesOf(entry)), precision.window)] : [];
+    return { reviewer: { actor: actorOf(entry), reasons: [...lead, position(source, input), ...judged.passed, ...said] }, passedOver, unpicked: null };
   }
   const tried = passedOver.length ? passedOver.map((c) => `${c.actor} (${c.reasons.join("; ")})`).join(", ") : "no model in the pool";
   return none(`no reviewer of another family than every contributor (${describeContributors(contributors)}): ${tried}`, passedOver);
@@ -100,12 +110,13 @@ export function pickReviewer(input: PickInput): ReviewerPick {
 
 function position(source: Source, input: PickInput): string {
   if (source.kind === "previous") return "Reviewed the previous round; a re-review goes to the same reviewer first";
-  if (source.kind === "tier") return "A model of the project's review tier, asked first so its review serves as the tier review too";
+  if (source.kind === "tier") return `A model of the project's review tier, asked first so its review serves as the tier review too${input.precision ? "; the tier is asked by review precision, then in its own order" : ""}`;
   if (source.kind === "routed") return "The plan's routed reviewer for this part";
   if (source.kind === "alternate") return `Alternate ${source.index + 1} in the plan's routing for this part`;
+  const order = input.precision ? "review precision, then model id, then actor name" : "model id, then actor name";
   return input.route
-    ? "From the pool, after the plan's routing named no model that qualifies; the pool goes by model id, then actor name"
-    : "From the pool, which goes by model id, then actor name";
+    ? `From the pool, after the plan's routing named no model that qualifies; the pool goes by ${order}`
+    : `From the pool, which goes by ${order}`;
 }
 
 // Every rule is applied, so a model passed over is shown with all the rules
