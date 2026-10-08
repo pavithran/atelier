@@ -1,0 +1,32 @@
+atelier atelier/t315 "Short task titles (site assessment 2026-10-08): every task title is its whole brief (60 to 150 words), so the task page's heading runs seven lines and Home, Decisions, Studio, Tasks, History and Overview are dense and overflow on a phone. Give items a short title (at most 80 characters) beside the brief: 'atelier new' takes --title or derives one, existing items get one (derived, editable with 'atelier edit'), and every list and heading shows the short title, the brief only on the task page"
+accepted head db11c4381dab462cce66a31ad333f0e3ab96a148
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T16:33:14.252Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T16:33:17.828Z
+REVIEW approve by codex/gpt-6-astra at db11c4381dab462cce66a31ad333f0e3ab96a148, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T15:08:03.040Z pavi item.created
+2026-10-08T15:54:57.875Z pavi item.edited
+2026-10-08T15:55:09.446Z claude-code/opus-5.5 item.claimed
+2026-10-08T15:55:24.478Z claude-code/opus-5.5 fork.created
+2026-10-08T16:18:45.969Z claude-code/opus-5.5 push.observed
+2026-10-08T16:24:48.596Z claude-code/opus-5.5 evidence.observed
+2026-10-08T16:24:52.298Z claude-code/opus-5.5 evidence.observed
+2026-10-08T16:25:02.730Z claude-code/opus-5.5 item.submitted
+2026-10-08T16:25:47.961Z pavi land.lease
+2026-10-08T16:25:56.044Z pavi land.merge
+2026-10-08T16:26:05.437Z pavi land.regenerate
+2026-10-08T16:26:08.419Z claude-code/opus-5.5 push.observed
+2026-10-08T16:26:08.724Z pavi land.push
+2026-10-08T16:33:15.150Z claude-code/opus-5.5 evidence.observed
+2026-10-08T16:33:18.282Z claude-code/opus-5.5 evidence.observed
+2026-10-08T16:33:18.790Z pavi land.check
+2026-10-08T16:33:22.874Z pavi review.requested
+2026-10-08T16:33:22.874Z pavi review.requested
+2026-10-08T16:33:48.374Z codex/gpt-6-astra review.claimed
+2026-10-08T16:33:50.054Z codex/gpt-6-astra review.diff
+2026-10-08T16:34:13.798Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T16:34:15.322Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T16:35:30.177Z codex/gpt-6-astra review.approved
+2026-10-08T16:35:42.572Z pavi land.review
+2026-10-08T16:35:44.067Z atelier/orchestrator review.withdrawn
+2026-10-08T16:35:44.067Z pavi item.accepted
+2026-10-08T16:35:44.197Z pavi land.accept
