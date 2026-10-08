@@ -109,8 +109,8 @@ function captionCue(text, words, dur) {
 // A chapter's first scene opens on its chapter card (scenes/film.js CARD),
 // so its narration waits for the card; the midpoint card is longer.
 const LEAD = { cold: 1.2, why: 1.9, cast: 1.9, gate: 1.9, plan: 3.2, metrics: 1.9, who: 1.9, cloud: 1.9, default: 0.8 };
-const GAP = 0.32;
-const TAIL = { default: 1.4, cold: 1.6, why: 3.6, cast: 1.6, gate: 2.6, stories: 1.6, plan: 1.4, metrics: 1.4, who: 1.6, cloud: 1.4, close: 2.6 };
+const GAP = 0.28;
+const TAIL = { default: 1.4, cold: 1.6, why: 3.0, cast: 1.6, gate: 2.2, stories: 1.4, plan: 1.4, metrics: 1.4, who: 1.6, cloud: 1.4, close: 2.4 };
 
 async function timeline(scenes) {
   let t = 0;

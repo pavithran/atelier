@@ -5,8 +5,12 @@ reads. `cd video && npm ci && npm run build` turns it into the film: each
 scene's narration below is spoken by text-to-speech, captioned, and laid over
 the scene of the same id in `video/scenes/film.js`, with a score composed by
 `video/scripts/music.mjs` from the same timeline. Change the words here, not
-in the build. This is the seventh cut, built as task t320 from the lead
-developer's notes on the sixth (2026-10-08: key words larger, the structure
+in the build. This is the eighth cut, `atelier-v8-dark.mp4`, rendered all on
+the dark ground in a cool navy with one blue accent (the lead developer's
+notes on the seventh, 2026-10-08: runners explained at first use, the rule
+as "a model from a different company", the plain takeaway "Tests Atelier
+runs itself, not the agent's claim"). The seventh cut was built as task
+t320 from the lead developer's notes on the sixth (2026-10-08: key words larger, the structure
 visible, the film memorable, a bright version). It renders twice from one
 timeline: `npm run build -- --theme dark` writes `atelier-v7-dark.mp4`, the
 Night theme with two scenes on the light ground, and `--theme bright` writes
@@ -63,7 +67,7 @@ Atelier keeps the record.", which also opens and closes the film. The four
 biggest numbers (15 tasks held at once, 99 send-backs, 30 of 52 findings,
 240 merged) each get a beat of their own with one plain line of meaning.
 
-The build of 2026-10-08 runs 6:38. The competition's rules ask for five to
+The eighth cut's build of 2026-10-08 runs 6:36. The competition's rules ask for five to
 ten minutes; this cut aims at six to six and a half.
 
 ## 1. Opening {#cold}
@@ -79,7 +83,7 @@ without proof · 4 Big goals become plans · 5 It measures, and it learns ·
 
 > Many AI agents, one repository. When their work merges, what can you trust?
 >
-> Three things to remember: checks Atelier observed itself; approval by another model family; and a record of every agent, kept on Cloudflare.
+> Three things to remember: tests Atelier runs itself, not the agent's claim; approval by a model from a different company; and a record of every agent, kept on Cloudflare.
 
 ## 2. Why Git alone isn't enough {#why}
 
@@ -112,9 +116,9 @@ project, runners as many as are started, one landing on main at a time;
 
 > A planner agent splits a goal into parts. Builders work at once, each in its own fork, and a task has one holder at a time; it changes hands only by a recorded handoff.
 >
-> A reviewer checks each change; only another family's approval counts, a family being the company that made the model. The lead developer, the one human, merges.
+> A reviewer checks each change, and only approval by a model from a different company counts. The lead developer, the one human, merges.
 >
-> That's concurrency. Each task is its own fork in Artifacts, and each project's ledger its own Durable Object; checks run on as many runners as are started, and only landing on main waits its turn. The most tasks held at once here was fifteen, on 6 October; beyond that, it hasn't been measured.
+> That's concurrency. Each task is its own fork in Artifacts, and each project's ledger its own Durable Object; runners, small programs on the lead developer's machines, take jobs from Atelier and start the right agent; any number can run, and only landing on main waits its turn. The most tasks held at once here was fifteen; beyond that, it hasn't been measured.
 
 ## 4. Nothing merges without proof {#gate}
 
@@ -173,7 +177,7 @@ quoted, its approval and the integration; beneath, what a single task's
 landing does on a conflict, and the landing lease. Tags: t197, 6 and 7
 October 2026; t209, 6 and 7 October 2026; t255, 7 October 2026.
 
-> Big goals become plans. Opus 5.5 split a docs update into seven parts, approved once, by the hash of exactly that proposal. Each part got a builder and a reviewer of another family, and five agents built them.
+> Big goals become plans. Opus 5.5 split a docs update into seven parts, approved once, by the hash of exactly that proposal. Each part got a builder and a reviewer from a different company, and five agents built them.
 >
 > That's coordination, and the orchestrator does it on its own: when two attempts by GLM at part t209 ended without a commit, it moved the part to Fable 5.1, and moved its review from GLM, which had worked on it, to Gemini.
 >
@@ -231,7 +235,7 @@ On screen, dark: the field of light returns. Four lines, then "Git keeps
 the code. Atelier keeps the record.", 321 tasks and 240 merged counting up,
 with the rest beneath; then atelier.zone and the repository's address.
 
-> Checks Atelier observed itself. Approval by another model family. A record of every agent, kept on Cloudflare.
+> Tests Atelier runs itself, not the agent's claim. Approval by a model from a different company. A record of every agent, kept on Cloudflare.
 >
 > Git keeps the code. Atelier keeps the record. It built itself this way: 321 tasks, 240 merged.
 >
