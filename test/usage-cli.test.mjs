@@ -412,6 +412,19 @@ test("an interrupt stops the reports", async (t) => {
   assert.equal(reported, 1);
 });
 
+test("t260: the server's speed record is printed after the gateway's, and a failed read does not stop the report", async (t) => {
+  const speed = { days: 14, since: "2026-09-23T12:00:00.000Z", until: "2026-10-07T12:00:00.000Z", minSamples: 3, models: [
+    { model: "opus-5.5", actors: ["claude-code/opus-5.5"], build: { n: 3, median: 1200, runs: 4, stalled: 1 }, review: { n: 0, median: null, runs: 0, stalled: 0 }, task: { n: 1, median: null } },
+  ] };
+  const { io, calls } = fakeIo(t, { io: { speed: async () => speed } });
+  await runUsage(args("name=home:test"), io);
+  assert.match(calls.printed.at(-1), /\n\nSpeed by model, last 14 days \(2026-09-23 to 2026-10-07\):\n  opus-5\.5: build median 20m \(n=3\), 1 of 4 stalled \(25%\); review none, no runs; task to merge n=1, too few for a median\n/);
+  const failed = fakeIo(t, { io: { speed: async () => { throw new Error("no such route"); } } });
+  await runUsage(args("name=home:test"), failed.io);
+  assert.match(failed.calls.printed.at(-1), /Speed: could not read: no such route/);
+  assert.equal(failed.calls.report.length, 4);
+});
+
 test("runner --usage --dry-run runs from the command line, reads nothing it does not have, and contacts no server", async (t) => {
   const dir = tempDir(t, "atelier-usage-");
   const env = { PATH: process.env.PATH, HOME: dir, ATELIER_CONFIG_DIR: dir, ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_TOKEN: "test-token" };

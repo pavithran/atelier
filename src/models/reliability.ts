@@ -178,7 +178,7 @@ function median(xs: number[]): number | null {
 export const runTotal = (r: ModelReliability): number => Object.values(r.runs).reduce((a, b) => a + b, 0);
 
 // An agent: harness/model, not Atelier's own recorder and not the owner.
-function isAgent(actor: string, owner: string): boolean {
+export function isAgent(actor: string, owner: string): boolean {
   return actor !== owner && actor.includes("/") && !actor.startsWith("atelier/") && validActor(actor);
 }
 
