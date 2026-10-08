@@ -15,9 +15,9 @@ const ON = { CF_ACCOUNT_ID: "test-account", ANALYTICS_TOKEN: "test-analytics-tok
 const same = (s: string) => s;
 
 // The live answer's shape, with quantiles added as the query asks for them.
-// The task rows sit beside the rows a call's other metadata entries land in
-// (role, runner) and any a call with no metadata gives; only the task rows
-// are read.
+// The task selection groups each call by its task value; the calls with no
+// task entry land in the empty value's row, which names no task and is
+// left out.
 const ANSWER = {
   data: { viewer: { accounts: [{
     models: [
@@ -25,11 +25,9 @@ const ANSWER = {
       { count: 1, dimensions: { model: "cohere/north-mini-code:free", provider: "openrouter" }, sum: { cachedTokensIn: 0, cachedTokensOut: 0, cost: 0, erroredRequests: 0, uncachedTokensIn: 16860, uncachedTokensOut: 166 }, quantiles: { durationMsP50: 900, durationMsP90: 900 } },
     ],
     tasks: [
-      { count: 3, dimensions: { metadataKey: "task", metadataValue: "t278" }, sum: { cachedTokensIn: 0, cachedTokensOut: 0, cost: 0.0029858999999999997, erroredRequests: 1, uncachedTokensIn: 19378, uncachedTokensOut: 132 } },
-      { count: 4, dimensions: { metadataKey: "role", metadataValue: "build" }, sum: { cachedTokensIn: 0, cachedTokensOut: 0, cost: 0.0029858999999999997, erroredRequests: 1, uncachedTokensIn: 36238, uncachedTokensOut: 298 } },
-      { count: 4, dimensions: { metadataKey: "runner", metadataValue: "home:studio" }, sum: { cachedTokensIn: 0, cachedTokensOut: 0, cost: 0.0029858999999999997, erroredRequests: 1, uncachedTokensIn: 36238, uncachedTokensOut: 298 } },
-      { count: 1, dimensions: { metadataKey: "task", metadataValue: "t271" }, sum: { cachedTokensIn: 0, cachedTokensOut: 0, cost: 0, erroredRequests: 0, uncachedTokensIn: 16860, uncachedTokensOut: 166 } },
-      { count: 2, dimensions: { metadataKey: "", metadataValue: "" }, sum: { cost: 0, erroredRequests: 0, uncachedTokensIn: 900, uncachedTokensOut: 90, cachedTokensIn: 0, cachedTokensOut: 0 } },
+      { count: 3, dimensions: { task: "t278" }, sum: { cachedTokensIn: 0, cachedTokensOut: 0, cost: 0.0029858999999999997, erroredRequests: 1, uncachedTokensIn: 19378, uncachedTokensOut: 132 } },
+      { count: 1, dimensions: { task: "t271" }, sum: { cachedTokensIn: 0, cachedTokensOut: 0, cost: 0, erroredRequests: 0, uncachedTokensIn: 16860, uncachedTokensOut: 166 } },
+      { count: 2, dimensions: { task: "" }, sum: { cost: 0, erroredRequests: 0, uncachedTokensIn: 900, uncachedTokensOut: 90, cachedTokensIn: 0, cachedTokensOut: 0 } },
     ],
   }] } },
   errors: null,
@@ -52,7 +50,7 @@ test("off without ANALYTICS_TOKEN or CF_ACCOUNT_ID, naming the setting, and AI_G
   assert.deepEqual(gatewayConfig({ CF_ACCOUNT_ID: "a", ANALYTICS_TOKEN: "t", AI_GATEWAY_ID: "gw" }), { account: "a", gateway: "gw", token: "t" });
 });
 
-test("one GraphQL query over the last 7 days for the gateway, grouped by model and provider beside metadataKey and metadataValue, with the token as a Bearer", async () => {
+test("one GraphQL query over the last 7 days for the gateway, grouped by model and provider beside each call's task metadata value, with the token as a Bearer", async () => {
   const { fetcher, sent } = graphql(ANSWER);
   const view = await readGatewayFigures(ON, NOW, fetcher);
   assert.equal(sent.length, 1);
@@ -63,7 +61,9 @@ test("one GraphQL query over the last 7 days for the gateway, grouped by model a
   assert.equal(query, gatewayQuery({ account: "test-account", gateway: "atelier" }, SINCE));
   assert.match(query, /accounts\(filter: \{ accountTag: "test-account" \}\)/);
   assert.match(query, /models: aiGatewayRequestsAdaptiveGroups\(limit: 1000, filter: \{ datetime_geq: "2026-09-30T12:00:00.000Z", gateway: "atelier" \}\) \{ count dimensions \{ model provider \}/);
-  assert.match(query, /tasks: aiGatewayRequestsAdaptiveGroups\(limit: 1000, filter: \{ datetime_geq: "2026-09-30T12:00:00.000Z", gateway: "atelier" \}\) \{ count dimensions \{ metadataKey metadataValue \}/);
+  assert.match(query, /tasks: aiGatewayRequestsAdaptiveGroups\(limit: 1000, filter: \{ datetime_geq: "2026-09-30T12:00:00.000Z", gateway: "atelier" \}\) \{ count dimensions \{ task: metadataValue\(key: "task"\) \}/);
+  // A metadataValue without its key argument is refused and every figure goes missing.
+  assert.doesNotMatch(query, /metadataValue(?!\(key: "task"\))/);
   assert.match(query, /dimensions \{ model provider \}/);
   assert.match(query, /sum \{ cost uncachedTokensIn uncachedTokensOut cachedTokensIn cachedTokensOut erroredRequests \}/);
   assert.match(query, /quantiles \{ durationMsP50 durationMsP90 \}/);
@@ -134,19 +134,17 @@ test("groups parse defensively: numbers as strings, cached tokens added, names p
     [{ provider: "p", model: "m", calls: 3, failures: 0, tokensIn: 2, tokensOut: 2, cost: 0.1, medianMs: 50, p90Ms: 200, sample: 2 }]);
 });
 
-test("task groups read only a metadataKey of task, parse defensively, and merge and sort by value", () => {
-  const cut = parseTaskGroup({ count: "4", dimensions: { metadataKey: "task", metadataValue: "t\u0007" + "x".repeat(300) }, sum: { cost: "0.5", uncachedTokensIn: "10", cachedTokensIn: 5, uncachedTokensOut: "2", cachedTokensOut: 1, erroredRequests: "9" } });
+test("task groups read the task value's group, drop the calls with no task entry, parse defensively, and merge and sort by value", () => {
+  const cut = parseTaskGroup({ count: "4", dimensions: { task: "t\u0007" + "x".repeat(300) }, sum: { cost: "0.5", uncachedTokensIn: "10", cachedTokensIn: 5, uncachedTokensOut: "2", cachedTokensOut: 1, erroredRequests: "9" } });
   assert.deepEqual(cut, { task: cut!.task, calls: 4, failures: 4, tokensIn: 15, tokensOut: 3, cost: 0.5 });
   assert.equal(cut!.task.length, 64, "the value is cut");
   assert.ok(cut!.task.startsWith("t") && !cut!.task.includes("\u0007"), "the value is plain");
-  // The rows a call's other metadata entries land in, and a call with none, name no task.
-  assert.equal(parseTaskGroup({ count: 4, dimensions: { metadataKey: "role", metadataValue: "build" }, sum: {} }), null);
-  assert.equal(parseTaskGroup({ count: 4, dimensions: { metadataKey: "runner", metadataValue: "home:studio" }, sum: {} }), null);
-  assert.equal(parseTaskGroup({ count: 4, dimensions: { metadataValue: "t9" }, sum: {} }), null);
+  // The group of the calls with no task entry, whatever else their metadata names, names no task.
+  assert.equal(parseTaskGroup({ count: 4, dimensions: { task: "" }, sum: {} }), null);
+  assert.equal(parseTaskGroup({ count: 4, dimensions: { task: " \u0007 " }, sum: {} }), null);
+  assert.equal(parseTaskGroup({ count: 4, dimensions: { task: 7 }, sum: {} }), null);
   assert.equal(parseTaskGroup({ count: 4, dimensions: {}, sum: {} }), null);
   assert.equal(parseTaskGroup(null), null);
-  // A task row with no value still names a task, cut and plain as any name.
-  assert.deepEqual(parseTaskGroup({ count: 1, dimensions: { metadataKey: "task" }, sum: {} }), { task: "unknown", calls: 1, failures: 0, tokensIn: 0, tokensOut: 0, cost: null });
   const t = (over: Partial<GatewayTask>): GatewayTask => ({ task: "t9", calls: 1, failures: 0, tokensIn: 1, tokensOut: 1, cost: null, ...over });
   assert.deepEqual(summarizeTasks([null, t({ calls: 0 }), t({ calls: 2, cost: 0.1 }), t({ task: "t10" })]),
     [{ task: "t9", calls: 2, failures: 0, tokensIn: 1, tokensOut: 1, cost: 0.1 }, { task: "t10", calls: 1, failures: 0, tokensIn: 1, tokensOut: 1, cost: null }]);
