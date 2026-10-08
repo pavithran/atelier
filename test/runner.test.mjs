@@ -626,9 +626,14 @@ test("a child's background processes end with it, whether it succeeded, failed o
     }
     const result = await run;
     const took = Date.now() - start;
+    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
+    // The run can settle without the pid file only when the deadline caught
+    // the group before both processes were up — a machine too loaded for the
+    // budget above. Name that, rather than letting the read below fail as a
+    // bare ENOENT with no cause.
+    assert.ok(readyAt, `${label}: the run ended after ${took} ms with the group's processes never up; the machine outran the ${timeoutMs} ms budget`);
     const pid = Number(readFileSync(file, "utf8"));
     pids.push(pid);
-    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
     assert.equal(result.timedOut, ending === "deadline", label);
     if (ending !== "deadline") assert.equal(result.code, Number(ending.slice(5)), label);
     assert.ok(await gone(pid), `the background child is gone once execute returns: ${label}`);
