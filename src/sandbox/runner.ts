@@ -18,6 +18,7 @@ import { mergePatch, mergeTrees, type Patch } from "../preview/merge";
 import { refusalOf, refusalText } from "../checks.ts";
 import { checkApplies, type CheckPaths } from "../rules.ts";
 import { MAX_RENDERS, renderGateway, RENDER_HOST } from "../render-check.ts";
+import { capLarge, putLarge, LARGE_MAX, type LargeRef } from "../large.ts";
 import { END_OF_ARCHIVE } from "./tar";
 import { writeTree } from "./tree";
 
@@ -60,6 +61,9 @@ export interface CheckResult {
   exitCode: number | null;
   seconds: number;
   outputTail: string;
+  // The whole output kept in R2 by reference (src/large.ts), when the output
+  // is longer than the tail held inline.
+  log?: LargeRef | null;
   notApplicable?: boolean;
 }
 
@@ -241,21 +245,33 @@ export class CheckRunner extends DurableObject<Env> {
       const t0 = Date.now();
       const proc = await container.exec(["timeout", "--kill-after=5", String(STEP_SECONDS), "sh", "-c", claim], { cwd: WORKDIR, stderr: "combined", env: ENV });
       const decoder = new TextDecoder();
-      let output = "";
+      let output = "", whole = "";
+      // The whole output is gathered beside the tail, capped (capLarge) so a
+      // check that prints without end cannot outgrow the run: its last part is
+      // kept, where a failure says what it is.
+      const keep = (text: string) => {
+        output = tail(output + text);
+        whole += text;
+        if (whole.length > 2 * LARGE_MAX) whole = capLarge(whole);
+      };
       const read = async () => {
         const stream = proc.stdout?.getReader();
         if (!stream) return;
-        try { while (true) { const chunk = await stream.read(); if (chunk.done) break; output = tail(output + decoder.decode(chunk.value,{stream:true})); } output = tail(output + decoder.decode()); }
+        try { while (true) { const chunk = await stream.read(); if (chunk.done) break; keep(decoder.decode(chunk.value, { stream: true })); } keep(decoder.decode()); }
         finally { stream.releaseLock(); }
       };
-      const [exitCode] = await Promise.all([proc.exitCode,read()]);
+      const [exitCode] = await Promise.all([proc.exitCode, read()]);
       const timedOut = exitCode === 124 ? `\n[atelier] stopped after ${STEP_SECONDS}s` : "";
+      // A log longer than the tail held inline is kept whole in R2, and the
+      // evidence carries the reference beside the tail (t284).
+      const log = whole.length > OUTPUT_TAIL ? await putLarge(this.env.LARGE, "logs", req.project, req.itemId, capLarge(whole + timedOut)) : null;
       state.results.push({
         claim,
         passed: exitCode === 0,
         exitCode,
         seconds: Math.round((Date.now() - t0) / 1000),
         outputTail: tail(output + timedOut),
+        ...(log ? { log } : {}),
       });
       await this.ctx.storage.put("state", state);
     }
@@ -288,6 +304,7 @@ export class CheckRunner extends DurableObject<Env> {
           : `${r.outputTail}\n[atelier] ran in a Cloudflare container in ${r.seconds}s, exit ${r.exitCode}${req.merged ? `, on the merge with main at ${state.mainHead?.slice(0, 8)}` : ""}`,
         where: "sandbox",
         mainHead: state.mainHead,
+        ...(r.log ? { log: r.log } : {}),
         ...(r.notApplicable ? { notApplicable: true } : req.merged ? { merged: true } : {}),
       });
     }
