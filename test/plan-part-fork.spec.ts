@@ -278,9 +278,38 @@ it("a part's move whose delete and fork answers were lost finds them done on ret
   } finally {
     warn.mockRestore();
   }
-  expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork, bFork] });
+  // The retry reads the fork gone and takes the delete as done.
+  expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork] });
   expect(heads.get(bFork)).toBe(MA);
   expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA });
+});
+
+it("a part's fork pushed to while its delete fails and waits is kept, and nothing is moved", async () => {
+  const name = "pf-flaky-pushed";
+  const { L, b, bFork, heads, art, builder } = await setup(name, false);
+  // The first delete fails before it is done, and the holder, whose token
+  // is still live, pushes before the retry.
+  let failures = 1;
+  const ARTIFACTS = {
+    get: (repo: string) => art.ARTIFACTS.get(repo),
+    delete: async (repo: string) => {
+      if (failures-- > 0) {
+        heads.set(bFork, PART_B);
+        throw Object.assign(new Error("service unavailable"), { code: "UNAVAILABLE" });
+      }
+      return art.ARTIFACTS.delete(repo);
+    },
+  } as unknown as Artifacts;
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect((await claim(name, b, builder, ARTIFACTS)).status).toBe(200);
+  } finally {
+    warn.mockRestore();
+  }
+  expect(heads.get(bFork)).toBe(PART_B);
+  expect(art.calls).toEqual({ forks: [], deletes: [] });
+  expect(await L.item(b)).toMatchObject({ fork: bFork, base: H0, head: H0, owner: builder, state: "claimed" });
+  expect(await moves(L, b)).toEqual([]);
 });
 
 it("a fork left at an earlier head of the plan's branch is forked again at its head", async () => {

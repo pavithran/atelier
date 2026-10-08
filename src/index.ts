@@ -630,9 +630,9 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
 // the fork holds nothing of its own, and the move is finished, by recording
 // it when it is the branch's head and by forking again otherwise. A head
 // the search cannot place on the plan's branch within MOVE_BUDGET is taken
-// for the builder's own and kept. The fork's head is read again just before
-// it is deleted, and a head that changed in between, as a push would, is
-// kept. True when the fork was moved: the repository and every token it had
+// for the builder's own and kept. The fork's head is read again before
+// each attempt to delete it, and a head that changed in between, as a push
+// would, is kept. True when the fork was moved: the repository and every token it had
 // are gone. A move that only records the head returns false: the fork and
 // its tokens stand.
 const MOVE_BUDGET = { commits: 500, reads: 5 };
@@ -661,12 +661,26 @@ async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, 
       return false;
     }
   }
-  if ((await forkHead()) !== observed) return false;
-  // A delete or a fork whose answer was lost is found done by its retry:
-  // the fork already gone, or already made again under its name.
-  await artifactsStep(`delete ${fork}`, () => env.ARTIFACTS.delete(fork), (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+  // Each attempt at the delete reads the fork's head first, so a push made
+  // while an earlier attempt failed and waited, with a token still live, is
+  // kept rather than deleted. A delete or a fork whose answer was lost is
+  // found done by its retry: the fork already gone, or already made again
+  // under its name. A fork that is gone counts as deleted; one that stands
+  // with a head other than `observed` is kept, and nothing is moved.
+  const deleted = await artifactsStep(`delete ${fork}`, async () => {
+    const now = await headOf(env, fork).catch((err) => {
+      if (!NOT_FOUND.test(codeOf(err))) throw err;
+      return undefined;
+    });
+    if (now === undefined) return true;
+    if (now !== observed) return false;
+    await env.ARTIFACTS.delete(fork);
+    return true;
+  }, (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
     if (!NOT_FOUND.test(codeOf(err))) throw err;
+    return true;
   });
+  if (!deleted) return false;
   await artifactsStep(`fork ${planFork} as ${fork}`, async () => {
     using plan = await env.ARTIFACTS.get(planFork);
     await plan.fork(fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
