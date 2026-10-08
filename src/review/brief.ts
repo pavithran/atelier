@@ -25,14 +25,16 @@ import { submission } from "../brief.ts";
 import type { LedgerEvent } from "../ledger.ts";
 import type { PlanPart } from "../plans/schema.ts";
 import { DEFAULT_OWNER, type ChangeClass, type Item } from "../rules.ts";
-import { TEXT_CONTROLS } from "../text.ts";
+import type { LargeRef } from "../large.ts";
+import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { findingKey, ownerVerdicts, refutedRejection, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
 import { DEFAULT_REVIEW_BAR, REPLY_FORMAT } from "./verdict.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
-// the brief fits a 32K window with room for the reply. A longer diff is cut
-// and the brief says so.
-export const BRIEF_LIMITS = { diff: 40_000 } as const;
+// the brief fits a 32K window with room for the reply. A longer diff is not
+// carried at all: it is kept in R2 by reference (t284) and the brief names
+// where the whole diff is.
+export const BRIEF_LIMITS = { diff: DIFF_INLINE_MAX } as const;
 
 export interface BriefInput {
   need: ReviewRequired;                    // from reviewNeeded: the head, change class, checks and earlier reviews
@@ -40,6 +42,12 @@ export interface BriefInput {
   events: readonly LedgerEvent[];          // the builder's summary for this head, read by submission()
   plan?: { goal: string; part: PlanPart } | null;
   diff?: string | null;                    // git diff from `compare.from` (or the base) to the head, when the caller has it
+  // The same diff kept in R2 by reference (t284), when the change is too
+  // large for this brief to carry and the claim stored it. Given here, the
+  // brief carries no diff text at all — not even a cut — and names the
+  // reference and where the reviewer reads the whole diff: the clone, and
+  // the file `diffFile` names in it.
+  diffRef?: LargeRef | null;
   // Where the diff runs from, when the caller computed it: the merge base of
   // the head and the branch the item merges into, or the fork point with the
   // reason the merge base could not be found. Absent, the brief compares
@@ -219,9 +227,11 @@ export function reviewBrief(input: BriefInput): string {
     "",
     ...(input.diff === "" && merge
       ? [...kind, "The resolution is empty: the builder committed the merge git makes on its own, with no file changed from it."]
-      : diff
-        ? [...kind, ...(diff.cut ? [`${diff.cut} Read the rest in your clone${compare ? ` with ${compare}` : ""}.`] : []), block(diff.text, "diff")]
-        : [compare ? `The diff is not included here. Read it in your clone: ${compare}` : "The diff is not included here. Read it in your clone."]),
+      : input.diffRef
+        ? [...kind, ...byReference(input.diffRef, compare)]
+        : diff
+          ? [...kind, ...(diff.cut ? [`${diff.cut} Read the rest in your clone${compare ? ` with ${compare}` : ""}.`] : []), block(diff.text, "diff")]
+          : [compare ? `The diff is not included here. Read it in your clone: ${compare}` : "The diff is not included here. Read it in your clone."]),
     ...(inFile.length ? ["", ...inFile] : []),
   );
   if (merge?.own) {
@@ -261,6 +271,16 @@ export function reviewBrief(input: BriefInput): string {
 
   section("## Reply format", "", REPLY_FORMAT);
   return out.join("\n\n");
+}
+
+// What a brief says of a diff too large to carry (t284): where the whole
+// diff is kept, and where the reviewer reads it. Nothing of the diff itself
+// is quoted here — a large payload travels by reference or not at all.
+function byReference(ref: LargeRef, compare: string | null): string[] {
+  return [
+    `The diff is too large for this brief — ${ref.bytes} bytes, sha256 ${inline(ref.sha256.slice(0, 12))} — so it is carried by reference: Atelier keeps the whole diff in R2, key ${code(ref.key)}, and the ledger names it by that key.`,
+    `Read the change in your clone${compare ? `: ${compare}` : ", comparing the head with its base"}.`,
+  ];
 }
 
 // What the change is measured from. A task that merged its target branch

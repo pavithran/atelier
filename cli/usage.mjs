@@ -241,10 +241,11 @@ export function describeReport(tool, body, now) {
 
 // What the server read of the AI Gateway (GET /api/usage, field gateway;
 // src/usage/gateway.ts): each model's calls, tokens, cost, and median and
-// p90 duration over its window with the calls they are taken over, or why
-// there are none. A server older than this CLI sends no p90 (and a pull
-// record this CLI no longer prints), so only what is there is shown. Every
-// name is cleaned with `safe` before it is printed.
+// p90 duration over its window with the calls they are taken over, and the
+// calls per task the runners' cf-aig-metadata tags name, or why there are
+// none. A server older than this CLI sends no p90 (and a pull record this
+// CLI no longer prints), so only what is there is shown. Every name is
+// cleaned with `safe` before it is printed.
 export function describeGateway(view, safe) {
   if (!view || typeof view !== "object") return ["AI Gateway: the server reports no gateway figures; it runs routes older than this CLI."];
   if (view.off) return [`AI Gateway: ${safe(view.off, 300)}.`];
@@ -256,6 +257,12 @@ export function describeGateway(view, safe) {
     const p90 = typeof m.p90Ms === "number" ? `, p90 ${time(m.p90Ms)}` : "";
     const ms = typeof m.medianMs === "number" ? `median ${time(m.medianMs)}${p90} (n=${m.sample})` : "no durations";
     lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out, ${typeof m.cost === "number" ? dollars(m.cost) : "not priced"}, ${ms}`);
+  }
+  if (view.tasks?.length) {
+    lines.push("  calls per task:");
+    for (const t of view.tasks) {
+      lines.push(`    ${safe(t.task, 64)}: ${t.calls} call${t.calls === 1 ? "" : "s"}${t.failures ? `, ${t.failures} failed` : ""}, ${millions(t.tokensIn)} in, ${millions(t.tokensOut)} out, ${typeof t.cost === "number" ? dollars(t.cost) : "not priced"}`);
+    }
   }
   return lines;
 }
