@@ -1,0 +1,28 @@
+atelier atelier/t305 "Let a landing Workflow take its checks from the owner's machine: on 2026-10-08 the CheckRunner container could not run Atelier's own suite (first stopped at the 600 s step limit, then, at 30 min a step, interrupted with no results after 62 min; Durable Object containers take no instance_type, so the small default is all there is without a custom image). Add a checks mode to atelier land --workflow where the CLI runs the required checks in a clean clone on the owner's machine (as plain atelier land does today, recorded as observed evidence by the server) and the Workflow waits for that evidence at the pushed head instead of starting a container run; keep the container mode for projects whose suite fits; default the mode by project policy or a flag; test the step sequence both ways"
+accepted head 35792177ba1f81d03c11334acc8acbbf25ecc00b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T11:05:20.447Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T11:05:23.418Z
+REVIEW approve by antigravity/gemini-3.1-pro at 35792177ba1f81d03c11334acc8acbbf25ecc00b, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T10:50:07.982Z pavi item.created
+2026-10-08T10:50:08.983Z claude-code/opus-5.5 item.claimed
+2026-10-08T10:50:23.782Z claude-code/opus-5.5 fork.created
+2026-10-08T11:02:24.687Z pavi land.lease
+2026-10-08T11:02:26.253Z pavi land.merge
+2026-10-08T11:02:34.417Z pavi land.regenerate
+2026-10-08T11:02:36.832Z claude-code/opus-5.5 push.observed
+2026-10-08T11:02:36.929Z pavi land.push
+2026-10-08T11:05:21.334Z claude-code/opus-5.5 evidence.observed
+2026-10-08T11:05:23.649Z claude-code/opus-5.5 evidence.observed
+2026-10-08T11:05:24.076Z pavi land.check
+2026-10-08T11:05:24.477Z claude-code/opus-5.5 item.submitted
+2026-10-08T11:05:24.678Z pavi land.submit
+2026-10-08T11:05:24.775Z pavi review.requested
+2026-10-08T11:05:25.765Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T11:05:26.385Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T11:08:24.143Z antigravity/gemini-3.1-pro review.released
+2026-10-08T11:08:27.674Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T11:08:28.374Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T11:10:59.745Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T11:11:04.638Z pavi land.review
+2026-10-08T11:11:05.175Z pavi item.accepted
+2026-10-08T11:11:05.264Z pavi land.accept
