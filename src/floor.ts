@@ -77,10 +77,10 @@ export function markFor(ev: LedgerEvent): Mark | null {
       return { ...base, kind: "push", label: `pushed ${String(d.head ?? "").slice(0, 8)}` };
     case "evidence.observed": {
       const on = d.merged ? " on the merge with main" : "";
-      if (d.passed === false) return { ...base, kind: "failed", label: `${claim} failed${on}${d.where === "sandbox" ? " in a Cloudflare container" : " on the agent's machine"}` };
+      if (d.passed === false) return { ...base, kind: "failed", label: `${claim} failed${on}${d.where === "sandbox" ? " in a Cloudflare container" : " on a runner, in a clean clone"}` };
       return d.where === "sandbox"
         ? { ...base, kind: "observed-cloud", label: `${claim} passed${on} in a Cloudflare container` }
-        : { ...base, kind: "observed-local", label: `${claim} passed${on} on the agent's machine` };
+        : { ...base, kind: "observed-local", label: `${claim} passed${on} on a runner, in a clean clone` };
     }
     case "evidence.reported":
       return { ...base, kind: "reported", label: `reported: ${claim}` };
