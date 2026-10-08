@@ -1,0 +1,26 @@
+atelier atelier/t314 "A front door at atelier.zone (PAVI, 2026-10-08, 'start with the front door'): since Cloudflare Access went on, / answers with Access's sign-in, so a visitor or judge who types atelier.zone never sees what Atelier is. Serve the public showcase at / to everyone (Access bypassed for that exact path), with a clear Sign in; move the owner's Home to /home (old links and the post-sign-in redirect follow), and keep every owner page behind Access and the Worker's own check"
+accepted head 6b028de186a9e3228dc59aa3364ed8be27d6f7dc
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T15:40:08.322Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T15:40:11.293Z
+REVIEW approve by antigravity/gemini-3.1-pro at 6b028de186a9e3228dc59aa3364ed8be27d6f7dc, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T15:08:00.845Z pavi item.created
+2026-10-08T15:11:47.319Z claude-code/opus-5.5 item.claimed
+2026-10-08T15:12:04.596Z claude-code/opus-5.5 fork.created
+2026-10-08T15:21:27.629Z claude-code/opus-5.5 push.observed
+2026-10-08T15:26:18.941Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:26:22.445Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:26:38.221Z claude-code/opus-5.5 item.submitted
+2026-10-08T15:36:27.158Z pavi land.lease
+2026-10-08T15:36:37.154Z pavi land.merge
+2026-10-08T15:36:46.230Z pavi land.regenerate
+2026-10-08T15:36:49.541Z claude-code/opus-5.5 push.observed
+2026-10-08T15:36:50.115Z pavi land.push
+2026-10-08T15:40:09.032Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:40:11.721Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:40:12.637Z pavi land.check
+2026-10-08T15:40:14.120Z pavi review.requested
+2026-10-08T15:40:39.611Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T15:44:24.515Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T15:44:33.742Z pavi land.review
+2026-10-08T15:44:34.924Z pavi item.accepted
+2026-10-08T15:44:34.974Z pavi land.accept
