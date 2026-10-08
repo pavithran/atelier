@@ -1,0 +1,24 @@
+atelier atelier/t299 "docs/setup.md's Access section says to give one Access application Bypass policies for /api/*, /showcase, /how and /live.js, but Access chooses an application by the most specific path and a policy applies to its whole application, so a public path needs its own self-hosted application with a Bypass (Everyone) policy; say so, in the order that keeps the owner from being locked out (applications first, then the three secrets), and fix the matching comment in wrangler.jsonc"
+accepted head d7bf345fcb464b94762d0426bdd8e90152883370
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T02:58:47.385Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T02:58:49.703Z
+REVIEW approve by antigravity/gemini-3.1-pro at d7bf345fcb464b94762d0426bdd8e90152883370, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T01:21:56.706Z pavi item.created
+2026-10-08T01:21:57.710Z claude-code/opus-5.5 item.claimed
+2026-10-08T01:22:12.368Z claude-code/opus-5.5 fork.created
+2026-10-08T02:55:54.783Z pavi land.lease
+2026-10-08T02:55:57.678Z pavi land.merge
+2026-10-08T02:56:05.618Z pavi land.regenerate
+2026-10-08T02:56:08.718Z claude-code/opus-5.5 push.observed
+2026-10-08T02:56:08.849Z pavi land.push
+2026-10-08T02:58:47.604Z claude-code/opus-5.5 evidence.observed
+2026-10-08T02:58:49.871Z claude-code/opus-5.5 evidence.observed
+2026-10-08T02:58:50.331Z pavi land.check
+2026-10-08T02:58:50.680Z claude-code/opus-5.5 item.submitted
+2026-10-08T02:58:50.921Z pavi land.submit
+2026-10-08T02:58:51.077Z pavi review.requested
+2026-10-08T02:59:00.595Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T02:59:39.846Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T02:59:44.032Z pavi land.review
+2026-10-08T02:59:44.761Z pavi item.accepted
+2026-10-08T02:59:44.896Z pavi land.accept
