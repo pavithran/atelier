@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
-import { reviewBrief } from "../src/review/brief.ts";
+import { reviewBrief, BRIEF_LIMITS } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -236,6 +236,23 @@ export function ownerTokens(base = process.env) {
 function gitAuth(token, base = process.env) {
   const n = Number.parseInt(base.GIT_CONFIG_COUNT ?? "", 10) || 0;
   return { ...base, GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "http.extraHeader", [`GIT_CONFIG_VALUE_${n}`]: `Authorization: Bearer ${token}` };
+}
+
+// The cf-aig-metadata header's value for one harness run, which the runner's
+// opencode configs send on every pay-per-use call through the AI Gateway (the
+// config's provider headers read "{env:CF_AIG_METADATA}"): whose run the call
+// belongs to, so the gateway's analytics, and the Models page with them, can
+// count calls per task (src/usage/gateway.ts reads them back). The role is
+// the one run reports use: build, review or plan. The gateway keeps at most
+// five entries a call; this is three.
+export function gatewayMetadata(task, role, runner) {
+  return JSON.stringify({ ...(task ? { task } : {}), role, runner });
+}
+
+// What a harness run's environment adds to harnessEnv's filtered variables:
+// the per-run opencode data folder (OWN_DATA_HOME) and CF_AIG_METADATA.
+export function harnessRunEnv(env, dataHome, task, role, runner) {
+  return { ...env, ...(dataHome ? { XDG_DATA_HOME: dataHome.dir } : {}), CF_AIG_METADATA: gatewayMetadata(task, role, runner) };
 }
 
 // Every opencode process opens one database in its data folder,
@@ -507,7 +524,7 @@ export async function runTask(assignment, config, name, io) {
       try {
         advance({ type: "start" });
         taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name));
       } finally {
         if (dataHome) {
           try { await io.removeDataHome(dataHome); }
@@ -638,8 +655,18 @@ export async function runReview(assignment, config, name, io) {
       await release("the review request no longer needs an answer");
       return { phase: "failed", reason: "the review request no longer needs an answer", taskFailure: true };
     }
+    // A diff too large for the brief's own limit is not carried inline (t284):
+    // the claim stored the change in R2 and named it by reference (diffRef),
+    // so the brief says where the whole diff is instead of holding a cut of
+    // it, and the reviewer reads it in the clone's .scratch/ file as ever.
+    // An older server that stored no reference keeps the inline cut, and a
+    // small diff is carried inline as it always was.
+    const large = diff.length > BRIEF_LIMITS.diff;
+    if (large && claimed.diffRef) io.log(`review diff kept in R2 by reference: ${claimed.diffRef.key} (${claimed.diffRef.bytes} bytes)`);
     const text = reviewBrief({
-      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, ownDiff, owner: claimed.owner,
+      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan,
+      diff: large && claimed.diffRef ? null : diff, diffRef: large ? claimed.diffRef ?? null : null,
+      ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
     });
     brief = await io.brief(workspace, text);
@@ -651,7 +678,7 @@ export async function runReview(assignment, config, name, io) {
     const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
     let result;
     try {
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env);
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "review", name));
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
@@ -1071,7 +1098,7 @@ export async function runPlanTask(assignment, config, name, io) {
       // The plan job's harness output is captured, so a harness that fails
       // before writing the plan leaves its last error line for the release
       // note and the run report; a build's harness output still streams.
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, dataHome ? { ...env, XDG_DATA_HOME: dataHome.dir } : env, { capture: true, captureError: true });
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, harnessRunEnv(env, dataHome, item.id, "plan", name), { capture: true, captureError: true });
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }

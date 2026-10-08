@@ -46,6 +46,61 @@ store outright. The `ATELIER_TOKEN` environment variable overrides every
 store. A value is handed to a store on its standard input and never as a
 command line argument, and login prints no token.
 
+## Cloudflare Access in front of the owner's pages
+
+The owner's pages can also sit behind Cloudflare Access, so the person
+reaching them has signed in with whatever the Zero Trust account asks (a
+one-time code, a passkey, an identity provider) before the Worker is reached
+at all. Access picks the application whose path is most specific, and a
+policy applies to its whole application, so this takes five self-hosted
+applications in the Zero Trust dashboard, made before the secrets below so the
+owner is never locked out:
+
+1. One for the server's domain with no path, covering everything, with an
+   Allow policy that includes the owner's email.
+2. One each for `atelier.zone/api/*`, `atelier.zone/showcase`,
+   `atelier.zone/how` and `atelier.zone/live.js` (with the server's own
+   domain), each with a single Bypass policy that includes Everyone. The CLI
+   and the runners send bearer tokens that never pass Access, and the public
+   showcase, the explainer and the live script are for everyone, so those
+   paths must reach the Worker without Access's prompt.
+
+Every other path, `/login` included, then meets the sign-in at the edge. Last,
+give the Worker the team's URL (`https://TEAM.cloudflareaccess.com`, shown
+under Zero Trust's settings), the first application's audience tag (on its
+overview) and the owner's email as the identity provider reports it, each
+pasted at wrangler's prompt:
+
+```bash
+npx wrangler secret put CF_ACCESS_ISS
+```
+
+```bash
+npx wrangler secret put CF_ACCESS_AUD
+```
+
+```bash
+npx wrangler secret put CF_ACCESS_OWNER_EMAIL
+```
+
+With all three set, the Worker itself checks the `Cf-Access-Jwt-Assertion`
+header Access adds to a request it let through. The token is verified with
+jose against the keys the team publishes at
+`https://TEAM.cloudflareaccess.com/cdn-cgi/access/certs`; its issuer and
+audience must be the team and the application, and its email claim must name
+`CF_ACCESS_OWNER_EMAIL`, so a token Access gave a teammate, or for another
+application, does not vouch. Any route that needs a sign-in is refused without
+that vouching, even a request carrying a session cookie, so the pages hold
+even if the Access application stops covering the server. `/login` is behind
+the check too, form and all: the server token cannot be tried without Access's
+sign-in first, which closes the open token form the 2026-10-06 audit noted.
+The public pages (`/showcase`, `/how`, `/live.js`), the sign-out form and the
+`/api` routes stay open in the Worker, and signing in takes both, Access first
+and the server token after. With any of the three unset the server stands as
+it always has, without the second check; a value that is set but unusable,
+such as an issuer without `https://`, logs a warning once rather than quietly
+leaving the pages unguarded.
+
 ## Agent tokens
 
 Give each agent its own token from an owner session:
