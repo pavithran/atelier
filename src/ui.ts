@@ -23,6 +23,7 @@ import type { ModelRecord } from "./models/record";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
+import { pace, stalledText, type Measure, type RoleSpeed, type SpeedRecord } from "./models/speed.ts";
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -697,7 +698,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, speed: SpeedRecord | null = null): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -734,6 +735,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
+  ${speed ? speedSection(speed) : ""}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
@@ -773,6 +775,40 @@ export function gatewaySection(g: GatewayView): string {
     <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median · p90 duration</th></tr></thead>
     <tbody>${g.models.map(row).join("")}</tbody>
   </table>` : `<p class="empty">No calls through the gateway in the last ${g.days} days.</p>`}
+</section>`;
+}
+
+// ── speed ──────────────────────────────────────────────────────────────────
+// How fast each model works over the record's window (src/models/speed.ts):
+// per model, the median time from claim to submission for its builds, from
+// review claim to verdict for its reviews and from its first claim to the
+// merge for its tasks, each with the n it is taken over, and the share of
+// its build and review runs that stalled. Below the minimum n a cell gives
+// n and no median. Its own section, so the reliability table stays as it is.
+
+function speedCell(m: Measure): string {
+  if (!m.n) return '<span class="meta">none</span>';
+  return m.median === null
+    ? `<span class="meta">n=${m.n}, too few for a median</span>`
+    : `${e(pace(m.median))}<span class="meta">n=${m.n}</span>`;
+}
+
+const roleCell = (r: RoleSpeed) => `${speedCell(r)}<span class="meta">${e(stalledText(r))}</span>`;
+
+export function speedSection(s: SpeedRecord): string {
+  const window = `the last ${s.days} days, ${dayOf(s.since)} to ${dayOf(s.until)}`;
+  const head = `<h2 class="section-title">Speed by model · ${e(window)}</h2>`;
+  const lead = `From the ledger's own timestamps over ${e(window)}: a build from the model's claim to its submission, a review from its review claim to its verdict, and a task from its first claim to the merge, counted under the model that claimed it first. Each is the median over the n runs that ended in the window; a model with fewer than ${s.minSamples} shows n and no median. Stalled counts the runs the runners reported as stalled or timed out, of every run that ended with a result or was reported.`;
+  const row = (m: SpeedRecord["models"][number]) => `<tr><th scope="row"><code>${e(m.model)}</code><span class="meta">${m.actors.map(e).join(", ")}</span></th>
+    <td class="num">${roleCell(m.build)}</td>
+    <td class="num">${roleCell(m.review)}</td>
+    <td class="num">${speedCell(m.task)}</td></tr>`;
+  return `<section class="speed" aria-label="Speed by model">${head}
+  <p class="meta">${lead}</p>
+  ${s.models.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Model</th><th scope="col">Build: claim to submission</th><th scope="col">Review: claim to verdict</th><th scope="col">Task: first claim to merge</th></tr></thead>
+    <tbody>${s.models.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">No model built, reviewed or merged anything in ${e(window)}.</p>`}
 </section>`;
 }
 

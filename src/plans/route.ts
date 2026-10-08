@@ -29,6 +29,7 @@ import { buildRecord, type ActorRecord, type ModelRecord } from "../models/recor
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
 import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
+import { measureText, stalledText, type SpeedRecord } from "../models/speed.ts";
 import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
@@ -50,6 +51,10 @@ export interface RouteInput {
   availability?: Readonly<Record<string, Availability>>;
   profiles?: readonly ModelProfile[];     // the registry's evidence and context windows; MODEL_PROFILES by default
   reliability?: Reliability;              // each model's record across every project; orders equal scores only
+  // Each model's speed over its window (src/models/speed.ts), when the plan
+  // asks to prefer faster models. Off when absent. It orders only models
+  // the score and the reliability tie-breaker cannot tell apart (paceFor).
+  speed?: SpeedRecord;
   // The offers the runners made as the index recorded them, raw with when
   // each asked, or null when the caller read none. A model no live runner
   // offers cannot build or review, because no runner could claim its
@@ -135,6 +140,36 @@ function tiebreaksFor(pool: readonly ModelEntry[], reliability: Reliability): Ma
   return out;
 }
 
+// Speed as a routing term, deliberately weak: a model's median, for builds
+// (claim to submission) or reviews (claim to verdict), is put in a bucket a
+// factor of two wide (log2 of the seconds, rounded) and compared by bucket,
+// so close medians count as the same pace and noise in a few runs does not
+// reorder models. It is compared only between candidates
+// tied on score and reliability, after both, so it never outweighs the
+// evidence, the project's record or a model's reliability: two models equally
+// good at the work go to the faster, and within one bucket the plan still
+// spreads its parts. A model without a median (fewer than the minimum
+// samples in the window) sorts after those with one among the tied, since
+// nothing says it is fast. Its reason states the medians, n and window.
+interface Pace { build: number; review: number; reason: string }
+const UNKNOWN_PACE = Number.POSITIVE_INFINITY;
+const bucket = (median: number | null) => (median === null ? UNKNOWN_PACE : Math.round(Math.log2(Math.max(median, 1))));
+
+function pacesFor(pool: readonly ModelEntry[], speed: SpeedRecord): Map<string, Pace> {
+  const out = new Map<string, Pace>();
+  const byModel = new Map(speed.models.map((m) => [m.model, m]));
+  const window = `the last ${speed.days} days (${speed.since.slice(0, 10)} to ${speed.until.slice(0, 10)})`;
+  for (const entry of pool) {
+    const m = [entry.id, ...entry.aliases].map((id) => byModel.get(modelKey(`${entry.harness}/${id}`))).find(Boolean);
+    const said = m ? `builds ${measureText(m.build)}, ${stalledText(m.build)}; reviews ${measureText(m.review)}, ${stalledText(m.review)}` : "no runs recorded";
+    out.set(actorOf(entry), {
+      build: bucket(m?.build.median ?? null), review: bucket(m?.review.median ?? null),
+      reason: `Speed over ${window}: ${said}; orders only models tied on score and reliability, the faster first.`,
+    });
+  }
+  return out;
+}
+
 export function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEvent[]): ModelRecord {
   const record = buildRecord(events);
   const merged = new Map<string, ActorRecord>();
@@ -169,6 +204,7 @@ interface Context {
   profiles: ModelProfile[];
   record: ModelRecord;
   tiebreaks: Map<string, Tiebreak>;
+  paces: Map<string, Pace> | null;         // null unless the input asks for speed
   availability: Map<string, { key: string; value: Availability }>;
   offered: Map<string, string[]> | null;   // actors live runners offer, whatever job; null when the offers were not read or none is live, and routing restricts nothing
   governed: boolean;
@@ -260,7 +296,20 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
 function choice(verdict: Verdict, lead: string[], role: string, ctx: Context): Choice {
   const reasons = [...lead];
   if (ctx.governed) reasons.push(`Governed policy: holds the ${role} role`);
-  return { actor: verdict.actor, reasons: [...reasons, ...verdict.passed, ...verdict.candidate.reasons] };
+  const pace = ctx.paces?.get(verdict.actor);
+  return { actor: verdict.actor, reasons: [...reasons, ...verdict.passed, ...verdict.candidate.reasons, ...(pace ? [pace.reason] : [])] };
+}
+
+// The verdicts in rank order with speed applied when the input asks for it:
+// among candidates tied on score and reliability the faster pace for the
+// role comes first; the sort is stable, so the rest keep route()'s order.
+function byPace(ranked: Verdict[], ctx: Context, key: "build" | "review"): Verdict[] {
+  const paces = ctx.paces;
+  if (!paces) return ranked;
+  const pace = (v: Verdict) => paces.get(v.actor)?.[key] ?? UNKNOWN_PACE;
+  const order = (a: Verdict, b: Verdict) => b.candidate.score - a.candidate.score || b.candidate.tiebreak - a.candidate.tiebreak
+    || (pace(a) === pace(b) ? 0 : pace(a) < pace(b) ? -1 : 1);
+  return [...ranked].sort(order);
 }
 
 // How many parts of the plan each actor, and each family, has been given in
@@ -281,9 +330,11 @@ class Load {
 // it, when the tied model with the fewest parts of the plan in this role so
 // far builds or reviews, then the fewest in its family, then the first in rank
 // order. The lead reason says what the tie was and why this model took it.
-function spread(ranked: readonly Verdict[], load: Load, role: "builds" | "reviews"): { pick: Verdict; lead: string | null } {
+function spread(ranked: readonly Verdict[], load: Load, role: "builds" | "reviews", ctx: Context): { pick: Verdict; lead: string | null } {
   const first = ranked[0];
-  const group = ranked.filter((v) => tied(v.candidate, first.candidate));
+  const key = role === "builds" ? "build" : "review";
+  const pace = (v: Verdict) => ctx.paces?.get(v.actor)?.[key] ?? UNKNOWN_PACE;
+  const group = ranked.filter((v) => tied(v.candidate, first.candidate) && pace(v) === pace(first));
   if (group.length < 2) return { pick: first, lead: null };
   const pick = group.reduce((best, v) => {
     const a = load.of(best), b = load.of(v);
@@ -304,8 +355,8 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   // Every synthesized profile names one harness, so each candidate has an actor.
   const verdicts = ranked.map((candidate) => judge(candidate, ctx.entries.get(candidate.actor!)!, part, ctx));
   const excluded = verdicts.filter((v) => v.build.length).map((v) => ({ actor: v.actor, reasons: v.build }));
-  const able = verdicts.filter((v) => !v.build.length);
-  const order = ctx.input.reliability ? "reliability across projects, then model id, then actor name" : "model id, then actor name";
+  const able = byPace(verdicts.filter((v) => !v.build.length), ctx, "build");
+  const order = [ctx.input.reliability ? "reliability across projects" : "", ctx.paces ? "speed" : "", "model id, then actor name"].filter(Boolean).join(", then ");
   const rank = (v: Verdict) => `Rank ${able.indexOf(v) + 1} of ${able.length} eligible for ${part.taskKind} work, score ${v.candidate.score}; equal scores spread across the plan's parts, then go by ${order}`;
 
   // The plan's preference wins only when that actor passes every rule; the
@@ -326,7 +377,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
     }
   }
   if (!builder && able.length) {
-    const picked = spread(able, builds, "builds");
+    const picked = spread(able, builds, "builds", ctx);
     builder = picked.pick;
     if (picked.lead) lead.push(picked.lead);
   }
@@ -336,8 +387,8 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const chosen = choice(builder, [...lead, rank(builder)], "executor", ctx);
 
   const others = verdicts.filter((v) => v !== builder);
-  const reviewers = others.filter((v) => !v.review.length && crossFamily(v.family, builder.family));
-  const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews") : null;
+  const reviewers = byPace(others.filter((v) => !v.review.length && crossFamily(v.family, builder.family)), ctx, "review");
+  const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews", ctx) : null;
   if (!reviewer) {
     const why = builder.family === "other"
       ? `no reviewer can be of another family than ${builder.actor}, whose family is not recognised from its name`
@@ -377,6 +428,7 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     profiles: pool.map((entry) => profileFor(entry, input.profiles ?? MODEL_PROFILES)),
     record: recordFor(pool, input.events),
     tiebreaks: input.reliability ? tiebreaksFor(pool, input.reliability) : new Map(),
+    paces: input.speed ? pacesFor(pool, input.speed) : null,
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
     offered: live.length ? offeredActors(live) : null,
     governed: input.policy.agents !== undefined,
