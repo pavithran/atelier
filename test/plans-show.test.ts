@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import { planBrief, planText, type PlanPartReview, type PlanPartView, type PlanView } from "../src/plans/show.ts";
 import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
@@ -104,7 +105,7 @@ test("a deadline block can only be stopped: plan show drops retry and reroute", 
 test("a plan's brief says what is decided and what it waits on, in the shape any item's brief has", () => {
   assert.deepEqual(planBrief(proposed), {
     decided: "Approve plan t1's split of: Ship the feature", summary: null,
-    nonGoals: [], stopWhen: [], nextGate: null,
+    nonGoals: [], stopWhen: [], nextGate: null, accept: [], partAccept: null, criteria: NO_CRITERIA,
     evidence: ["Phase: proposed.", `Proposal 2: 2 parts, ${HASH.slice(0, 12)}, by claude-code/opus-5.5.`],
     recommendation: { verdict: "decide", reason: "Read the split with atelier plan show t1, then approve it by its hash or send it back with a note." },
   });

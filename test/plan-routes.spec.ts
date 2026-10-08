@@ -311,7 +311,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   await L.addEvidence({ itemId: b.id, claim: "npm test", grade: "observed", head: H2, passed: false, by: actorB, at: new Date().toISOString(), changedPaths: ["src/b/one.ts"], outputTail: "3 tests failed in src/b/one.ts" });
   // The plan spreads its parts across the tied models, so b's builder is not a's; the reviewer is another model still.
   const reviewerB = ["codex/gpt-6-astra", "claude-code/opus-5.5", "zcode/glm-5.3"].find((m) => m !== actorB)!;
-  await L.addReview({ itemId: b.id, by: reviewerB, head: H2, approve: false, note: "The loop never ends", at: new Date().toISOString(),
+  await L.addReview({ itemId: b.id, criteria: await L.criteria(b.id), by: reviewerB, head: H2, approve: false, note: "The loop never ends", at: new Date().toISOString(),
     findings: [{ file: "src/b/one.ts", line: 12, severity: "blocking", text: "The loop never ends" }] } as never);
   const again = (await L.item(b.id)).dispatch!;
   expect(`${again.agent}/${again.model}`).toBe(actorB); // a rejection sends it back to the same builder

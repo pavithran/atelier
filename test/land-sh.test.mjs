@@ -15,6 +15,9 @@ import { fileURLToPath } from "node:url";
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const zsh = ["/bin/zsh", "/usr/bin/zsh"].find((p) => existsSync(p));
 
+// What atelier show --json gives for the task: its criteria and their binding.
+const SHOWN = { criteria: "c".repeat(64), accept: ["A nested list parses", "Nothing else changes"], partAccept: null };
+
 function landing(t, { model, answer = "VERDICT: APPROVE\nSUMMARY: The reviewer's own summary.\n", check = "PASS npm test" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-land-sh-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -25,12 +28,14 @@ function landing(t, { model, answer = "VERDICT: APPROVE\nSUMMARY: The reviewer's
   for (const f of ["land.sh", "lib.sh", "verdict.mjs"]) copyFileSync(join(repo, "bin", "orchestrate", f), join(bin, f));
   symlinkSync(join(repo, "src"), join(dir, "root", "src"));
   writeFileSync(join(dir, "answer.md"), answer);
-  writeFileSync(join(bin, "review.sh"), `#!/bin/zsh\nmkdir -p "\${2:h}"\ncp ${JSON.stringify(join(dir, "answer.md"))} "$2.md"\ngit -C "$1" commit -q --allow-empty -m later\n`);
+  writeFileSync(join(dir, "context.txt"), "The session's context.\n");
+  // It keeps the context it was given, so a test can read what the reviewer was told.
+  writeFileSync(join(bin, "review.sh"), `#!/bin/zsh\nmkdir -p "\${2:h}"\ncp ${JSON.stringify(join(dir, "answer.md"))} "$2.md"\ncp "$3" ${JSON.stringify(join(dir, "given-context.txt"))}\ngit -C "$1" commit -q --allow-empty -m later\n`);
   chmodSync(join(bin, "review.sh"), 0o755);
   // An atelier that records each call and passes every check.
   const tools = join(dir, "tools"), log = join(dir, "calls.jsonl");
   mkdirSync(tools);
-  writeFileSync(join(tools, "atelier"), `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconsole.log(process.argv[2] === "check" ? ${JSON.stringify(check)} : "ok");\n`);
+  writeFileSync(join(tools, "atelier"), `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconsole.log(process.argv[2] === "check" ? ${JSON.stringify(check)} : process.argv[2] === "show" ? ${JSON.stringify(JSON.stringify(SHOWN))} : "ok");\n`);
   chmodSync(join(tools, "atelier"), 0o755);
   const cache = join(dir, "cache"), config = join(dir, "config"), checkout = join(dir, "checkout");
   const ws = join(cache, "work", "demo", "t9");
@@ -48,19 +53,25 @@ function landing(t, { model, answer = "VERDICT: APPROVE\nSUMMARY: The reviewer's
     },
   });
   const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
-  return { result, calls, head };
+  const given = existsSync(join(dir, "given-context.txt")) ? readFileSync(join(dir, "given-context.txt"), "utf8") : null;
+  return { result, calls, head, given };
 }
 
 const flag = (call, name) => call[call.indexOf(name) + 1];
 
 test("the review carries the reviewer's summary and the reviewed head; the acceptance carries the note and the same head", { skip: !zsh && "zsh is not installed" }, (t) => {
-  const { result, calls, head } = landing(t, { model: "gemini-3.1-pro-high" });
+  const { result, calls, head, given } = landing(t, { model: "gemini-3.1-pro-high" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const review = calls.find((c) => c[0] === "review"), accept = calls.find((c) => c[0] === "accept");
   assert.ok(review && accept, JSON.stringify(calls));
   assert.equal(flag(review, "--as"), "antigravity/gemini-3.1-pro");
   assert.equal(flag(review, "--head"), head, "the review names the head read before review.sh ran, not the one after");
   assert.equal(flag(review, "--note"), "The reviewer's own summary.");
+  // t326: the review is bound to the criteria read with the head, and the
+  // reviewer is given those criteria with the session's context.
+  assert.equal(flag(review, "--criteria"), SHOWN.criteria);
+  assert.match(given, /The session's context\./);
+  assert.match(given, /1\. A nested list parses\n2\. Nothing else changes/);
   assert.ok(review.includes("--approve"));
   assert.equal(flag(accept, "--head"), head);
   assert.equal(flag(accept, "--note"), "Session note on the acceptance");

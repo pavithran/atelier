@@ -16,7 +16,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, matchesAny,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, matchesAny,
   type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
@@ -175,7 +175,10 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // override also meets.
   const reviews = [...input.reviews];
   const verdicts = ownerVerdicts(input.verdicts ?? []);
-  const atHead = countingReviews(reviews, head, policy, owner);
+  // Only reviews bound to this head and to the item's criteria as they are
+  // now stand: one withdrawn when the criteria changed, or recorded before
+  // reviews were bound, neither ends the need nor blocks it.
+  const atHead = countingReviews(reviews, bindingOf(item), policy, owner);
   const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts));
   if (rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);

@@ -201,8 +201,9 @@ whatever the Worker is set to.
 ## Registering a project
 
 Run `init` inside the project checkout. Without `--protect`, the protected
-paths are the defaults, `AGENTS.md`, `CLAUDE.md` and `wrangler.*`
-(`DEFAULT_PROTECTED` in `src/ledger.ts`), with the files the checks execute.
+paths are the defaults, `AGENTS.md`, `CLAUDE.md`, `wrangler.*` and
+`.atelier/prompts/**` (`DEFAULT_PROTECTED` in `src/ledger.ts`), with the
+files the checks execute.
 `atelier guide` prints the
 instructions an agent needs; paste them into the project's `AGENTS.md` or
 `CLAUDE.md`.
