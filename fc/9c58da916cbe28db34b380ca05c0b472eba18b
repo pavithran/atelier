@@ -1,0 +1,47 @@
+atelier atelier/t258 "atelier show on an integrated plan says 'Recommendation: wait. The parts are being built; nothing waits on you.' while atelier plan show says the plan is integrated and gives the merge command (t197, 2026-10-07); and that merge command is refused (not_ready) because the plan item needs a review from a model of a family other than every part's contributors, which neither command mentions. show and plan show agree on a ready plan, name the review the plan item still needs and from which families, and give atelier land PLAN --reviewer H/M as the next step"
+accepted head c1df3c38c7ed47e828eb5113ef84d21a1756464d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/qwen3.8-27b 2026-10-08T06:17:55.439Z
+OBSERVED pass npm run types && npm run typecheck — opencode/qwen3.8-27b 2026-10-08T06:17:57.994Z
+REVIEW approve by antigravity/gemini-3.1-pro at c1df3c38c7ed47e828eb5113ef84d21a1756464d, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T15:34:38.045Z pavi item.created
+2026-10-08T01:54:04.480Z pavi item.dispatched
+2026-10-08T01:57:39.016Z opencode/qwen3-coder-next item.claimed
+2026-10-08T01:57:53.671Z opencode/qwen3-coder-next fork.created
+2026-10-08T01:58:23.215Z opencode/qwen3-coder-next item.released
+2026-10-08T01:59:29.156Z pavi item.dispatched
+2026-10-08T02:36:30.473Z opencode/qwen3.8-27b item.claimed
+2026-10-08T03:08:35.822Z opencode/qwen3.8-27b item.released
+2026-10-08T03:08:54.291Z pavi item.undispatched
+2026-10-08T03:09:00.959Z opencode/qwen3.8-27b item.claimed
+2026-10-08T04:45:15.191Z pavi land.lease
+2026-10-08T04:45:19.932Z pavi land.merge
+2026-10-08T04:45:27.814Z pavi land.regenerate
+2026-10-08T04:45:30.801Z opencode/qwen3.8-27b push.observed
+2026-10-08T04:45:30.910Z pavi land.push
+2026-10-08T04:47:53.675Z opencode/qwen3.8-27b evidence.observed
+2026-10-08T04:47:55.860Z opencode/qwen3.8-27b evidence.observed
+2026-10-08T04:47:56.248Z pavi land.check
+2026-10-08T04:47:56.589Z opencode/qwen3.8-27b item.submitted
+2026-10-08T04:47:56.843Z pavi land.submit
+2026-10-08T04:47:56.938Z pavi review.requested
+2026-10-08T04:48:09.912Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T04:51:04.793Z antigravity/gemini-3.1-pro review.rejected
+2026-10-08T04:51:08.078Z pavi land.review
+2026-10-08T04:51:48.452Z pavi review.finding
+2026-10-08T04:51:49.037Z pavi review.finding
+2026-10-08T06:15:20.407Z pavi land.lease
+2026-10-08T06:15:22.855Z pavi land.merge
+2026-10-08T06:15:30.523Z pavi land.regenerate
+2026-10-08T06:15:33.012Z opencode/qwen3.8-27b push.observed
+2026-10-08T06:15:33.128Z pavi land.push
+2026-10-08T06:17:55.798Z opencode/qwen3.8-27b evidence.observed
+2026-10-08T06:17:58.140Z opencode/qwen3.8-27b evidence.observed
+2026-10-08T06:17:58.561Z pavi land.check
+2026-10-08T06:17:58.888Z opencode/qwen3.8-27b item.submitted
+2026-10-08T06:17:59.079Z pavi land.submit
+2026-10-08T06:17:59.189Z pavi review.requested
+2026-10-08T06:18:11.146Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T06:23:51.207Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T06:23:54.589Z pavi land.review
+2026-10-08T06:23:55.119Z pavi item.accepted
+2026-10-08T06:23:55.217Z pavi land.accept
