@@ -12,6 +12,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { synth, wavSeconds, spendSoFar, VOICE, wordTimes } from "./scripts/tts.mjs";
+import { writeScore } from "./scripts/music.mjs";
 
 const HERE = new URL(".", import.meta.url).pathname;
 const CACHE = HERE + ".cache/";
@@ -24,7 +25,7 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const ONLY = opt("--only");
 const PREVIEW = flag("--preview");
 const WORKERS = Number(opt("--workers") ?? 8);
-const NAME = opt("--name") ?? "atelier-v1";
+const NAME = opt("--name") ?? "atelier-v2";
 
 // ── the script ─────────────────────────────────────────────────────────────
 
@@ -101,9 +102,9 @@ function captionCue(text, words, dur) {
 
 // Seconds before the first cue, between cues, and after the last; some
 // scenes hold longer after their narration to show a real page.
-const LEAD = { open: 0.6, default: 0.9 };
-const GAP = 0.55;
-const TAIL = { default: 1.6, gate: 6.5, catches: 2.0, plan: 6.0, replay: 7.0, terminal: 2.5, cloud: 2.5, public: 2.5, close: 5.0 };
+const LEAD = { cold: 12.4, default: 0.8 };
+const GAP = 0.42;
+const TAIL = { default: 1.2, cold: 3.4, gate: 6.2, catches: 1.6, plan: 4.8, replay: 4.8, runners: 3.2, cloud: 1.8, close: 4.5 };
 
 async function timeline(scenes) {
   let t = 0;
@@ -115,7 +116,8 @@ async function timeline(scenes) {
     for (const text of sc.cues) {
       const file = await synth(text);
       const dur = wavSeconds(readFileSync(file));
-      cues.push({ start: c, end: c + dur, file, text, captions: captionCue(text, await wordTimes(file), dur).map((k) => ({ ...k, start: k.start + c, end: k.end + c })) });
+      const words = await wordTimes(file);
+      cues.push({ start: c, end: c + dur, file, text, words, captions: captionCue(text, words, dur).map((k) => ({ ...k, start: k.start + c, end: k.end + c })) });
       c += dur + GAP;
     }
     const dur = c - GAP + (TAIL[sc.id] ?? TAIL.default);
@@ -155,17 +157,6 @@ function narrationTrack(tl, file) {
     src.copy(pcm, at, 0, Math.min(src.length, pcm.length - at));
   }
   writeFileSync(file, Buffer.concat([wavHeader(pcm.length), pcm]));
-}
-
-// A quiet bed synthesised here: a slow A-major pad of sine partials with a
-// gentle swell, low-passed, under the voice and ducked by it.
-function musicArgs(total) {
-  const notes = [55, 110, 164.81, 220, 277.18, 329.63];
-  const gains = [0.5, 0.35, 0.22, 0.16, 0.08, 0.06];
-  const inputs = notes.map((f, i) => ["-f", "lavfi", "-t", String(total), "-i", `sine=frequency=${f}:sample_rate=48000`]).flat();
-  const mix = notes.map((_, i) => `[${i + 1}:a]volume=${gains[i]},tremolo=f=${(0.11 + i * 0.017).toFixed(3)}:d=0.45[n${i}]`).join(";");
-  const sum = notes.map((_, i) => `[n${i}]`).join("") + `amix=inputs=${notes.length}:normalize=0,lowpass=f=900,volume=0.1,afade=t=in:d=4,afade=t=out:st=${(total - 5).toFixed(2)}:d=5[bed]`;
-  return { inputs, filter: mix + ";" + sum };
 }
 
 // ── frames ─────────────────────────────────────────────────────────────────
@@ -220,7 +211,7 @@ for (const s of tl.scenes) console.log(`  ${s.id.padEnd(9)} ${fmt(s.start).padSt
 console.log(`Total ${fmt(tl.total)} (${tl.total.toFixed(1)} s). TTS so far: ${JSON.stringify(spendSoFar())}`);
 
 const data = JSON.parse(readFileSync(HERE + "data/ledger.json", "utf8"));
-data.terminal = { t278: readFileSync(HERE + "data/terminal/show-t278.txt", "utf8"), t197: readFileSync(HERE + "data/terminal/show-t197.txt", "utf8") };
+data.terminal = { t278: readFileSync(HERE + "data/terminal/show-t278.txt", "utf8"), t197: readFileSync(HERE + "data/terminal/show-t197.txt", "utf8"), note: readFileSync(HERE + "data/terminal/note-5af22431.txt", "utf8") };
 data.screens = JSON.parse(readFileSync(CACHE + "screens/meta.json", "utf8"));
 writeFileSync(CACHE + "timeline.json", JSON.stringify(tl, null, 1));
 
@@ -269,19 +260,30 @@ const list = MUX_ONLY ? work + "segments.txt" : await renderFrames(tl, data, t0,
 console.log(`Frames rendered in ${Math.round((Date.now() - began) / 1000)} s.`);
 
 narrationTrack(tl, work + "narration.wav");
-const m = musicArgs(tl.total);
+// The score, from the sound events the scenes registered on the same clock.
+{
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+  await page.goto("file://" + HERE + "scenes/film.html");
+  await page.evaluate(async ([tl, data]) => { await window.film.init(tl, data); }, [tl, data]);
+  const sounds = await page.evaluate(() => window.film.sounds());
+  await browser.close();
+  writeScore(work + "score.wav", tl, sounds);
+  console.log(`Score: ${sounds.length} sound events.`);
+}
 const final = range ? `${CACHE}preview-${ONLY}.mp4` : OUT + NAME + ".mp4";
-const args = ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, ...m.inputs, "-i", work + "narration.wav",
-  "-filter_complex", `${m.filter};[${m.inputs.length / 6 + 1}:a]aresample=48000,asplit=2[v1][v2];[bed][v1]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=600[ducked];[ducked][v2]amix=inputs=2:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo[aout]`,
-  "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ss", String(range ? t0 : 0), "-t", String(t1 - t0), "-movflags", "+faststart", final];
-// The audio covers the whole film; a one-scene preview takes its slice.
+// The mix: the voice brought to -16 LUFS, the score to -24 LUFS and ducked
+// under the voice, then summed and limited.
+const mixFilter = "[1:a]aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-2:LRA=9,asplit=2[v1][v2];" +
+  "[2:a]loudnorm=I=-24:TP=-6:LRA=14[bed];[bed][v1]sidechaincompress=threshold=0.03:ratio=5:attack=60:release=700:makeup=1[ducked];" +
+  "[ducked][v2]amix=inputs=2:normalize=0,alimiter=limit=0.93,aresample=48000[aout]";
 if (range) {
-  const a = ["-y", "-loglevel", "error", "-ss", String(t0), "-t", String(t1 - t0), "-i", work + "narration.wav", work + "slice.wav"];
-  execFileSync(FFMPEG, a);
-  execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-i", work + "slice.wav", "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", final]);
+  execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-ss", String(t0), "-t", String(t1 - t0), "-i", work + "narration.wav", "-ss", String(t0), "-t", String(t1 - t0), "-i", work + "score.wav",
+    "-filter_complex", mixFilter, "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", final], { stdio: "inherit" });
 } else {
-  const fixed = args.filter((x, i) => !(x === "-ss" || args[i - 1] === "-ss"));
-  execFileSync(FFMPEG, fixed, { stdio: "inherit" });
+  execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-i", work + "narration.wav", "-i", work + "score.wav",
+    "-filter_complex", mixFilter, "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", String(tl.total), "-movflags", "+faststart", final], { stdio: "inherit" });
 }
 console.log("Wrote " + final);
 

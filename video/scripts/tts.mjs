@@ -9,8 +9,8 @@ import { homedir } from "node:os";
 const CACHE = new URL("../.cache/tts/", import.meta.url).pathname;
 const LEDGER = CACHE + "spend.json";
 export const MODEL = "gpt-4o-mini-tts";
-export const VOICE = process.env.VIDEO_VOICE ?? "onyx";
-export const INSTRUCTIONS = "Narrate a technical documentary. Calm, confident and measured, at an even pace of about 140 words a minute. Plain delivery: no excitement, no sales tone. Pronounce 'Atelier' as 'a-tel-yay'. Read identifiers like t278 as 't two seventy-eight', UTC as 'U T C', and gpt-6.1-sol as 'G P T six point one sol'.";
+export const VOICE = process.env.VIDEO_VOICE ?? "ash";
+export const INSTRUCTIONS = process.env.VIDEO_INSTRUCTIONS ?? "Voice: a warm, confident documentary narrator with a quiet sense of wonder. Pacing: unhurried but steady, about 150 words a minute, with short natural pauses between sentences and a slight lift on the key fact of each sentence. Tone: calm and assured, never salesy or excited. Pronounce 'Atelier' as 'a-tel-yay'. Read identifiers like t278 as 't two seventy-eight', UTC as 'U T C', GLM as 'G L M', and gpt-6.1-sol as 'G P T six point one sol'.";
 
 // Estimated price: $0.60 per million text tokens in and $12 per million audio
 // tokens out, which OpenAI gives as about $0.015 a minute of speech.
