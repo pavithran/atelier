@@ -7,7 +7,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
-  assertBlockable, assertNotBlocked, blockReason, REASON_MAX,
+  assertBlockable, assertNotBlocked, blockReason, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type ItemFields,
 } from "./rules";
@@ -440,6 +440,12 @@ export class Ledger extends DurableObject<Env> {
     // A part's integration onto the plan's branch: the head that was merged
     // and the merge commit, recorded when the part became integrated.
     if (!columns.includes("integration")) this.sql.exec(`ALTER TABLE items ADD COLUMN integration TEXT`);
+    // A task's long text and its acceptance criteria (JSON). `title` holds
+    // the short title every list shows; `brief` is null when the title says
+    // it all.
+    if (!columns.includes("brief")) this.sql.exec(`ALTER TABLE items ADD COLUMN brief TEXT`);
+    if (!columns.includes("accept")) this.sql.exec(`ALTER TABLE items ADD COLUMN accept TEXT`);
+    this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS plans (
@@ -475,6 +481,19 @@ export class Ledger extends DurableObject<Env> {
     // the new logic would read sits idle until something else changes; the
     // ledger ticks its open plans once per deploy (retickDeployed).
     this.retickDeployed((this.env as unknown as { DEPLOYED_MAIN?: string }).DEPLOYED_MAIN ?? null);
+  }
+
+  // Items made while the title was the task's whole text keep that text as
+  // their brief and take a short title derived from it (shortTitle), once.
+  // Nothing is lost: the brief holds the text the title held, and the
+  // item.created event keeps it as it was sent.
+  private splitLongTitles(): void {
+    if (this.sql.exec(`SELECT 1 FROM meta WHERE key = 'item-briefs'`).toArray().length) return;
+    for (const row of this.sql.exec(`SELECT id, title FROM items WHERE brief IS NULL AND LENGTH(title) > ?`, TITLE_MAX).toArray()) {
+      const text = row.title as string;
+      this.sql.exec(`UPDATE items SET title = ?, brief = ? WHERE id = ?`, shortTitle(text), text, row.id);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('item-briefs', ?)`, new Date().toISOString());
   }
 
   // Reviews recorded before each said who recorded it gain the fields
@@ -820,19 +839,24 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
-  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item {
-    if (!title.trim()) throw new RuleError("bad_title", "an item needs a title", 400);
+  // `title` is what the creator sent as the title, and `fields.brief` the
+  // long text if sent apart (itemText): a title too long with no brief, as
+  // an older CLI sends, becomes the brief with a short title derived from
+  // it. The item answers with `derived` set then, so the CLI can say so.
+  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item & { derived?: true } {
+    const text = itemText(title, fields.brief);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
     const now = new Date().toISOString();
     this.sql.exec(
-      `INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)`,
-      id, title.trim(), JSON.stringify(scope), now, now,
+      `INSERT INTO items (id, title, brief, scope, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?)`,
+      id, text.title, text.brief, JSON.stringify(scope), now, now,
     );
-    const set = fieldColumns(fields);
+    const { brief: _brief, title: _title, ...framing } = fields;
+    const set = fieldColumns(framing);
     if (Object.keys(set).length) this.update(id, set, now);
-    this.log(id, actor, "item.created", { title, scope, ...fields }, now);
-    return this.item(id);
+    this.log(id, actor, "item.created", { title: text.title, ...(text.brief ? { brief: text.brief } : {}), scope, ...framing }, now);
+    return { ...this.item(id), ...(text.derived ? { derived: true as const } : {}) };
   }
 
   // The project owner changes a task's framing after it was created. A
@@ -843,7 +867,13 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
     const set = fieldColumns(fields);
-    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --non-goal, --stop-when or --next-gate", 400);
+    if (fields.title !== undefined) {
+      const title = titleLine(fields.title);
+      if (!title) throw new RuleError("bad_title", "a title cannot be empty", 400);
+      if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
+      set.title = title;
+    }
+    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --accept, --non-goal, --stop-when or --next-gate", 400);
     const at = new Date().toISOString();
     this.update(id, set, at);
     this.log(id, actor, "item.edited", { ...fields }, at);
@@ -3783,6 +3813,8 @@ function toItem(r: Row): Item {
     nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
     stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
     nextGate: (r.next_gate as string | null) ?? null,
+    brief: (r.brief as string | null) ?? null,
+    accept: r.accept ? (JSON.parse(r.accept as string) as string[]) : [],
     // Only a blocked item carries the record; unblocking and abandoning clear it.
     ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
     // Only a plan and its parts carry these.
@@ -3800,5 +3832,7 @@ function fieldColumns(fields: ItemFields): Record<string, string | null> {
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
+  if (fields.accept !== undefined) set.accept = fields.accept.length ? JSON.stringify(fields.accept) : null;
+  if (fields.brief !== undefined) set.brief = fields.brief;
   return set;
 }
