@@ -38,7 +38,11 @@ async function project(name: string) {
 
 const BAD = [[true], [5], ["ok", true], [""], ["   "], [null], "npm test", null, {}, 7];
 
-it("an item's scope must be a list of non-empty strings", async () => {
+// Each round-trip crosses the worker and its Durable Objects, and a machine
+// running several suites at once stretches every one (t298: this file's
+// second test once crossed vitest's 5 s ceiling that way), so both tests
+// carry a timeout with room for a loaded machine.
+it("an item's scope must be a list of non-empty strings", { timeout: 30_000 }, async () => {
   await project("lists-scope");
   for (const scope of BAD) {
     const res = await call("POST", "/projects/lists-scope/items", { title: "Scoped", scope });
@@ -55,10 +59,14 @@ it("an item's scope must be a list of non-empty strings", async () => {
   expect(((await open.json()) as { scope: string[] }).scope).toEqual([]);
 });
 
-it("a project's checks, protected paths and eligible agents must each be a list of non-empty strings", async () => {
+it("a project's checks, protected paths and eligible agents must each be a list of non-empty strings", { timeout: 30_000 }, async () => {
   for (const field of ["checks", "protected", "eligible", "shipRuns", "shipKinds"]) {
-    for (const value of BAD) {
-      const res = await call("PUT", "/projects/lists-policy", { [field]: value });
+    // Every one of these is refused before anything is written, so they are
+    // independent; asking them all at once keeps a loaded machine's
+    // per-round-trip stretch from stacking fifty of them past the timeout.
+    const answers = await Promise.all(BAD.map((value) => call("PUT", "/projects/lists-policy", { [field]: value })));
+    for (const [i, res] of answers.entries()) {
+      const value = BAD[i];
       expect(res.status, `${field}: ${JSON.stringify(value)}`).toBe(400);
       const body = (await res.json()) as { error: string; detail: string };
       expect(body.error).toBe("bad_list");
