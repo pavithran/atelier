@@ -32,6 +32,20 @@ export function offerFrom(config, name) {
   return { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
 }
 
+// The runner's first line at start (runRunner): the jobs it takes, with the
+// known jobs it does not take named behind them. t252 made a config's jobs
+// the exact list a runner takes, so a config written before it — jobs:
+// ["plan"], which then meant the plan job besides building — silently
+// stopped taking builds and merge-main jobs: on 2026-10-07 both build
+// runners claimed nothing for about an hour while seven dispatches waited,
+// and nothing where the runners ran said why. Said at start, the narrowing
+// is the first line of the runner's own output, not an hour of the queue's
+// silence.
+export function jobsLine(jobs, known = [...DEFAULT_JOBS, "review"]) {
+  const not = known.filter((job) => !jobs.includes(job));
+  return `jobs: ${jobs.join(", ")}${not.length ? ` (not ${not.join(", ")})` : ""}`;
+}
+
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
 
 // Why the runner refuses to start, or null when the server's routes are new
@@ -1270,6 +1284,11 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       const refusal = versionRefusal(await version(controller.signal));
       if (refusal) throw new Error(refusal);
     }
+    // Said once, before the first poll (t289): the jobs this runner takes
+    // and the ones its config leaves out, so an offer narrowed by t252's
+    // exact jobs is read where the runner runs, not inferred from the
+    // queue's silence.
+    io.log(jobsLine(offer.jobs));
     // Transient queue failures in a row (transientQueueError): the first is
     // logged, the rest are quiet until the queue answers again, and each
     // lengthens the wait before the next poll (queueBackoffMs).

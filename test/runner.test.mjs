@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, gatewayMetadata, harnessRunEnv, versionRefusal, transientQueueError, queueBackoffMs } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -1128,6 +1128,41 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
   assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan and review/);
   // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
   assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
+});
+
+// t289: t252 made a config's jobs the exact list a runner takes, so a config
+// written before it with jobs: ["plan"] — which then meant the plan job
+// besides building — silently stopped taking builds and merge-main jobs (on
+// 2026-10-07 both build runners claimed nothing for about an hour while
+// seven dispatches waited). At start the runner says the jobs it takes and
+// the jobs it leaves, so the narrowing is its first line, before any poll.
+test("at start the runner says the jobs it takes and the jobs it leaves", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-jobs-line-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const [value, expected] of [
+    [config, `jobs: ${DEFAULT_JOBS.join(", ")} (not review)`],
+    [{ ...config, jobs: ["plan"] }, "jobs: plan (not build, merge-main, merge-main-task, merge-plan, review)"],
+  ]) {
+    const path = join(dir, `runner-${value.jobs?.join("-") ?? "all"}.json`);
+    writeFileSync(path, JSON.stringify(value));
+    const logs = [];
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      taskIO: { log: (s) => logs.push(s) },
+      queue: async () => [],
+    });
+    assert.deepEqual(logs, [expected], JSON.stringify(value.jobs ?? null));
+  }
+  // The integrator's fixed jobs are said the same way, and a runner taking
+  // every known job names no omission.
+  const logs = [];
+  await runRunner({ _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    taskIO: { log: (s) => logs.push(s) },
+    queue: async () => [],
+  });
+  assert.deepEqual(logs, ["jobs: integrate, refresh (not build, plan, merge-main, merge-main-task, merge-plan, review)"]);
+  assert.equal(jobsLine([...DEFAULT_JOBS, "review"]), `jobs: ${[...DEFAULT_JOBS, "review"].join(", ")}`);
 });
 
 // t252: the job an assignment is, which the runner takes only when its offer
