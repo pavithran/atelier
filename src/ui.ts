@@ -756,7 +756,8 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
 // Each model's calls through the AI Gateway over the view's window, from the
 // GraphQL Analytics API (src/usage/gateway.ts): calls and failures, tokens,
 // cost, and the median and 90th percentile duration with the number of calls
-// they are taken over. Off, refused or empty, the section says which.
+// they are taken over, and the calls per task the runners' cf-aig-metadata
+// tags name. Off, refused or empty, the section says which.
 
 export function gatewaySection(g: GatewayView): string {
   const head = `<h2 class="section-title">AI Gateway · last ${g.days} days</h2>`;
@@ -767,12 +768,22 @@ export function gatewaySection(g: GatewayView): string {
     <td class="num">${e(tokens(m.tokensIn))} in · ${e(tokens(m.tokensOut))} out</td>
     <td class="num">${m.cost === null ? '<span class="meta">not priced</span>' : e(money(m.cost))}</td>
     <td class="num">${ms(m.medianMs)} · ${ms(m.p90Ms)} <span class="meta">n=${e(m.sample.toLocaleString("en"))}</span></td></tr>`;
+  const taskRow = (t: GatewayView["tasks"][number]) => `<tr><th scope="row"><code>${e(t.task)}</code></th>
+    <td class="num">${e(t.calls.toLocaleString("en"))}${t.failures ? ` <span class="meta">${e(t.failures.toLocaleString("en"))} failed</span>` : ""}</td>
+    <td class="num">${e(tokens(t.tokensIn))} in · ${e(tokens(t.tokensOut))} out</td>
+    <td class="num">${t.cost === null ? '<span class="meta">not priced</span>' : e(money(t.cost))}</td></tr>`;
   return `<section class="gateway" aria-label="AI Gateway costs">${head}
   <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from Cloudflare's GraphQL Analytics. The median and 90th percentile durations are taken over n calls in that window. A model whose calls all cost $0 shows "not priced": the gateway records a call it could not price as $0, so the two cannot be told apart.</p>
   ${g.models.length ? `<table class="usage-table">
     <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median · p90 duration</th></tr></thead>
     <tbody>${g.models.map(row).join("")}</tbody>
   </table>` : `<p class="empty">No calls through the gateway in the last ${g.days} days.</p>`}
+  ${g.tasks.length ? `<h3>Calls per task</h3>
+  <p class="meta">Tasks as each call's cf-aig-metadata names it, which the runner sets per run; a task's value is its id, so the same id in two projects is one row. A call with no task tag counts under no task.</p>
+  <table class="usage-table">
+    <thead><tr><th scope="col">Task</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
+    <tbody>${g.tasks.map(taskRow).join("")}</tbody>
+  </table>` : g.models.length ? '<p class="meta">No calls carried a task tag; runners send it as cf-aig-metadata, one per run.</p>' : ""}
 </section>`;
 }
 
@@ -1741,13 +1752,14 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 
 // The error page keeps the owner's name and the rail, and highlights nothing:
 // it does not know which page failed (finding 18). `back` says where Go back
-// returns to. The public error paths pass no ownerName, so the name never
-// reaches a page anyone can read.
+// returns to; an empty `back` leaves the advice and the button out, for a
+// refusal that has no page to go back to (the Access 401). The public error
+// paths pass no ownerName, so the name never reaches a page anyone can read.
 export function renderError(message: string, back = "/", ownerName: string | null = null, active = ""): string {
   return page("Action needs attention", `<section class="page-width error-page">
   <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
-  <p>Go back, refresh the evidence, and try the available action again.</p>
-  <a class="button" href="${e(back)}">Go back</a>
+  ${back ? `<p>Go back, refresh the evidence, and try the available action again.</p>
+  <a class="button" href="${e(back)}">Go back</a>` : ""}
 </section>`, active, ownerName);
 }
 
