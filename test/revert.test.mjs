@@ -104,3 +104,33 @@ test("a recorded non-merge or merge outside the workspace history is refused", a
   await assert.rejects(runRevert("t1", "codex/test", io), /does not hold the recorded merge/);
   assert.equal(git(["rev-parse", "HEAD"]), base);
 });
+
+test("an empty merge reports no changes and leaves Git ready for subsequent work", async (t) => {
+  const { git, io } = fixture(t);
+  git(["checkout", "-b", "empty-feature"]);
+  git(["commit", "--allow-empty", "-m", "Empty feature"]);
+  git(["checkout", "main"]);
+  git(["merge", "--no-ff", "empty-feature", "-m", "Empty merge"]);
+  const mergeCommit = git(["rev-parse", "HEAD"]), messages = [];
+  await runRevert("t1", "codex/test", {
+    ...io,
+    create: async () => ({ id: "t2", revert: { itemId: "t1", mergeCommit } }),
+    say: (message) => messages.push(message),
+  });
+  assert.match(messages.join("\n"), /changes nothing.*No commit was made/);
+  assert.equal(git(["rev-parse", "HEAD"]), mergeCommit);
+  assert.equal(git(["status", "--porcelain"]), "");
+  assert.equal(git(["rev-parse", "--verify", "REVERT_HEAD"], { allowFail: true }).status, 128);
+  git(["commit", "--allow-empty", "-m", "Subsequent work"]);
+  assert.equal(git(["rev-parse", "HEAD^"]), mergeCommit);
+});
+
+test("a server refusal for an unmerged task is propagated before claiming or touching Git", async () => {
+  const refusal = new Error("t1 is not merged");
+  await assert.rejects(runRevert("t1", "codex/test", {
+    create: async () => { throw refusal; },
+    claim: () => assert.fail("must not claim after a refused request"),
+    git: () => assert.fail("must not touch Git after a refused request"),
+    say: () => assert.fail("must not report success"),
+  }), (error) => error === refusal);
+});
