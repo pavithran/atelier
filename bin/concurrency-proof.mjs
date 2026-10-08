@@ -42,7 +42,7 @@ every task it created.
   -h, --help        print this
 
 Owner calls (creating and abandoning tasks) name ATELIER_OWNER, the
-project owner's actor (as `atelier` is configured with it); without it the
+project owner's actor (as the atelier CLI is configured with it); without it the
 clean-up is refused and the tasks must be abandoned by hand.
 
 The owner token is sent only to the server named, over https (plain http is
