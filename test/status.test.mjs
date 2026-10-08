@@ -38,6 +38,34 @@ test("a project with nothing to do says so, and other projects' decisions are ig
   assert.equal(out, "quiet\n  Nothing waiting.");
 });
 
+test("the waiting list splits the lead developer's own decisions from what the orchestrator handles", () => {
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" }), item("t2", "accepted"), item("t3", "claimed", { owner: "codex/gpt-6" })],
+    inbox: [
+      entry("t1", "assess"),
+      entry("t2", "merge"),
+      entry("t3", "stale"),
+      entry("t4", "ship"),
+      entry("t5", "approve-plan"),
+    ],
+  }]).split("\n");
+  const yours = out.indexOf("  Waiting for you");
+  const handled = out.indexOf("  Handled by the orchestrator");
+  const progress = out.indexOf("  In progress");
+  assert.ok(yours > -1 && handled > -1, "both headings print");
+  assert.ok(yours < handled && handled < progress, "own decisions, then the orchestrator's, then work in progress");
+  // The lead developer's own calls: assess (override or review), ship (a
+  // protected action), approve-plan — under "Waiting for you".
+  for (const id of ["t1  assess", "t4  ship", "t5  approve-plan"]) {
+    assert.ok(out.indexOf(`    ${id}  Task ${id.split(" ")[0]}`) < handled, `${id} is the lead developer's own call`);
+  }
+  // Merging and a stale claim are the orchestrator's, listed apart.
+  for (const id of ["t2  merge", "t3  stale"]) {
+    assert.ok(out.indexOf(`    ${id}  Task ${id.split(" ")[0]}`) > handled, `${id} is the orchestrator's`);
+  }
+});
+
 test("no projects", () => {
   assert.equal(formatStatus([]), "No projects.");
 });
@@ -103,9 +131,11 @@ test("an overlap whose reason names no pair stays a plain decision, so nothing t
     ],
   }]).split("\n");
   assert.ok(out.includes("    t1 and t2 name overlapping paths"), "the pair still stands under its heading");
-  const wait = out.indexOf("  Waiting for you");
+  // Overlapping work is not the lead developer's call, so an entry that names
+  // no pair stands with the orchestrator's, not the owner's decisions.
+  const handled = out.indexOf("  Handled by the orchestrator");
   const said = out.indexOf("    t7  overlap  Task t7");
-  assert.ok(said > wait, "the entry stands with the owner's decisions");
+  assert.ok(said > handled, "the entry stands with the orchestrator's");
   assert.ok(out.includes("      its paths are shared with other live work"), "its reason is shown");
   assert.ok(!out.some((l) => l.includes("next:")), "an overlap still offers no command");
 });

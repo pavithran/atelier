@@ -38,7 +38,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
+  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -304,10 +304,15 @@ export function renderInbox(
   live?: Live,
 ): string {
   const names = titleMap(projects);
+  // The lead developer's own decisions come first, under the heading the page
+  // has always used; the rest — what the orchestrator and runners handle — is
+  // listed apart, so only the human's calls read as needing the human.
   const groups = new Map<string, InboxEntry[]>();
+  const handledGroups = new Map<string, InboxEntry[]>();
   for (const x of entries) {
     const key = `${x.project}/${x.itemId}`;
-    groups.set(key, [...(groups.get(key) ?? []), x]);
+    const bucket = isOwnCall(x.kind) ? groups : handledGroups;
+    bucket.set(key, [...(bucket.get(key) ?? []), x]);
   }
   const rows = [...groups.values()].map(([lead, ...more]) => {
     const [label, tone] = KIND[lead.kind];
@@ -317,6 +322,11 @@ export function renderInbox(
       ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a>`;
     const detail = details.get(`${lead.project}/${lead.itemId}`);
     return detail ? decisionCard(row, lead.project, detail, lead) : `<li>${row}</li>`;
+  }).join("");
+  const handledRows = [...handledGroups.values()].map(([lead, ...more]) => {
+    const [label, tone] = KIND[lead.kind];
+    const extra = more.length ? `<span class="meta">${more.map((m) => e(KIND[m.kind][0])).join(" · ")}</span>` : "";
+    return `<li><a class="decision-row" href="${href("p", lead.project, lead.itemId)}">${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a></li>`;
   }).join("");
 
   const needs = new Set(entries.map((x) => `${x.project}/${x.itemId}`));
@@ -335,6 +345,7 @@ export function renderInbox(
   ${floorStrip(floor, now)}
   <h2 class="section-title">Needs your attention</h2>
   ${rows ? `<ul class="decision-list">${rows}</ul>` : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
+  ${handledRows ? `<h2 class="section-title">Handled by the orchestrator</h2><ul class="decision-list">${handledRows}</ul>` : ""}
   ${workingList}
   ${queued.length ? `<h2 class="section-title">Waiting for a runner</h2><ul class="decision-list">${queued.map(({ project, item }) =>
     `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("studio")}<span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.id)} · for ${e(describeDispatch(item.dispatch!))}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>` : ""}
@@ -1153,10 +1164,12 @@ export interface HomeView extends ProjectView {
 export function renderHome(views: HomeView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER, showcase: Record<string, "named" | "anonymous"> = {}): string {
   const vendors = new Set<Vendor>();
   const ranked = views.map((v) => {
-    // Failing checks are the holder's to fix, not the owner's decision, so
-    // the card counts what the owner must act on (as buildStanding does).
-    const waiting = [...new Set((v.waiting ?? []).filter((x) => x.kind !== "failing").map((x) => x.itemId))];
-    return { v, waiting, lastAt: "" };
+    // The lead developer's own decisions are what the card counts as waiting
+    // on the human; the rest the orchestrator and runners handle on their own.
+    const entries = v.waiting ?? [];
+    const waiting = [...new Set(entries.filter((x) => isOwnCall(x.kind)).map((x) => x.itemId))];
+    const handled = [...new Set(entries.filter((x) => !isOwnCall(x.kind)).map((x) => x.itemId))];
+    return { v, waiting, handled, lastAt: "" };
   });
   for (const { v } of ranked) {
     const p = buildPulse(v.events ?? [], owner, now, !!v.cut);
@@ -1166,7 +1179,7 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
   // portfolio still reads newest first.
   const order = ranked.map((r) => ({ ...r, lastAt: buildPulse(r.v.events ?? [], owner, now, !!r.v.cut).lastAt ?? "" }))
     .sort((a, b) => b.waiting.length - a.waiting.length || b.lastAt.localeCompare(a.lastAt));
-  const cards = order.map(({ v, waiting }) => {
+  const cards = order.map(({ v, waiting, handled }) => {
     const { project, items, unavailable, events, cut } = v;
     const count = (states: string[]) => items.filter((i) => states.includes(i.state)).length;
     const p = buildPulse(events ?? [], owner, now, !!cut);
@@ -1177,14 +1190,21 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
     const line = p.moves || p.decisions
       ? `${plural(p.moves, "move")} by ${plural(p.agents.length, "agent")} and ${plural(p.decisions, "decision")} in two weeks${p.cut ? ", from the most recent part of the record" : ""}${last}.`
       : `No moves in the last two weeks${last}.`;
-    const waitingRows = (v.waiting ?? []).filter((x) => x.kind !== "failing");
+    const waitingRows = v.waiting ?? [];
     const waitRows = waiting.slice(0, 3).map((id) => {
       // The entry's own title, so the row stands even when the items list
-      // was read apart from it.
-      const w = waitingRows.find((x) => x.itemId === id);
+      // was read apart from it. A task may carry both an own call and a
+      // handled one, so each list finds the entry of its own kind, not merely
+      // the first entry that names the item.
+      const w = waitingRows.find((x) => x.itemId === id && isOwnCall(x.kind));
       return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
     }).join("");
     const more = waiting.length > 3 ? `<li class="meta">and ${waiting.length - 3} more</li>` : "";
+    const handledRows = handled.slice(0, 3).map((id) => {
+      const w = waitingRows.find((x) => x.itemId === id && !isOwnCall(x.kind));
+      return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
+    }).join("");
+    const handledMore = handled.length > 3 ? `<li class="meta">and ${handled.length - 3} more</li>` : "";
     const runRows = running.slice(0, 3).map((i) =>
       `<li><a href="${href("p", project.name, i.id)}">${e(i.title)}</a><span class="meta">${e(stateLabel[i.state])} · ${e(i.owner ?? "nobody")}</span></li>`).join("");
     const mergeLine = lastMerge
@@ -1194,6 +1214,7 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
       ? '<p class="meta">Temporarily unavailable. Open to retry.</p>'
       : `${pulseGraph(p)}<p class="meta">${line}</p>
     ${waitRows ? `<h3>Waiting on you</h3><ul class="home-rows">${waitRows}${more}</ul>` : ""}
+    ${handledRows ? `<h3>Handled by the orchestrator</h3><ul class="home-rows">${handledRows}${handledMore}</ul>` : ""}
     ${runRows ? `<h3>Running</h3><ul class="home-rows">${runRows}</ul>` : ""}
     ${mergeLine}`;
     const mode = showcase[project.name];
