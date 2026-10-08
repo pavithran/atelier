@@ -613,6 +613,26 @@ it('Decisions lists the lead developer\'s own calls under Needs your attention a
   expect(html.indexOf('Stale me')).toBeGreaterThan(handled);
   expect(html).toContain('1 decision needs your attention.');
 });
+it('Decisions lists a task that has both an own call and a handled one under each list with its own kind, the handled row linking to the task page',()=>{
+  const entries=[
+    {project:'example',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:100},
+    {project:'example',itemId:'t1',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+  ];
+  const html=renderInbox(entries,[project],'PAVI');
+  const needs=html.indexOf('Needs your attention');
+  const handled=html.indexOf('Handled by the orchestrator');
+  expect(needs).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(needs).toBeLessThan(handled);
+  const ownSection=html.slice(needs,handled);
+  const handledSection=html.slice(handled);
+  expect(ownSection).toContain('Review required');
+  expect(ownSection).not.toContain('Ready to merge');
+  expect(ownSection).toContain('href="/decisions?project=example&task=t1#review"');
+  expect(handledSection).toContain('Ready to merge');
+  expect(handledSection).not.toContain('Review required');
+  expect(handledSection).toContain('href="/p/example/t1"');
+  expect(handledSection).not.toContain('aria-current');
+});
 it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
  const {renderMainPreview}=await import('../src/ui');
  expect(renderMainPreview(undefined)).toBe('');
@@ -1060,6 +1080,26 @@ it('Home lists what the orchestrator handles apart from what waits on the lead d
   expect(html.indexOf('Assess me')).toBeLessThan(handled);
   expect(html.indexOf('Merge me')).toBeGreaterThan(handled);
   expect(html).toContain('<b>1</b>waiting on you');
+});
+it('Home lists a task that has both an own call and a handled one under each list with its own kind',async()=>{
+  const {renderHome}=await import('../src/ui');
+  const titled={...project,name:'cloudflare-git',title:'Atelier'};
+  const items=[{...detail().item,id:'t1',state:'submitted' as const}];
+  const waiting=[
+    {project:'cloudflare-git',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:100},
+    {project:'cloudflare-git',itemId:'t1',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+  ];
+  const html=renderHome([{project:titled,items,waiting}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
+  const yours=html.indexOf('<h3>Waiting on you</h3>');
+  const handled=html.indexOf('<h3>Handled by the orchestrator</h3>');
+  expect(yours).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(yours).toBeLessThan(handled);
+  const ownSection=html.slice(yours,handled);
+  const handledSection=html.slice(handled);
+  expect(ownSection).toContain('Review required');
+  expect(ownSection).not.toContain('Ready to merge');
+  expect(handledSection).toContain('Ready to merge');
+  expect(handledSection).not.toContain('Review required');
 });
 it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
  const {renderHistory}=await import('../src/ui');

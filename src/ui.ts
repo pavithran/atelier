@@ -1189,13 +1189,15 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
     const waitingRows = v.waiting ?? [];
     const waitRows = waiting.slice(0, 3).map((id) => {
       // The entry's own title, so the row stands even when the items list
-      // was read apart from it.
-      const w = waitingRows.find((x) => x.itemId === id);
+      // was read apart from it. A task may carry both an own call and a
+      // handled one, so each list finds the entry of its own kind, not merely
+      // the first entry that names the item.
+      const w = waitingRows.find((x) => x.itemId === id && isOwnCall(x.kind));
       return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
     }).join("");
     const more = waiting.length > 3 ? `<li class="meta">and ${waiting.length - 3} more</li>` : "";
     const handledRows = handled.slice(0, 3).map((id) => {
-      const w = waitingRows.find((x) => x.itemId === id);
+      const w = waitingRows.find((x) => x.itemId === id && !isOwnCall(x.kind));
       return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
     }).join("");
     const handledMore = handled.length > 3 ? `<li class="meta">and ${handled.length - 3} more</li>` : "";
