@@ -80,3 +80,11 @@ svg text { font-family: var(--font-mono); }
 .term pre { margin: 0; padding: 22px 26px; font: 400 19px/1.5 var(--font-mono); color: #d7dee6; white-space: pre-wrap; word-break: break-word; }
 .term .prompt { color: var(--observed); }
 .term .cursor { display: inline-block; width: 11px; height: 22px; background: var(--signal); vertical-align: -4px; }
+
+/* Second cut: depth, grain, kinetic type */
+#vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 75% 70% at 50% 46%, transparent 55%, rgba(0,0,0,.55) 100%); }
+#grain { position: absolute; inset: 0; pointer-events: none; opacity: .07; mix-blend-mode: overlay; }
+.scene { transform-origin: 50% 50%; }
+.kin span { display: inline-block; will-change: transform, opacity; }
+.ring { width: 120px; height: 120px; border-radius: 50%; border: 3px solid; pointer-events: none; opacity: 0; }
+.card { transition: none; }

@@ -17,6 +17,9 @@ export const SHOTS = [
   { name: "plans", path: "/p/atelier/plans" },
   { name: "t278", path: "/p/atelier/t278" },
   { name: "t252", path: "/p/atelier/t252" },
+  // Only the AI Gateway section of the Models page: per-model gateway
+  // figures, which name models, not projects.
+  { name: "gateway", path: "/models", section: "AI Gateway" },
 ];
 
 // Words that must never be on a captured owner page: the names of the
@@ -48,6 +51,17 @@ for (const pub of [true, false]) {
       const text = (await page.evaluate(() => document.body.innerText)).toLowerCase();
       const hit = others.filter((n) => text.includes(n.toLowerCase().replace(/-/g, " ")) || text.includes(n.toLowerCase()));
       if (hit.length) console.warn(`${shot.name}: names ${hit.length} other project(s); crop or drop it`);
+    }
+    if (shot.section) {
+      const box = await page.evaluate((title) => {
+        const h2 = [...document.querySelectorAll("h2")].find((x) => x.textContent.includes(title));
+        let r = h2.getBoundingClientRect(), top = r.top + scrollY, bottom = r.bottom + scrollY, left = r.left, right = r.right;
+        for (let n = h2.nextElementSibling; n && n.tagName !== "H2"; n = n.nextElementSibling) { const q = n.getBoundingClientRect(); bottom = Math.max(bottom, q.bottom + scrollY); right = Math.max(right, q.right); }
+        return { x: Math.max(0, left - 40), y: Math.max(0, top - 40), width: Math.min(innerWidth, right + 40) - Math.max(0, left - 40), height: bottom - top + 80 };
+      }, shot.section);
+      await page.screenshot({ path: OUT + shot.name + ".png", fullPage: true, clip: box });
+      console.log("captured", shot.name);
+      continue;
     }
     await page.screenshot({ path: OUT + shot.name + ".png", fullPage: true });
     // Where each heading and drawing sits, in the image's pixels, so a scene
