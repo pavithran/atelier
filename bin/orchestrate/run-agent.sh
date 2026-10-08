@@ -19,6 +19,15 @@ else
   brief="$ws/.scratch/run-agent-brief.md"
   print -r -- "$prompt" > "$brief"
 fi
+# The opencode configs' cf-aig-metadata header reads {env:CF_AIG_METADATA};
+# the home runner sets it per run, and a hand dispatch reads the task from
+# the brief. Only plain characters survive, so the JSON stays one line.
+task=$(grep -m1 '^Task: ' "$brief" | sed 's/^Task: //' | tr -cd 'A-Za-z0-9.-' || true)
+if [[ -n $task ]]; then
+  export CF_AIG_METADATA="{\"task\":\"$task\",\"role\":\"build\",\"runner\":\"hand\"}"
+else
+  export CF_AIG_METADATA='{"role":"build","runner":"hand"}'
+fi
 cd "$ws"
 export XDG_DATA_HOME="$ws/.scratch/xdg-data"
 case $which in

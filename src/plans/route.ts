@@ -12,6 +12,13 @@
 // family, so one model is never the whole plan when others are as good.
 // Reviewers spread the same way. A better score still wins outright.
 //
+// Reviewers are ordered first by their precision on blocking findings
+// (src/models/precision.ts) when the caller gives it, and only among those
+// that already qualify: another family than the builder, offered, available
+// and allowed. A reviewer with too few judged findings orders as neutral, so
+// precision moves only a reviewer whose findings the owner has judged often
+// enough; between equal precision terms the rank and the spread decide.
+//
 // The offers live runners made bind the routing twice over. A model no live
 // runner offers cannot build or review at all, because no runner could
 // claim its dispatch (offeredActors in src/dispatch/rules.ts, t246); a
@@ -28,6 +35,7 @@ import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
+import { byPrecision, precisionLine, precisionOf, precisionTerm, type PrecisionRecord } from "../models/precision.ts";
 import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { measureText, stalledText, type SpeedRecord } from "../models/speed.ts";
 import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
@@ -51,9 +59,10 @@ export interface RouteInput {
   availability?: Readonly<Record<string, Availability>>;
   profiles?: readonly ModelProfile[];     // the registry's evidence and context windows; MODEL_PROFILES by default
   reliability?: Reliability;              // each model's record across every project; orders equal scores only
+  precision?: PrecisionRecord | null;     // reviewers' precision on blocking findings; orders qualifying reviewers only
   // Each model's speed over its window (src/models/speed.ts), when the plan
   // asks to prefer faster models. Off when absent. It orders only models
-  // the score and the reliability tie-breaker cannot tell apart (paceFor).
+  // the score and the reliability tie-breaker cannot tell apart (pacesFor).
   speed?: SpeedRecord;
   // The offers the runners made as the index recorded them, raw with when
   // each asked, or null when the caller read none. A model no live runner
@@ -330,11 +339,14 @@ class Load {
 // it, when the tied model with the fewest parts of the plan in this role so
 // far builds or reviews, then the fewest in its family, then the first in rank
 // order. The lead reason says what the tie was and why this model took it.
-function spread(ranked: readonly Verdict[], load: Load, role: "builds" | "reviews", ctx: Context): { pick: Verdict; lead: string | null } {
+// Models tie only at an equal pace for the role when the input asks for
+// speed, and `same` narrows the tie further: reviewers tie only at an equal
+// precision term.
+function spread(ranked: readonly Verdict[], load: Load, role: "builds" | "reviews", ctx: Context, same: (a: Verdict, b: Verdict) => boolean = () => true): { pick: Verdict; lead: string | null } {
   const first = ranked[0];
   const key = role === "builds" ? "build" : "review";
   const pace = (v: Verdict) => ctx.paces?.get(v.actor)?.[key] ?? UNKNOWN_PACE;
-  const group = ranked.filter((v) => tied(v.candidate, first.candidate) && pace(v) === pace(first));
+  const group = ranked.filter((v) => tied(v.candidate, first.candidate) && pace(v) === pace(first) && same(v, first));
   if (group.length < 2) return { pick: first, lead: null };
   const pick = group.reduce((best, v) => {
     const a = load.of(best), b = load.of(v);
@@ -387,8 +399,16 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const chosen = choice(builder, [...lead, rank(builder)], "executor", ctx);
 
   const others = verdicts.filter((v) => v !== builder);
-  const reviewers = byPace(others.filter((v) => !v.review.length && crossFamily(v.family, builder.family)), ctx, "review");
-  const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews", ctx) : null;
+  // Precision and speed order only the reviewers that pass every rule; the
+  // filter comes first, so a same-family or unavailable model is never a
+  // reviewer however precise or fast. Speed orders within ties of score and
+  // reliability (byPace), then precision orders the qualifying reviewers,
+  // keeping that order among equal precision terms (byPrecision is stable).
+  const precision = ctx.input.precision ?? null;
+  const namesOfVerdict = (v: Verdict) => { const entry = ctx.entries.get(v.actor)!; return [entry.id, ...entry.aliases].map((id) => `${entry.harness}/${id}`); };
+  const termOf = (v: Verdict) => precisionTerm(precisionOf(precision, namesOfVerdict(v)));
+  const reviewers = byPrecision(byPace(others.filter((v) => !v.review.length && crossFamily(v.family, builder.family)), ctx, "review"), namesOfVerdict, precision);
+  const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
   if (!reviewer) {
     const why = builder.family === "other"
       ? `no reviewer can be of another family than ${builder.actor}, whose family is not recognised from its name`
@@ -397,7 +417,9 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   }
   reviews.add(reviewer.pick);
   const family = `Another family (${reviewer.pick.family}) than the builder's (${builder.family})`;
-  const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; the first such model in rank order`];
+  const first = precision ? "the first such model by review precision, then rank order" : "the first such model in rank order";
+  const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; ${first}`];
+  if (precision) said.push(precisionLine(precisionOf(precision, namesOfVerdict(reviewer.pick)), precision.window));
   // What the runner offers said of the reviewer: the runners that offer it
   // for the review job, or, offers read but no runner live, the warning
   // that the pool stood in for them, since the review cannot be claimed
