@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
 import { Ledger } from "../src/ledger.ts";
@@ -108,14 +109,14 @@ it("a review that clears a rejection notifies through the review route", async (
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
       const L = ledger(state); setup(L, "notify-review"); evidence(L);
-      L.addReview({ itemId: "t1", by: "owner", head: H1, approve: false, note: "Revise", at: new Date().toISOString() });
+      L.addReview({ itemId: "t1", criteria: await L.criteria("t1"), by: "owner", head: H1, approve: false, note: "Revise", at: new Date().toISOString() });
       await submit(L, "notify-review");
       expect(send).not.toHaveBeenCalled();
       const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
       const ARTIFACTS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
       const response = await worker.fetch(new Request("https://atelier.test/api/projects/notify-review/items/t1/review", {
         method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": "owner", "content-type": "application/json" },
-        body: JSON.stringify({ head: H1, approve: true }),
+        body: JSON.stringify({ head: H1, criteria: NO_CRITERIA, approve: true }),
       }), { ...env, LEDGER, ARTIFACTS, ATELIER_TOKEN: "test-token" } as typeof env);
       expect(response.status).toBe(200);
       expect(send).toHaveBeenCalledTimes(1);

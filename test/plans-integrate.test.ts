@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import {
   INTEGRABLE_FROM, integrationBlockers, integrationChecks, LANDED, landed, mergeBaseFor, nextToIntegrate, planGate, rollbackFor, verifyIntegration, verifyRefresh,
@@ -24,7 +25,7 @@ const part = (key: string, change: Partial<Part> = {}): Part => ({
 const integrated = (key: string, mergeCommit: string, change: Partial<Part> = {}): Part =>
   part(key, { state: "integrated", integration: { head: HEAD[key], mergeCommit }, ...change });
 const review = (p: Pick<Part, "id" | "head">, by = REVIEWER, approve = true, head = p.head!): Review => ({
-  itemId: p.id, by, head, approve, note: approve ? "" : "breaks the API", at: T,
+  itemId: p.id, by, head, criteria: NO_CRITERIA, approve, note: approve ? "" : "breaks the API", at: T,
 });
 const commit = (hash: string, ...parents: string[]): LogCommit => ({ hash, parents });
 const pass = (head: string, change: Partial<Evidence> = {}): Evidence => ({
@@ -281,7 +282,7 @@ test("planGate: a plan at its integration head needs no review of its own, thoug
   // recorded the refresh as the integration head: it counts as an integration.
   const R = h("d");
   assert.deepEqual(planGate(gateInput({ policy: guarded, plan: planItem({ head: R }), integrationHead: R, evidence: [pass(R)] })).blockers, []);
-  const rejected: Review = { itemId: "t1", by: REVIEWER, head: MB, approve: false, note: "breaks the API", at: T };
+  const rejected: Review = { itemId: "t1", by: REVIEWER, head: MB, criteria: NO_CRITERIA, approve: false, note: "breaks the API", at: T };
   assert.deepEqual(planGate(gateInput({ policy: guarded, reviews: [...gateInput().reviews, rejected] })).blockers, [`rejected by ${REVIEWER}: breaks the API`]);
 });
 
@@ -293,7 +294,7 @@ test("planGate: a plan at its integration head needs no review of its own, thoug
 test("an ordinary task's gate and a part's integration still compare every contributor's family", () => {
   const guarded = { ...policy, protected: ["src/a/**"] };
   const task = planItem({ pushActors: ["atelier/integrator", BUILDER] });
-  const reviewed: Review = { itemId: "t1", by: REVIEWER, head: MB, approve: true, note: "", at: T };
+  const reviewed: Review = { itemId: "t1", by: REVIEWER, head: MB, criteria: NO_CRITERIA, approve: true, note: "", at: T };
   const g = gate(task, guarded, [pass(MB)], [reviewed]);
   assert.deepEqual([g.ready, g.blockers, g.needsAssessor], [false, [PROTECTED_NEED], true]);
   assert.deepEqual(gate({ ...task, owner: BUILDER, pushActors: [BUILDER] }, guarded, [pass(MB)], [reviewed]).blockers, []);
@@ -315,7 +316,7 @@ test("planGate: a plan with an unrecorded commit still needs its own review wher
   const blocked = planGate(moved);
   assert.equal(blocked.needsAssessor, true);
   assert.deepEqual(blocked.blockers, [PROTECTED_NEED, unrecorded]);
-  const approved: Review = { itemId: "t1", by: "owner", head: X, approve: true, note: "", at: T };
+  const approved: Review = { itemId: "t1", by: "owner", head: X, criteria: NO_CRITERIA, approve: true, note: "", at: T };
   assert.deepEqual(planGate({ ...moved, reviews: [...moved.reviews, approved] }).blockers, [PROTECTED_NEED, unrecorded]);
   assert.deepEqual(planGate({ ...moved, reviews: [...moved.reviews, { ...approved, by: REVIEWER }] }).blockers, [PROTECTED_NEED, unrecorded]);
   const reviewOverride = { head: X, by: "owner", reason: "Each part had its own review from another family", at: T };
@@ -351,4 +352,49 @@ test("mergeBaseFor measures from the part's merged plan head unless the part hol
   assert.equal(mergeBaseFor(null, null, "b".repeat(40), null), "b".repeat(40));
   assert.equal(mergeBaseFor(false, "p".repeat(40), "b".repeat(40), null), "b".repeat(40));
   assert.equal(mergeBaseFor(false, "b".repeat(40), "b".repeat(40), true), "b".repeat(40));
+});
+
+// t326: a part's review is bound to both lists its brief carries, the task's
+// acceptance criteria and the approved plan's acceptance for the part, and
+// integration counts only a review bound to both as they are now.
+test("integration counts a part's review only while it is bound to the task's criteria and the plan's acceptance as they are", () => {
+  const task = ["Errors are reported"], plan = ["It works"];
+  const p = part("a", { accept: task, partAccept: plan });
+  const bound = (criteria: string, approve = true): Review => ({ ...review(p, REVIEWER, approve), criteria });
+  const now = criteriaHash(task, plan);
+  assert.deepEqual(integrationBlockers(p, [p], [bound(now)], policy), []);
+  assert.equal(nextToIntegrate([p], [bound(now)], policy)?.key, "a");
+  // A review of the task's criteria alone, of the plan's alone, or of none
+  // does not let the part in, approval or rejection.
+  for (const old of [criteriaHash(task), criteriaHash([], plan), NO_CRITERIA, criteriaHash(["Errors are reported", "It works"])]) {
+    assert.deepEqual(integrationBlockers(p, [p], [bound(old)], policy), ["part a (t2) has no approval from another model family at aaaaaaaa"]);
+    assert.deepEqual(integrationBlockers(p, [p], [bound(now), bound(old, false)], policy), [], "a rejection of other criteria blocks nothing");
+    assert.equal(nextToIntegrate([p], [bound(old)], policy), null);
+  }
+  // Change either source and the review that let the part in no longer does.
+  for (const changed of [part("a", { accept: ["Errors are logged"], partAccept: plan }), part("a", { accept: task, partAccept: ["It works fast"] })]) {
+    assert.deepEqual(integrationBlockers(changed, [changed], [bound(now)], policy), ["part a (t2) has no approval from another model family at aaaaaaaa"]);
+  }
+  // A withdrawn review, or one recorded before reviews were bound, counts for nothing.
+  assert.deepEqual(integrationBlockers(p, [p], [{ ...bound(now), withdrawn: { at: T, reason: "the acceptance criteria changed" } }], policy).length, 1);
+  const { criteria: _unbound, ...legacy } = bound(now);
+  assert.deepEqual(integrationBlockers(p, [p], [legacy], policy).length, 1);
+  // A bound rejection blocks.
+  assert.match(integrationBlockers(p, [p], [bound(now), { ...bound(now, false), by: "zcode/glm-5.3" }], policy).join(), /rejected at aaaaaaaa by zcode\/glm-5.3/);
+});
+
+test("planGate holds an integrated part to the criteria it was integrated under; an integration from before binding keeps its head's reviews", () => {
+  const task = ["Errors are reported"], plan = ["It works"];
+  const at = criteriaHash(task, plan);
+  const a = integrated("a", MA, { accept: task, partAccept: plan, integration: { head: A, mergeCommit: MA, criteria: at } });
+  const b = integrated("b", MB, { dependsOn: ["a"] });
+  const bound = { ...review(a), criteria: at };
+  assert.equal(planGate(gateInput({ parts: [a, b], reviews: [bound, review(b)] })).ready, true);
+  // Bound to other criteria, or withdrawn, the review does not hold the part.
+  assert.match(planGate(gateInput({ parts: [a, b], reviews: [{ ...bound, criteria: criteriaHash(task) }, review(b)] })).blockers.join(), /part a \(t2\) has no approval/);
+  assert.match(planGate(gateInput({ parts: [a, b], reviews: [{ ...bound, withdrawn: { at: T, reason: "x" } }, review(b)] })).blockers.join(), /part a \(t2\) has no approval/);
+  // b's integration records no criteria: it was let in by the reviews at its
+  // head, recorded before reviews were bound, and they still hold it.
+  const { criteria: _unbound, ...legacy } = review(b);
+  assert.equal(planGate(gateInput({ parts: [a, b], reviews: [bound, legacy] })).ready, true);
 });

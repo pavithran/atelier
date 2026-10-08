@@ -1,4 +1,5 @@
 import {expect,it} from 'vitest';
+import { NO_CRITERIA } from "../src/criteria.ts";
 import {renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
 import type {ProjectRecord} from '../src/ledger';
@@ -34,11 +35,11 @@ it('merged tasks show completion without actionable approval or a misleading clo
 });
 it('acceptance renders only after an independent approval and passing evidence; the owner\'s approval leaves the override instead',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
- const d=detail();d.reviews=[{itemId:'t1',head,approve:true,by:'pavi',note:'approved',at:time}];
+ const d=detail();d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'pavi',note:'approved',at:time}];
  const own=renderItem(project,d,'PAVI',diff);
  expect(own).not.toContain('Accept revision');expect(own).toContain('Waiting for an independent review');expect(own).toContain('Your own approval does not count as that review.');
  expect(own).toContain('Accept without an independent review');expect(own).toContain('action="/ui/example/t1/override"');expect(own).toContain('<textarea name="note" required rows="3" maxlength="500">');
- d.reviews.push({itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'another family',at:time});d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ d.reviews.push({itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'another family',at:time});d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  const independent=renderItem(project,d,'PAVI',diff);
  expect(independent).toContain('Accept revision');expect(independent).not.toContain('Accept without an independent review');
  d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
@@ -61,7 +62,7 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   const d=detail();
   // A revision outside the protected paths, sent back by the owner's own review: approving it is the owner's move.
   d.gate={ready:false,needsAssessor:false,blockers:['rejected by pavi: tighten'],outOfScope:[]};
-  d.reviews=[{itemId:'t1',head,approve:false,by:'pavi',note:'tighten',at:time}];
+  d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'pavi',note:'tighten',at:time}];
   d.evidence[0].changedPaths=['docs/a.md'];
   const html=renderItem(project,d,'PAVI',diff);
   expect(html).toContain('<button class="primary">Approve revision</button>');
@@ -103,7 +104,7 @@ it('approval and acceptance require visible changes at the recorded revision',()
  for(const diff of ['unavailable' as const,null,{head:'c'.repeat(40),base:'b'.repeat(40),files:[],truncated:false}]){
   const html=renderItem(project,d,'PAVI',diff);
   expect(html).not.toContain('Approve revision');expect(html).toContain('Reload this task');
-  d.reviews=[{itemId:'t1',head,approve:true,by:'pavi',note:'approved',at:time}];
+  d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'pavi',note:'approved',at:time}];
   expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
  }
 });
@@ -272,7 +273,7 @@ it('pages call a project by its title and link it by its name',()=>{
 it('the brief renders above the diff, escapes a hostile summary, and tags the verdict',()=>{
  const d=detail();
  d.evidence[0].where='sandbox';
- d.reviews=[{itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'',at:time}];
+ d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'',at:time}];
  d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  d.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'<img src=x onerror=alert(1)> done'}}];
  const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
@@ -313,7 +314,7 @@ it('a project with no required checks says so instead of counting zero of zero',
  expect(html).toContain('This project requires no checks.');expect(html).not.toContain('0 of 0');
 });
 it('banner, brief heading and tag name one ask for a protected revision with a rejection',()=>{
- const d=detail();d.reviews=[{itemId:'t1',head,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
+ const d=detail();d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
  const html=renderItem(project,d,'PAVI',null);
  const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
  expect(html).toContain('Waiting for an independent review');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
@@ -323,7 +324,7 @@ it('a claimed task shows the same ask in its banner and its brief',()=>{
  const failing=detail();failing.item.state='claimed';failing.evidence[0].passed=false;
  const f=renderItem(project,failing,'PAVI',null);
  expect(f).toContain('Checks need attention');expect(brief(f)).toContain('Send t1 back');expect(brief(f)).toContain('<span class="tag bad">send back</span>');
- const rejected=detail();rejected.item.state='claimed';rejected.reviews=[{itemId:'t1',head,approve:false,by:'codex/gpt-5.5',note:'no',at:time}];
+ const rejected=detail();rejected.item.state='claimed';rejected.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'codex/gpt-5.5',note:'no',at:time}];
  const r=renderItem(project,rejected,'PAVI',null);
  expect(r).toContain('Changes requested');expect(brief(r)).toContain('Send t1 back');expect(brief(r)).not.toContain('not been submitted');
  const idle=detail();idle.item.state='claimed';
@@ -1316,9 +1317,9 @@ it('a commit page marks the Log tab current and its crumb names the commit',()=>
 it('each review on the task page says who recorded it (t215)',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.reviews=[
-  {itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'own token',at:time,recordedBy:'claude-code/opus-5.5',proved:true,claimed:false},
-  {itemId:'t1',head,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the owner',at:time,recordedBy:'pavi',proved:false,claimed:false},
-  {itemId:'t1',head,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
+  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'own token',at:time,recordedBy:'claude-code/opus-5.5',proved:true,claimed:false},
+  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the owner',at:time,recordedBy:'pavi',proved:false,claimed:false},
+  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
  ];
  const html=renderItem(project,d,'PAVI',diff);
  expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded with its own token');

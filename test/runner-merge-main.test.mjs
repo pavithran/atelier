@@ -134,9 +134,11 @@ test("a merge-main build merges main into the workspace and leaves the conflicts
   assert.equal(seen.conflicts, "a.txt");
   // Nothing reset the workspace between the merge and the harness.
   assert.ok(order.indexOf("harness") > order.indexOf("mergeMain") && !order.slice(order.indexOf("mergeMain")).includes("reset"));
-  // The brief is the server's, with the conflicting files after it.
+  // The brief is the build role's instructions, then the server's brief with
+  // the conflicting files after it.
   const brief = calls.find((c) => c.brief).brief;
-  assert.ok(brief.startsWith("SERVER BRIEF\n\n## Conflicts in this workspace\n"), brief);
+  assert.ok(brief.startsWith("## Building\n"), brief);
+  assert.ok(brief.includes("SERVER BRIEF\n\n## Conflicts in this workspace\n"), brief);
   assert.ok(brief.includes("left conflicts in this file:\n```\na.txt\n```"), brief);
   // The harness committed the merge unedited: main is a parent, and the message ends with the Agent line.
   const head = git(r.workspace, "rev-parse", "HEAD");
@@ -221,7 +223,7 @@ test("a merge-main task build reads main through its own base token, and its bri
   // The brief keeps the local rules and adds the job's instructions, the
   // findings of any rejecting review, and the conflicting files.
   const brief = calls.find((c) => c.brief).brief;
-  assert.ok(brief.startsWith("Rules:\nStay in scope."), brief);
+  assert.ok(brief.includes("Rules:\nStay in scope."), brief);
   assert.ok(brief.includes("## Resolve the merge of main\n\nMain at " + r.main.slice(0, 8) + " conflicts with this task's work."), brief);
   assert.ok(brief.includes("keeping both sides' behaviour"), brief);
   assert.ok(brief.includes("## Conflicts in this workspace\n"), brief);
