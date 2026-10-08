@@ -99,6 +99,7 @@ test("a plan job claims as the planner, fetches the brief, posts the plan file a
   assert.deepEqual(calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t7", "opencode/glm-5.3"]);
   assert.equal(calls.find((c) => c.brief).brief, "SERVER BRIEF");
   assert.deepEqual(calls.find((c) => c.harness).harness.slice(6, 8), ["--plan-file", planFilePath(join(root, "t7"))]);
+  assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: join(root, "data-home"), CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:studio"}' });
   const posted = calls.find((c) => c.postPlan);
   assert.deepEqual(posted.postPlan, ["atelier", "t7", "opencode/glm-5.3"]);
   assert.equal(posted.text, JSON.stringify(planDocument));

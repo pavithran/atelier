@@ -12,6 +12,20 @@
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
+  // Cloudflare Access in front of the owner's pages (src/access.ts): set all
+  // three, as vars or secrets, and the Worker verifies the Access assertion
+  // on every owner route — /login and its token form among them — against the
+  // keys the team publishes, matching the issuer, the audience and the
+  // owner's email claim. The issuer is the team's URL; the audience is the
+  // Access application's AUD tag; the email is the one person the pages are
+  // for. The application itself needs Bypass policies on /api/*, /showcase,
+  // /how and /live.js, whose bearer tokens and visitors never pass Access
+  // (docs/setup.md says how).
+  //   "vars": {
+  //     "CF_ACCESS_ISS": "https://TEAM.cloudflareaccess.com",
+  //     "CF_ACCESS_AUD": "<the application's AUD tag>",
+  //     "CF_ACCESS_OWNER_EMAIL": "owner@example.com"
+  //   }
   "vars": {
     // The Cloudflare account that holds the AI Gateway and the metrics
     // dataset is the secret CF_ACCOUNT_ID (README, "AI Gateway costs"), so
@@ -24,6 +38,13 @@
   "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "atelier_metrics" }],
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
+  // Large payloads by reference (t284): whole check logs and review diffs are
+  // kept in R2 and named by their key in briefs and the ledger, instead of
+  // carried inline — an 888 KB review diff broke a review on 2026-10-07. The
+  // owner creates the bucket before deploying: npx wrangler r2 bucket create
+  // atelier-large. Where no bucket answers the binding, nothing large is
+  // stored and briefs and the ledger carry what they always did.
+  "r2_buckets": [{ "binding": "LARGE", "bucket_name": "atelier-large" }],
   "durable_objects": {
     "bindings": [
       { "name": "LEDGER", "class_name": "Ledger" },
