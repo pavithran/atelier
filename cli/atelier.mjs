@@ -2133,7 +2133,7 @@ const commands = {
     // Keep them outside the server brief's five-line evidence limit.
     for (const event of d.events ?? []) {
       if (event.itemId !== id || !["item.reverts", "item.revert_requested"].includes(event.kind)) continue;
-      const { itemId, mergeCommit } = event.data;
+      const { itemId, mergeCommit } = event.data ?? {};
       if (!/^t[1-9]\d*$/.test(itemId ?? "") || !/^[a-f0-9]{40,64}$/.test(mergeCommit ?? "")) continue;
       const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
       brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);

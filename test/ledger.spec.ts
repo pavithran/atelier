@@ -89,6 +89,20 @@ it("a revert links both records and must earn fresh checks and independent revie
   await refusal(L.accept("t2", "owner"), "not_ready", /./);
   await L.addReview(review("t2", B, H0, true), undefined, true);
   expect(await L.accept("t2", "owner")).toMatchObject({ state: "accepted", acceptedHead: H0 });
+  await L.merged("t2", "owner", "c".repeat(40), true);
+  // A request is history, not a claim about today's tree. A repeated request
+  // still uses the original merge; the CLI reports an already-undone tree.
+  const previousEvents = await L.events("t1");
+  const repeated = await L.newItem("", [], A, { revertOf: "t1" });
+  expect(repeated).toMatchObject({ id: "t3", state: "open", head: null, revert: { itemId: "t1", mergeCommit: H2 } });
+  expect(await L.item("t1")).toEqual(before);
+  expect(await L.events("t1")).toEqual(expect.arrayContaining([
+    ...previousEvents,
+    expect.objectContaining({ kind: "item.revert_requested", data: { itemId: "t3", mergeCommit: H2 } }),
+  ]));
+  expect(await L.events("t3")).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "item.reverts", data: { itemId: "t1", mergeCommit: H2 } }),
+  ]));
 });
 
 it("revert refuses missing merge records and plan parts without creating a task", async () => {

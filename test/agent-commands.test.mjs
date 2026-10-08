@@ -138,6 +138,11 @@ test("show displays both ledger revert links without claiming the undo has merge
   const events = [
     { itemId: "t1", kind: "item.revert_requested", data: { itemId: "t2", mergeCommit } },
     { itemId: "t2", kind: "item.reverts", data: { itemId: "t1", mergeCommit } },
+    // Incomplete or invalid historical records must not hide valid links.
+    { itemId: "t1", kind: "item.revert_requested" },
+    { itemId: "t2", kind: "item.reverts", data: null },
+    { itemId: "t1", kind: "item.revert_requested", data: { itemId: "../other", mergeCommit } },
+    { itemId: "t2", kind: "item.reverts", data: { itemId: "t3", mergeCommit: "invalid" } },
   ];
   // Preloaded fetch exercises the real show command without a listening server.
   const root = mkdtempSync(join(process.cwd(), ".show-test-"));
