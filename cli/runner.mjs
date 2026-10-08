@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
-import { reviewBrief } from "../src/review/brief.ts";
+import { reviewBrief, BRIEF_LIMITS } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -651,8 +651,18 @@ export async function runReview(assignment, config, name, io) {
       await release("the review request no longer needs an answer");
       return { phase: "failed", reason: "the review request no longer needs an answer", taskFailure: true };
     }
+    // A diff too large for the brief's own limit is not carried inline (t284):
+    // the claim stored the change in R2 and named it by reference (diffRef),
+    // so the brief says where the whole diff is instead of holding a cut of
+    // it, and the reviewer reads it in the clone's .scratch/ file as ever.
+    // An older server that stored no reference keeps the inline cut, and a
+    // small diff is carried inline as it always was.
+    const large = diff.length > BRIEF_LIMITS.diff;
+    if (large && claimed.diffRef) io.log(`review diff kept in R2 by reference: ${claimed.diffRef.key} (${claimed.diffRef.bytes} bytes)`);
     const text = reviewBrief({
-      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan, diff, ownDiff, owner: claimed.owner,
+      need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan,
+      diff: large && claimed.diffRef ? null : diff, diffRef: large ? claimed.diffRef ?? null : null,
+      ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
     });
     brief = await io.brief(workspace, text);
