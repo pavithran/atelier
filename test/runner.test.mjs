@@ -589,7 +589,7 @@ async function gone(pid, ms = 2000) {
 
 const GRACE_MS = 4000, PROMPT_MS = 3000;
 
-test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 30_000 }, async (t) => {
+test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-group-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const pids = [];
@@ -605,8 +605,26 @@ test("a child's background processes end with it, whether it succeeded, failed o
       const written = () => { try { return fs.readFileSync(${JSON.stringify(file)}, 'utf8'); } catch { return ''; } };
       while (!written()) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       ${ending === "deadline" ? UNTIL_TEST_EXITS : `process.exit(${ending.slice(5)})`}`;
+    // A deadline a loaded machine could reach before the two node processes
+    // are up would kill the group ahead of the pid file, so its budget is
+    // the four seconds two busy starts take (as the test below times it)
+    // with room to spare; the other endings leave the leader to end itself.
+    const timeoutMs = ending === "deadline" ? 5000 : 20_000;
     const start = Date.now();
-    const result = await execute([process.execPath, "-e", leader], { capture: true, timeoutMs: ending === "deadline" ? 1000 : 20_000, graceMs: GRACE_MS });
+    let settled = false;
+    const run = execute([process.execPath, "-e", leader], { capture: true, timeoutMs, graceMs: GRACE_MS })
+      .finally(() => { settled = true; });
+    // The pid file appears once both processes are up, moments before the
+    // leader ends; the moment it is seen is where the timings below start,
+    // so the machine's startup stretch stays out of them (t298: measured
+    // from the spawn instead, a machine running several suites at once
+    // pushed the two starts past the prompt bound and failed this test).
+    let readyAt = 0;
+    while (!settled && !readyAt) {
+      if (existsSync(file)) readyAt = Date.now();
+      else await new Promise((ok) => setTimeout(ok, 10));
+    }
+    const result = await run;
     const took = Date.now() - start;
     const pid = Number(readFileSync(file, "utf8"));
     pids.push(pid);
@@ -616,9 +634,11 @@ test("a child's background processes end with it, whether it succeeded, failed o
     assert.ok(await gone(pid), `the background child is gone once execute returns: ${label}`);
     // A group that ends at SIGTERM ends the wait at once; one that ignores it
     // waits out the grace period. The grace is long and the bound for a
-    // prompt end sits well below it, so a busy machine, where starting the two
-    // node processes alone can take a second, cannot blur the two.
-    assert.ok(ignore ? took >= GRACE_MS : took < (ending === "deadline" ? 1000 : 0) + PROMPT_MS, `${label}: ${took} ms`);
+    // prompt end sits well below it, so the two cannot blur. Only a deadline
+    // is measured from the spawn, its timer being anchored there.
+    if (ignore) assert.ok(took >= GRACE_MS, `${label}: ${took} ms`);
+    else if (ending === "deadline") assert.ok(took < timeoutMs + PROMPT_MS, `${label}: ${took} ms`);
+    else assert.ok(took - (readyAt - start) < PROMPT_MS, `${label}: ${took - (readyAt - start)} ms once the child was up`);
   }
 });
 
