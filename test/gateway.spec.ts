@@ -36,9 +36,9 @@ it("the Models page shows the calls per task the runners' cf-aig-metadata names,
   const view = await readGateway(ON, NOW, answer([
     { count: 3, dimensions: { model: "deepseek-flash", provider: "deepseek" }, sum: { cost: 0.03, uncachedTokensIn: 2500, cachedTokensIn: 500, uncachedTokensOut: 300, cachedTokensOut: 0, erroredRequests: 1 }, quantiles: { durationMsP50: 1200, durationMsP90: 2400 } },
   ], [
-    { count: 3, dimensions: { metadataKey: "task", metadataValue: "t278" }, sum: { cost: 0.03, uncachedTokensIn: 2500, cachedTokensIn: 500, uncachedTokensOut: 300, cachedTokensOut: 0, erroredRequests: 1 } },
-    { count: 3, dimensions: { metadataKey: "role", metadataValue: "build" }, sum: { cost: 0.03, uncachedTokensIn: 2500, cachedTokensIn: 500, uncachedTokensOut: 300, cachedTokensOut: 0, erroredRequests: 1 } },
-    { count: "1", dimensions: { metadataKey: "task", metadataValue: "<i>t9</i>" }, sum: { cost: 0, uncachedTokensIn: "1000", uncachedTokensOut: 100, erroredRequests: 0 } },
+    { count: 3, dimensions: { task: "t278" }, sum: { cost: 0.03, uncachedTokensIn: 2500, cachedTokensIn: 500, uncachedTokensOut: 300, cachedTokensOut: 0, erroredRequests: 1 } },
+    { count: 3, dimensions: { task: "" }, sum: { cost: 0.03, uncachedTokensIn: 2500, cachedTokensIn: 500, uncachedTokensOut: 300, cachedTokensOut: 0, erroredRequests: 1 } },
+    { count: "1", dimensions: { task: "<i>t9</i>" }, sum: { cost: 0, uncachedTokensIn: "1000", uncachedTokensOut: 100, erroredRequests: 0 } },
   ]));
   expect(view.tasks).toEqual([
     { task: "t278", calls: 3, failures: 1, tokensIn: 3000, tokensOut: 300, cost: 0.03 },
