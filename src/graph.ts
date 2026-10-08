@@ -204,7 +204,9 @@ export function buildStory(project: string, items: Item[], events: LedgerEvent[]
       case "item.claimed":
         t.claims++;
         if (!th) {
-          const label = R ? (opts.anon ? workKind(item?.title ?? "") : withoutAddresses(item?.title ?? id)) : item?.title ?? id;
+          // The kind of work is read from the title and the brief, the words
+          // the title held before the two were apart; neither is drawn.
+          const label = R ? (opts.anon ? workKind(item ? `${item.title} ${item.brief ?? ""}` : "") : withoutAddresses(item?.title ?? id)) : item?.title ?? id;
           th = { id, title: label, state: item?.state ?? "claimed", start: pos, end: null, ending: null, holds: [], beads: [] };
           threads.set(id, th);
         }

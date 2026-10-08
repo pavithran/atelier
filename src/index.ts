@@ -8,7 +8,7 @@ import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, type Evidence, type Item } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -1366,7 +1366,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit":
       requireOwner(env, actor);
-      return json(await L.editItem(id, actor, itemFields(body)));
+      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }));
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
       return json(await L.block(id, actor, body.reason, !!c.token));
@@ -2059,7 +2059,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const note = String(form.get("note") ?? "");
     const owner = ownerActor(env);
     if (id === "new" && !verb) {
-      const item = await L.newItem(String(form.get("title") ?? "").slice(0,300), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner);
+      // A long title with no brief becomes the brief, with a short title derived from it (itemText).
+      const brief = String(form.get("brief") ?? "");
+      const item = await L.newItem(String(form.get("title") ?? ""), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner, brief.trim() ? { brief } : {});
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
     }
     // The Ship tab's protected-action forms: approve at the head it showed, or withdraw.
