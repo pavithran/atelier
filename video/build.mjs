@@ -25,7 +25,7 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const ONLY = opt("--only");
 const PREVIEW = flag("--preview");
 const WORKERS = Number(opt("--workers") ?? 8);
-const NAME = opt("--name") ?? "atelier-v4";
+const NAME = opt("--name") ?? "atelier-v5";
 
 // ── the script ─────────────────────────────────────────────────────────────
 
@@ -104,7 +104,7 @@ function captionCue(text, words, dur) {
 // scenes hold longer after their narration to show a real page.
 const LEAD = { cold: 11.0, contents: 0.6, default: 0.8 };
 const GAP = 0.5;
-const TAIL = { default: 1.2, cold: 2.0, contents: 1.2, why: 2.0, cast: 3.0, gate: 6.0, plan: 4.8, metrics: 2.0, cloud: 1.8, close: 4.0 };
+const TAIL = { default: 1.2, cold: 2.0, contents: 1.2, why: 1.7, cast: 2.2, gate: 4.0, plan: 3.6, metrics: 1.6, cloud: 1.8, close: 3.4 };
 
 async function timeline(scenes) {
   let t = 0;

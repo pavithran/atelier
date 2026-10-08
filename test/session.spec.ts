@@ -65,7 +65,7 @@ it("sign-out ends the session at once, from the same origin only", async () => {
   expect((await get("/decisions", cookie)).status).toBe(200);
   const out = await logout(cookie, "https://atelier.test");
   expect(out.status).toBe(303);
-  expect(out.headers.get("location")).toBe("/login");
+  expect(out.headers.get("location")).toBe("/");
   expect(out.headers.get("set-cookie")).toBe("atelier=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
   const after = await get("/projects", cookie);
   expect(after.status).toBe(303);
