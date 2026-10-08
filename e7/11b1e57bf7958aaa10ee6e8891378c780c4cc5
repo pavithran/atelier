@@ -1,0 +1,47 @@
+atelier atelier/t318 "Showcase consistency"
+accepted head 86a7b0b91dae2d29dc8d53fbf2ac3e49c854190e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/haiku-5.5 2026-10-08T22:00:21.125Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/haiku-5.5 2026-10-08T22:00:24.077Z
+REVIEW approve by antigravity/gemini-3.1-pro at 86a7b0b91dae2d29dc8d53fbf2ac3e49c854190e, recorded by pavi with the owner token, answering a claimed review request
+REVIEW approve by opencode/glm-5.3 at 86a7b0b91dae2d29dc8d53fbf2ac3e49c854190e, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T15:08:10.001Z pavi item.created
+2026-10-08T18:53:38.896Z pavi item.dispatched
+2026-10-08T20:12:00.483Z claude-code/haiku-5.5 item.claimed
+2026-10-08T20:12:05.795Z claude-code/haiku-5.5 fork.created
+2026-10-08T20:23:59.804Z claude-code/haiku-5.5 push.observed
+2026-10-08T20:27:29.086Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T20:27:31.601Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T20:27:32.190Z claude-code/haiku-5.5 item.submitted
+2026-10-08T21:15:54.730Z pavi land.lease
+2026-10-08T21:15:55.862Z pavi land.merge
+2026-10-08T21:16:08.626Z pavi land.regenerate
+2026-10-08T21:16:10.979Z pavi land.push
+2026-10-08T21:19:54.136Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T21:19:56.664Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T21:19:57.141Z pavi land.check
+2026-10-08T21:19:58.091Z pavi review.requested
+2026-10-08T21:19:58.091Z pavi review.requested
+2026-10-08T21:20:21.152Z opencode/glm-5.3 review.claimed
+2026-10-08T21:20:57.983Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T21:26:12.975Z antigravity/gemini-3.1-pro review.rejected
+2026-10-08T21:26:16.642Z pavi land.review
+2026-10-08T21:26:28.743Z opencode/glm-5.3 review.approved
+2026-10-08T21:26:42.176Z pavi review.finding
+2026-10-08T21:26:42.637Z pavi item.edited
+2026-10-08T21:55:31.743Z pavi land.lease
+2026-10-08T21:55:36.309Z pavi land.merge
+2026-10-08T21:55:48.347Z pavi land.regenerate
+2026-10-08T21:55:52.402Z claude-code/haiku-5.5 push.observed
+2026-10-08T21:55:52.657Z pavi land.push
+2026-10-08T22:00:21.730Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T22:00:24.306Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T22:00:24.895Z pavi land.check
+2026-10-08T22:00:25.917Z pavi review.requested
+2026-10-08T22:00:25.917Z pavi review.requested
+2026-10-08T22:00:38.691Z opencode/glm-5.3 review.claimed
+2026-10-08T22:00:41.270Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T22:02:29.412Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T22:03:06.782Z opencode/glm-5.3 review.approved
+2026-10-08T22:03:12.656Z pavi land.review
+2026-10-08T22:03:13.795Z pavi item.accepted
+2026-10-08T22:03:13.851Z pavi land.accept
