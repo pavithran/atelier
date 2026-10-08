@@ -1,0 +1,24 @@
+atelier atelier/t300 "A review request that names an old head is never replaced: t282's request was for 92b71b65, its landing then merged main and pushed 6ac333e8, and every review runner that claimed the request failed with stale_head and put it back, so it looped and the landing waited out its 60 minutes twice (2026-10-08). When a task's head moves (push, submit, land's merge of main), close its open review request for the old head and open one for the new head, or have review-claim answer the current head"
+accepted head 0efb0bf91224d3f833ed17bd494461c822056633
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T04:58:52.089Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T04:58:54.805Z
+REVIEW approve by antigravity/gemini-3.1-pro at 0efb0bf91224d3f833ed17bd494461c822056633, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T02:57:54.533Z pavi item.created
+2026-10-08T02:58:00.518Z claude-code/opus-5.5 item.claimed
+2026-10-08T02:58:07.017Z claude-code/opus-5.5 fork.created
+2026-10-08T04:56:09.658Z pavi land.lease
+2026-10-08T04:56:12.162Z pavi land.merge
+2026-10-08T04:56:20.022Z pavi land.regenerate
+2026-10-08T04:56:24.234Z claude-code/opus-5.5 push.observed
+2026-10-08T04:56:24.415Z pavi land.push
+2026-10-08T04:58:52.743Z claude-code/opus-5.5 evidence.observed
+2026-10-08T04:58:54.922Z claude-code/opus-5.5 evidence.observed
+2026-10-08T04:58:55.326Z pavi land.check
+2026-10-08T04:58:55.668Z claude-code/opus-5.5 item.submitted
+2026-10-08T04:58:55.872Z pavi land.submit
+2026-10-08T04:58:55.976Z pavi review.requested
+2026-10-08T04:59:02.286Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T05:03:34.250Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T05:03:39.113Z pavi land.review
+2026-10-08T05:03:39.686Z pavi item.accepted
+2026-10-08T05:03:39.802Z pavi land.accept
