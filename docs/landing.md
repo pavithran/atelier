@@ -166,8 +166,13 @@ The steps in between:
 Each step, its duration and what it settled are recorded on the task as
 `land.*` events (the commits that came from main, the files a conflict
 stopped on and who resolved it, the reviewer and the verdict), so the cost
-of integrating a task can be read from the ledger. `--dry-run` prints the
-steps and the refusals without changing anything.
+of integrating a task can be read from the ledger. A record is capped at
+4,000 characters of JSON: a merge that brings more commits from main than
+that (t293's landing once brought 103, and its merge step was refused
+whole) is recorded as the first commit hashes with the count of all of
+them beside it (`fromMainCount`); the hashes themselves are in the merge,
+which names main's head. `--dry-run` prints the steps and the refusals
+without changing anything.
 
 ## Landing through a Cloudflare Workflow
 
