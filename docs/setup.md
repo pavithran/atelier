@@ -254,6 +254,53 @@ Queue provisioning, subscription creation, and deployment are release actions;
 adding the consumer handler alone does not activate event delivery. See
 [Artifacts event subscriptions](https://developers.cloudflare.com/artifacts/guides/event-subscriptions/).
 
+## The check container's git
+
+`atelier check --sandbox` and the landing Workflow run the checks in a
+container started from the Cloudflare-managed `cloudflare/debian-trixie`
+image (Node 24 on Debian Trixie slim). That image has no git, and on
+2026-10-08 every test that made a repository failed with
+`spawnSync git ENOENT`.
+
+The Containers documentation offers no managed image with git, and an image
+of one's own needs Docker on the deploying machine or Workers Builds: with
+the `durable_object` scheduling policy CheckRunner uses, an image is either a
+Dockerfile that `wrangler deploy` builds, or a digest-pinned image already
+pushed to the Cloudflare registry; Docker Hub images, the Sandbox SDK's
+`docker.io/cloudflare/sandbox` among them, cannot be started directly
+([Image management](https://developers.cloudflare.com/containers/guides/image-management/)).
+
+So the runner supplies git itself (`src/sandbox/tools.ts`). Before the
+checked tree goes in, the Worker fetches Debian trixie's own `git` package
+for amd64, pinned in the source by version, size and sha256, refuses any
+bytes that do not match, and streams it into the container, which unpacks it
+with `dpkg-deb -x` and runs `git --version`. The container's egress stays the
+npm registry alone and it holds no credential; the Worker, not the
+container, reaches Debian. The package is fetched from deb.debian.org, or
+from snapshot.debian.org once the pool drops that version, and kept in the
+`atelier-large` R2 bucket under its sha256 when the bucket exists, so later
+runs reach neither. When no verified copy can be had, the checks still run
+and each check's output begins `[atelier] this container has no git:` and
+the reason; the run's state (`git`) holds git's version line or that reason.
+
+Deploying needs nothing beyond `npm run deploy`: no image is built or pushed
+and no Docker is needed. Only a production check run proves it: run
+`atelier check ID --sandbox` on a task of the atelier project and see
+`npm test` pass, with no `spawnSync git ENOENT` and no
+`this container has no git` line.
+
+To move to a newer git, take the size and sha256 from
+`https://packages.debian.org/trixie/amd64/git/download` and the sha1 for the
+snapshot URL from `https://snapshot.debian.org/mr/binary/git/VERSION/binfiles`,
+and change `GIT_DEB` in `src/sandbox/tools.ts` as one.
+
+If the owner later prefers an image with git built in, the documented way is
+a named image: a Dockerfile of `FROM node:24-trixie-slim` plus
+`apt-get install --no-install-recommends git`, declared under `images` in the
+`containers` entry and started with `this.ctx.container.images.NAME`. Then
+every `wrangler deploy` needs Docker running, or the deploy must move to
+Workers Builds, which builds Dockerfiles itself.
+
 ## Local development
 
 `npm run dev` serves the Worker on localhost. The Artifacts binding always

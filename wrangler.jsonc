@@ -68,7 +68,12 @@
   // default limit of 10,000.
   "workflows": [{ "name": "landing", "binding": "LANDING_WORKFLOW", "class_name": "LandingWorkflow" }],
   // One container per check run, started from the Cloudflare-managed
-  // cloudflare/debian-trixie image (Node 24), so no image is built or pushed.
+  // cloudflare/debian-trixie image (Node 24), so no image is built or pushed
+  // and deploying needs no Docker. The image has no git: the runner fetches
+  // Debian's git package, pinned by sha256, and unpacks it into each
+  // container offline (src/sandbox/tools.ts; docs/setup.md, "The check
+  // container's git"). Declaring an "images" entry here would make every
+  // deploy need Docker or Workers Builds.
   "containers": [{ "class_name": "CheckRunner", "scheduling_policy": "durable_object" }],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Ledger"] },
