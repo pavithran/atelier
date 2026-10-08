@@ -504,6 +504,11 @@ export class Ledger extends DurableObject<Env> {
     // The criteria binding (src/criteria.ts) the request asked about when it
     // was made, and the one its claim captured for the reviewer's brief.
     if (!requestColumns.includes("criteria")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN criteria TEXT`);
+    // Set on every request of an item, whatever its state, when the item's
+    // criteria change: it asked about criteria the item has left, so it never
+    // again counts as already asked, even if the criteria return to the ones
+    // it recorded, or it recorded none (made before requests did).
+    if (!requestColumns.includes("superseded")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN superseded INTEGER`);
     this.backfillReviewProvenance();
     this.backfillPartAcceptance();
     // A deploy can change the tick's logic, and a plan waiting on nothing
@@ -971,9 +976,11 @@ export class Ledger extends DurableObject<Env> {
     const to = criteriaOf(this.item(id));
     const reason = "the acceptance criteria changed";
     let reviews = 0;
+    // A review recorded before reviews were bound judged criteria the task
+    // had then, never the new ones, so it is withdrawn too (and left unstamped).
     for (const row of this.sql.exec(`SELECT id, json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray()) {
       const r = JSON.parse(row.json as string) as Review;
-      if (r.withdrawn || r.criteria !== from) continue;
+      if (r.withdrawn || (r.criteria !== undefined && r.criteria !== from)) continue;
       this.sql.exec(`UPDATE reviews SET json = ? WHERE id = ?`, JSON.stringify({ ...r, withdrawn: { at, reason } }), row.id);
       reviews++;
     }
@@ -983,6 +990,7 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
       this.log(id, actor, "review.withdrawn", { head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null, reason, ...(r.tier === 1 ? { tier: true } : {}) }, at);
     }
+    this.sql.exec(`UPDATE review_requests SET superseded = 1 WHERE item = ?`, id);
     const accepted = before.state === "accepted";
     const overridden = !!before.reviewOverride;
     if (accepted || overridden) {
@@ -3414,10 +3422,12 @@ export class Ledger extends DurableObject<Env> {
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
     if (this.gateIsTier(item, need, gateReviewer)) return;
     // A request or review for criteria the item no longer has does not count:
-    // the tier is asked again for the new ones. A request made before
-    // requests recorded their criteria counts, so none is asked twice.
+    // the tier is asked again for the new ones. A request superseded by a
+    // change of criteria never counts, even when the criteria return to the
+    // ones it recorded; one made before requests recorded their criteria
+    // counts until the criteria first change, so none is asked twice.
     const criteria = criteriaOf(item);
-    if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1 AND (criteria IS NULL OR criteria = ?)`, item.id, need.head, criteria).toArray().length) return;
+    if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1 AND superseded IS NULL AND (criteria IS NULL OR criteria = ?)`, item.id, need.head, criteria).toArray().length) return;
     if (this.reviewsFor(item.id).some((r) => r.head === need.head && !r.withdrawn && (r.criteria === undefined || r.criteria === criteria) && (r.tier || r.topTier))) return;
     const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
@@ -3470,16 +3480,20 @@ export class Ledger extends DurableObject<Env> {
   // beside it as askTierReview asks one. A plan's part is left to its tick,
   // which asks the routed reviewer. Nothing is asked while the need is not
   // there yet (checks pending at the new head, say); submit, each piece of
-  // evidence and a review claim ask again. Nothing is carried when the
-  // newest gate request is not one the head moved past, so it is carried
-  // once per move, or when its reviewer may no longer review: a contributor
+  // evidence and a review claim ask again. A request a change of the
+  // criteria withdrew is carried the same way, at the same head. Nothing is
+  // carried when the newest gate request is not one the head moved past or
+  // the criteria change withdrew, so it is carried once per move, or when its reviewer may no longer review: a contributor
   // never, and for a review the gate must count (not `wanted`), only a model
   // of another family than every contributor.
   private reaskReview(itemId: string, at: string): void {
     const item = this.item(itemId);
     if (item.kind === "part" || item.state !== "submitted" || !item.head) return;
-    const last = this.sql.exec(`SELECT head, dispatch, state, wanted, moved FROM review_requests WHERE item = ? AND tier IS NULL ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
-    if (!last || last.state !== "withdrawn" || last.moved !== 1 || last.head === item.head) return;
+    const last = this.sql.exec(`SELECT head, dispatch, state, wanted, moved, superseded FROM review_requests WHERE item = ? AND tier IS NULL ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
+    // A request a change of criteria withdrew is carried too, at the same
+    // head, once the gate needs the review of the new criteria.
+    const carry = last?.state === "withdrawn" && ((last.moved === 1 && last.head !== item.head) || last.superseded === 1);
+    if (!carry) return;
     const d = JSON.parse(last.dispatch as string) as Dispatch;
     if (!d.agent || !d.model) return;
     const reviewer = `${d.agent}/${d.model}`;
