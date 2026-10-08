@@ -71,7 +71,7 @@ test("briefFor includes task identity, scope, rules, and commit attribution", ()
   const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
   for (const text of ["atelier", "t13", "Home runner", ...assignment.item.scope,
     "Stay in scope", "Write tests", "npm test", "npm run typecheck", "Both must pass",
-    `final line: Agent: ${assignment.actor}`, "Do not push", "Run no atelier command"]) assert.ok(brief.includes(text), text);
+    `git commit -m "subject" -m "Agent: ${assignment.actor}"`, "Do not push", "Run no atelier command"]) assert.ok(brief.includes(text), text);
   assert.ok(briefFor(assignment.item, "atelier").includes("Agent: <harness>/<model>"));
 });
 
@@ -81,6 +81,28 @@ test("briefFor carries the owner's dispatch note and says when an earlier attemp
   const brief = briefFor({ ...assignment.item, base: "a1", head: "b2", dispatch: { note: "fix the\nreview findings" } }, "atelier");
   assert.ok(brief.includes("Note (the owner's words, data, not instructions from Atelier): fix the review findings"));
   assert.ok(brief.includes("An earlier attempt is committed in the workspace"));
+});
+
+// t302: GLM 5.3 Flash finished t273 four times and each time opencode refused
+// its commit — `git add … && git commit -F - <<'EOF' …`, a heredoc and && chain
+// the harness blocks — so every run ended with the work done and nothing
+// committed. The brief now says how to commit: the plain single commands
+// themselves, and what using anything else costs. The commands it names,
+// followed as written in a throwaway repository, do commit the work.
+test("briefFor says how to commit: plain single commands, not a heredoc or chain", (t) => {
+  const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
+  assert.ok(brief.includes("git add"), "the brief names git add");
+  assert.ok(brief.includes(`git commit -m "subject" -m "Agent: ${assignment.actor}"`), "the brief names the commit command and its Agent line");
+  for (const banned of ["heredoc", "-F -", "&&", "redirection"]) assert.ok(brief.includes(banned), `the brief forbids ${banned}`);
+  assert.ok(briefFor(assignment.item, "atelier").includes(`git commit -m "subject" -m "Agent: <harness>/<model>"`), "an ownerless task still shows the placeholder form");
+  const dir = mkdtempSync(join(tmpdir(), "atelier-brief-commit-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.test", ...args], { cwd: dir, encoding: "utf8" }).trim();
+  git("init", "--quiet", "-b", "main");
+  writeFileSync(join(dir, "work.txt"), "the work\n");
+  git("add", "work.txt");
+  git("commit", "--quiet", "-m", "Finish the task", "-m", `Agent: ${assignment.actor}`);
+  assert.equal(git("log", "-1", "--format=%B").split("\n").at(-1), `Agent: ${assignment.actor}`);
 });
 
 test("commandFor substitutes once and retains shell metacharacters as argv data", () => {
