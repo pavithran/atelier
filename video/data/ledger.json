@@ -1,13 +1,13 @@
 {
  "facts": {
-  "cutoff": "2026-10-08T01:30:00.000Z",
+  "cutoff": "2026-10-08T02:20:00.000Z",
   "tasks": 299,
   "firstTaskAt": "2026-10-03T22:29:33.467Z",
   "states": {
    "abandoned": 60,
-   "merged": 212,
-   "open": 11,
-   "claimed": 8,
+   "merged": 215,
+   "open": 10,
+   "claimed": 6,
    "blocked": 4,
    "submitted": 4
   },
@@ -17,19 +17,19 @@
    "2026-10-05": 37,
    "2026-10-06": 77,
    "2026-10-07": 70,
-   "2026-10-08": 2
+   "2026-10-08": 5
   },
   "mergedBuilderFamilies": {
-   "zai": 56,
-   "anthropic": 146,
+   "zai": 58,
+   "anthropic": 147,
    "openai": 15,
    "deepseek": 13,
    "google": 4,
    "xiaomi": 1
   },
   "mergedBuilderModels": {
-   "glm-5.3": 49,
-   "opus-5.5": 105,
+   "glm-5.3": 51,
+   "opus-5.5": 106,
    "gpt-5.5": 1,
    "gpt-6": 3,
    "gpt-6-astra": 11,
@@ -44,7 +44,7 @@
    "gpt-6.1-sol": 2,
    "gemini-3.1-pro": 2
   },
-  "modelReviews": 312,
+  "modelReviews": 315,
   "modelRejections": 93,
   "reviewsByModel": {
    "opus-5.5": 20,
@@ -52,7 +52,7 @@
    "gpt-6-astra": 40,
    "gemini-3.1-pro-preview": 7,
    "sonnet-5.5": 6,
-   "gemini-3.1-pro": 182,
+   "gemini-3.1-pro": 185,
    "fable-5.1": 5,
    "gpt-oss-120b": 1
   },
@@ -68,12 +68,12 @@
    "anthropic": 31,
    "zai": 51,
    "openai": 41,
-   "google": 189
+   "google": 192
   },
   "findings": 196,
   "blockingFindings": 60,
-  "mergedWithCrossFamilyApprovalAtFinalHead": 164,
-  "observedChecks": 1024,
+  "mergedWithCrossFamilyApprovalAtFinalHead": 167,
+  "observedChecks": 1032,
   "handoffs": 15,
   "findingVerdicts": {
    "refuted": 15,
@@ -85,7 +85,7 @@
    "at": "2026-10-06T22:11:16.254Z"
   },
   "mergesSinceThenAllCross": true,
-  "mergesSinceThen": 76
+  "mergesSinceThen": 79
  },
  "stories": {
   "t278": {
@@ -2593,6 +2593,92 @@
    "state": "claimed"
   }
  },
+ "fleet": [
+  {
+   "id": "deepseek-v4-pro",
+   "harness": "opencode",
+   "family": "deepseek",
+   "provider": "deepseek",
+   "addedAt": "2026-10-05T21:34:15.089Z"
+  },
+  {
+   "id": "fable-5.1",
+   "harness": "claude-code",
+   "family": "anthropic",
+   "provider": "subscription",
+   "addedAt": "2026-10-06T22:02:53.869Z"
+  },
+  {
+   "id": "gemini-3.1-pro",
+   "harness": "antigravity",
+   "family": "google",
+   "provider": "subscription",
+   "addedAt": "2026-10-05T21:25:48.667Z"
+  },
+  {
+   "id": "glm-5.3",
+   "harness": "opencode",
+   "family": "zai",
+   "provider": "subscription",
+   "addedAt": "2026-10-05T21:25:49.458Z"
+  },
+  {
+   "id": "glm-5.3-flash",
+   "harness": "opencode",
+   "family": "zai",
+   "provider": "ai-studio",
+   "addedAt": "2026-10-08T01:53:29.914Z"
+  },
+  {
+   "id": "gpt-6.1-sol",
+   "harness": "codex",
+   "family": "openai",
+   "provider": "subscription",
+   "addedAt": "2026-10-06T22:02:54.249Z"
+  },
+  {
+   "id": "gpt-oss-120b",
+   "harness": "antigravity",
+   "family": "openai",
+   "provider": "subscription",
+   "addedAt": "2026-10-06T21:53:43.186Z"
+  },
+  {
+   "id": "kimi-k2.7-code",
+   "harness": "opencode",
+   "family": "moonshot",
+   "provider": "openrouter",
+   "addedAt": "2026-10-08T01:58:21.750Z"
+  },
+  {
+   "id": "minimax-m3",
+   "harness": "opencode",
+   "family": "minimax",
+   "provider": "ai-studio",
+   "addedAt": "2026-10-08T01:53:31.060Z"
+  },
+  {
+   "id": "opus-5.5",
+   "harness": "claude-code",
+   "family": "anthropic",
+   "provider": "subscription",
+   "addedAt": "2026-10-05T00:41:41.435Z"
+  },
+  {
+   "id": "qwen3.8-27b",
+   "harness": "opencode",
+   "family": "qwen",
+   "provider": "ai-studio",
+   "addedAt": "2026-10-08T01:53:30.666Z"
+  },
+  {
+   "id": "sonnet-5.5",
+   "harness": "claude-code",
+   "family": "anthropic",
+   "provider": "subscription",
+   "addedAt": "2026-10-05T00:41:41.772Z"
+  }
+ ],
  "localPool": [
   {
    "id": "glm-5.3-flash",
@@ -2607,12 +2693,6 @@
    "addedAt": "2026-10-08T01:53:31.060Z"
   },
   {
-   "id": "qwen3-coder-next",
-   "harness": "opencode",
-   "family": "qwen",
-   "addedAt": "2026-10-08T01:53:30.285Z"
-  },
-  {
    "id": "qwen3.8-27b",
    "harness": "opencode",
    "family": "qwen",
@@ -2622,8 +2702,8 @@
  "localDispatches": [
   {
    "id": "t258",
-   "model": "qwen3-coder-next",
-   "at": "2026-10-08T01:54:04.480Z",
+   "model": "qwen3.8-27b",
+   "at": "2026-10-08T01:59:29.156Z",
    "state": "open"
   },
   {
@@ -10700,14 +10780,18 @@
   },
   {
    "id": "t257",
-   "state": "open",
+   "state": "claimed",
    "kind": "task",
    "createdAt": "2026-10-07T15:14:29.205Z",
-   "claimedAt": null,
+   "claimedAt": "2026-10-08T01:36:47.464Z",
    "mergedAt": null,
    "abandonedAt": null,
-   "builders": [],
-   "builderFamilies": [],
+   "builders": [
+    "claude-code/opus-5.5"
+   ],
+   "builderFamilies": [
+    "anthropic"
+   ],
    "reviews": [],
    "crossAtFinal": false,
    "crossBy": [],
@@ -10719,11 +10803,15 @@
    "state": "open",
    "kind": "task",
    "createdAt": "2026-10-07T15:34:38.045Z",
-   "claimedAt": null,
+   "claimedAt": "2026-10-08T01:57:39.016Z",
    "mergedAt": null,
    "abandonedAt": null,
-   "builders": [],
-   "builderFamilies": [],
+   "builders": [
+    "opencode/qwen3-coder-next"
+   ],
+   "builderFamilies": [
+    "other"
+   ],
    "reviews": [],
    "crossAtFinal": false,
    "crossBy": [],
@@ -10776,7 +10864,7 @@
    "state": "claimed",
    "kind": "task",
    "createdAt": "2026-10-07T15:48:45.834Z",
-   "claimedAt": null,
+   "claimedAt": "2026-10-08T01:30:51.340Z",
    "mergedAt": null,
    "abandonedAt": null,
    "builders": [
@@ -10860,7 +10948,7 @@
    "state": "claimed",
    "kind": "task",
    "createdAt": "2026-10-07T16:12:02.495Z",
-   "claimedAt": null,
+   "claimedAt": "2026-10-08T01:31:11.142Z",
    "mergedAt": null,
    "abandonedAt": null,
    "builders": [
@@ -11062,11 +11150,11 @@
   },
   {
    "id": "t271",
-   "state": "claimed",
+   "state": "merged",
    "kind": "task",
    "createdAt": "2026-10-07T17:36:37.228Z",
    "claimedAt": "2026-10-08T00:33:38.395Z",
-   "mergedAt": null,
+   "mergedAt": "2026-10-08T01:46:06.131Z",
    "abandonedAt": null,
    "builders": [
     "opencode/glm-5.3"
@@ -11074,11 +11162,23 @@
    "builderFamilies": [
     "zai"
    ],
-   "reviews": [],
-   "crossAtFinal": false,
-   "crossBy": [],
+   "reviews": [
+    {
+     "by": "antigravity/gemini-3.1-pro",
+     "family": "google",
+     "approve": true,
+     "at": "2026-10-08T01:45:49.308Z",
+     "cross": true,
+     "blocking": 0,
+     "findings": 0
+    }
+   ],
+   "crossAtFinal": true,
+   "crossBy": [
+    "google"
+   ],
    "handoffs": 0,
-   "observedChecks": 0
+   "observedChecks": 2
   },
   {
    "id": "t272",
@@ -11350,7 +11450,7 @@
    "crossAtFinal": false,
    "crossBy": [],
    "handoffs": 0,
-   "observedChecks": 8
+   "observedChecks": 10
   },
   {
    "id": "t283",
@@ -11384,11 +11484,11 @@
   },
   {
    "id": "t284",
-   "state": "submitted",
+   "state": "merged",
    "kind": "task",
    "createdAt": "2026-10-07T20:30:29.918Z",
    "claimedAt": "2026-10-07T23:53:44.685Z",
-   "mergedAt": null,
+   "mergedAt": "2026-10-08T01:31:19.887Z",
    "abandonedAt": null,
    "builders": [
     "opencode/glm-5.3"
@@ -11396,9 +11496,21 @@
    "builderFamilies": [
     "zai"
    ],
-   "reviews": [],
-   "crossAtFinal": false,
-   "crossBy": [],
+   "reviews": [
+    {
+     "by": "antigravity/gemini-3.1-pro",
+     "family": "google",
+     "approve": true,
+     "at": "2026-10-08T01:31:09.265Z",
+     "cross": true,
+     "blocking": 0,
+     "findings": 0
+    }
+   ],
+   "crossAtFinal": true,
+   "crossBy": [
+    "google"
+   ],
    "handoffs": 0,
    "observedChecks": 4
   },
@@ -11516,7 +11628,7 @@
   },
   {
    "id": "t289",
-   "state": "claimed",
+   "state": "submitted",
    "kind": "task",
    "createdAt": "2026-10-07T22:20:27.846Z",
    "claimedAt": "2026-10-08T00:39:02.785Z",
@@ -11532,7 +11644,7 @@
    "crossAtFinal": false,
    "crossBy": [],
    "handoffs": 0,
-   "observedChecks": 2
+   "observedChecks": 4
   },
   {
    "id": "t290",
@@ -11720,11 +11832,11 @@
   },
   {
    "id": "t297",
-   "state": "claimed",
+   "state": "merged",
    "kind": "task",
    "createdAt": "2026-10-08T00:47:22.187Z",
    "claimedAt": "2026-10-08T00:47:22.611Z",
-   "mergedAt": null,
+   "mergedAt": "2026-10-08T01:37:03.924Z",
    "abandonedAt": null,
    "builders": [
     "claude-code/opus-5.5"
@@ -11732,11 +11844,23 @@
    "builderFamilies": [
     "anthropic"
    ],
-   "reviews": [],
-   "crossAtFinal": false,
-   "crossBy": [],
+   "reviews": [
+    {
+     "by": "antigravity/gemini-3.1-pro",
+     "family": "google",
+     "approve": true,
+     "at": "2026-10-08T01:36:53.453Z",
+     "cross": true,
+     "blocking": 0,
+     "findings": 0
+    }
+   ],
+   "crossAtFinal": true,
+   "crossBy": [
+    "google"
+   ],
    "handoffs": 0,
-   "observedChecks": 0
+   "observedChecks": 2
   },
   {
    "id": "t298",
