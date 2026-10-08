@@ -19,10 +19,13 @@ import { refusalOf, refusalText } from "../checks.ts";
 import { checkApplies, type CheckPaths } from "../rules.ts";
 import { MAX_RENDERS, renderGateway, RENDER_HOST } from "../render-check.ts";
 import { capLarge, putLarge, LARGE_MAX, type LargeRef } from "../large.ts";
-import { END_OF_ARCHIVE } from "./tar";
+import { END_OF_ARCHIVE, entryBytes } from "./tar";
+import { fetchPinned, GIT_DEB, installCommands, TOOLS_DIR } from "./tools";
 import { writeTree } from "./tree";
 
-const IMAGE = "cloudflare/debian-trixie"; // Cloudflare-managed: Node 24 on Debian Trixie slim
+// Cloudflare-managed: Node 24 on Debian Trixie slim, with no git; supplyGit
+// (src/sandbox/tools.ts) adds Debian's own git package to each container.
+const IMAGE = "cloudflare/debian-trixie";
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const WORKDIR = "/workspace";
 const STEP_SECONDS = 600;
@@ -74,6 +77,7 @@ export interface RunState {
   startedAt?: string;
   finishedAt?: string;
   changedPaths?: string[];
+  git?: string;            // what supplyGit found: git's version line, or why the run has no git
   mainHead?: string;       // main's head the checks were measured against, and merged with for a merged run
   results?: CheckResult[];
   recorded?: boolean;      // whether the Ledger accepted the results
@@ -225,6 +229,11 @@ export class CheckRunner extends DurableObject<Env> {
 
     const mkdir = await (await container.exec(["mkdir", "-p", WORKDIR], { env: ENV })).output();
     if (mkdir.exitCode !== 0) throw new Error("could not create the workspace directory");
+    // A run whose git could not be supplied still runs its checks, since many
+    // need none; each check's output then begins by saying so.
+    const git = await this.supplyGit(container);
+    state.git = git.line;
+    const gitNote = git.ok ? "" : `[atelier] this container has no git: ${git.line}\n`;
     const pipe = new IdentityTransformStream();
     const writer = pipe.writable.getWriter();
     const unpack = await container.exec(["tar", "-x", "-f", "-", "-C", WORKDIR], { stdin: pipe.readable, stdout: "ignore", stderr: "pipe", env: ENV });
@@ -254,6 +263,7 @@ export class CheckRunner extends DurableObject<Env> {
         whole += text;
         if (whole.length > 2 * LARGE_MAX) whole = capLarge(whole);
       };
+      keep(gitNote);
       const read = async () => {
         const stream = proc.stdout?.getReader();
         if (!stream) return;
@@ -276,6 +286,29 @@ export class CheckRunner extends DurableObject<Env> {
       await this.ctx.storage.put("state", state);
     }
     await this.record(state, m.head, fork);
+  }
+
+  // Puts Debian's git package (GIT_DEB, pinned by size and sha256) into the
+  // running container: the Worker fetches and verifies it, streams it in as
+  // a one-file tar, and the container unpacks it offline with dpkg-deb. The
+  // container reaches no new host and holds no credential. Answers git's
+  // version line, or why there is no git.
+  private async supplyGit(container: Container): Promise<{ ok: boolean; line: string }> {
+    try {
+      const deb = await fetchPinned(GIT_DEB, { fetch: (url) => fetch(url), bucket: this.env.LARGE });
+      const tar = new Blob([...entryBytes({ path: `${TOOLS_DIR}/${GIT_DEB.name}.deb`, mode: 0o644, kind: "file", data: deb }), END_OF_ARCHIVE]);
+      const put = await (await container.exec(["tar", "-x", "-f", "-", "-C", "/"], { stdin: tar.stream(), stdout: "ignore", stderr: "pipe", env: ENV })).output();
+      if (put.exitCode !== 0) throw new Error(`tar failed: ${new TextDecoder().decode(put.stderr).slice(0, 300)}`);
+      let last = "";
+      for (const argv of installCommands(GIT_DEB)) {
+        const out = await (await container.exec(argv, { stderr: "combined", env: ENV })).output();
+        last = new TextDecoder().decode(out.stdout).trim();
+        if (out.exitCode !== 0) throw new Error(`${argv.join(" ")} exited ${out.exitCode}: ${last.slice(0, 300)}`);
+      }
+      return { ok: true, line: last.slice(0, 200) };
+    } catch (err) {
+      return { ok: false, line: String((err as Error)?.message ?? err).slice(0, 500) };
+    }
   }
 
   // Record in the Ledger. It refuses evidence for a head the item has moved
