@@ -1,0 +1,26 @@
+atelier atelier/t297 "README: say plainly why anyone would adopt Atelier over Git and a forge alone (PAVI, 2026-10-07: 'explain tangible benefits, improvements against mere git'): a short table of the questions many agents leave open with Git alone (who owns this, did the checks really run, who independently checked it, is main still sound after the merge, what needs the owner now, which model is worth it, who did what) and Atelier's answer to each, with the record's evidence; Atelier sits on Git and adds the governance layer, it does not replace Git"
+accepted head 1de266fb6a4d761983ea84e96476b3ac51e9bf41
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T01:35:22.776Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T01:35:25.501Z
+REVIEW approve by antigravity/gemini-3.1-pro at 1de266fb6a4d761983ea84e96476b3ac51e9bf41, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T00:47:22.187Z pavi item.created
+2026-10-08T00:47:22.611Z claude-code/opus-5.5 item.claimed
+2026-10-08T00:47:26.627Z claude-code/opus-5.5 fork.created
+2026-10-08T01:31:24.188Z pavi land.lease
+2026-10-08T01:31:27.035Z pavi land.merge
+2026-10-08T01:31:36.310Z pavi land.regenerate
+2026-10-08T01:31:39.524Z claude-code/opus-5.5 push.observed
+2026-10-08T01:31:39.678Z pavi land.push
+2026-10-08T01:35:23.287Z claude-code/opus-5.5 evidence.observed
+2026-10-08T01:35:25.706Z claude-code/opus-5.5 evidence.observed
+2026-10-08T01:35:26.137Z pavi land.check
+2026-10-08T01:35:26.568Z claude-code/opus-5.5 item.submitted
+2026-10-08T01:35:26.846Z pavi land.submit
+2026-10-08T01:35:27.033Z pavi review.requested
+2026-10-08T01:35:43.457Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T01:36:02.947Z antigravity/gemini-3.1-pro review.released
+2026-10-08T01:36:07.161Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T01:36:53.481Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T01:36:56.985Z pavi land.review
+2026-10-08T01:36:57.835Z pavi item.accepted
+2026-10-08T01:36:57.979Z pavi land.accept
