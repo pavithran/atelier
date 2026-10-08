@@ -194,3 +194,139 @@ it("the landing-workflow routes start and read an instance, take only the two ev
   expect(((await refused.json()) as { detail: string }).detail).toMatch(/is accepted at .*merge it with: atelier merge/);
   expect(await L.landingWorkflowOf(other)).toBeNull();
 });
+
+// ── the local checks mode (t305) ────────────────────────────────────────────
+// The executor runs the required checks in a clean clone before it reports
+// the push, and the server records them as observed evidence; the Workflow
+// starts no container and goes on only once every required check has
+// observed, passing evidence at the exact pushed head. A report or a merged
+// run never stands in for one, a failing result ends the landing, and no
+// result within the checks timeout ends it too, each with the lease released
+// and nothing submitted.
+
+const CHECKS = ["npm test", "npm run types"];
+
+async function localTask(project: string, instance: string) {
+  const L = ledger(project);
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: CHECKS, protected: [] }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const id = (await L.newItem("Land with the checks run locally", [], "owner")).id;
+  await L.claim(id, OPUS);
+  await L.setFork(id, `${project}--${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.setLandingWorkflow(id, instance, "owner", "local");
+  return { L, id };
+}
+
+const check = (L: ReturnType<typeof ledger>, id: string, claim: string, passed: boolean, extra: Record<string, unknown> = {}) =>
+  L.addEvidence({ itemId: id, claim, grade: "observed", head: H1, passed, by: OPUS, at: new Date().toISOString(), changedPaths: ["README.md"], where: "runner", ...extra } as never);
+const local = (project: string, item: string, extra: Record<string, unknown> = {}) => ({ ...params(project, item), checks: "local" as const, ...extra });
+
+it("local checks: observed passing evidence for every required check at the pushed head lets the landing go on, with no container run", async () => {
+  const { L, id } = await localTask("wf-local-ok", "wf-local-ok-1");
+  for (const claim of CHECKS) await check(L, id, claim, true);
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-local-ok-1");
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+    // A container run would fail the landing: the local mode must not start one.
+    await m.mockStepError({ name: "run the required checks in a Cloudflare container" }, new Error("the container was started"));
+  });
+  await env.LANDING_WORKFLOW.create({ id: "wf-local-ok-1", params: local("wf-local-ok", id) });
+  await send("wf-local-ok-1", "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: true });
+  await wf.waitForStatus("complete");
+  expect((await L.item(id)).state).toBe("accepted");
+  expect((await L.item(id)).acceptedHead).toBe(H1);
+  // The executor records the check step (it ran the checks); the Workflow
+  // records the rest.
+  expect((await kinds(L, id)).filter((k) => k.startsWith("land.")).reverse()).toEqual(["land.lease", "land.submit", "land.review", "land.accept"]);
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "done", checks: "local" });
+});
+
+it("local checks: the landing waits for the observed results, and goes on when they arrive", async () => {
+  const { L, id } = await localTask("wf-local-wait", "wf-local-wait-1");
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-local-wait-1");
+  await wf.modify(async (m) => {
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: "wf-local-wait-1", params: local("wf-local-wait", id, { pollMs: 20, checksTimeoutMs: 120_000 }) });
+  await send("wf-local-wait-1", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  const waiting = await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "checks");
+  expect(waiting?.detail).toMatch(/waiting for the observed results of the required checks at aaaaaaaa/);
+  await check(L, id, "npm test", true);
+  // One check observed is not all of them: still waiting, nothing submitted.
+  await new Promise((r) => setTimeout(r, 200));
+  expect((await L.landingWorkflowOf(id))?.stage).toBe("checks");
+  expect((await L.item(id)).state).not.toBe("submitted");
+  await check(L, id, "npm run types", true);
+  await wf.waitForStatus("complete");
+  expect((await L.item(id)).state).toBe("accepted");
+});
+
+it("local checks: with no observed result the landing waits, then times out, and a report or a merged run does not count", async () => {
+  const { L, id } = await localTask("wf-local-none", "wf-local-none-1");
+  await check(L, id, "npm test", true);
+  // Evidence the gate does not count as the head's own observed check.
+  await L.addEvidence({ itemId: id, claim: "npm run types", grade: "reported", head: H1, passed: null, by: OPUS, at: new Date().toISOString() } as never);
+  await check(L, id, "npm run types", true, { merged: true, mainHead: H2, changedPaths: null });
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-local-none-1");
+  await wf.modify(async (m) => { await m.disableSleeps(); });
+  await env.LANDING_WORKFLOW.create({ id: "wf-local-none-1", params: local("wf-local-none", id, { checksTimeoutMs: 100 }) });
+  await send("wf-local-none-1", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await wf.waitForStatus("errored");
+  const message = (await L.landingWorkflowOf(id))?.detail ?? "";
+  expect(message).toMatch(/no observed result at aaaaaaaa for npm run types within 0 seconds: in the local checks mode the machine holding the workspace runs the required checks in a clean clone/);
+  expect(message).not.toMatch(/npm test;/);
+  expect(await L.readProjectLanding()).toBeNull();
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
+  expect((await L.item(id)).state).not.toBe("submitted");
+});
+
+it("local checks: a failing observed check ends the landing, recorded, with the lease released and nothing submitted", async () => {
+  const { L, id } = await localTask("wf-local-fail", "wf-local-fail-1");
+  await check(L, id, "npm test", false);
+  await check(L, id, "npm run types", true);
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-local-fail-1");
+  await wf.modify(async (m) => { await m.disableSleeps(); });
+  await env.LANDING_WORKFLOW.create({ id: "wf-local-fail-1", params: local("wf-local-fail", id) });
+  await send("wf-local-fail-1", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await wf.waitForStatus("errored");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/the required checks failed at aaaaaaaa in a clean clone on the machine holding the workspace: npm test\. /);
+  const events = (await L.events(id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "land.check")?.data).toMatchObject({ failed: true, head: H1, reason: "npm test" });
+  expect(await L.readProjectLanding()).toBeNull();
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
+  expect((await L.item(id)).state).not.toBe("submitted");
+});
+
+it("the landing-workflow route records the checks mode it starts with, keeps container for a start that names none, and refuses another", async () => {
+  const project = "wf-route-checks";
+  const L = ledger(project);
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const ids: string[] = [];
+  for (const head of [H1, H2, H9]) {
+    const id = (await L.newItem("Land", [], "owner")).id;
+    await L.claim(id, OPUS); await L.setFork(id, `${project}--${id}`, H0, OPUS); await L.recordPush(id, OPUS, head, head);
+    ids.push(id);
+  }
+  const call = (id: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${id}/landing-workflow`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+  }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  await using introspector = await introspectWorkflow(env.LANDING_WORKFLOW);
+  await introspector.modifyAll(async (m) => { await m.disableSleeps(); });
+  const bad = await call(ids[0], { checks: "laptop" });
+  expect(bad.status).toBe(400);
+  expect(((await bad.json()) as { detail: string }).detail).toMatch(/checks must be local or container/);
+  expect(await L.landingWorkflowOf(ids[0])).toBeNull();
+  expect(await (await call(ids[0], { checks: "local", pollMs: 10 })).json()).toMatchObject({ created: true, checks: "local" });
+  expect(await (await call(ids[1], { checks: "container", pollMs: 10 })).json()).toMatchObject({ created: true, checks: "container" });
+  expect(await (await call(ids[2], { pollMs: 10 })).json()).toMatchObject({ created: true, checks: "container" });
+  // The stage the Workflow writes keeps the mode, so an executor attaching later reads it.
+  await until(() => L.landingWorkflowOf(ids[0]), (r) => r?.stage === "workspace");
+  expect(await L.landingWorkflowOf(ids[0])).toMatchObject({ stage: "workspace", checks: "local" });
+});

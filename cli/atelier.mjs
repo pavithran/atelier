@@ -260,7 +260,7 @@ export const FLAGS = {
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
-  land: { reviewer: false, "no-review": true, "dry-run": true, wait: true, "release-lease": true, workflow: true },
+  land: { reviewer: false, "no-review": true, "dry-run": true, wait: true, "release-lease": true, workflow: true, checks: "--checks needs a mode: atelier land ID --workflow --checks local|container" },
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
