@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, gatewayMetadata, harnessRunEnv, versionRefusal, transientQueueError, queueBackoffMs } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -589,7 +589,7 @@ async function gone(pid, ms = 2000) {
 
 const GRACE_MS = 4000, PROMPT_MS = 3000;
 
-test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 30_000 }, async (t) => {
+test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-group-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const pids = [];
@@ -605,20 +605,48 @@ test("a child's background processes end with it, whether it succeeded, failed o
       const written = () => { try { return fs.readFileSync(${JSON.stringify(file)}, 'utf8'); } catch { return ''; } };
       while (!written()) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       ${ending === "deadline" ? UNTIL_TEST_EXITS : `process.exit(${ending.slice(5)})`}`;
+    // A deadline a loaded machine could reach before the two node processes
+    // are up would kill the group ahead of the pid file, so its budget is
+    // the four seconds two busy starts take (as the test below times it)
+    // with room to spare; the other endings leave the leader to end itself.
+    const timeoutMs = ending === "deadline" ? 5000 : 20_000;
     const start = Date.now();
-    const result = await execute([process.execPath, "-e", leader], { capture: true, timeoutMs: ending === "deadline" ? 1000 : 20_000, graceMs: GRACE_MS });
+    let settled = false;
+    const run = execute([process.execPath, "-e", leader], { capture: true, timeoutMs, graceMs: GRACE_MS })
+      .finally(() => { settled = true; });
+    // The pid file appears once both processes are up, moments before the
+    // leader ends; the moment it is seen is where the timings below start,
+    // so the machine's startup stretch stays out of them (t298: measured
+    // from the spawn instead, a machine running several suites at once
+    // pushed the two starts past the prompt bound and failed this test).
+    let readyAt = 0;
+    while (!settled && !readyAt) {
+      if (existsSync(file)) readyAt = Date.now();
+      else await new Promise((ok) => setTimeout(ok, 10));
+    }
+    const result = await run;
+    // The leader can write the pid file and exit inside one 10 ms wait, which
+    // ends the loop with the file unseen; look once more after the run.
+    if (!readyAt && existsSync(file)) readyAt = Date.now();
     const took = Date.now() - start;
+    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
+    // The run can settle without the pid file only when the deadline caught
+    // the group before both processes were up — a machine too loaded for the
+    // budget above. Name that, rather than letting the read below fail as a
+    // bare ENOENT with no cause.
+    assert.ok(readyAt, `${label}: the run ended after ${took} ms with the group's processes never up; the machine outran the ${timeoutMs} ms budget`);
     const pid = Number(readFileSync(file, "utf8"));
     pids.push(pid);
-    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
     assert.equal(result.timedOut, ending === "deadline", label);
     if (ending !== "deadline") assert.equal(result.code, Number(ending.slice(5)), label);
     assert.ok(await gone(pid), `the background child is gone once execute returns: ${label}`);
     // A group that ends at SIGTERM ends the wait at once; one that ignores it
     // waits out the grace period. The grace is long and the bound for a
-    // prompt end sits well below it, so a busy machine, where starting the two
-    // node processes alone can take a second, cannot blur the two.
-    assert.ok(ignore ? took >= GRACE_MS : took < (ending === "deadline" ? 1000 : 0) + PROMPT_MS, `${label}: ${took} ms`);
+    // prompt end sits well below it, so the two cannot blur. Only a deadline
+    // is measured from the spawn, its timer being anchored there.
+    if (ignore) assert.ok(took >= GRACE_MS, `${label}: ${took} ms`);
+    else if (ending === "deadline") assert.ok(took < timeoutMs + PROMPT_MS, `${label}: ${took} ms`);
+    else assert.ok(took - (readyAt - start) < PROMPT_MS, `${label}: ${took - (readyAt - start)} ms once the child was up`);
   }
 });
 
@@ -789,6 +817,9 @@ test("failure counts use task identity and exclude refusals and skipped tasks", 
   for (const state of [{ phase: "failed" }, { phase: "submitted" }, { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(failureCount(1, state), 1);
   }
+  // t273: a failure the job recorded on the item (refresh-failed) is the
+  // server's to handle, so it is no task failure for the cap.
+  assert.equal(failureCount(1, { phase: "failed", recorded: true }), 1);
 });
 
 test("runner remembers unsupported project names and claims the task behind them", async (t) => {
@@ -1099,6 +1130,41 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
   assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
 });
 
+// t289: t252 made a config's jobs the exact list a runner takes, so a config
+// written before it with jobs: ["plan"] — which then meant the plan job
+// besides building — silently stopped taking builds and merge-main jobs (on
+// 2026-10-07 both build runners claimed nothing for about an hour while
+// seven dispatches waited). At start the runner says the jobs it takes and
+// the jobs it leaves, so the narrowing is its first line, before any poll.
+test("at start the runner says the jobs it takes and the jobs it leaves", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-jobs-line-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const [value, expected] of [
+    [config, `jobs: ${DEFAULT_JOBS.join(", ")} (not review)`],
+    [{ ...config, jobs: ["plan"] }, "jobs: plan (not build, merge-main, merge-main-task, merge-plan, review)"],
+  ]) {
+    const path = join(dir, `runner-${value.jobs?.join("-") ?? "all"}.json`);
+    writeFileSync(path, JSON.stringify(value));
+    const logs = [];
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      taskIO: { log: (s) => logs.push(s) },
+      queue: async () => [],
+    });
+    assert.deepEqual(logs, [expected], JSON.stringify(value.jobs ?? null));
+  }
+  // The integrator's fixed jobs are said the same way, and a runner taking
+  // every known job names no omission.
+  const logs = [];
+  await runRunner({ _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    taskIO: { log: (s) => logs.push(s) },
+    queue: async () => [],
+  });
+  assert.deepEqual(logs, ["jobs: integrate, refresh (not build, plan, merge-main, merge-main-task, merge-plan, review)"]);
+  assert.equal(jobsLine([...DEFAULT_JOBS, "review"]), `jobs: ${[...DEFAULT_JOBS, "review"].join(", ")}`);
+});
+
 // t252: the job an assignment is, which the runner takes only when its offer
 // names it.
 test("jobOf names the job an assignment is", () => {
@@ -1171,6 +1237,9 @@ test("infrastructure failures are consecutive and separate from task failures", 
     { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(infrastructureFailureCount(2, state), 0);
   }
+  // Nor an infrastructure failure (t273): a recorded refresh-failed is the
+  // server's to handle, so it neither advances nor keeps the streak.
+  assert.equal(infrastructureFailureCount(2, { phase: "failed", recorded: true }), 0);
 });
 
 test("real runner caps reset, claim and finish failures while serving the next task each poll", async (t) => {
