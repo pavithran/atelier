@@ -29,6 +29,11 @@ export const OWNER_TEXT_MAX = 500;
 export const REVIEW_BAR_MAX = 1000;
 // The most models a project's review tier lists (`atelier init --review-tier`).
 export const REVIEW_TIER_MAX = 10;
+// The most diff a review brief carries inline (BRIEF_LIMITS.diff in
+// src/review/brief.ts). A larger diff is never carried: it is kept in R2 by
+// reference and the brief names where the whole diff is (t284), so a brief's
+// size never depends on the size of the change it reviews.
+export const DIFF_INLINE_MAX = 40_000;
 
 export function assertLength(text: string, max: number, what: string): void {
   if (text.length > max) {
