@@ -169,13 +169,16 @@ const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "su
 
 // What a land.* event may carry beside its duration, and as what: hashes and
 // actors, the commits that came from main, the files a conflict stopped on,
-// who resolved the step and how it ended.
+// who resolved the step and how it ended. A list too long for the record is
+// cut to its first entries by the ledger itself, which adds the count of the
+// whole list beside it (`fromMainCount`, cutLandLists below), so no caller
+// sends those counts.
 const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
 };
-const LAND_JSON_MAX = 4000;
+export const LAND_JSON_MAX = 4000;
 
 function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -187,8 +190,28 @@ function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
     else if (kind === "strings" && Array.isArray(value) && value.length <= 200 && value.every((s) => typeof s === "string")) out[key] = value.slice(0, 200).map((s) => s.slice(0, 200));
     else throw new RuleError("bad_field", `${key} must be ${kind === "strings" ? "a list of commit hashes or paths" : kind === "boolean" ? "true or false" : "text"}`, 400);
   }
-  if (JSON.stringify(out).length > LAND_JSON_MAX) throw new RuleError("too_long", `a landing step records at most ${LAND_JSON_MAX} characters; shorten the lists`, 400);
+  cutLandLists(out);
   return out;
+}
+
+// A record that would pass LAND_JSON_MAX is cut to fit rather than refused
+// whole (t307): the first end-to-end Workflow landing (t293, 2026-10-08)
+// merged 103 commits from main and the merge step's record was refused as
+// too long, so the step went unrecorded. Each list keeps its first entries
+// and the count of the whole list is recorded beside it (`fromMainCount`);
+// the hashes beyond the first stay in Git, where the merge names main's
+// head. A record with nothing left to cut is refused as before.
+function cutLandLists(out: Record<string, unknown>): void {
+  const lists = Object.keys(out).filter((k) => Array.isArray(out[k]));
+  const whole = new Map(lists.map((k) => [k, (out[k] as string[]).length]));
+  const longest = () => lists.filter((k) => (out[k] as string[]).length > 0).sort((a, b) => (out[b] as string[]).length - (out[a] as string[]).length)[0];
+  while (JSON.stringify(out).length > LAND_JSON_MAX) {
+    const key = longest();
+    if (!key) throw new RuleError("too_long", `a landing step records at most ${LAND_JSON_MAX} characters; shorten the lists`, 400);
+    const list = out[key] as string[];
+    list.length--;
+    out[`${key}Count`] = whole.get(key)!;
+  }
 }
 
 // How many run reports the index returns: the most recent, for the reliability record.

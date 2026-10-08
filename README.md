@@ -348,7 +348,9 @@ reviewer, `--wait` queues behind a landing that holds the lease, `--no-review`
 leaves the task submitted for the owner to settle, and `--dry-run` prints
 the steps and the refusals without changing anything. A landing stopped
 partway resumes when the same command runs again, and each step is recorded
-on the task as a `land.*` event.
+on the task as a `land.*` event; a merge that brings more commits from main
+than the record has room for records the first hashes and the count of all
+of them.
 
 The same can be done in steps: `atelier accept ID` then `atelier merge ID`,
 or `atelier merge ID --head FULL_SHA`, which accepts a submitted task at
