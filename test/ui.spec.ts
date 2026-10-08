@@ -13,6 +13,21 @@ it('review puts revision-bound actions before the diff and escapes untrusted tas
  expect(html.indexOf('Approve revision')).toBeLessThan(html.indexOf('id="changes"'));
  expect(html).toContain('name="note" required');
 });
+it('a check Atelier ran reads as a runner in a clean clone or a Cloudflare container, never as the agent\'s machine',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();
+ // The decision brief's wording comes from src/brief.ts, not the page's own check rows.
+ const outsideBrief=(h:string)=>h.slice(0,h.indexOf('id="brief"'))+h.slice(h.indexOf('id="changes"'));
+ const local=renderItem(project,d,'PAVI',diff);
+ expect(local).toContain('Runner, clean clone');
+ expect(local).toContain('on a runner, in a clean clone');
+ expect(outsideBrief(local)).not.toMatch(/agent(&#39;|')s machine/i);
+ d.evidence[0].where='sandbox';
+ const cloud=renderItem(project,d,'PAVI',diff);
+ expect(cloud).toContain('Cloudflare container');
+ expect(cloud).not.toContain('Runner, clean clone');
+ expect(outsideBrief(cloud)).not.toMatch(/agent(&#39;|')s machine/i);
+});
 it('merged tasks show completion without actionable approval or a misleading closed gate',()=>{
  const d=detail();d.item.state='merged';d.item.acceptedHead=head;
  const html=renderItem(project,d,'PAVI',null);
@@ -1338,4 +1353,17 @@ it('each review on the task page says who recorded it (t215)',()=>{
  expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded with its own token');
  expect(html).toContain('recorded by the project owner with the owner token</p>');
  expect(html).toContain('recorded by the project owner with the owner token, answering a review request it claimed');
+});
+it('a merged task shows its change as it landed, with no merge preview or conflict warning',()=>{
+ const d=detail();d.item={...d.item,state:'merged',owner:null,acceptedHead:head};
+ const file={path:'src/a.ts',status:'modified' as const,added:1,removed:1,hunks:[{oldStart:1,oldLines:1,newStart:1,newLines:1,lines:[{op:'-' as const,text:'a'},{op:'+' as const,text:'a2'}]}]};
+ // A preview that would conflict, as one read against today's main would: it is not shown.
+ const main={head:'c'.repeat(40),ahead:12,aheadCapped:false,merge:{clean:false,conflicts:[{path:'src/a.ts',reason:'both changed'}],both:['src/a.ts'],ours:60,theirs:1}};
+ const html=renderItem(project,d,'PAVI',{head:'m'.repeat(40),base:'f'.repeat(40),files:[file],truncated:false,main,merged:{commit:'m'.repeat(40),from:'first-parent'}});
+ expect(html).toContain('changed by the merge');expect(html).toContain('against its first parent');
+ expect(html).toContain('src/a.ts');
+ expect(html).not.toContain('Merging now would stop at');expect(html).not.toContain('both changed');
+ expect(html).not.toContain('differ from main');
+ const ff=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false,merged:{commit:head,from:'fork-point'}});
+ expect(ff).toContain("the task's fork point");expect(ff).not.toContain('No workspace yet');
 });
