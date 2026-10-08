@@ -60,8 +60,8 @@
   const col = (f) => `var(--m-${f})`;
   // Family colours for SVG strokes: the Night theme's, or the light theme's,
   // tuned for contrast on white; init() picks one.
-  const HEX_DARK = { anthropic: "#ff8a5b", openai: "#3fe0b0", zai: "#6f9bff", google: "#ff8fcf", deepseek: "#5ad1e6", xiaomi: "#ff9e40", qwen: "#b5e55c", moonshot: "#b48cff", minimax: "#ff9f7a", other: "#8f9cab" };
-  const HEX_LIGHT = { anthropic: "#b4461c", openai: "#0b7a5c", zai: "#2f56c9", google: "#b0307a", deepseek: "#0f7d93", xiaomi: "#a35a00", qwen: "#4d7a12", moonshot: "#5f3fa8", minimax: "#b04a1f", other: "#4b5562" };
+  const HEX_DARK = { anthropic: "#ff8a5b", openai: "#3fe0b0", zai: "#a5b4fc", google: "#ff8fcf", deepseek: "#5ad1e6", xiaomi: "#ff9e40", qwen: "#b5e55c", moonshot: "#b48cff", minimax: "#ff9f7a", other: "#8f9cab" };
+  const HEX_LIGHT = { anthropic: "#c2410c", openai: "#0b7a5c", zai: "#3730a3", google: "#b0307a", deepseek: "#0e7490", xiaomi: "#c2410c", qwen: "#4d7a12", moonshot: "#7e22ce", minimax: "#c2410c", other: "#44546d" };
   let HEX = HEX_DARK;
   const FAMILY_NAME = { anthropic: "Anthropic · Claude", zai: "Zhipu · GLM", openai: "OpenAI · GPT", deepseek: "DeepSeek", google: "Google · Gemini", xiaomi: "Xiaomi · MiMo", qwen: "Alibaba · Qwen" };
   const NAMES = {
@@ -362,7 +362,7 @@
     hud.append(title, motif, head3, ...three);
     el.append(hud);
     const tTitle = SWEEP_B + 0.2, tThree = c.cue(1);
-    const at3 = [c.when("checks Atelier observed"), c.when("approval by another"), c.when("and a record")];
+    const at3 = [c.when("tests Atelier runs"), c.when("approval by a model"), c.when("and a record")];
     c.sfx(tTitle, "chime", 1); at3.forEach((x) => c.sfx(x, "tick", 0.8));
     return {
       el,
@@ -438,7 +438,7 @@
     const el = h("div");
     const f = data.facts;
     const T = [c.when("A planner agent"), c.when("Builders work"), c.when("A reviewer checks"), c.when("The lead developer")];
-    const kw = keywords([[T[0], "Four roles"], [c.when("one holder at a time"), "One holder per task", "var(--signal)"], [T[2], "Another family must approve", "var(--signal)"], [c.cue(2), "Concurrency"], [c.when("The most tasks"), "15 tasks at once"]]);
+    const kw = keywords([[T[0], "Four roles"], [c.when("one holder at a time"), "One holder per task", "var(--signal)"], [T[2], "A different company must approve", "var(--signal)"], [c.cue(2), "Concurrency"], [c.when("runners small programs"), "Runners start the agents", "var(--signal)"], [c.when("The most tasks"), "15 tasks at once"]]);
     el.append(kw.el);
     const A = layer();
     const svg = svgFull(); A.append(svg);
@@ -449,7 +449,7 @@
     const boxes = [
       ["Planner", "splits a goal into parts", [line(data.plan.planner.split("/").pop(), null)]],
       ["Builders", "each in its own fork; tasks merged", builders.map(([m, n]) => line(m, n))],
-      ["Reviewer", "of another family; reviews", reviewers.map(([m, n]) => line(m, n))],
+      ["Reviewer", "a model from a different company; reviews", reviewers.map(([m, n]) => line(m, n))],
       ["Lead developer", "the one human; merges", []],
     ].map(([name, what, kids], i) => {
       const b = pos(h("div", { class: "card", style: { padding: "22px 24px", width: W + "px", height: "500px" } },
@@ -462,10 +462,10 @@
       const p = s("path", { d: `M ${x1 + 4} ${y} L ${x2 - 6} ${y} M ${x2 - 20} ${y - 12} L ${x2 - 6} ${y} L ${x2 - 20} ${y + 12}`, stroke: "var(--signal)", "stroke-width": 4, fill: "none" });
       svg.append(p); return p;
     });
-    const famDef = foot(`<b style="color:var(--signal)">Family</b>: the company that made the model. Anthropic made Opus 5.5; Google made Gemini 3.1 Pro.`, 80, TOP + 530, 1760, { color: "var(--text)", fontSize: "34px" });
+    const famDef = foot(`The reviewer's model must come from <b style="color:var(--signal)">a different company</b> than every builder's: Anthropic made Opus 5.5; Google made Gemini 3.1 Pro.`, 80, TOP + 530, 1760, { color: "var(--text)", fontSize: "34px" });
     A.append(famDef);
     const B = layer();
-    const scale = [["One fork per task", "its own Git repository in Artifacts", "its own fork in"], ["One Durable Object per project", "each project's ledger apart from every other", "its own Durable Object"], ["Runners, as many as are started", "each claims jobs and checks in its own clean clone", "as many runners"], ["One landing on main at a time", "a lease per project; plans meet on their own branch", "only landing on main"]];
+    const scale = [["One fork per task", "its own Git repository in Artifacts", "its own fork in"], ["One Durable Object per project", "each project's ledger apart from every other", "its own Durable Object"], ["Runners, any number", "small programs on the lead developer's machines: they take jobs from Atelier and start the right agent", "runners small programs"], ["One landing on main at a time", "a lease per project; plans meet on their own branch", "only landing on main"]];
     const scaleEls = scale.map(([a, b2], i) => card(a, b2, 120 + (i % 2) * 850, TOP + Math.floor(i / 2) * 230, 820, 200));
     B.append(...scaleEls);
     const C = layer();
@@ -482,7 +482,7 @@
         show(t); kw.update(t);
         boxes.forEach((b, i) => pop(b, P(t, T[i] - 0.15, 0.5), 0.85));
         arrows.forEach((a, i) => { a.style.opacity = P(t, T[i + 1] - 0.2, 0.5); });
-        fadeIn(famDef, P(t, c.when("a family being") - 0.2, 0.5));
+        fadeIn(famDef, P(t, c.when("only approval by") - 0.2, 0.5));
         scaleEls.forEach((x, i) => fadeIn(x, P(t, c.when(scale[i][2]) - 0.2, 0.45), 10));
         big.update(t, tC);
         return { cx: 960, cy: 540, s: 1 };
@@ -497,16 +497,16 @@
     const el = h("div");
     const tB = c.cue(1), tC = c.cue(2), tD = c.cue(2) + 2.8;
     const tRej = c.when("Gemini rejected it twice"), tDrop = c.when("then one bad log"), tFixed = c.when("All four findings"), tThird = c.when("the third head");
-    const kw = keywords([[0, "Proof first"], [c.when("Atelier records"), "Observed, not claimed", "var(--observed)"], [tB, "Another family must approve", "var(--signal)"], [tRej, "Rejected twice", "var(--fault)"], [tFixed, "All four real, all fixed", "var(--observed)"], [tThird, "Merged 11 s after approval", "var(--observed)"], [tC, "The live page"]]);
+    const kw = keywords([[0, "Proof first"], [c.when("Atelier records"), "Observed, not claimed", "var(--observed)"], [tB, "A different company must approve", "var(--signal)"], [tRej, "Rejected twice", "var(--fault)"], [tFixed, "All four real, all fixed", "var(--observed)"], [tThird, "Merged 11 s after approval", "var(--observed)"], [tC, "The live page"]]);
     el.append(kw.el);
     // A: the gate.
     const A = layer();
     const sA = svgFull(); A.append(sA);
-    const nodes = [["Pushed head", "the latest commit, read from Artifacts"], ["Clean clone", "of that head, on the lead developer's machine"], ["Checks", "recorded as Atelier saw them"], ["Review", "by another family"], ["Lead developer", "merges"]].map(([a, b], i) => {
+    const nodes = [["Pushed head", "the latest commit, read from Artifacts"], ["Clean clone", "of that head, on the lead developer's machine"], ["Checks", "recorded as Atelier saw them"], ["Review", "by a model from a different company"], ["Lead developer", "merges"]].map(([a, b], i) => {
       const n = pos(h("div", { class: "card", style: { padding: "20px 22px", width: "326px", height: "250px" } }, h("div", { style: { font: `700 ${BODY}px/1.15 var(--font-sans)`, color: "var(--text-bright)" }, text: a }), h("div", { text: b, style: { font: `500 ${FOOT}px/1.35 var(--font-sans)`, marginTop: "12px", color: "var(--text-muted)" } })), 70 + i * 360, TOP);
       A.append(n); return n;
     });
-    const edges = [0, 1, 2, 3].map((i) => beads(sA, `M ${70 + i * 360 + 326} ${TOP + 125} L ${70 + (i + 1) * 360} ${TOP + 125}`, "#ffd166", 1, 7));
+    const edges = [0, 1, 2, 3].map((i) => beads(sA, `M ${70 + i * 360 + 326} ${TOP + 125} L ${70 + (i + 1) * 360} ${TOP + 125}`, BRIGHT ? "#0a5bc4" : "#5ea8ff", 1, 7));
     const obs = pos(h("div", { class: "abs stamp", text: "Observed", style: { color: "var(--observed)", fontSize: "44px" } }), 790, TOP + 290);
     const rep = foot("An agent's own word is shown as <b>Reported</b>, and never counted. Checks inside a Cloudflare Container: built, not yet proven.", 70, TOP + 420, 1760, { color: "var(--text)", fontSize: "34px" });
     A.append(obs, rep);
@@ -618,7 +618,7 @@
     C2.append(big2.el);
     const ov = data.overrides, lw = f.lastMergeWithoutCrossApproval;
     const since = data.tasks.filter((t) => t.state === "merged" && t.kind !== "plan" && t.mergedAt > lw.at);
-    const waiver = foot(`On ${day(ov[0].at)} the lead developer waived the family rule ${ov.length} times, each recorded as an override. Since ${lw.id} that evening, all ${since.length} merged tasks had another family's approval.`, 120, TOP + 520, 1680, { color: "var(--text)" });
+    const waiver = foot(`On ${day(ov[0].at)} the lead developer waived the different-company rule ${ov.length} times, each recorded as an override. Since ${lw.id} that evening, all ${since.length} merged tasks had approval from a different company.`, 120, TOP + 520, 1680, { color: "var(--text)" });
     C2.append(waiver);
     el.append(A, X, A2, B, C1, C2);
     const show = slides([{ el: A, a: 0, b: tX }, { el: X, a: tX, b: tRj }, { el: A2, a: tRj, b: tB }, { el: B, a: tB, b: tC }, { el: C1, a: tC, b: tJ }, { el: C2, a: tJ, b: 1e9 }]);
@@ -781,7 +781,7 @@
     const secs = Math.round((Date.parse("2026-10-08T15:28:06.110Z") - Date.parse(`2026-10-08T${first[1]}Z`)) / 1000);
     A.append(...stepEls);
     const B = layer();
-    const cards = [["One holder per task", "hands change only by a recorded handoff"], ["Checks it can trust", "observed in a clean clone, never taken from the agent"], ["Another company's review", "and a record of which reviewers are right"], ["A ledger of who did what", "kept by the server, and noted in Git on each merge"]].map(([a, b2], i) => card(a, b2, 120 + (i % 2) * 850, TOP + Math.floor(i / 2) * 230, 820, 200));
+    const cards = [["One holder per task", "hands change only by a recorded handoff"], ["Checks it can trust", "observed in a clean clone, never taken from the agent"], ["A different company's review", "and a record of which reviewers are right"], ["A ledger of who did what", "kept by the server, and noted in Git on each merge"]].map(([a, b2], i) => card(a, b2, 120 + (i % 2) * 850, TOP + Math.floor(i / 2) * 230, 820, 200));
     B.append(...cards);
     const C = layer();
     const shot = browser("front", "<b>atelier.zone</b>", "public, no sign-in · captured 8 October 2026");
@@ -839,7 +839,7 @@
     const hud = layer();
     el.append(hud);
     const f = data.facts;
-    const at3 = [c.when("Checks Atelier observed"), c.when("Approval by another"), c.when("A record of every")];
+    const at3 = [c.when("Tests Atelier runs"), c.when("Approval by a model"), c.when("A record of every")];
     const three = THREE.map((x, i) => pos(h("div", { class: "abs", style: { display: "flex", gap: "28px", alignItems: "baseline", width: "1600px" } }, h("span", { class: "display", text: "✓", style: { fontSize: "64px", color: "var(--observed)", width: "60px" } }), h("span", { class: "display", text: x, style: { fontSize: "66px" } })), 260, 300 + i * 120));
     hud.append(...three);
     const motif = pos(h("div", { class: "abs display", text: "Git keeps the code. Atelier keeps the record.", style: { fontSize: "84px", width: "1920px", textAlign: "center" } }), 0, 200);
@@ -872,7 +872,7 @@
     };
   };
 
-  const THREE = ["Checks Atelier observed itself", "Approval by another model family", "A record of every agent, kept on Cloudflare"];
+  const THREE = ["Tests Atelier runs itself, not the agent's claim", "Approval by a model from a different company", "A record of every agent, kept on Cloudflare"];
   const CHAPTERS = ["Why Git alone isn't enough", "Who does the work", "Nothing merges without proof", "Big goals become plans", "It measures, and it learns", "Who it is for", "It runs on Cloudflare"];
   const SHORT = ["Git alone", "The agents", "Proof", "Plans", "Learning", "Who for", "Cloudflare"];
   // What each chapter's card recalls of the one before it.
@@ -880,7 +880,7 @@
     "Many agents, one repository: what can you trust?",
     "Git keeps commits; Atelier keeps the record of what it observed.",
     "Four roles, one holder per task, many tasks at once.",
-    "Proof first, review by another family, and nothing lost.",
+    "Proof first, review by a different company, and nothing lost.",
     "Plans, coordination and conflicts, handled by agents.",
     "Every agent measured; a failure traced to its cause.",
     "A new project merged in under a minute; a team gets the same.",
@@ -890,9 +890,9 @@
   // ── the player ──────────────────────────────────────────────────────────
   let built = [], captions = [], sounds = [], chapters = [];
   const capEl = () => document.querySelector("#caption span");
-  // Scenes on the light ground in the dark version; the bright version puts
-  // every scene on it.
-  const LIGHT = new Set(["why", "metrics"]);
+  // Scenes on the light ground in the dark version (none since cut 8); the
+  // bright version puts every scene on it.
+  const LIGHT = new Set([]);
   const CHAPTER_OF = { why: 1, cast: 2, gate: 3, stories: 3, plan: 4, metrics: 5, who: 6, cloud: 7 };
   const CARD = { why: 1.7, cast: 1.7, gate: 1.7, plan: 3.0, metrics: 1.7, who: 1.7, cloud: 1.7 };
   let BRIGHT = false;
@@ -957,7 +957,7 @@
     cur.wrap.style.transform = `scale(${(1 + 0.05 * ease(kOut)) * (1 - 0.04 * ease(kIn))})`;
     cur.wrap.style.filter = kOut + kIn > 0 ? `blur(${3 * (kOut + kIn)}px)` : "";
     const fade = document.getElementById("fade");
-    fade.style.background = BRIGHT ? "#f6f4ee" : "#000";
+    fade.style.background = BRIGHT ? "#f3f7fc" : "#000";
     fade.style.opacity = clamp(Math.max(kOut, kIn) * 0.9 + (T < 0.4 ? 1 - T / 0.4 : 0));
     const light = cur.wrap.classList.contains("light");
     document.getElementById("stage").classList.toggle("on-light", light);
