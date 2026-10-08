@@ -1,0 +1,34 @@
+atelier atelier/t350 "Remove the orphaned cron trigger"
+accepted head 83fac5d502a17453d0012e0dc295ea4a3d6f8663
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/haiku-5.5 2026-10-08T20:42:13.457Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/haiku-5.5 2026-10-08T20:42:16.517Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/haiku-5.5 2026-10-08T21:31:35.769Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/haiku-5.5 2026-10-08T21:31:39.443Z
+REVIEW approve by antigravity/gemini-3.1-pro at 83fac5d502a17453d0012e0dc295ea4a3d6f8663, recorded by pavi with the owner token, answering a claimed review request
+REVIEW approve by codex/gpt-6-luna at 83fac5d502a17453d0012e0dc295ea4a3d6f8663, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T20:08:10.015Z pavi item.created
+2026-10-08T20:08:55.704Z pavi item.dispatched
+2026-10-08T20:34:41.742Z claude-code/haiku-5.5 item.claimed
+2026-10-08T20:34:49.039Z claude-code/haiku-5.5 fork.created
+2026-10-08T20:38:54.643Z claude-code/haiku-5.5 push.observed
+2026-10-08T20:42:14.307Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T20:42:16.764Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T20:42:17.358Z claude-code/haiku-5.5 item.submitted
+2026-10-08T21:26:47.407Z pavi land.lease
+2026-10-08T21:26:49.090Z pavi land.merge
+2026-10-08T21:26:58.634Z pavi land.regenerate
+2026-10-08T21:27:00.576Z pavi land.push
+2026-10-08T21:31:36.748Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T21:31:39.673Z claude-code/haiku-5.5 evidence.observed
+2026-10-08T21:31:40.311Z pavi land.check
+2026-10-08T21:31:41.280Z pavi review.requested
+2026-10-08T21:31:41.280Z pavi review.requested
+2026-10-08T21:31:47.616Z codex/gpt-6-luna review.claimed
+2026-10-08T21:32:04.388Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T21:32:22.355Z codex/gpt-6-luna review.released
+2026-10-08T21:32:53.340Z codex/gpt-6-luna review.claimed
+2026-10-08T21:33:18.697Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T21:33:21.958Z codex/gpt-6-luna review.approved
+2026-10-08T21:33:27.982Z pavi land.review
+2026-10-08T21:33:28.662Z pavi item.accepted
+2026-10-08T21:33:28.721Z pavi land.accept
