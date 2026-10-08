@@ -2,6 +2,7 @@ import { familyOf, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
+import type { LargeRef } from "./large.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -98,6 +99,11 @@ export interface Evidence {
   at: string;
   changedPaths?: string[] | null;  // observed checks record what the item actually changes
   outputTail?: string;
+  // The whole output of an observed check, kept in R2 by reference (src/large.ts)
+  // when it is longer than the tail kept inline; `outputTail` is its end. Only
+  // Atelier's own runs record one: the sandbox runner stores the log as it
+  // streams, and nothing posted to the API can name a stored payload.
+  log?: LargeRef;
   // Where an observed check ran: "sandbox" is a Cloudflare container started by
   // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
   // Worker's own code can record "sandbox"; anything posted to the API is "runner".

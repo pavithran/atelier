@@ -69,6 +69,6 @@ it("the speed section states the window with dates, each median with n, and only
   expect(html).toContain("a model with fewer than 3 shows n and no median");
   expect(speedSection({ ...SAMPLE, models: [] })).toContain("No model built, reviewed or merged anything in the last 14 days");
   // The Models page shows the section when given the record, and not otherwise.
-  expect(renderModels([], new Map(), null, "", undefined, new Map(), null, SAMPLE)).toContain('aria-label="Speed by model"');
+  expect(renderModels([], new Map(), null, "", undefined, new Map(), null, null, SAMPLE)).toContain('aria-label="Speed by model"');
   expect(renderModels([], new Map())).not.toContain("Speed by model");
 });
