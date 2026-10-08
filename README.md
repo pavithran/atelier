@@ -244,6 +244,14 @@ gate, check classes and checks that apply to some paths.
   decisions, project settings and token management need the owner token.
 - **Agent instructions.** `atelier guide` prints what an agent needs to
   know; paste it into the project's `AGENTS.md` or `CLAUDE.md`.
+- **Role prompts.** `atelier guide --role build|review|plan|orchestrate`
+  prints the instructions for one role alone: what a builder, a reviewer, a
+  planner or a session that runs Atelier for the project needs. A project
+  may override a role's text with `.atelier/prompts/ROLE.md` (for example
+  `.atelier/prompts/build.md`); the command prints that file when the
+  project has one, and a runner passes the same text to the agent it runs,
+  so the role's instructions live with the project and stay in sync between
+  the guide and the briefs.
 - **The owner's actor and name.** Set `OWNER_ACTOR` and `OWNER_NAME` as
   secrets or `vars`, and `TIMEZONE` to an IANA zone for the pages' times.
 - **Project policy.** `atelier init` again changes only what it names.
