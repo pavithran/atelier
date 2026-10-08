@@ -9,10 +9,11 @@ import { homedir } from "node:os";
 const CACHE = new URL("../.cache/tts/", import.meta.url).pathname;
 const LEDGER = CACHE + "spend.json";
 export const MODEL = "gpt-4o-mini-tts";
-export const VOICE = process.env.VIDEO_VOICE ?? "nova";
-// The spoken audio is sped up by this factor, pitch kept, for a brisker read.
-export const TEMPO = Number(process.env.VIDEO_TEMPO ?? 0.95);
-export const INSTRUCTIONS = process.env.VIDEO_INSTRUCTIONS ?? "Voice: casual, friendly and natural, someone in their early twenties showing a friend a thing they built. Conversational and light, quick but relaxed, like talking across a desk. Not dramatic, not an announcer, no big pauses, no emphasis for effect. Pronounce 'Atelier' as 'a-tel-yay'. Say 'Artifacts' as the plain word. Read t278 as 't two seventy-eight', UTC as 'U T C', GLM as 'G L M'.";
+export const VOICE = process.env.VIDEO_VOICE ?? "marin";
+// The spoken audio is stretched by this factor, pitch kept. marin reads at
+// about 149 words a minute unstretched, near the fifth cut's 151, so 1.
+export const TEMPO = Number(process.env.VIDEO_TEMPO ?? 1);
+export const INSTRUCTIONS = process.env.VIDEO_INSTRUCTIONS ?? "Voice: casual, friendly and natural, someone in their early twenties showing a friend a thing they built. Conversational and light, quick but relaxed, like talking across a desk. Not dramatic, not an announcer, no big pauses, no emphasis for effect. Pronounce 'Atelier' as 'a-tel-yay'. Say 'Artifacts' as the plain word. Read task ids such as t278 as 't two seventy-eight', UTC as 'U T C', GLM as 'G L M'.";
 
 // Estimated price: $0.60 per million text tokens in and $12 per million audio
 // tokens out, which OpenAI gives as about $0.015 a minute of speech.

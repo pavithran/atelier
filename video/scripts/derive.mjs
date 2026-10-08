@@ -4,7 +4,7 @@
 // left out: only ids, states, times, actor names and review verdicts.
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 
-const CUTOFF = process.env.LEDGER_CUTOFF ?? "2026-10-08T14:50:00.000Z";
+const CUTOFF = process.env.LEDGER_CUTOFF ?? "2026-10-08T15:43:14.950Z";
 const dir = new URL("../.cache/items/", import.meta.url).pathname;
 const items = readdirSync(dir).map((f) => JSON.parse(readFileSync(dir + f, "utf8")))
   .filter((d) => d.item.createdAt < CUTOFF)
@@ -57,6 +57,15 @@ const count = (xs, f) => xs.reduce((m, x) => { for (const k of [].concat(f(x))) 
 const merged = tasks.filter((t) => t.state === "merged");
 const allReviews = tasks.flatMap((t) => t.reviews);
 const byDay = count(merged, (t) => t.mergedAt.slice(0, 10));
+// The model that built each merged task: the actor whose push Atelier
+// observed at the merged head. A task worked on by several models counts
+// once, for the one whose head merged; plans are counted apart.
+const finalBuilder = (d) => {
+  const head = d.item.acceptedHead ?? d.item.head;
+  const pushes = d.events.filter((e) => e.kind === "push.observed" && e.at < CUTOFF).sort((a, b) => a.seq - b.seq);
+  const at = pushes.filter((e) => e.data?.head === head).at(-1) ?? pushes.at(-1);
+  return at ? at.actor : null;
+};
 const facts = {
   cutoff: CUTOFF,
   tasks: tasks.length,
@@ -76,6 +85,12 @@ const facts = {
   observedChecks: tasks.reduce((s, t) => s + t.observedChecks, 0),
   handoffs: tasks.reduce((s, t) => s + t.handoffs, 0),
 };
+const byIdAll = Object.fromEntries(items.map((d) => [d.item.id, d]));
+facts.mergedPlans = merged.filter((t) => t.kind === "plan").length;
+facts.mergedByFinalBuilder = count(merged.filter((t) => t.kind !== "plan"), (t) => { const a = finalBuilder(byIdAll[t.id]); return a && isModel(a) ? modelOf(a) : "none"; });
+facts.mergedWithSeveralBuilders = merged.filter((t) => t.kind !== "plan" && new Set(t.builders.map(modelOf)).size > 1).length;
+facts.claims = items.reduce((k, d) => k + d.events.filter((e) => e.kind === "item.claimed" && e.at < CUTOFF).length, 0);
+facts.lastReviewAt = allReviews.map((r) => r.at).sort().at(-1);
 // The owner's verdicts on review findings (atelier finding), by verdict.
 facts.findingVerdicts = count(items.flatMap((d) => d.events.filter((e) => e.kind === "review.finding" && e.at < CUTOFF)), (e) => e.data.verdict);
 // From which merge on every merge carried a cross-family approval.
@@ -97,6 +112,7 @@ const story = (id) => {
       .sort((a, b) => a.seq - b.seq).map((e) => ({ at: e.at, kind: e.kind, actor: e.actor, ms: e.data?.ms ?? null, head: (e.data?.head ?? "").slice(0, 8) || null, claim: e.data?.claim ?? null, passed: e.data?.passed ?? null, mergeCommit: (e.data?.mergeCommit ?? "").slice(0, 8) || null, skipped: e.data?.skipped ?? null })),
     handoffs: d.events.filter((e) => e.kind === "item.handoff").map((e) => ({ at: e.at, from: e.data.from, to: e.data.to, note: e.data.note })),
     mergedAt: d.events.find((e) => e.kind === "item.merged")?.at ?? null,
+    events: d.events.filter((e) => e.at < CUTOFF).sort((a, b) => a.seq - b.seq).map((e) => ({ at: e.at, kind: e.kind, actor: e.actor, note: e.data?.note || e.data?.reason || null, model: e.data?.model ?? null, to: e.data?.to ?? null, head: (e.data?.head ?? "").slice(0, 8) || null, mergeCommit: (e.data?.mergeCommit ?? "").slice(0, 8) || null })),
   };
 };
 // Local models: the pool's home entries served by the owner's own server,
@@ -110,8 +126,19 @@ const localMerged = tasks.filter((t) => t.state === "merged" && t.builders.some(
 // The fleet: every pool entry and how it is paid for.
 const fleet = poolList.map((e) => ({ id: e.id, harness: e.harness, family: e.family, provider: e.provider, addedAt: e.addedAt }));
 // Two tasks Atelier filed against itself on 2026-10-07 and 08, by title.
-const selfTasks = Object.fromEntries(["t296", "t298"].filter((id) => byId[id]).map((id) => [id, { title: byId[id].item.title, createdAt: byId[id].item.createdAt, state: tasks.find((t) => t.id === id).state }]));
-const stories = Object.fromEntries(["t278", "t219", "t252", "t50"].map((id) => [id, story(id)]));
+const selfTasks = Object.fromEntries(["t296", "t313"].filter((id) => byId[id]).map((id) => [id, { title: byId[id].item.title, createdAt: byId[id].item.createdAt, state: tasks.find((t) => t.id === id).state }]));
+const stories = Object.fromEntries(["t278", "t219", "t283", "t296", "t209", "t275", "t313", "t255", "t197"].map((id) => [id, story(id)]));
+// t324 happened after the cut-off; its story is read whole from its own file.
+{
+  const late = JSON.parse(readFileSync(new URL("../.cache/late-t324.json", import.meta.url), "utf8"));
+  const L = late;
+  stories.t324 = {
+    id: "t324", builders: (L.item.pushActors ?? []).filter(isModel),
+    reviews: L.reviews.sort((a, b) => a.at < b.at ? -1 : 1).map((r) => ({ by: r.by, approve: r.approve, head: r.head.slice(0, 8), at: r.at, note: r.note, tier: !!r.tier, findings: (r.findings ?? []).map((f) => ({ file: f.file, line: f.line, severity: f.severity, text: f.text })) })),
+    verdicts: L.events.filter((e) => e.kind === "review.finding").map((e) => ({ at: e.at, head: e.data.head.slice(0, 8), index: e.data.index, verdict: e.data.verdict, note: e.data.note })),
+    state: L.item.state,
+  };
+}
 
 // Who held which task at one moment: the five tasks held at once at
 // 14:40:53 UTC on 5 October, the most families working together.
@@ -127,9 +154,31 @@ for (const d of items) {
   }
 }
 const moment = { at: MOMENT, held: held.filter((h) => isModel(h.actor)).sort((a, b) => a.from < b.from ? -1 : 1) };
+// The most tasks agents held at one instant before the cut-off: every
+// holding interval (claim or handoff to release, submit, merge, abandon or
+// the next handoff), swept in time order.
+const spans = [];
+for (const d of items) {
+  let cur = null, from = null;
+  for (const e of [...d.events].filter((e) => e.at < CUTOFF).sort((a, b) => a.seq - b.seq)) {
+    if (e.kind === "item.claimed") { if (cur) spans.push({ id: d.item.id, actor: cur, from, to: e.at }); cur = e.actor; from = e.at; }
+    else if (e.kind === "item.handoff" && cur) { spans.push({ id: d.item.id, actor: cur, from, to: e.at }); cur = e.data.to; from = e.at; }
+    else if (["item.released", "item.merged", "item.abandoned", "item.submitted"].includes(e.kind) && cur) { spans.push({ id: d.item.id, actor: cur, from, to: e.at }); cur = null; }
+  }
+  if (cur) spans.push({ id: d.item.id, actor: cur, from, to: CUTOFF });
+}
+const modelSpans = spans.filter((x) => isModel(x.actor));
+let peakN = 0, peakAt = null, n = 0;
+for (const [t, k] of modelSpans.flatMap((x) => [[x.from, 1], [x.to, -1]]).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])) { n += k; if (n > peakN) { peakN = n; peakAt = t; } }
+const peak = { at: peakAt, held: modelSpans.filter((x) => x.from <= peakAt && x.to > peakAt).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1))).map((x) => ({ id: x.id, actor: x.actor })) };
 
 // Plan t197, from GET .../items/t197/plan (saved by fetch-ledger) and its parts' events.
 const planRaw = JSON.parse(readFileSync(new URL("../.cache/plan-t197.json", import.meta.url), "utf8"));
+// Run reports for the stories (GET /api/runs, saved by fetch-ledger).
+const runsRaw = JSON.parse(readFileSync(new URL("../.cache/api-runs.json", import.meta.url), "utf8"));
+const runs = (runsRaw.runs ?? runsRaw).filter((r) => ["t275", "t283", "t209"].includes(r.item) && r.at < CUTOFF).map((r) => ({ actor: r.actor, role: r.role, outcome: r.outcome, item: r.item, detail: r.detail, at: r.at }));
+// Waivers of the cross-family rule, each recorded as review.overridden.
+const overrides = items.flatMap((d) => d.events.filter((e) => e.kind === "review.overridden" && e.at < CUTOFF).map((e) => ({ id: d.item.id, at: e.at }))).sort((a, b) => a.at < b.at ? -1 : 1);
 const plan = {
   id: "t197", goal: planRaw.goal, planner: planRaw.planner, proposedAt: planRaw.proposal.at, approvedAt: planRaw.approval.at, hash: planRaw.approval.hash,
   maxParallel: planRaw.approval.limits.maxParallel, jobsUsed: planRaw.approval.jobsUsed, maxJobs: planRaw.approval.limits.maxJobs,
@@ -153,8 +202,8 @@ const api = {
   readAt: relRaw.speed.until,
   speed: { days: relRaw.speed.days, since: relRaw.speed.since, until: relRaw.speed.until, minSamples: relRaw.speed.minSamples, models: relRaw.speed.models.map((m) => ({ model: m.model, build: m.build, review: m.review })) },
   findings: relRaw.models.filter((m) => m.findingsConfirmed || m.findingsRefuted).map((m) => ({ model: m.model, upheld: m.findingsConfirmed, refuted: m.findingsRefuted })),
-  gateway: { readable: !gwRaw.off, models: (gwRaw.models ?? []).length, days: gwRaw.days ?? null },
+  gateway: { readable: !gwRaw.off, days: gwRaw.days ?? null, since: gwRaw.since ?? null, readAt: JSON.parse(readFileSync(new URL("../.cache/api-usage.json", import.meta.url), "utf8")).readAt ?? null, models: (gwRaw.models ?? []).map((m) => ({ provider: m.provider, model: m.model, calls: m.calls, failures: m.failures, tokensIn: m.tokensIn, tokensOut: m.tokensOut, cost: m.cost, medianMs: m.medianMs })) },
 };
 
-writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, moment, plan, selfTasks, fleet, localPool, localDispatches, localMerged, api, tasks }, null, 1) + "\n");
+writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, runs, overrides, moment, peak, plan, selfTasks, fleet, localPool, localDispatches, localMerged, api, tasks }, null, 1) + "\n");
 console.log(JSON.stringify(facts, null, 1));
