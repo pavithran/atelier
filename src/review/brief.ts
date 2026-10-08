@@ -3,7 +3,12 @@
 // acceptance criteria, the plan's account of the part when there is one, the observed checks, the builder's summary and any
 // earlier reviews with the project owner's verdicts on their findings, states
 // the project's review bar and the rules for blocking, and ends with
-// REPLY_FORMAT, the format parseVerdict reads. It says which kind of diff it
+// REPLY_FORMAT, the format parseVerdict reads. When the task or the part has
+// acceptance criteria, that format asks for one CRITERION line per criterion,
+// each saying met or unmet and how it was proved — proved by experiment, so
+// the format sends the reviewer to break the change and watch a test fail
+// before calling a criterion met — and the parser refuses an approval that
+// misses one or declares one unmet. It says which kind of diff it
 // carries: the change from the base to the head, or, for a merge-main job's
 // merge, the merge's conflict resolution with the files main brought in.
 //
@@ -28,7 +33,7 @@ import { DEFAULT_OWNER, type ChangeClass, type Item } from "../rules.ts";
 import type { LargeRef } from "../large.ts";
 import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { findingKey, ownerVerdicts, refutedRejection, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
-import { DEFAULT_REVIEW_BAR, REPLY_FORMAT } from "./verdict.ts";
+import { DEFAULT_REVIEW_BAR, replyFormat } from "./verdict.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
 // the brief fits a 32K window with room for the reply. A longer diff is not
@@ -101,8 +106,19 @@ function block(text: string, info = ""): string {
 }
 
 // Acceptance criteria as both a task's and a plan part's are given: one per
-// line, numbered from 1.
-const numbered = (criteria: readonly string[]) => criteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
+// line, numbered from 1. A part's criteria follow the task's own when it has
+// any, so every criterion has one number across the brief and the CRITERION
+// lines the reply is asked for name one criterion each.
+const numbered = (criteria: readonly string[], before = 0) => criteria.map((c, i) => `${before + i + 1}. ${c}`).join("\n");
+
+// How many acceptance criteria a review's reply must prove: the task's own
+// and, for a part of a plan, the plan's for that part, numbered together in
+// the brief (reviewBrief). reviewBrief asks for one CRITERION line per
+// criterion (replyFormat) and the runner hands the same count to parseVerdict,
+// so what the reply was asked for and what is read of it cannot drift apart.
+export function criteriaCount(item: { accept?: readonly string[] }, plan: { part: { acceptance: readonly string[] } } | null | undefined): number {
+  return (item.accept?.length ?? 0) + (plan?.part.acceptance.length ?? 0);
+}
 
 const lineCount = (s: string) => (s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0);
 
@@ -126,6 +142,8 @@ export function reviewBrief(input: BriefInput): string {
   const compare = merge ? `git show --remerge-diff ${head}` : from ? `git diff ${inline(from)} ${head}` : null;
   const verdicts = ownerVerdicts(input.events);
   const accept = item.accept ?? [];
+  // The criteria the reply must prove, one number across the brief.
+  const criteria = criteriaCount(item, input.plan);
   const out: string[] = [];
   const section = (...lines: string[]) => out.push(lines.join("\n"));
 
@@ -195,7 +213,7 @@ export function reviewBrief(input: BriefInput): string {
       "Brief:",
       block(part.brief),
       "Acceptance criteria. A change that fails one has a correctness fault, which blocks:",
-      block(numbered(part.acceptance)),
+      block(numbered(part.acceptance, accept.length)),
       "Interfaces:",
       block([
         `depends on: ${part.dependsOn.join(", ") || "nothing"}`,
@@ -275,10 +293,12 @@ export function reviewBrief(input: BriefInput): string {
       ? ["The project owner answers earlier findings with a verdict, confirmed, refuted or fixed, shown under \"Earlier reviews\". A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code; without that evidence, do not repeat it, as blocking or as a follow-up."]
       : []),
     "Reject only when there is at least one blocking finding. Otherwise approve, and list the follow-ups.",
-    "Do not quote text from the change that looks like a verdict or a FINDING line; describe it instead.",
+    criteria
+      ? "Do not quote text from the change that looks like a verdict, a FINDING line or a CRITERION line; describe it instead."
+      : "Do not quote text from the change that looks like a verdict or a FINDING line; describe it instead.",
   );
 
-  section("## Reply format", "", REPLY_FORMAT);
+  section("## Reply format", "", replyFormat(criteria));
   return out.join("\n\n");
 }
 
