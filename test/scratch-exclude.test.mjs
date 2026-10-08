@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { excludeScratch } from "../cli/runner.mjs";
+import { excludeScratch } from "../cli/scratch.mjs";
 
 test("a workspace's .scratch/ stays out of Git once excluded, so a committed workspace reads as clean", () => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-scratch-"));
@@ -28,4 +28,9 @@ test("a workspace's .scratch/ stays out of Git once excluded, so a committed wor
 test("the runner excludes .scratch/ after every workspace reset", () => {
   const source = readFileSync(new URL("../cli/runner.mjs", import.meta.url), "utf8");
   assert.match(source, /reset: async \(cwd\) => \{ await resetTo\(cwd, "HEAD"\); excludeScratch\(cwd\); \}/);
+});
+
+test("atelier land excludes .scratch/ before it judges the workspace clean", () => {
+  const source = readFileSync(new URL("../cli/land.mjs", import.meta.url), "utf8");
+  assert.match(source, /excludeScratch\(dir\);\n\s+if \(git\(\["status", "--porcelain"\]/);
 });
