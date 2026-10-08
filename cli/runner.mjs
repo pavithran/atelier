@@ -12,6 +12,7 @@ import { reviewBrief, BRIEF_LIMITS } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -90,6 +91,58 @@ export function briefFor(item, project) {
 export function commandFor(entry, { model, briefFile, workspace, planFile, diffFile, verdictFile }) {
   const values = { model, brief_file: briefFile, workspace, plan_file: planFile, diff_file: diffFile, verdict_file: verdictFile };
   return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace|plan_file|diff_file|verdict_file)\}/g, (_, key) => values[key]));
+}
+
+// A role's instructions, as the runner passes them to the harness: the
+// project's `.atelier/prompts/ROLE.md` when the workspace (a clone of the
+// fork) holds one, else the default text `atelier guide --role ROLE` prints.
+// The override travels with the project's code, so the agent reads exactly
+// what the owner's checkout would print for the role. Returned without a
+// trailing newline, so the caller joins it to the brief with a single blank
+// line, however it was written.
+//
+// A role's override cannot name the role's own prompt as something for the
+// change to write, so an override over the cap is refused rather than cut or
+// carried: a cut would drop instructions the owner wrote, and an unbounded
+// one would crowd the actual brief out of the context window.
+export function roleText(role, workspace) {
+  return roleOverride(role, workspace).replace(/\s+$/, "");
+}
+
+// A role's override, `.atelier/prompts/ROLE.md`, read from `base`, the
+// directory that holds the checkout. Returns the file's text, or the default
+// `rolePrompt(role)` when there is none, and refuses one over ROLE_PROMPT_MAX.
+function roleOverride(role, base) {
+  let text;
+  try { text = readFileSync(join(base, ".atelier", "prompts", `${role}.md`), "utf8"); }
+  catch { return rolePrompt(role); }
+  return checkedOverride(role, text);
+}
+
+// The length check every override passes through: a blank file is no override,
+// and one over the cap is refused loudly rather than silently degrading the run.
+function checkedOverride(role, text) {
+  if (!text.trim()) return rolePrompt(role);
+  if (text.length > ROLE_PROMPT_MAX) {
+    throw new Error(`.atelier/prompts/${role}.md is ${text.length} characters, over the ${ROLE_PROMPT_MAX} a role prompt may be; shorten it`);
+  }
+  return text;
+}
+
+// The review role's instructions, read from the accepted base — the branch the
+// item merges into, which `reviewBase` fetched and returned as `compare.target`
+// — never from the workspace under review. A change that writes its own
+// `.atelier/prompts/review.md` must not author the instructions its reviewer
+// reads, and it stays unfenced in front of the brief, exactly what the brief's
+// fencing discipline exists to prevent. Falls back to the default when the
+// base has no override or no base could be fetched.
+export async function reviewRoleText(io, workspace, compare) {
+  const base = compare?.target;
+  if (!base) return rolePrompt("review").replace(/\s+$/, "");
+  let text;
+  try { text = await io.show(workspace, `${base}:.atelier/prompts/review.md`); }
+  catch { return rolePrompt("review").replace(/\s+$/, ""); }
+  return checkedOverride("review", text).replace(/\s+$/, "");
 }
 
 // Observations are supplied by the loop; terminal states remain terminal.
@@ -532,11 +585,12 @@ export async function runTask(assignment, config, name, io) {
       const local = briefFor({ ...item, owner: actor }, project);
       // A merge-main task's brief (t243) is the local one with the job's own
       // instructions (mergeMainSection) and the conflicts after it.
-      brief = await io.brief(workspace, serverBrief
+      const body = serverBrief
         ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text)
         : merging
           ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
-          : reworked?.text ? `${local}\n${reworked.text}\n` : local);
+          : reworked?.text ? `${local}\n${reworked.text}\n` : local;
+      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${body}`);
       const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
       for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
       // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -690,7 +744,7 @@ export async function runReview(assignment, config, name, io) {
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
     });
-    brief = await io.brief(workspace, text);
+    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -726,6 +780,11 @@ export async function runReview(assignment, config, name, io) {
       return { phase: "failed", reason: parsed.error, taskFailure: true };
     }
     const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
+    // The verdict is bound to the criteria the brief carried and to the
+    // request claimed, as the claim gave them, so a verdict on criteria that
+    // changed while the harness ran is refused rather than counted.
+    if (claimed.criteria) argv.push("--criteria", claimed.criteria);
+    if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
     if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${parsed.verdict}`);
@@ -757,8 +816,13 @@ export async function reviewBase(io, workspace, claimed) {
   if (!target?.remote || !target?.branch) return forkPoint("the review claim named no branch the task merges into");
   try {
     await io.fetch(workspace, target.remote, target.token, target.branch);
+    // The fetched branch's head, returned as `target` so the review role's
+    // instructions can be read from it (reviewRoleText), never from the head
+    // under review: FETCH_HEAD after the clone is that head, so only a head
+    // captured here is safe to read.
+    const targetHead = (await io.revParse(workspace, "FETCH_HEAD")).trim();
     const from = (await io.mergeBase(workspace, "FETCH_HEAD", claimed.head)).trim();
-    return from ? { from, branch: target.branch } : forkPoint(`the head shares no history with ${target.branch}`);
+    return from ? { from, branch: target.branch, target: targetHead } : forkPoint(`the head shares no history with ${target.branch}`);
   } catch (error) {
     return forkPoint(`the merge base with ${target.branch} could not be found: ${error.message}`);
   }
@@ -1122,7 +1186,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (io.stopped()) throw new Error("interrupted");
     const job = await io.jobBrief(project, item.id, actor);
     if (!job || typeof job.text !== "string") throw new Error("the server's job brief has no text");
-    brief = await io.brief(workspace, job.text);
+    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${job.text}`);
     const planFile = planFilePath(workspace);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const each of withheld) io.log(`${each} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
@@ -1262,6 +1326,12 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
+    revParse: (dir, spec) => checked(["git", "rev-parse", spec], { cwd: dir, capture: true, signal: controller.signal, step: "rev-parse" }, executeChild),
+    // A review role's override read from the accepted base (reviewRoleText):
+    // the file as the base holds it, or the command fails and the default is
+    // used. The failure is expected (a base with no override), so its stderr
+    // is captured and dropped, not printed as a "fatal" on every review.
+    show: (dir, spec) => checked(["git", "show", spec], { cwd: dir, capture: true, captureError: true, signal: controller.signal, step: "show" }, executeChild),
     // A merge-main review's git reads (mergeReview): the head's parents, the
     // merge's conflict resolution, and the files the merge brought in.
     parents: (dir, head) => checked(["git", "rev-list", "--parents", "-n", "1", head], { cwd: dir, capture: true, signal: controller.signal, step: "parents" }, executeChild),
