@@ -1,0 +1,29 @@
+atelier atelier/t263 "Route reviewers by precision (PAVI, 2026-10-07): the ledger already records the owner's verdict on each blocking finding (atelier finding: confirmed, fixed, refuted). Compute each reviewer model's precision over a stated window (confirmed+fixed over judged, with the sample size), show it on the Models page, and have routing (pickReviewer, plan routing, tier selection) prefer reviewers with higher precision among those that qualify, never dropping below the cross-family rule; on 2026-10-07 about half of gemini-3.1-pro's blocking findings were refuted"
+accepted head a795994a8240bb120df67a9145e0222e739739d9
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T03:23:44.511Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T03:23:47.434Z
+REVIEW approve by antigravity/gemini-3.1-pro at a795994a8240bb120df67a9145e0222e739739d9, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T16:12:02.495Z pavi item.created
+2026-10-07T21:36:42.467Z pavi item.dispatched
+2026-10-07T22:25:43.808Z pavi item.undispatched
+2026-10-07T22:25:44.642Z pavi item.blocked
+2026-10-08T01:31:10.695Z pavi item.unblocked
+2026-10-08T01:31:11.142Z claude-code/opus-5.5 item.claimed
+2026-10-08T01:31:16.029Z claude-code/opus-5.5 fork.created
+2026-10-08T03:20:50.141Z pavi land.lease
+2026-10-08T03:20:53.993Z pavi land.merge
+2026-10-08T03:21:01.968Z pavi land.regenerate
+2026-10-08T03:21:05.036Z claude-code/opus-5.5 push.observed
+2026-10-08T03:21:05.169Z pavi land.push
+2026-10-08T03:23:45.332Z claude-code/opus-5.5 evidence.observed
+2026-10-08T03:23:47.673Z claude-code/opus-5.5 evidence.observed
+2026-10-08T03:23:48.128Z pavi land.check
+2026-10-08T03:23:48.493Z claude-code/opus-5.5 item.submitted
+2026-10-08T03:23:48.678Z pavi land.submit
+2026-10-08T03:23:48.793Z pavi review.requested
+2026-10-08T03:24:00.307Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T03:24:01.222Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T03:28:05.049Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T03:28:07.871Z pavi land.review
+2026-10-08T03:28:08.563Z pavi item.accepted
+2026-10-08T03:28:08.695Z pavi land.accept
