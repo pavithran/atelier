@@ -128,7 +128,7 @@ interface Resolved {
   limits: JobBriefLimits;
 }
 
-const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on the agent's machine" } as const;
+const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 
 const short = (head: string) => head.slice(0, 8);
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
