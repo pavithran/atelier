@@ -64,6 +64,23 @@ moved main into the task's fork. The Models page and the JSON route show
 these measures by model and by the kind of work each item asked for, from
 its plan part when there is one, else unknown.
 
+Review precision is shown in a section of its own on the Models page, over
+the last 30 days with the dates stated: for each reviewer model, the
+blocking findings the owner judged (n), those confirmed or fixed, those
+refuted, and the share confirmed or fixed. Each finding counts once, by its
+newest verdict (`src/models/precision.ts`). Under 5 judged findings the row
+shows n and says it is too few to rank. Routing reads the same figure, from
+the project's own ledger, to order reviewers that already qualify: another
+family than every contributor, available, allowed and offered. The
+landing's reviewer and the plan tick's fallback (`pickReviewer`, which asks
+the tier and then the pool in precision order), the separate tier review
+(`pickTierReviewer`) and a plan's routed reviewer (`routeParts`) all ask the
+more precise reviewer first, at (held + 1) / (judged + 2); a reviewer with
+fewer than 5 judged orders as neutral, one half. A re-review still goes
+first to the previous round's reviewer. Precision never makes a reviewer
+qualify, so a same-family or paused reviewer is passed over however
+precise.
+
 ```text
 atelier defect t12 --note "pagination drops the last page" --found-in t19
 atelier finding t12 --head SHA --index 1 --verdict confirmed --note "fixed in t19"
