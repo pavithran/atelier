@@ -7,6 +7,8 @@ import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS } from "../src/review/needed.ts";
+import { reviewBrief } from "../src/review/brief.ts";
+import { criteriaHash } from "../src/criteria.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
 // Automatic cross-family review on the Ledger (docs/orchestrator.md, section 4,
@@ -130,7 +132,7 @@ it("an approval answers the request and moves the part on", async () => {
   const head = "a".repeat(40);
   await submitPart(L, partId, head);
   await L.claimReview(partId, GPT, RUNNER);
-  await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Looks good", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: GPT, head, approve: true, note: "Looks good", at: new Date().toISOString() });
   // The request is answered, and the part can be accepted.
   expect(await reviewWaiting(L)).toEqual([]);
   expect(await L.reviewRequests(partId)).toEqual([expect.objectContaining({ head, state: "answered" })]);
@@ -157,7 +159,7 @@ it("a rejection with a blocker sends the part back with the findings, then an al
   await submitPart(L, partId, head1);
   const reviewer1 = await routedReviewer(L, partId);
   await L.claimReview(partId, reviewer1, RUNNER);
-  await L.addReview({ itemId: partId, by: reviewer1, head: head1, approve: false, note: "One blocker.", findings: [blocker()], at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer1, head: head1, approve: false, note: "One blocker.", findings: [blocker()], at: new Date().toISOString() });
   // The part is released back to its builder, and the findings are stored.
   expect((await L.item(partId)).state).toBe("open");
   expect((await L.reviewsFor(partId))[0].findings).toEqual([blocker()]);
@@ -175,7 +177,7 @@ it("a rejection with a blocker sends the part back with the findings, then an al
   await L.submit(partId, builder);
   const reviewer2 = await routedReviewer(L, partId);
   await L.claimReview(partId, reviewer2, RUNNER);
-  await L.addReview({ itemId: partId, by: reviewer2, head: head2, approve: false, note: "Still broken.", findings: [blocker()], at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer2, head: head2, approve: false, note: "Still broken.", findings: [blocker()], at: new Date().toISOString() });
   // After two rounds an alternate builder takes over: the first that reviewed none of the rounds.
   const alternate = route.alternates.map((a) => a.actor).find((a) => a !== reviewer1 && a !== reviewer2)!;
   expect(alternate).toBeDefined();
@@ -189,7 +191,7 @@ it("a rejection with a blocker sends the part back with the findings, then an al
   await L.submit(partId, alternate);
   const reviewer3 = await routedReviewer(L, partId);
   await L.claimReview(partId, reviewer3, RUNNER);
-  await L.addReview({ itemId: partId, by: reviewer3, head: head3, approve: false, note: "Still broken.", findings: [blocker()], at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer3, head: head3, approve: false, note: "Still broken.", findings: [blocker()], at: new Date().toISOString() });
   expect((await L.planView(id)).blocked).toBe("part a has reached 3 attempts");
   expect(await reviewWaiting(L)).toEqual([]);
 });
@@ -203,7 +205,7 @@ it("a review with only follow-up findings does not rework the part, and the revi
   await refusal(L.claimReview(partId, actor, RUNNER), "self_review", /cannot review/);
   await L.claimReview(partId, GPT, RUNNER);
   // An approval carrying follow-ups only does not release the part.
-  await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Fine", findings: [{ file: "src/a/x.ts", line: null, severity: "follow-up", text: "Add a test." }], at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: GPT, head, approve: true, note: "Fine", findings: [{ file: "src/a/x.ts", line: null, severity: "follow-up", text: "Add a test." }], at: new Date().toISOString() });
   expect((await L.item(partId)).state).toBe("submitted");
   expect((await L.reviewsFor(partId))[0].findings).toHaveLength(1);
 });
@@ -221,7 +223,7 @@ it("a rejection the owner has fully refuted is reviewed again at the same head w
   const reviewer1 = await routedReviewer(L, partId);
   await L.claimReview(partId, reviewer1, RUNNER);
   await L.addReview({
-    itemId: partId, by: reviewer1, head, approve: false, note: "Two blockers.",
+    itemId: partId, by: reviewer1, head, criteria: await L.criteria(partId), approve: false, note: "Two blockers.",
     findings: [blocker(), { file: "src/a/y.ts", line: 4, severity: "blocking" as const, text: "It drops a row." }],
     at: new Date().toISOString(),
   });
@@ -249,7 +251,7 @@ it("a rejection the owner has fully refuted is reviewed again at the same head w
   expect(brief2).toContain("Round 1, at aaaaaaaa (this head)");
   expect(brief2).toContain("The project owner's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`\n- finding 2: refuted, noting `src/a/y.ts:12 keeps the row.`");
   // The second opinion approves at the same head, and the request is answered.
-  await L.addReview({ itemId: partId, by: reviewer1, head, approve: true, note: "Both findings were refuted; approving.", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer1, head, approve: true, note: "Both findings were refuted; approving.", at: new Date().toISOString() });
   expect(await reviewWaiting(L)).toEqual([]);
 });
 
@@ -501,7 +503,7 @@ it("a part blocked for want of a reviewer is unblocked by naming one outside the
   expect(planText(view as unknown as PlanView, "review-reroute-blocked")).toContain(`reviewer ${GEMINI}, of another family, in place of ${routed}: named by the project owner`);
   // The named reviewer claims the review, and its approval counts.
   expect((await L.claimReview(partId, GEMINI, RUNNER) as unknown as ReviewClaim).head).toBe(head);
-  await L.addReview({ itemId: partId, by: GEMINI, head, approve: true, note: "Looks good", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: GEMINI, head, approve: true, note: "Looks good", at: new Date().toISOString() });
   await L.accept(partId, "owner");
   expect((await L.item(partId)).state).toBe("accepted");
 });
@@ -605,7 +607,7 @@ it("a review claim carries the project's review bar and the owner's verdicts on 
   expect(brief1).not.toContain("## Earlier reviews");
 
   // The reviewer rejects; the owner refutes the finding with file and line.
-  await L.addReview({ itemId: partId, by: reviewer1, head: "a".repeat(40), approve: false, note: "One blocker.", findings: [blocker()], at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer1, head: "a".repeat(40), approve: false, note: "One blocker.", findings: [blocker()], at: new Date().toISOString() });
   await L.addFinding(partId, "owner", "a".repeat(40), 1, "refuted", "src/a/x.ts:9 writes the row before it deletes.");
   await L.claim(partId, builder, RUNNER);
   const head2 = "b".repeat(40);
@@ -702,7 +704,7 @@ it("a protected part's review is routed to a tier model of another family before
   expect(planText(view, "review-tier-first")).toContain(`gate review, top tier, of ${head.slice(0, 8)} asked of ${top}; the request is open`);
   // Its one approval satisfies the gate and is labelled as the tier's too.
   await L.claimReview(partId, top, RUNNER);
-  await L.addReview({ itemId: partId, by: top, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: top, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
   expect((await L.reviewsFor(partId))[0]).toMatchObject({ by: top, approve: true, topTier: true });
   await L.accept(partId, "owner");
   expect((await L.item(partId)).state).toBe("accepted");
@@ -741,7 +743,7 @@ it("a tier approval never satisfies the gate, and the gate's approval leaves the
   const head = "a".repeat(40);
   await submitPart(L, partId, head);
   await L.claimReview(partId, sibling, RUNNER);
-  await L.addReview({ itemId: partId, by: sibling, head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: sibling, head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
   expect((await L.reviewsFor(partId))[0]).toMatchObject({ by: sibling, approve: true, tier: true, claimed: true });
   // The gate still needs its cross-family review, still asked of GPT, and
   // the part cannot be accepted on the tier approval.
@@ -750,7 +752,7 @@ it("a tier approval never satisfies the gate, and the gate's approval leaves the
   await refusal(L.accept(partId, "owner"), "not_ready", /another family/);
   // The gate's approval answers only the gate's request.
   await L.claimReview(partId, GPT, RUNNER);
-  await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
   await L.accept(partId, "owner");
   expect((await L.item(partId)).state).toBe("accepted");
 });
@@ -761,12 +763,41 @@ it("a tier rejection with a blocking finding sends the part back like any reject
   await submitPart(L, partId, head);
   // The gate approves first; the tier request is still asked.
   await L.claimReview(partId, GPT, RUNNER);
-  await L.addReview({ itemId: partId, by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
   expect((await L.reviewRequests(partId)).find((r) => r.tier)).toMatchObject({ state: "open" });
   const claim = await L.claimReview(partId, sibling, RUNNER) as unknown as ReviewClaim;
   expect(claim.need).not.toBeNull();
-  await L.addReview({ itemId: partId, by: sibling, head, approve: false, note: "Tier: loses data.", findings: [blocker()], at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: sibling, head, approve: false, note: "Tier: loses data.", findings: [blocker()], at: new Date().toISOString() });
   expect((await L.item(partId)).state).toBe("open");
   expect((await events(L, partId)).find((e) => e.kind === "review.rework")).toMatchObject({ data: { by: sibling, builder, findings: [blocker()] } });
   expect((await events(L, partId)).find((e) => e.kind === "review.rejected")).toMatchObject({ actor: sibling, data: { tier: true } });
+});
+
+// t326: a part's review claim captures the binding of the criteria its brief
+// carries, the task's and the approved plan's, and a verdict must name it.
+it("a part's review claim binds the task's criteria and the plan's acceptance its brief carries, and a verdict names that binding", async () => {
+  const L = await setup("review-criteria-part");
+  const { partId } = await approved(L);
+  // The owner adds a criterion of the task's own to the part before it is built.
+  await L.editItem(partId, "owner", { accept: ["Errors name the line"] });
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const claim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.item.accept).toEqual(["Errors name the line"]);
+  expect(claim.plan?.part.acceptance).toEqual(["It works"]);
+  expect(claim.criteria).toBe(criteriaHash(["Errors name the line"], ["It works"]));
+  expect(claim.criteria).toBe(await L.criteria(partId));
+  for (const other of [criteriaHash(["Errors name the line"]), criteriaHash([], ["It works"]), criteriaHash(["Errors name the line", "It works"])]) expect(claim.criteria).not.toBe(other);
+  // The brief built from the claim carries both lists the binding names.
+  const brief = reviewBrief({ need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, owner: claim.owner });
+  expect(brief).toContain("1. Errors name the line");
+  expect(brief).toContain("1. It works");
+  // The claim is recorded with its binding and request.
+  expect((await events(L, partId)).find((e) => e.kind === "review.claimed")!.data).toMatchObject({ head, criteria: claim.criteria, request: claim.request });
+  // A verdict bound to one list alone is refused and answers nothing.
+  await refusal(L.addReview({ itemId: partId, by: GPT, head, criteria: criteriaHash(["Errors name the line"]), request: claim.request, approve: true, note: "ok", at: new Date().toISOString() }, undefined, true), "stale_criteria", /refresh/);
+  expect((await L.reviewRequests(partId)).at(-1)).toMatchObject({ state: "claimed", claimedBy: GPT });
+  await L.addReview({ itemId: partId, by: GPT, head, criteria: claim.criteria, request: claim.request, approve: true, note: "ok", at: new Date().toISOString() }, undefined, true);
+  expect((await L.reviewRequests(partId)).at(-1)).toMatchObject({ state: "answered" });
+  expect((await L.reviewsFor(partId)).at(-1)).toMatchObject({ criteria: claim.criteria, request: claim.request, claimed: true });
 });

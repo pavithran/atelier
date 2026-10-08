@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -40,7 +41,7 @@ const pass = (over: Partial<Evidence> = {}): Evidence => ({
   by: "atelier/sandbox", at: T, changedPaths: ["src/review/needed.ts"], where: "sandbox", ...over,
 });
 const review = (by: string, approve: boolean, head = H2, over: Partial<ReviewRecord> = {}): ReviewRecord =>
-  ({ itemId: "t21", by, head, approve, note: "", at: T, ...over });
+  ({ itemId: "t21", by, head, criteria: NO_CRITERIA, approve, note: "", at: T, ...over });
 const need = (over: Partial<NeedInput> = {}) =>
   reviewNeeded({ item: item(), part: true, policy, evidence: [pass()], reviews: [], now: NOW, owner: OWNER, ...over });
 const required = (over: Partial<NeedInput> = {}): ReviewRequired => {
@@ -965,4 +966,45 @@ test("reviewBrief: says which kind of diff the reviewer reads, and names the dif
   assert.ok(task.includes(`## The task's own change\n\nThis is the task's whole change, the output of git diff ${H3} ${H2}`), task);
   assert.ok(task.includes(`\`\`\`diff\n${own.trimEnd()}\n\`\`\``), task);
   assert.ok(task.includes("the resolution first and the task's own change after it"), task);
+});
+
+// t326: scheduling reads reviews as the gate does. Only a review bound to the
+// item's head and its criteria as they are now ends the need for a review or
+// holds it back for rework; and the brief a claim builds carries the same
+// criteria the claim's binding names.
+test("reviewNeeded: only a review bound to this head and these criteria ends the need or waits for rework", () => {
+  const accept = ["Reviews are bound to the criteria"], plan = ["It works"];
+  const bound = criteriaHash(accept, plan);
+  const part = item({ accept, partAccept: plan });
+  const GPT = "codex/gpt-6-astra";
+  const approval = (over: Partial<ReviewRecord> = {}) => review(GPT, true, H2, { criteria: bound, ...over });
+  assert.equal(need({ item: part, reviews: [approval()] }).needed, false);
+  for (const stale of [approval({ criteria: criteriaHash(accept) }), approval({ criteria: NO_CRITERIA }), approval({ head: H1 }), approval({ withdrawn: { at: T, reason: "the acceptance criteria changed" } }), approval({ criteria: undefined })]) {
+    assert.equal(need({ item: part, reviews: [stale] }).needed, true, JSON.stringify(stale));
+  }
+  // A rejection at this head waits for rework only when it is bound the same way.
+  const rejection = (over: Partial<ReviewRecord> = {}) => review(GPT, false, H2, { criteria: bound, ...over });
+  assert.match((need({ item: part, reviews: [rejection()] }) as { reason: string }).reason, /rejected bbbbbbbb; the builder reworks it/);
+  assert.equal(need({ item: part, reviews: [rejection({ criteria: criteriaHash(accept) })] }).needed, true);
+  assert.equal(need({ item: part, reviews: [rejection({ withdrawn: { at: T, reason: "x" } })] }).needed, true);
+  // An item outside a plan: its gate's own reading of the review.
+  const task = item({ accept });
+  const protectedChange = [pass({ changedPaths: ["AGENTS.md"] })];
+  assert.equal(need({ part: false, item: task, evidence: protectedChange, reviews: [review(GPT, true, H2, { criteria: criteriaHash(accept) })] }).needed, false);
+  assert.equal(need({ part: false, item: task, evidence: protectedChange, reviews: [review(GPT, true, H2, { criteria: NO_CRITERIA })] }).needed, true);
+});
+
+test("a review brief carries the task's criteria and the plan's acceptance the claim's binding names, and marks a withdrawn review", () => {
+  const accept = ["Reviews are bound to the criteria"];
+  const planPart: PlanPart = {
+    key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/review/**"], dependsOn: [], provides: [], uses: [],
+    brief: "Build it", acceptance: ["It works", "It is fast"], tests: [], size: "S",
+  };
+  const n = required({ reviews: [review("codex/gpt-6-astra", false, H1, { criteria: NO_CRITERIA, withdrawn: { at: T, reason: "the acceptance criteria changed" } })] });
+  const text = reviewBrief({ need: n, item: item({ accept }), events: [], plan: { goal: "Ship", part: planPart }, owner: OWNER });
+  assert.ok(text.includes("1. Reviews are bound to the criteria"));
+  assert.ok(text.includes("1. It works\n2. It is fast"));
+  assert.match(text, /Withdrawn when the acceptance criteria changed/);
+  // The binding of exactly these two lists, in this order.
+  assert.notEqual(criteriaHash(accept, planPart.acceptance), criteriaHash(accept, [...planPart.acceptance].reverse()));
 });

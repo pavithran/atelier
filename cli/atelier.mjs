@@ -40,7 +40,7 @@ import { describeStore, promptSecret, readSecret, writeSecret } from "./credenti
 import { checkEnv } from "./check-env.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
+import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "../src/usage.ts";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
@@ -248,7 +248,7 @@ export const FLAGS = {
   report: { item: false },
   submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
   diff: {},
-  review: { approve: true, reject: true, note: false, head: false, findings: false },
+  review: { approve: true, reject: true, note: false, head: false, findings: false, criteria: false, request: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
   "read-token": {},
@@ -288,7 +288,7 @@ export const FLAGS = {
   inbox: { json: true },
   status: { json: true },
   open: {},
-  guide: {},
+  guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
   help: {},
 };
 const REST = new Set(["check"]);
@@ -456,6 +456,31 @@ function project() {
   const { here, name } = registeredHere();
   if (name) return name;
   die(unregisteredMessage(here, cfg.projects));
+}
+
+// A project's override for one role's instructions, `.atelier/prompts/ROLE.md`,
+// or null when the project has none. Read from the project's checkout on this
+// machine; a role outside one prints its default text. The project is the one
+// `--project` names, else this folder's workspace or registered checkout, else
+// none.
+function roleOverride(role) {
+  // A `--project` that names no checkout registered on this Mac is a typo, not
+  // a reason to print the default text: every other command that takes
+  // `--project` dies, and the quiet fallback here would hide the typo'd name
+  // and print the default as though the owner's override did not exist.
+  if (args.project && !cfg.projects?.[args.project]) {
+    die(unregisteredMessage(registeredHere().here, cfg.projects));
+  }
+  const name = args.project ?? wsConfig("project") ?? registeredHere().name;
+  const path = name ? cfg.projects?.[name]?.path : null;
+  if (!path) return null;
+  try {
+    const text = readFileSync(join(path, ".atelier", "prompts", `${role}.md`), "utf8");
+    if (!text.trim()) return null;
+    return text.endsWith("\n") ? text : `${text}\n`;
+  } catch {
+    return null;
+  }
 }
 
 // What a command that needs a project says when this folder is neither a
@@ -1154,6 +1179,28 @@ export function formatFields(fields) {
   ].filter(Boolean);
 }
 
+// What `atelier edit` says when the task's acceptance criteria changed
+// (Ledger.editItem): that they did, what that withdrew, and that a fresh
+// review of the new criteria is needed. An edit that leaves them as they
+// were says nothing of them.
+export function criteriaNotice(id, change) {
+  const count = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  const withdrawn = [
+    change.reviews ? count(change.reviews, "review") : null,
+    change.requests ? count(change.requests, "review request") : null,
+    change.acceptance ? "the acceptance" : null,
+    change.override ? "the override of the review" : null,
+  ].filter(Boolean);
+  return [
+    `The acceptance criteria of ${id} changed (binding ${String(change.to).slice(0, 12)}, was ${String(change.from).slice(0, 12)}).`,
+    withdrawn.length
+      ? `Withdrawn: ${withdrawn.join(", ")}. They stay in the record and never count again, even if the criteria change back; ${id} needs a fresh review of the new criteria.`
+      : `No review or review request stood, so nothing was withdrawn; any review of ${id} from now on judges the new criteria.`,
+    ...(change.acceptance ? [`${id} is claimed again: its holder submits it, and it is reviewed and accepted again before it can merge.`] : []),
+    ...(change.asked?.length ? [`Asked again at the same head: ${change.asked.join(", ")}.`] : []),
+  ].join("\n");
+}
+
 // The task an agent starts: its short title, then its whole brief.
 export function formatTask(item) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
@@ -1162,7 +1209,10 @@ export function formatTask(item) {
 
 export function formatBrief(project, id, brief, origin) {
   return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
-    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief), ...brief.evidence.map(flat),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief),
+    ...(brief.partAccept ?? []).map((c, i) => `Plan acceptance criterion ${i + 1}: ${flat(c)}`),
+    ...(brief.criteria ? [`Criteria binding: ${brief.criteria} (a review of these criteria names it with --criteria)`] : []),
+    ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
@@ -2078,6 +2128,7 @@ const commands = {
       ...formatFields(item),
     ];
     console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
+    if (item.criteriaChange) console.log(criteriaNotice(id, item.criteriaChange));
   },
 
   // The holder or the owner blocks a task with what it is waiting on. The
@@ -2390,7 +2441,16 @@ const commands = {
       if (typeof args.findings !== "string" || !args.findings.trim()) die("--findings needs a JSON list of findings");
       try { findings = JSON.parse(args.findings); } catch { die("--findings is not valid JSON"); }
     }
-    await call("POST", `${I(name, id)}/review`, { approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head, ...(findings !== undefined ? { findings } : {}) }, as);
+    // The criteria binding is the one the reviewer read, never the task's
+    // now: a verdict without it is refused by the server, with how to refresh.
+    if (args.criteria !== undefined && !/^[a-f0-9]{64}$/.test(String(args.criteria))) die("--criteria needs the 64-digit binding atelier show prints");
+    if (args.request !== undefined && !/^[0-9]+$/.test(String(args.request))) die("--request needs the request number the review claim gave");
+    await call("POST", `${I(name, id)}/review`, {
+      approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head,
+      ...(args.criteria !== undefined ? { criteria: String(args.criteria) } : {}),
+      ...(args.request !== undefined ? { request: Number(args.request) } : {}),
+      ...(findings !== undefined ? { findings } : {}),
+    }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
   },
 
@@ -2741,7 +2801,8 @@ const commands = {
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
-        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:args.note??""},OWNER);
+        // The owner approves here the criteria this command read with the head.
+        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
         await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
       }
     }
@@ -3348,7 +3409,10 @@ const commands = {
   },
 
   guide() {
-    process.stdout.write(guideText());
+    if (args.role === undefined) { process.stdout.write(guideText()); return; }
+    const role = args.role;
+    if (!ROLES.includes(role)) die(`--role needs one of ${ROLES.join(", ")}: atelier guide --role build|review|plan|orchestrate`);
+    process.stdout.write(roleOverride(role) ?? rolePrompt(role));
   },
 
   help() {

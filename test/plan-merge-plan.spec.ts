@@ -58,7 +58,7 @@ async function submitApproved(L: L, partId: string, head: string, path: string, 
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === partId);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
   await L.claimReview(partId, reviewer, RUNNER);
-  await L.addReview({ itemId: partId, by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
   return builder;
 }
 
@@ -110,7 +110,7 @@ it("a part whose integration conflicted is dispatched again with the plan branch
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === b);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
   await L.claimReview(b, reviewer, RUNNER);
-  await L.addReview({ itemId: b, by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
+  await L.addReview({ itemId: b, criteria: await L.criteria(b), by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
   await failIntegration(L, id, "b", "checks");
   const again = (await L.item(b)).dispatch;
   expect(again).not.toBeNull();
@@ -206,7 +206,7 @@ async function reworked(name: string) {
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === b);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
   await L.claimReview(b, reviewer, RUNNER);
-  await L.addReview({ itemId: b, by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
+  await L.addReview({ itemId: b, criteria: await L.criteria(b), by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
   expect((await L.item(id)).dispatch).toMatchObject({ job: "integrate", part: "b", head: PART_B2 });
   return { id, b };
 }

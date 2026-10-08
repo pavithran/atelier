@@ -90,7 +90,7 @@ async function submitApproved(L: L, partId: string, head: string, key: string) {
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === partId);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
   await L.claimReview(partId, reviewer, RUNNER);
-  await L.addReview({ itemId: partId, by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
 }
 
 // Part a integrated as MA, with main's head noted at `main` first, as the
