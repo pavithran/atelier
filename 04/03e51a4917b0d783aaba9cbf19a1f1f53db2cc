@@ -1,0 +1,38 @@
+atelier atelier/t302 "Local models finish work but can't commit it (2026-10-08): GLM 5.3 Flash on the AI Studio finished t273 four times and each time opencode refused its commit (git add … && git commit -F - <<'EOF' …, a heredoc and && chain the harness blocks), despite a brief telling it to commit plainly; Qwen3.8 27B stopped to ask before committing on t258. The runner saved each run's work as a rescue ref, and the owner had to restore and commit it. When a harness ends with uncommitted changes and no new commit, have the runner (or the opencode wrapper) commit them for the agent under its Agent: line, say so in the commit body, and let finish's checks and the cross-family review judge the work as usual"
+accepted head 506adb27bf75c67636412f7493f211d2ca55b770
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — atelier/sandbox 2026-10-08T08:03:29.299Z
+OBSERVED pass npm run types && npm run typecheck — atelier/sandbox 2026-10-08T08:03:29.299Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T08:07:16.237Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T08:07:18.518Z
+REVIEW approve by antigravity/gemini-3.1-pro at 506adb27bf75c67636412f7493f211d2ca55b770, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T04:14:58.606Z pavi item.created
+2026-10-08T07:20:59.466Z pavi item.dispatched
+2026-10-08T07:21:19.674Z opencode/glm-5.3 item.claimed
+2026-10-08T07:21:26.069Z opencode/glm-5.3 fork.created
+2026-10-08T07:41:02.393Z opencode/glm-5.3 push.observed
+2026-10-08T07:43:54.984Z opencode/glm-5.3 evidence.observed
+2026-10-08T07:43:57.161Z opencode/glm-5.3 evidence.observed
+2026-10-08T07:43:57.586Z opencode/glm-5.3 item.submitted
+2026-10-08T07:53:35.443Z pavi land.lease
+2026-10-08T07:53:42.332Z pavi land.merge
+2026-10-08T07:53:50.006Z pavi land.regenerate
+2026-10-08T07:53:51.668Z opencode/glm-5.3 push.observed
+2026-10-08T07:53:51.774Z pavi land.push
+2026-10-08T08:03:29.306Z atelier/sandbox evidence.observed
+2026-10-08T08:03:29.336Z atelier/sandbox evidence.observed
+2026-10-08T08:03:42.216Z pavi land.check
+2026-10-08T08:04:09.803Z pavi land.lease
+2026-10-08T08:04:10.738Z pavi land.merge
+2026-10-08T08:04:18.717Z pavi land.regenerate
+2026-10-08T08:04:19.750Z pavi land.push
+2026-10-08T08:07:16.464Z opencode/glm-5.3 evidence.observed
+2026-10-08T08:07:18.635Z opencode/glm-5.3 evidence.observed
+2026-10-08T08:07:19.023Z pavi land.check
+2026-10-08T08:07:19.356Z opencode/glm-5.3 item.submitted
+2026-10-08T08:07:19.524Z pavi land.submit
+2026-10-08T08:07:19.619Z pavi review.requested
+2026-10-08T08:07:27.418Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T08:11:07.375Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T08:11:11.163Z pavi land.review
+2026-10-08T08:11:11.683Z pavi item.accepted
+2026-10-08T08:11:11.769Z pavi land.accept
