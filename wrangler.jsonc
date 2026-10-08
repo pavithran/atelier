@@ -32,9 +32,12 @@
   "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "atelier_metrics" }],
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   // Cloudflare Browser Run (Browser Rendering until 2026): the render check
-  // (src/render-check.ts) opens one session per page the sandbox asks about,
-  // with guardrails that allow the pages' font hosts and nothing else, and
-  // closes it again; the binding holds no credential the sandbox could read.
+  // (src/render-check.ts) scrapes each page the sandbox sends with
+  // JavaScript off and allowRequestPattern set to the pages' Google Fonts
+  // stylesheet URL and fonts.gstatic.com font files only, so the page loads
+  // nothing else; a check run may render at most MAX_RENDERS times, and the
+  // answer holds no text the browser got from anywhere but the sent HTML.
+  // The binding holds no credential the sandbox could read.
   "browser": { "binding": "BROWSER" },
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   "durable_objects": {
