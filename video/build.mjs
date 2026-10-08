@@ -25,7 +25,11 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const ONLY = opt("--only");
 const PREVIEW = flag("--preview");
 const WORKERS = Number(opt("--workers") ?? 8);
-const NAME = opt("--name") ?? "atelier-v5";
+// The theme: "dark" (the Night theme, two scenes on the light ground) or
+// "bright" (the light theme throughout). One timeline serves both.
+const THEME = opt("--theme") ?? "dark";
+if (!["dark", "bright"].includes(THEME)) throw new Error("--theme is dark or bright");
+const NAME = opt("--name") ?? `atelier-v7-${THEME}`;
 
 // ── the script ─────────────────────────────────────────────────────────────
 
@@ -102,9 +106,11 @@ function captionCue(text, words, dur) {
 
 // Seconds before the first cue, between cues, and after the last; some
 // scenes hold longer after their narration to show a real page.
-const LEAD = { cold: 11.0, contents: 0.6, default: 0.8 };
-const GAP = 0.5;
-const TAIL = { default: 1.2, cold: 2.0, contents: 1.2, why: 1.7, cast: 2.2, gate: 4.0, plan: 3.6, metrics: 1.6, cloud: 1.8, close: 3.4 };
+// A chapter's first scene opens on its chapter card (scenes/film.js CARD),
+// so its narration waits for the card; the midpoint card is longer.
+const LEAD = { cold: 1.2, why: 1.9, cast: 1.9, gate: 1.9, plan: 3.2, metrics: 1.9, who: 1.9, cloud: 1.9, default: 0.8 };
+const GAP = 0.28;
+const TAIL = { default: 1.4, cold: 1.6, why: 3.0, cast: 1.6, gate: 2.2, stories: 1.4, plan: 1.4, metrics: 1.4, who: 1.6, cloud: 1.4, close: 2.4 };
 
 async function timeline(scenes) {
   let t = 0;
@@ -166,7 +172,7 @@ async function renderSegment(index, from, to, tl, data, size, segFile) {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: size });
   await page.goto("file://" + HERE + "scenes/film.html");
-  await page.evaluate(async ([tl, data]) => { await window.film.init(tl, data); }, [tl, data]);
+  await page.evaluate(async ([tl, data, theme]) => { await window.film.init(tl, data, theme); }, [tl, data, THEME]);
   const w = Math.round(1920 * size), h = Math.round(1080 * size);
   const ff = spawn(FFMPEG, ["-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "mjpeg", "-i", "-",
     "-c:v", "libx264", "-preset", PREVIEW ? "veryfast" : "medium", "-crf", PREVIEW ? "26" : "17", "-tune", "animation",
@@ -203,6 +209,13 @@ async function renderFrames(tl, data, startSec, endSec, size, dir) {
 const script = parseScript(readFileSync(HERE + "../docs/video.md", "utf8"));
 if (!script.length) throw new Error("no scenes found in docs/video.md");
 if (!existsSync(CACHE + "screens/meta.json")) execFileSync("node", [HERE + "scripts/capture.mjs"], { stdio: "inherit" });
+// The live page of t278, captured signed in at 3840 by 1906 (two pixels a
+// CSS pixel) and kept out of Git in public/footage/, cut to the two panels
+// the film shows: the Thread, and Checks and reviews.
+mkdirSync(CACHE + "footage", { recursive: true });
+for (const [name, from, crop] of [["t278-thread", "t278-2-thread", "1740:380:1060:20"], ["t278-reviews", "t278-3-reviews", "1740:720:1060:630"]]) {
+  if (!existsSync(`${CACHE}footage/${name}.png`)) execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-i", `${HERE}public/footage/${from}.png`, "-vf", `crop=${crop}`, `${CACHE}footage/${name}.png`]);
+}
 
 console.log(`Narration: ${script.reduce((n, s) => n + s.cues.join(" ").split(/\s+/).length, 0)} words in ${script.length} scenes, voice ${VOICE}.`);
 const tl = await timeline(script);
@@ -211,7 +224,8 @@ for (const s of tl.scenes) console.log(`  ${s.id.padEnd(9)} ${fmt(s.start).padSt
 console.log(`Total ${fmt(tl.total)} (${tl.total.toFixed(1)} s). TTS so far: ${JSON.stringify(spendSoFar())}`);
 
 const data = JSON.parse(readFileSync(HERE + "data/ledger.json", "utf8"));
-data.terminal = { t278: readFileSync(HERE + "data/terminal/show-t278.txt", "utf8"), t197: readFileSync(HERE + "data/terminal/show-t197.txt", "utf8"), note: readFileSync(HERE + "data/terminal/note-5af22431.txt", "utf8"), commit: readFileSync(HERE + "data/terminal/commit-de67194.txt", "utf8") };
+const term = (f) => readFileSync(HERE + "data/terminal/" + f, "utf8");
+data.terminal = { note: term("note-5af22431.txt"), noteFull: term("note-5af22431-full.txt"), commit: term("commit-de67194.txt"), freshLog: term("fresh-log.txt"), freshNote: term("fresh-note.txt") };
 data.screens = JSON.parse(readFileSync(CACHE + "screens/meta.json", "utf8"));
 writeFileSync(CACHE + "timeline.json", JSON.stringify(tl, null, 1));
 
@@ -230,7 +244,7 @@ if (flag("--stills")) {
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   page.on("pageerror", (e) => console.error("page error:", e.message));
   await page.goto("file://" + HERE + "scenes/film.html");
-  await page.evaluate(async ([tl, data]) => { await window.film.init(tl, data); }, [tl, data]);
+  await page.evaluate(async ([tl, data, theme]) => { await window.film.init(tl, data, theme); }, [tl, data, THEME]);
   const dir = CACHE + "stills/";
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
@@ -266,7 +280,7 @@ narrationTrack(tl, work + "narration.wav");
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   await page.goto("file://" + HERE + "scenes/film.html");
-  await page.evaluate(async ([tl, data]) => { await window.film.init(tl, data); }, [tl, data]);
+  await page.evaluate(async ([tl, data, theme]) => { await window.film.init(tl, data, theme); }, [tl, data, THEME]);
   const sounds = await page.evaluate(() => window.film.sounds());
   await browser.close();
   writeScore(work + "score.wav", tl, sounds);
@@ -286,6 +300,10 @@ if (range) {
     "-filter_complex", mixFilter, "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", String(tl.total), "-movflags", "+faststart", final], { stdio: "inherit" });
 }
 console.log("Wrote " + final);
+if (!range) {
+  execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-i", final, "-vf", "scale=1280:720", "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-c:a", "copy", "-movflags", "+faststart", OUT + NAME + "-720p.mp4"]);
+  console.log("Wrote " + OUT + NAME + "-720p.mp4");
+}
 
 // One frame per scene, taken a little past the middle, as a contact sheet.
 if (!range) {

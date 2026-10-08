@@ -1,0 +1,20 @@
+atelier fresh-demo/t1 "Fix the off-by-one in pagination"
+accepted head a0e9ad581c03d5f786bd49b4e283db3d71ea01e2
+OBSERVED pass npm test — claude-code/opus-5.5 2026-10-08T15:27:48.385Z
+OBSERVED pass npm test — claude-code/opus-5.5 2026-10-08T15:27:59.007Z
+2026-10-08T15:27:34.592Z pavi item.created
+2026-10-08T15:27:35.248Z claude-code/opus-5.5 item.claimed
+2026-10-08T15:27:38.611Z claude-code/opus-5.5 fork.created
+2026-10-08T15:27:45.974Z claude-code/opus-5.5 push.observed
+2026-10-08T15:27:48.736Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:27:49.133Z claude-code/opus-5.5 item.submitted
+2026-10-08T15:27:53.663Z pavi land.lease
+2026-10-08T15:27:54.768Z pavi land.merge
+2026-10-08T15:27:56.255Z pavi land.push
+2026-10-08T15:27:59.306Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:27:59.517Z pavi land.check
+2026-10-08T15:28:00.010Z claude-code/opus-5.5 item.submitted
+2026-10-08T15:28:00.356Z pavi land.submit
+2026-10-08T15:28:00.680Z pavi land.review
+2026-10-08T15:28:01.566Z pavi item.accepted
+2026-10-08T15:28:01.739Z pavi land.accept
