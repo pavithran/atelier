@@ -1379,6 +1379,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
+        // The criteria binding is the reviewer's own, as given; never the item's.
+        ...(body.criteria !== undefined ? { criteria: String(body.criteria) } : {}),
+        ...(body.request !== undefined ? { request: Number(body.request) } : {}),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
       }, c.url.origin, !!c.token, "api");
@@ -2119,7 +2122,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "release") await L.release(id, owner, note, false, oldToken);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
+      await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
     } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
