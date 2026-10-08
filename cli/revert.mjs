@@ -16,6 +16,11 @@ export async function runRevert(id, as, io) {
   if (git(["merge-base", "--is-ancestor", merge, "HEAD"], { allowFail: true }).status !== 0) throw new Error(`${recovery}; its history does not hold the recorded merge ${merge}`);
   const result = git(["revert", "--no-commit", "-m", "1", merge], { allowFail: true });
   if (result.status !== 0) throw new Error(`${recovery}; git revert stopped: ${result.stderr || result.stdout}. Resolve the conflicts and commit with an Agent: ${as} final line, or run git revert --abort there. Then use the normal checks and review.`);
+  if (!git(["diff", "--cached", "--name-only"])) {
+    git(["revert", "--quit"]);
+    io.say(`${item.id}: reverting ${id} (${merge}) changes nothing; its changes may already have been undone. No commit was made. ${recovery}; inspect the task before continuing or abandoning it.`);
+    return item;
+  }
   git(["commit", "-m", `Revert ${id}\n\nThis reverts merge commit ${merge}, relative to its first parent.\n\nAgent: ${as}`]);
   io.say(`${item.id} reverts ${id} (${merge}) and is committed in ${dir}. Run the normal push, checks and submit flow for independent review.`);
   return item;
