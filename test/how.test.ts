@@ -77,12 +77,13 @@ test("the review code is called by the ledger and the runner, and the page says 
   for (const said of ["review request", "runReview", "cli/agy-review.mjs", "routeParts", "integration branch", "atelier runner --integrate", "atelier land", "landing lease"]) {
     assert.ok(prose.includes(said), `the orchestrator section no longer says "${said}"`);
   }
-  // Two claims the prose must not overstate: a home runner's offer always
-  // holds build and plan ahead of whatever the config lists (offerFrom in
-  // cli/runner.mjs also adds the merge jobs a merge-main or merge-plan build
-  // needs), and only a rejection with blocking findings sends a part back
-  // (reworkPart in src/ledger.ts).
-  assert.match(read("cli/runner.mjs"), /\["build", "plan", (?:"[a-z-]+", )*\.\.\.\(config\.jobs/, "the runner no longer offers build and plan jobs by default");
+  // Two claims the prose must not overstate: a home runner's offer takes its
+  // jobs from its config (offerFrom in cli/runner.mjs), which by default
+  // (DEFAULT_JOBS in cli/runner-config.mjs) holds build and plan with the
+  // merge jobs a merge-main or merge-plan build needs, and only a rejection
+  // with blocking findings sends a part back (reworkPart in src/ledger.ts).
+  assert.match(read("cli/runner.mjs"), /jobs: \[\.\.\.\(jobs \?\? DEFAULT_JOBS\)\]/, "the runner no longer takes its offer's jobs from its config");
+  assert.match(read("cli/runner-config.mjs"), /DEFAULT_JOBS = \["build", "plan", "merge-main", "merge-main-task", "merge-plan"\]/, "the runner's default jobs no longer hold build and plan");
   assert.ok(prose.includes("Every home runner offers build and plan jobs"), "the orchestrator section no longer says every home runner offers build and plan jobs");
   assert.match(read("src/ledger.ts"), /f\.severity === "blocking"\)\) \{\s*this\.reworkPart/, "the ledger no longer reworks a part on blocking findings alone");
   assert.ok(prose.includes("A rejection with blocking findings sends the part back"), "the orchestrator section no longer says which rejections send a part back");
@@ -130,7 +131,7 @@ test("the plan flow draws what the code does, from goal to merge", () => {
   assert.ok(HELP_FORMS.some((form) => form.startsWith("plan ")), "atelier plan is gone from the help");
   says("Plan", "home runner takes the plan job");
   assert.match(runner, /export async function runPlanTask\(/);
-  assert.match(runner, /\["build", "plan", (?:"[a-z-]+", )*\.\.\.\(config\.jobs/, "a home runner no longer offers plan jobs");
+  assert.match(read("cli/runner-config.mjs"), /DEFAULT_JOBS = \["build", "plan",/, "a home runner no longer offers plan jobs");
   // Approval by hash, then routing to a builder, alternates and a reviewer of another family.
   says("Approve the plan", "by the hash");
   assert.match(read("src/plans/route.ts"), /export function routeParts\(/);
@@ -176,13 +177,15 @@ test("the plan flow's text fits its boxes and lanes at the drawn size", () => {
 });
 
 // The layers diagram shows a goal entering as a plan and names the jobs a
-// home runner takes, and those are among the jobs cli/runner.mjs offers:
-// build and plan always with the merge jobs such a build needs, review when
-// the config lists it, and integrate and refresh for a runner started with
-// --integrate.
+// home runner takes, and those are the jobs the runner offers by default:
+// build and plan with the merge jobs such a build needs (DEFAULT_JOBS in
+// cli/runner-config.mjs; a config's jobs names exactly the jobs it takes
+// instead), review when the config lists it, and integrate and refresh for a
+// runner started with --integrate.
 test("the layers diagram shows a goal entering as a plan and the runner's jobs", () => {
   const runner = read("cli/runner.mjs");
-  assert.match(runner, /jobs: \[\.\.\.new Set\(\["build", "plan", (?:"[a-z-]+", )*\.\.\.\(config\.jobs \?\? \[\]\)\]\)\]/);
+  assert.match(runner, /jobs: \[\.\.\.\(jobs \?\? DEFAULT_JOBS\)\]/);
+  assert.match(read("cli/runner-config.mjs"), /DEFAULT_JOBS = \["build", "plan", "merge-main", "merge-main-task", "merge-plan"\]/);
   assert.match(runner, /dispatch carrying job: "plan"[\s\S]{0,80}carrying "review"/);
   assert.match(runner, /jobs: \["integrate", "refresh"\]/);
   for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) {

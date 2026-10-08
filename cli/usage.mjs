@@ -239,6 +239,27 @@ export function describeReport(tool, body, now) {
   return lines;
 }
 
+// What the server read of the AI Gateway (GET /api/usage, field gateway;
+// src/usage/gateway.ts): each model's calls, tokens, cost, and median and
+// p90 duration over its window with the calls they are taken over, or why
+// there are none. A server older than this CLI sends no p90 (and a pull
+// record this CLI no longer prints), so only what is there is shown. Every
+// name is cleaned with `safe` before it is printed.
+export function describeGateway(view, safe) {
+  if (!view || typeof view !== "object") return ["AI Gateway: the server reports no gateway figures; it runs routes older than this CLI."];
+  if (view.off) return [`AI Gateway: ${safe(view.off, 300)}.`];
+  const lines = [`AI Gateway, last ${view.days} days:`];
+  if (!view.models?.length) lines.push("  no calls");
+  const time = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+  const dollars = (n) => (n > 0 && n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
+  for (const m of view.models ?? []) {
+    const p90 = typeof m.p90Ms === "number" ? `, p90 ${time(m.p90Ms)}` : "";
+    const ms = typeof m.medianMs === "number" ? `median ${time(m.medianMs)}${p90} (n=${m.sample})` : "no durations";
+    lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out, ${typeof m.cost === "number" ? dollars(m.cost) : "not priced"}, ${ms}`);
+  }
+  return lines;
+}
+
 // ── the command ────────────────────────────────────────────────────────────
 
 export function usageOptions(args, host = hostname()) {
@@ -262,7 +283,8 @@ function defaultIo() {
 }
 
 // io: report(tool, body, runner) comes from the CLI and answers with what the
-// server returned ({ alerts }); everything else has a default, so a test
+// server returned ({ alerts }), and gateway(), when given, answers with the
+// server's AI Gateway view; everything else has a default, so a test
 // supplies only what it replaces.
 export async function runUsage(args, given = {}) {
   const opts = usageOptions(args);
@@ -289,6 +311,12 @@ export async function runUsage(args, given = {}) {
   if (via) out.push(`Local databases are read only, through ${via}.`);
   for (const r of reports) out.push("", ...describeReport(r.tool, r.body, now));
   if (skipped.length) out.push("", "Not reported:", ...skipped.map((s) => `  ${safe(s, 300)}`));
+  // The gateway's figures are the server's, read once whatever this
+  // machine records; a failed read is said and does not stop the report.
+  if (io.gateway) {
+    try { out.push("", ...describeGateway(await io.gateway(), safe)); }
+    catch (error) { out.push("", `AI Gateway: could not read: ${safe(error.message, 200)}`); }
+  }
   out.push("", "Not read here: Claude's plan limits (the Claude app shows them) and Gemini's spend (Google serves no balance).");
 
   const failed = [], alerts = [];

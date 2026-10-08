@@ -26,6 +26,7 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
+import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
@@ -42,7 +43,7 @@ const READ_TTL = 3600;
 
 // `ref` is the project an API path names, resolved once at the entry (see
 // resolveProject); null when the path names none.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null };
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -793,7 +794,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // thresholds in force and the alerts in force.
   if (parts[0] === "usage") {
     const I = index(env);
-    if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts() });
+    if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts(), gateway: await readGateway(env) });
     if (parts.length === 2 && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a usage report names its runner in X-Atelier-Runner", 400);
@@ -847,18 +848,29 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // One call per project reads both its waiting tasks and its open review requests.
     const lists = await Promise.all(projects.map(async (p) => {
       try {
-        const { waiting, reviews } = await ledgerOf(env, p).queued();
-        return [...waiting, ...reviews].map((item) => ({ project: p.name, item }));
+        // The runner's own held jobs come first (heldJobs, t235): a run that
+        // died mid-build leaves its claim behind, and the process that takes
+        // over settles it, finishing the commits the dead run made, before
+        // it starts new work.
+        const L = ledgerOf(env, p);
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
+        return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
     const read = Date.now();
-    const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
+    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // the claim a dead run left behind is settled before new work starts.
+    const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
-          return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
+          // A held job is offered only as the claim it already is: the
+          // assignment must name its holder, or the re-claim would be refused
+          // as another's claim (claim guards the runner name; assign the actor).
+          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1442,7 +1454,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", mainHead);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
       }
-      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null));
+      return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null, await index(env).runnerOffers()));
     }
     case "integration-failed": {
       // The integrator reports a failed merge. The Worker checks the branch was
@@ -1586,7 +1598,10 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
   switch (sub) {
     case "approve": {
       if (body.allowPaid !== undefined && typeof body.allowPaid !== "boolean") throw new RuleError("bad_allow_paid", "allowPaid must be true or false", 400);
-      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models());
+      // The runner offers come with the pool, so the routing an approval
+      // fixes counts a reviewer only when a live runner offers it for the
+      // review job (routeParts in src/plans/route.ts).
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers());
       return json(await L.planView(id));
     }
     case "revise":
@@ -1619,7 +1634,9 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       const reopening = await L.checkPlanRefresh(id, actor, main, holds, body.resolve === true, body.to);
       const oldToken = reopening ? await L.tokenId(id) : undefined;
       if (reopening) await revoke(env, plan.fork, oldToken ?? null);
-      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, oldToken);
+      // The runner offers the Worker read come with the resolve, for the
+      // merge-main part's routing as approval routes it.
+      if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, await index(env).runnerOffers(), oldToken);
       else await L.planRefresh(id, actor, main, holds, oldToken);
       // `reopened` says what was withdrawn, for the command to say so.
       const reopened = reopening ? { from: plan.state, acceptedHead: plan.state === "accepted" ? plan.acceptedHead : null } : null;
@@ -1668,7 +1685,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, track] = await Promise.all([I.models(), trackRecords(env)]);
+  const [entries, track, gateway] = await Promise.all([I.models(), trackRecords(env), readGateway(env)]);
   const record = new Map<string, ActorRecord>();
   for (const { events } of track.sources) {
     for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
@@ -1677,7 +1694,15 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability), error ? 400 : 200);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway), error ? 400 : 200);
+}
+
+// ── AI Gateway ───────────────────────────────────────────────────────────────
+// What the Models page and GET /api/usage show of the AI Gateway's calls,
+// read from the GraphQL Analytics API each time (src/usage/gateway.ts).
+
+export function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
+  return readGatewayFigures(env, now, fetcher);
 }
 
 // Each model's record is read from every event of every project, and
@@ -1776,7 +1801,8 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const r = parseRunner(typeof body.runner === "string" ? body.runner : null);
   if (!r) throw new RuleError("bad_runner", "say which runner is asking, e.g. home:studio", 400);
   const agents = Array.isArray(body.agents) ? body.agents : [];
-  // The jobs besides building that the runner runs, such as "plan".
+  // The jobs the runner runs, build among them; an ask naming none is an
+  // older runner's, which takes builds (missingJob in src/dispatch/rules.ts).
   const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
   return {
     runner: r.runner, kind: r.kind, jobs,
@@ -1787,6 +1813,12 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
         : [];
     }),
   };
+}
+
+// Whether an item coming off the queue is a claim a runner already holds, as
+// heldJobs lists it: the queue offers it back to its holder alone.
+function isHeld(item: Item): boolean {
+  return item.state === "claimed" && !!item.owner;
 }
 
 async function inbox(env: Env, token?: AgentToken) {
@@ -2171,6 +2203,11 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 
 // ── entry ──────────────────────────────────────────────────────────────────
 
+// The API's own top-level paths, as api() and the routes before it read them.
+// A caller without a token is refused on them (401); anything else under /api
+// answers 404 before auth is asked, as it does after it.
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+
 export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
@@ -2201,18 +2238,19 @@ export default {
       } catch (error) { console.error("push event retry", error); message.retry(); }
     }
   },
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
+    const pathname = url.pathname.endsWith("/") && url.pathname.length > 1 ? url.pathname.slice(0, -1) : url.pathname;
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      if (url.pathname === "/showcase" && req.method === "GET") return await showcase(env, url);
+      if (pathname === "/showcase" && (req.method === "GET" || req.method === "HEAD")) return await showcase(env, url);
       // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
-      if (url.pathname === "/live.js" && req.method === "GET") {
+      if (pathname === "/live.js" && (req.method === "GET" || req.method === "HEAD")) {
         return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });
       }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
-      if (url.pathname === "/how" && req.method === "GET") { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
+      if (pathname === "/how" && (req.method === "GET" || req.method === "HEAD")) { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
       // Cloudflare Access in front of the owner's pages (src/access.ts). When
       // the server names its Access team, application and owner, every route
       // that needs a sign-in must carry an Access assertion the Worker verifies
@@ -2221,13 +2259,18 @@ export default {
       // guessed, without Access's sign-in first (the open form the 2026-10-06
       // audit noted). Never the /api routes, which take bearer tokens the CLI
       // sends without passing Access; the sign-out form stays open.
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
       const access = accessSettings(env as unknown as Record<string, string | undefined>);
-      if (access && parts[0] !== "api" && url.pathname !== "/logout" && !(await accessVouches(req, access))) {
+      if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
         return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
       }
-      if (url.pathname === "/login") {
+      if (pathname === "/login") {
         if (req.method === "POST") {
+          // A cross-site form post carries another origin and is refused. A
+          // post without an Origin header did not come from a browser form,
+          // so the token alone judges it, as it always has.
+          const origin = req.headers.get("origin");
+          if (origin !== null && origin !== url.origin) return html("Cross-origin form refused.", 403);
           const token = String((await req.formData()).get("token") ?? "");
           const want = serverToken(env);
           if (!want || !sameString(token, want)) return await loginPage(env, "That token is not this server's.", 401);
@@ -2237,7 +2280,7 @@ export default {
       }
       // Sign out: a form in every signed-in page's rail. The Origin check is
       // the one every owner form makes, so another site cannot end a session.
-      if (url.pathname === "/logout" && req.method === "POST") {
+      if (pathname === "/logout" && req.method === "POST") {
         if (req.headers.get("origin") !== url.origin) return html("Cross-origin form refused.", 403);
         return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
@@ -2249,10 +2292,16 @@ export default {
         // and a session checks them before it signs in. atelier land
         // refuses on the level, saying to deploy, when the server's is
         // lower than the CLI's.
-        if (parts.length === 2 && parts[1] === "version" && req.method === "GET") {
+        if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
           return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
         }
-        if (how !== "api" && (typeof how !== "object" || !how)) return json({ error: "unauthorised" }, 401);
+        if (how !== "api" && (typeof how !== "object" || !how)) {
+          // A path that names no part of the API answers 404 whoever asks:
+          // a caller without a token is told that before it is told the
+          // route needs one, as api() tells a signed-in caller.
+          if (!API_PATHS.has(parts[1] ?? "")) return json({ error: "not_found", detail: "no such route" }, 404);
+          return json({ error: "unauthorised" }, 401);
+        }
         const token = typeof how === "object" && how ? how : undefined;
         const declared = req.headers.get("x-atelier-actor");
         if (token && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
@@ -2274,13 +2323,25 @@ export default {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
-        const res = await api({ env, req, url, actor, body, token, ref }, parts.slice(1));
+        const res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         if (ref?.former) res.headers.set("x-atelier-project", ref.name);
         return res;
       }
       // The front door: a visitor who is not signed in sees the public showcase
-      // when there is one, and is otherwise asked to sign in.
+      // when there is one, and is otherwise asked to sign in — but only on a
+      // path the app itself serves. A path no page lives at answers 404,
+      // never a redirect that funnels stray traffic to the sign-in page.
+      // /how serves one public page at exactly that path (above); anything
+      // else asked under the name is sent to sign in like the app's own
+      // pages. Every path under /p/ is sent to sign in alike (below).
       if (!how) {
+        // A path under /p/ is answered the same whether or not a project is
+        // registered under the name it holds: the visitor is sent to sign in
+        // either way, so a guessed name learns nothing — a 404 for the rest
+        // would say which names, anonymised or private, are real.
+        const projectArea = parts[0] === "p" && parts.length >= 2;
+        const knownUI = parts.length === 0 || projectArea || ["models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
+        if (!knownUI) return html("Not found.", 404);
         const open = parts.length === 0 && (await liveShowcase(env).catch(() => [])).length > 0;
         return Response.redirect(new URL(open ? "/showcase" : "/login", url).toString(), 303);
       }
@@ -2290,7 +2351,7 @@ export default {
       const rule = parseRuleError(err);
       // The error page keeps the owner's name on the pages only the owner
       // reads; the public pages keep it to themselves (finding 18).
-      const who = ["/how", "/showcase", "/login", "/live.js"].includes(url.pathname) ? null : ownerName(env);
+      const who = ["/how", "/showcase", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
       if (rule) {
         return url.pathname.startsWith("/api/")
           ? json({ error: rule.code, detail: rule.detail }, rule.status)

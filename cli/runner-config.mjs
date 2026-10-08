@@ -7,6 +7,16 @@ import { redactKeys } from "../src/models/pool.ts";
 export const DEFAULT_TASK_TIMEOUT_MS = 45 * 60_000;
 export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 
+// The jobs a runner offers and takes (offerFrom in runner.mjs): every form of
+// building — a plain build, the plan job (docs/orchestrator.md, section 2) and
+// the three merge jobs — plus the review job (section 4). A config with no
+// `jobs` takes the build jobs alone, as every runner did before reviews; a
+// config with `jobs` takes exactly what it lists, so ["review"] keeps a runner
+// for reviews alone (t252) and a config that wants both lists "build" and its
+// kin beside "review".
+export const DEFAULT_JOBS = ["build", "plan", "merge-main", "merge-main-task", "merge-plan"];
+const JOB_NAMES = new Set([...DEFAULT_JOBS, "review"]);
+
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 // {plan_file} is the plan job's alone (docs/orchestrator.md, section 2): the
@@ -62,12 +72,21 @@ export function parseConfig(json) {
     }
   }
   const seen = new Set();
-  // Optional: the jobs besides building the runner offers, such as "review".
-  // A review dispatch is offered only to a runner whose offer lists it.
+  // Optional: the jobs this runner takes, named exactly (DEFAULT_JOBS): with
+  // it the list is the whole truth, so a runner configured for reviews takes
+  // no build, and one long build on it cannot hold every review behind it
+  // (t252). A name the runner does not know is refused, not taken as silence:
+  // a typo would otherwise leave the runner idle while work waits.
   let jobs;
   if (value.jobs !== undefined) {
-    if (!Array.isArray(value.jobs) || value.jobs.some((j) => typeof j !== "string" || !j.trim())) errors.push("jobs must be a list of job names");
-    else jobs = [...new Set(value.jobs.map((j) => j.trim()))];
+    if (!Array.isArray(value.jobs) || !value.jobs.length || value.jobs.some((j) => typeof j !== "string" || !j.trim())) errors.push("jobs must be a nonempty list of job names");
+    else {
+      jobs = [...new Set(value.jobs.map((j) => j.trim()))];
+      for (const job of jobs) {
+        if (job === "integrate" || job === "refresh") errors.push(`jobs cannot list "${job}": the integrate and refresh jobs are the integrator's alone (atelier runner --integrate, which takes no config)`);
+        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan and review`);
+      }
+    }
   }
   for (const [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);

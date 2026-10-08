@@ -22,6 +22,8 @@ import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
+import { duration, type GatewayView } from "./usage/gateway.ts";
+import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
 import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
@@ -592,8 +594,9 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 // The public page: the portfolio the owner chose to show, read only. Stories
 // arrive redacted (graph.ts), and for a project shown anonymously they arrive
 // anonymised as well: titled by a neutral label from the project's kind, each
-// task titled by its kind of work, so no project name, task title, path,
-// commit message, review note, person or address reaches the HTML.
+// task titled by its kind of work, and no commit hash anywhere, so no project
+// name, task title, path, commit message, commit hash, review note, person or
+// address reaches the HTML.
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
@@ -683,7 +686,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     ${layersFigure()}
     <p class="meta">How a task goes from claim to merge, and the rules each step enforces: <a href="/how#the-loop">How it works</a>.</p>
   </section>
-  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message or address in them. Review notes, reports and diffs stay private in every case.</p>
+  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
 `,
   });
 }
@@ -694,7 +697,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map()): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -731,6 +734,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
+  ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
       <label>Model id, as the harness names it<input name="id" required maxlength="128" placeholder="gemini-3.1-pro, GLM-5.3-Flash-4_8bit"></label>
@@ -746,6 +750,30 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
     </form>
   </details>
 </div>`, "Models", ownerName);
+}
+
+// ── AI Gateway ─────────────────────────────────────────────────────────────
+// Each model's calls through the AI Gateway over the view's window, from the
+// GraphQL Analytics API (src/usage/gateway.ts): calls and failures, tokens,
+// cost, and the median and 90th percentile duration with the number of calls
+// they are taken over. Off, refused or empty, the section says which.
+
+export function gatewaySection(g: GatewayView): string {
+  const head = `<h2 class="section-title">AI Gateway · last ${g.days} days</h2>`;
+  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p></section>`;
+  const ms = (v: number | null) => (v === null ? '<span class="meta">none</span>' : e(duration(v)));
+  const row = (m: GatewayView["models"][number]) => `<tr><th scope="row"><code>${e(m.model)}</code><span class="meta"> ${e(m.provider)}</span></th>
+    <td class="num">${e(m.calls.toLocaleString("en"))}${m.failures ? ` <span class="meta">${e(m.failures.toLocaleString("en"))} failed</span>` : ""}</td>
+    <td class="num">${e(tokens(m.tokensIn))} in · ${e(tokens(m.tokensOut))} out</td>
+    <td class="num">${m.cost === null ? '<span class="meta">not priced</span>' : e(money(m.cost))}</td>
+    <td class="num">${ms(m.medianMs)} · ${ms(m.p90Ms)} <span class="meta">n=${e(m.sample.toLocaleString("en"))}</span></td></tr>`;
+  return `<section class="gateway" aria-label="AI Gateway costs">${head}
+  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from Cloudflare's GraphQL Analytics. The median and 90th percentile durations are taken over n calls in that window. A model whose calls all cost $0 shows "not priced": the gateway records a call it could not price as $0, so the two cannot be told apart.</p>
+  ${g.models.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median · p90 duration</th></tr></thead>
+    <tbody>${g.models.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">No calls through the gateway in the last ${g.days} days.</p>`}
+</section>`;
 }
 
 // ── reliability ────────────────────────────────────────────────────────────

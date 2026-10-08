@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs } from "../cli/runner.mjs";
+import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -209,6 +209,57 @@ test("runTask reports release failure and skips empty or interrupted work", asyn
   assert.deepEqual(stopped.calls, []);
 });
 
+// t235: the queue offers a runner the claims its dead run left held. Such a
+// job arrives with the item already claimed by this actor, and a workspace
+// that may hold commits Atelier never recorded (the dead run committed and
+// was stopped before finish pushed and submitted). The model's work is done,
+// so the runner finishes it and runs no harness again.
+const heldItem = (item = {}) => ({ ...assignment.item, state: "claimed", owner: assignment.actor, ...item });
+
+test("a held job whose workspace is ahead of the recorded head is finished, not rebuilt", async () => {
+  const { io, calls, logs } = fixture();
+  const state = await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", io);
+  assert.equal(state.phase, "submitted");
+  assert.equal(state.head, "before");
+  assert.ok(!calls.some((c) => c.harness || c.brief), "no harness and no brief for resumed work");
+  const finish = calls.find((c) => c.argv?.[0] === "finish");
+  assert.deepEqual(finish.argv, ["finish", "t13", "--project", "atelier", "--as", assignment.actor]);
+  assert.equal(finish.cwd, "/cache/work/atelier/t13");
+  assert.deepEqual(logs, ["nothing claimed", "claimed", "workspace reset to HEAD and untracked files removed",
+    "resumed: an earlier run of this runner committed before and never submitted it; finishing it without the harness",
+    "working", "committed", "submitted"]);
+});
+
+test("a held job whose workspace is at the recorded head runs the harness again", async () => {
+  const { io, calls, logs } = fixture();
+  const state = await runTask({ ...assignment, item: heldItem({ head: "before" }) }, config, "home:studio", io);
+  assert.equal(state.phase, "submitted");
+  assert.ok(calls.some((c) => c.harness), "the dead run committed nothing, so the model builds");
+  assert.ok(!logs.some((l) => l.startsWith("resumed:")));
+});
+
+test("an open task is never finished without the harness, however far its workspace is ahead", async () => {
+  for (const item of [{ state: "open", owner: null, head: "recorded" }, { head: "recorded" }, { state: "claimed", owner: "codex/other", head: "recorded" }]) {
+    const { io, calls } = fixture();
+    const state = await runTask({ ...assignment, item: { ...assignment.item, ...item } }, config, "home:studio", io);
+    assert.equal(state.phase, "submitted", JSON.stringify(item));
+    assert.ok(calls.some((c) => c.harness), JSON.stringify(item));
+  }
+});
+
+test("a resumed finish failure preserves an ordinary claim and releases a part", async () => {
+  const ordinary = fixture({ failCommand: "finish" });
+  assert.equal((await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", ordinary.io)).phase, "failed");
+  assert.ok(!ordinary.calls.some((c) => c.argv?.[0] === "release"));
+  assert.ok(ordinary.logs.some((l) => l.includes("claim preserved: work was committed before finish")));
+
+  const part = fixture({ failCommand: "finish" });
+  part.io.jobBrief = async () => ({ text: "part brief" });
+  assert.equal((await runTask({ ...assignment, item: heldItem({ kind: "part", head: "recorded" }) }, config, "home:studio", part.io)).phase, "failed");
+  assert.ok(part.calls.some((c) => c.argv?.[0] === "release"), "a part whose finish failed goes back to its plan");
+  assert.ok(!part.calls.some((c) => c.brief), "no brief is fetched for resumed work");
+});
+
 test("a release note over the server's cap is cut to its end, whatever failed", async () => {
   const reason = `prefix ${"x".repeat(3000)} tail`;
   const released = fixture({ head: "before" });
@@ -280,6 +331,53 @@ test("runner handles interruption after a harness exits with real HEAD and relea
     assert.deepEqual(commands, committed ? ["claim"] : ["claim", "release"]);
     assert.ok(logs.includes("failed: interrupted"));
   }
+});
+
+// t235: the whole restart story. A stop kills a build after its agent
+// committed; the claim stays with the dead run, the queue offers it back to
+// the restarted runner (the item arrives claimed by this actor, its head the
+// last one Atelier recorded), and the new run finishes the commit without
+// running the model again.
+test("a restarted runner retakes the claim a stop left held and finishes its committed work", async (t) => {
+  const { workspace, git, args } = gitWorkspace(t);
+  const recorded = git("rev-parse", "HEAD");
+  const commands = [], logs = [];
+  const log = (s) => logs.push(s);
+  await runRunner({ ...args, once: true }, {
+    workspacePath: () => workspace, queue: async () => [assignment],
+    taskIO: {
+      log,
+      harness: async () => {
+        git("commit", "--quiet", "--allow-empty", "-m", "the dead run's work");
+        process.emit("SIGINT");
+        return { code: 0 };
+      },
+    },
+    executeChild: async (argv, options) => {
+      if (argv[0] === "git") return execute(argv, options);
+      commands.push(argv[2]);
+      return execute([process.execPath, "-e", ""], options);
+    },
+  });
+  const committed = git("rev-parse", "HEAD");
+  assert.notEqual(committed, recorded);
+  assert.deepEqual(commands, ["claim"], "a stop after the commit preserves the claim; nothing submits it");
+  assert.ok(logs.some((l) => l.includes("claim preserved: a commit exists")));
+  const restarted = commands.length;
+  await runRunner({ ...args, once: true }, {
+    workspacePath: () => workspace,
+    queue: async () => [{ ...assignment, item: { ...assignment.item, state: "claimed", owner: assignment.actor, runner: "home:studio", head: recorded } }],
+    taskIO: { log },
+    executeChild: async (argv, options) => {
+      if (argv[0] === "git") return execute(argv, options);
+      commands.push(argv[2]);
+      return execute([process.execPath, "-e", ""], options);
+    },
+  });
+  assert.deepEqual(commands.slice(restarted), ["claim", "finish"], "the restart retakes the claim and submits the commit");
+  assert.equal(git("rev-parse", "HEAD"), committed, "the dead run's commit is finished, not rebuilt or reset away");
+  assert.ok(logs.some((l) => l.startsWith("resumed: an earlier run of this runner committed")));
+  assert.ok(logs.includes("submitted"));
 });
 
 test("runRunner once polls once and handles SIGINT, SIGTERM and SIGHUP", async (t) => {
@@ -928,7 +1026,43 @@ test("parseConfig refuses review jobs for an agent whose command has no {verdict
   const errors = parseConfig({ ...config, jobs: ["review"] }).errors.join(" ");
   assert.match(errors, /opencode's command has no \{verdict_file\} placeholder/);
   assert.deepEqual(parseConfig({ agents: [{ ...entry, command: [...entry.command, "{verdict_file}"] }], jobs: ["review"] }).errors, []);
-  assert.deepEqual(parseConfig({ ...config, jobs: ["other"] }).errors, []);
+  // t252: jobs names the jobs exactly, so a name the runner does not know is
+  // refused rather than taken as a job it silently cannot run.
+  assert.match(parseConfig({ ...config, jobs: ["other"] }).errors.join(" "), /jobs cannot list "other"/);
+});
+
+// t252: jobs is the exact list a runner takes. A runner configured for
+// reviews offers no build, plan or merge job, so the queue's builds pass it
+// by instead of holding every review behind one long build.
+test("jobs is the exact list a runner offers, and unknown job names are refused", () => {
+  const reviewer = { agent: "opencode", models: ["glm-5.3"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{verdict_file}"] };
+  for (const jobs of [["review"], ["build", "review"], DEFAULT_JOBS]) {
+    assert.deepEqual(parseConfig({ agents: [reviewer], jobs }).jobs, jobs, JSON.stringify(jobs));
+    assert.deepEqual(offerFrom({ agents: [reviewer], jobs }, "home:rev").jobs, jobs, JSON.stringify(jobs));
+  }
+  for (const jobs of [[], ["other"], ["reviews"], ["review", "other"], ["integrate"], ["refresh"]]) {
+    const errors = parseConfig({ agents: [reviewer], jobs }).errors.join(" ");
+    assert.match(errors, /jobs/, JSON.stringify(jobs));
+  }
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["integrate"] }).errors.join(" "), /the integrator's alone/);
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan and review/);
+  // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
+  assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
+});
+
+// t252: the job an assignment is, which the runner takes only when its offer
+// names it.
+test("jobOf names the job an assignment is", () => {
+  const item = (dispatch) => ({ id: "t9", dispatch });
+  assert.equal(jobOf({ item: item() }), "build");
+  assert.equal(jobOf({ item: item({ to: "home", by: "owner", at: "x", note: "" }) }), "build");
+  assert.equal(jobOf({ item: item({ job: "plan" }) }), "plan");
+  assert.equal(jobOf({ item: item({ job: "review" }) }), "review");
+  assert.equal(jobOf({ item: item({ job: "integrate" }) }), "integrate");
+  assert.equal(jobOf({ item: item({ job: "refresh" }) }), "refresh");
+  assert.equal(jobOf({ item: item({ job: "merge-main" }) }), "merge-main");
+  assert.equal(jobOf({ item: item({ job: "merge-main", task: true }) }), "merge-main-task");
+  assert.equal(jobOf({ item: item({ planHead: "b".repeat(40) }) }), "merge-plan");
 });
 
 test("server failures in finish retire the task after three failures", async (t) => {
