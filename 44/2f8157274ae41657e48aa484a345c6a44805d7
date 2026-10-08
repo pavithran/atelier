@@ -1,0 +1,41 @@
+atelier atelier/t321 "A merged task's page compares it with today's main"
+accepted head 8087f1a7f9b0b566cf3e62aa2572a7e280337215
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T21:38:10.936Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T21:38:14.551Z
+REVIEW approve by antigravity/gemini-3.1-pro at 8087f1a7f9b0b566cf3e62aa2572a7e280337215, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T15:42:07.266Z pavi item.created
+2026-10-08T18:05:24.875Z pavi item.dispatched
+2026-10-08T18:53:33.781Z claude-code/opus-5.5 item.claimed
+2026-10-08T18:53:40.771Z claude-code/opus-5.5 fork.created
+2026-10-08T19:13:11.896Z claude-code/opus-5.5 push.observed
+2026-10-08T19:18:29.542Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:18:32.763Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:18:33.521Z claude-code/opus-5.5 item.submitted
+2026-10-08T19:45:06.984Z pavi land.lease
+2026-10-08T19:45:14.854Z pavi land.merge
+2026-10-08T19:45:25.485Z pavi land.regenerate
+2026-10-08T19:45:29.530Z claude-code/opus-5.5 push.observed
+2026-10-08T19:45:29.782Z pavi land.push
+2026-10-08T19:50:00.545Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:50:03.250Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:50:03.965Z pavi land.check
+2026-10-08T19:50:04.917Z pavi review.requested
+2026-10-08T19:50:19.437Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T20:50:22.321Z pavi land.review
+2026-10-08T20:51:09.655Z antigravity/gemini-3.1-pro review.released
+2026-10-08T20:51:18.666Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T20:55:27.695Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T21:33:43.124Z pavi land.lease
+2026-10-08T21:33:48.722Z pavi land.merge
+2026-10-08T21:33:58.443Z pavi land.regenerate
+2026-10-08T21:34:01.254Z claude-code/opus-5.5 push.observed
+2026-10-08T21:34:01.426Z pavi land.push
+2026-10-08T21:38:12.186Z claude-code/opus-5.5 evidence.observed
+2026-10-08T21:38:14.782Z claude-code/opus-5.5 evidence.observed
+2026-10-08T21:38:15.320Z pavi land.check
+2026-10-08T21:38:16.311Z pavi review.requested
+2026-10-08T21:38:23.398Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T21:43:01.067Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T21:43:04.141Z pavi land.review
+2026-10-08T21:43:05.016Z pavi item.accepted
+2026-10-08T21:43:05.064Z pavi land.accept
