@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { excludeScratch } from "./scratch.mjs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -183,13 +184,11 @@ const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
 // its reply, outside the clone; the runner names it in the command and reads
 // it after the harness ends.
 export const REVIEW_DIFF = ".scratch/atelier-review.diff";
+export { excludeScratch };
+
 export function writeDiff(workspace, text) {
   mkdirSync(join(workspace, ".scratch"), { recursive: true });
-  const info = join(workspace, ".git", "info");
-  mkdirSync(info, { recursive: true });
-  const exclude = join(info, "exclude");
-  const held = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
-  if (!held.split("\n").includes(".scratch/")) appendFileSync(exclude, `${held && !held.endsWith("\n") ? "\n" : ""}.scratch/\n`);
+  excludeScratch(workspace);
   const file = join(workspace, REVIEW_DIFF);
   writeFileSync(file, text, { mode: 0o600, flag: "wx" });
   return { file };
@@ -1207,7 +1206,9 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       ...((argv[0] === "release" || argv[0] === "review-release") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
-    reset: (cwd) => resetTo(cwd, "HEAD"),
+    // Every build, plan and merge job's workspace keeps .scratch/ out of Git
+    // after the reset (excludeScratch).
+    reset: async (cwd) => { await resetTo(cwd, "HEAD"); excludeScratch(cwd); },
     // The integrate and refresh jobs' reset: to the fork's copy of the branch
     // the claim names (atelier.branch), which the claim has just fetched.
     resetToRemote: async (cwd) => {
