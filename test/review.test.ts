@@ -520,6 +520,29 @@ test("parseVerdict: a bracket-numbered criterion line is read, and formatting ar
   ok(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION 1: __met__ — Broke it; test 1 failed."].join("\n"), 1);
 });
 
+// t325 rework again, from review of dffec738: formatting followed by an empty
+// separator still approved — '**met** — ', '**met**:' or '__met__ -' with
+// nothing after — because the closing markers fell into the proof capture and
+// the separator left behind them read as proof once the markers were stripped.
+// The line now consumes the closing formatting and the separator before the
+// proof, and the check strips markers, separators and whitespace alike.
+test("parseVerdict: formatting followed by an empty separator is not a criterion's proof", () => {
+  const noProof = /a CRITERION line ends with how the criterion was proved/;
+  // The three strings from the review, each of which approved before the fix.
+  refusedWith("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: **met** — ", noProof, 1);
+  refusedWith("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: **met**:", noProof, 1);
+  refusedWith("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: __met__ -", noProof, 1);
+  // A separator alone after the word, markers around a bare separator, and
+  // whitespace left between closing markers and the separator: none is proof.
+  refusedWith("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: `met` —", noProof, 1);
+  refusedWith("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: **met** — **", noProof, 1);
+  refusedWith("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: ** met ** —  ", noProof, 1);
+  refusedWith("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: met — —", noProof, 1);
+  // Formatting and separators around a proof that says something still prove it.
+  ok("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: __met__ - Broke it; test 1 failed.", 1);
+  ok("VERDICT: APPROVE\nSUMMARY: One.\nCRITERION 1: ** met ** — Reverted it; the suite went red.", 1);
+});
+
 test("parseVerdict: without criteria, CRITERION lines are prose and no approval is refused for them", () => {
   // The caller that names no criteria (verdict.mjs, say) reads the reply as
   // before: a CRITERION line in it is not a statement it was asked for,
