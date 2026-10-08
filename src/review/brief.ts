@@ -3,7 +3,9 @@
 // part when there is one, the observed checks, the builder's summary and any
 // earlier reviews with the project owner's verdicts on their findings, states
 // the project's review bar and the rules for blocking, and ends with
-// REPLY_FORMAT, the format parseVerdict reads.
+// REPLY_FORMAT, the format parseVerdict reads. It says which kind of diff it
+// carries: the change from the base to the head, or, for a merge-main job's
+// merge, the merge's conflict resolution with the files main brought in.
 //
 // The task's title and the plan's text are labelled as the request the change
 // answers, never as claims the change makes: gemini-3.1-pro blocked t240 and
@@ -23,14 +25,16 @@ import { submission } from "../brief.ts";
 import type { LedgerEvent } from "../ledger.ts";
 import type { PlanPart } from "../plans/schema.ts";
 import { DEFAULT_OWNER, type ChangeClass, type Item } from "../rules.ts";
-import { TEXT_CONTROLS } from "../text.ts";
+import type { LargeRef } from "../large.ts";
+import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { findingKey, ownerVerdicts, refutedRejection, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
 import { DEFAULT_REVIEW_BAR, REPLY_FORMAT } from "./verdict.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
-// the brief fits a 32K window with room for the reply. A longer diff is cut
-// and the brief says so.
-export const BRIEF_LIMITS = { diff: 40_000 } as const;
+// the brief fits a 32K window with room for the reply. A longer diff is not
+// carried at all: it is kept in R2 by reference (t284) and the brief names
+// where the whole diff is.
+export const BRIEF_LIMITS = { diff: DIFF_INLINE_MAX } as const;
 
 export interface BriefInput {
   need: ReviewRequired;                    // from reviewNeeded: the head, change class, checks and earlier reviews
@@ -38,11 +42,32 @@ export interface BriefInput {
   events: readonly LedgerEvent[];          // the builder's summary for this head, read by submission()
   plan?: { goal: string; part: PlanPart } | null;
   diff?: string | null;                    // git diff from `compare.from` (or the base) to the head, when the caller has it
+  // The same diff kept in R2 by reference (t284), when the change is too
+  // large for this brief to carry and the claim stored it. Given here, the
+  // brief carries no diff text at all — not even a cut — and names the
+  // reference and where the reviewer reads the whole diff: the clone, and
+  // the file `diffFile` names in it.
+  diffRef?: LargeRef | null;
   // Where the diff runs from, when the caller computed it: the merge base of
   // the head and the branch the item merges into, or the fork point with the
   // reason the merge base could not be found. Absent, the brief compares
   // from the item's base, as the ledger does when it fingerprints a request.
-  compare?: { from: string | null; branch?: string; fallback?: string } | null;
+  //
+  // `merge` is set when the head is a merge-main job's merge (mergeReview in
+  // cli/runner.mjs): `from` is then the merge's first parent, the builder's
+  // previous head, `main` its second, `files` the files the merge brought in
+  // from main, and `diff` the merge's conflict resolution (git show
+  // --remerge-diff HEAD) rather than a diff from `from`. For a task outside
+  // a plan, `own` names where its own change runs from, the merge base of
+  // the head and the branch it merges into, and `ownDiff` holds that change.
+  compare?: {
+    from: string | null; branch?: string; fallback?: string;
+    merge?: { main: string; files: readonly string[]; own?: { from: string; branch: string } | null } | null;
+  } | null;
+  ownDiff?: string | null;
+  // The path, inside the reviewer's clone, of the file that holds the whole
+  // diff (REVIEW_DIFF in cli/runner.mjs), when the caller wrote one.
+  diffFile?: string | null;
   diffLimit?: number;
   owner?: string;
   bar?: string | null;                     // the project's review bar; absent or null, DEFAULT_REVIEW_BAR
@@ -93,7 +118,8 @@ export function reviewBrief(input: BriefInput): string {
   const owner = input.owner ?? DEFAULT_OWNER;
   const head = need.head;
   const from = input.compare ? input.compare.from : item.base;
-  const compare = from ? `git diff ${inline(from)} ${head}` : null;
+  const merge = input.compare?.merge ?? null;
+  const compare = merge ? `git show --remerge-diff ${head}` : from ? `git diff ${inline(from)} ${head}` : null;
   const verdicts = ownerVerdicts(input.events);
   const out: string[] = [];
   const section = (...lines: string[]) => out.push(lines.join("\n"));
@@ -135,7 +161,7 @@ export function reviewBrief(input: BriefInput): string {
     "Title, as written for the item. The title asks for the change; it is not a claim the change or its commits make:",
     block(item.title),
     `Head: ${head}`,
-    ...baseLines(item.base, input.compare, compare),
+    ...(merge ? mergeLines(input.compare!.from, merge, head) : baseLines(item.base, input.compare, compare)),
     `Change class: ${need.changeClass}, because ${CLASS_GLOSS[need.changeClass]}. ${basis}`,
     "",
     ...(item.scope.length ? ["Scope, the globs the item intends to touch:", block(item.scope.join("\n"))] : ["The item has no scope, so no changed file is outside it."]),
@@ -188,13 +214,38 @@ export function reviewBrief(input: BriefInput): string {
 
   const limit = input.diffLimit !== undefined && Number.isFinite(input.diffLimit) && input.diffLimit > 0 ? Math.floor(input.diffLimit) : BRIEF_LIMITS.diff;
   const diff = input.diff ? cutDiff(input.diff, limit) : null;
+  const inFile = input.diffFile ? [`The whole diff is also in the file ${code(input.diffFile)} in your clone${merge?.own ? ", the resolution first and the task's own change after it" : ""}.`] : [];
+  // Which kind of diff this is: a merge's conflict resolution, or the change
+  // from the base to the head.
+  const kind = merge
+    ? [
+      `This is the merge's conflict resolution, the output of ${compare}: for each file git could not merge as committed, the diff from the merge git makes on its own (conflict markers included, on the - side, where git left a conflict) to the merge the builder committed. A file not shown was merged as git merged it. It is not a diff from the base: the work main brought in is listed above by file, not shown.`,
+    ]
+    : compare ? [`This is the change from the base to the head, the output of ${compare}.`] : [];
   section(
     "## The diff",
     "",
-    ...(diff
-      ? [...(diff.cut ? [`${diff.cut} Read the rest in your clone${compare ? ` with ${compare}` : ""}.`] : []), block(diff.text, "diff")]
-      : [compare ? `The diff is not included here. Read it in your clone: ${compare}` : "The diff is not included here. Read it in your clone."]),
+    ...(input.diff === "" && merge
+      ? [...kind, "The resolution is empty: the builder committed the merge git makes on its own, with no file changed from it."]
+      : input.diffRef
+        ? [...kind, ...byReference(input.diffRef, compare)]
+        : diff
+          ? [...kind, ...(diff.cut ? [`${diff.cut} Read the rest in your clone${compare ? ` with ${compare}` : ""}.`] : []), block(diff.text, "diff")]
+          : [compare ? `The diff is not included here. Read it in your clone: ${compare}` : "The diff is not included here. Read it in your clone."]),
+    ...(inFile.length ? ["", ...inFile] : []),
   );
+  if (merge?.own) {
+    const own = input.ownDiff ? cutDiff(input.ownDiff, limit) : null;
+    const command = `git diff ${inline(merge.own.from)} ${head}`;
+    section(
+      "## The task's own change",
+      "",
+      `This is the task's whole change, the output of ${command}: from the merge base of the head and ${code(merge.own.branch)}, so main's work is left out, and the resolution above is part of it. An approval covers this change too.`,
+      ...(own
+        ? [...(own.cut ? [`${own.cut} Read the rest in your clone with ${command}.`] : []), block(own.text, "diff")]
+        : [input.ownDiff === "" ? "It is empty: the head changes nothing from the merge base." : `It is not included here. Read it in your clone: ${command}`]),
+    );
+  }
 
   const bar = input.bar?.trim() ? input.bar : DEFAULT_REVIEW_BAR;
   section(
@@ -222,6 +273,16 @@ export function reviewBrief(input: BriefInput): string {
   return out.join("\n\n");
 }
 
+// What a brief says of a diff too large to carry (t284): where the whole
+// diff is kept, and where the reviewer reads it. Nothing of the diff itself
+// is quoted here — a large payload travels by reference or not at all.
+function byReference(ref: LargeRef, compare: string | null): string[] {
+  return [
+    `The diff is too large for this brief — ${ref.bytes} bytes, sha256 ${inline(ref.sha256.slice(0, 12))} — so it is carried by reference: Atelier keeps the whole diff in R2, key ${code(ref.key)}, and the ledger names it by that key.`,
+    `Read the change in your clone${compare ? `: ${compare}` : ", comparing the head with its base"}.`,
+  ];
+}
+
 // What the change is measured from. A task that merged its target branch
 // after it forked holds that branch's newer commits, so the change is read
 // from the merge base of the head and that branch; when the caller could not
@@ -243,6 +304,29 @@ function baseLines(base: string | null, given: BriefInput["compare"], compare: s
   return [
     `Base: ${base ? inline(base) : "not recorded"}`,
     compare ? `The change is everything from the base to the head: ${compare}` : "The base is not recorded; compare the head with its fork point in your clone.",
+  ];
+}
+
+// What a merge-main job's head is measured from: its first parent, the
+// builder's previous head, with main as its second. The files main brought
+// in are listed, up to MERGE_FILES, so the reviewer knows what else came in
+// without reading main's work as the change.
+const MERGE_FILES = 300;
+function mergeLines(previous: string | null, merge: NonNullable<NonNullable<BriefInput["compare"]>["merge"]>, head: string): string[] {
+  const files = merge.files.slice(0, MERGE_FILES);
+  const more = merge.files.length - files.length;
+  return [
+    `Base: ${previous ? inline(previous) : "not recorded"}, the head before this merge. This head merges main at ${inline(merge.main)} into it: its first parent is the builder's previous head, its second is main. It is a merge-main job's merge, and what is under review is how the merge was resolved.`,
+    `The resolution is: git show --remerge-diff ${head}`,
+    ...(merge.own ? [`The task's own change, which this review also covers, is: git diff ${inline(merge.own.from)} ${head}`] : []),
+    "",
+    ...(merge.files.length
+      ? [
+        `Files the merge brought in from main (${merge.files.length}): git diff --name-only ${previous ? inline(previous) : "HEAD^1"} ${head}. They hold main's work, which was reviewed and merged on main; judge them only where the resolution touches them.`,
+        block(files.join("\n")),
+        ...(more ? [`and ${more} more.`] : []),
+      ]
+      : ["The merge brought in no file from main."]),
   ];
 }
 

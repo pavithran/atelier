@@ -3,31 +3,80 @@
   "name": "atelier",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-03",
+  // Workers Logs: the account keeps every invocation and every console.*
+  // line the Worker writes (seven days, three on the free plan) — read them
+  // in the dashboard under Workers & Pages → atelier → Observability, or
+  // live with wrangler tail; docs/orchestrating.md, "Reading the server's
+  // logs", says how a session queries them. test/workers-logs.test.mjs
+  // keeps the logs free of tokens and keys.
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
+  // Cloudflare Access in front of the owner's pages (src/access.ts): set all
+  // three, as vars or secrets, and the Worker verifies the Access assertion
+  // on every owner route — /login and its token form among them — against the
+  // keys the team publishes, matching the issuer, the audience and the
+  // owner's email claim. The issuer is the team's URL; the audience is the
+  // Access application's AUD tag; the email is the one person the pages are
+  // for. Each public path (/api/*, /showcase, /how, /live.js) needs its own
+  // Access application with a Bypass policy, since bearer tokens and visitors
+  // never pass Access (docs/setup.md says how).
+  //   "vars": {
+  //     "CF_ACCESS_ISS": "https://TEAM.cloudflareaccess.com",
+  //     "CF_ACCESS_AUD": "<the application's AUD tag>",
+  //     "CF_ACCESS_OWNER_EMAIL": "owner@example.com"
+  //   }
   "vars": {
     // The Cloudflare account that holds the AI Gateway and the metrics
     // dataset is the secret CF_ACCOUNT_ID (README, "AI Gateway costs"), so
     // the public source names no account; unset, neither is read.
-    // The gateway runners send their calls through.
+    // The gateway runners send their calls through, whose figures the
+    // Models page reads from the GraphQL Analytics API.
     "AI_GATEWAY_ID": "atelier"
   },
-  // Atelier's metrics (src/metrics.ts), among them each AI Gateway call.
+  // Atelier's own metrics (src/metrics.ts).
   "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "atelier_metrics" }],
-  // Every five minutes the Worker pulls the AI Gateway's new logs; without
-  // the AI_GATEWAY_TOKEN secret the pull does nothing.
-  "triggers": { "crons": ["*/5 * * * *"] },
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
+  // Cloudflare Browser Run (Browser Rendering until 2026): the render check
+  // (src/render-check.ts) scrapes each page the sandbox sends with
+  // JavaScript off and allowRequestPattern set to the pages' Google Fonts
+  // stylesheet URL and fonts.gstatic.com font files only, so the page loads
+  // nothing else; a check run may render at most MAX_RENDERS times, and the
+  // answer holds no text the browser got from anywhere but the sent HTML.
+  // The binding holds no credential the sandbox could read.
+  "browser": { "binding": "BROWSER" },
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
+  // Large payloads by reference (t284): whole check logs and review diffs are
+  // kept in R2 and named by their key in briefs and the ledger, instead of
+  // carried inline — an 888 KB review diff broke a review on 2026-10-07. The
+  // owner creates the bucket before deploying: npx wrangler r2 bucket create
+  // atelier-large. Where no bucket answers the binding, nothing large is
+  // stored and briefs and the ledger carry what they always did.
+  "r2_buckets": [{ "binding": "LARGE", "bucket_name": "atelier-large" }],
   "durable_objects": {
     "bindings": [
       { "name": "LEDGER", "class_name": "Ledger" },
       { "name": "RUNNER", "class_name": "CheckRunner" }
     ]
   },
+  // The landing pipeline as a Cloudflare Workflow (src/landing-workflow.ts),
+  // used only by `atelier land ID --workflow` (docs/landing.md): one instance
+  // per landing runs the lease, the checks in a container, the submission,
+  // the review wait and the acceptance as durable steps with retries, and
+  // waits for the owner's machine to merge main, push and merge. At the
+  // default polls a landing takes under 3,000 steps, well inside the
+  // default limit of 10,000.
+  "workflows": [{ "name": "landing", "binding": "LANDING_WORKFLOW", "class_name": "LandingWorkflow" }],
   // One container per check run, started from the Cloudflare-managed
-  // cloudflare/debian-trixie image (Node 24), so no image is built or pushed.
+  // cloudflare/debian-trixie image (Node 24), so no image is built or pushed
+  // and deploying needs no Docker. The image has no git: the runner fetches
+  // Debian's git package, pinned by sha256, and unpacks it into each
+  // container offline (src/sandbox/tools.ts; docs/setup.md, "The check
+  // container's git"). Declaring an "images" entry here would make every
+  // deploy need Docker or Workers Builds.
+  // A Durable Object-managed container takes no instance_type (wrangler
+  // refuses it), so the check step's own limit (STEP_SECONDS in
+  // src/sandbox/runner.ts) is what lets a long suite finish.
   "containers": [{ "class_name": "CheckRunner", "scheduling_policy": "durable_object" }],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Ledger"] },

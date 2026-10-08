@@ -3,10 +3,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { checkEnv } from "./check-env.mjs";
+import { excludeScratch } from "./scratch.mjs";
 import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
+import { landingVerdict } from "../src/landing-verdict.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -113,8 +115,18 @@ export async function runLand(io) {
   const noReview = args["no-review"] === true;
   const wait = args.wait === true;
   const releaseLease = args["release-lease"] === true;
+  const workflow = args.workflow === true;
   const reviewer = args.reviewer;
-  if (releaseLease && (dryRun || noReview || wait || reviewer !== undefined)) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
+  // Where a Workflow landing runs the required checks (t305): "local" (the
+  // default) runs them here in a clean clone, as the plain landing does, and
+  // the Workflow waits for their observed results; "container" has the
+  // Workflow run them in the CheckRunner container. Atelier's own suite does
+  // not finish in the container's default instance, hence the default.
+  const checksMode = args.checks;
+  if (checksMode !== undefined && !workflow) die("--checks says where a Workflow landing runs the required checks; give it with --workflow (the plain landing always runs them here, in a clean clone)");
+  if (checksMode !== undefined && checksMode !== "local" && checksMode !== "container") die(`--checks takes local or container: atelier land ${id} --workflow --checks local|container`);
+  if (releaseLease && (dryRun || noReview || wait || reviewer !== undefined || workflow)) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
+  if (workflow && dryRun) die("--dry-run and --workflow together say two things: --dry-run prints what a landing would do and changes nothing, and --workflow starts the landing as a Cloudflare Workflow that does it; give one or the other");
   if (reviewer !== undefined && (typeof reviewer !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(reviewer))) {
     die(`--reviewer needs harness/model, such as codex/gpt-6-astra: atelier land ${id} --reviewer H/M`);
   }
@@ -207,11 +219,17 @@ export async function runLand(io) {
     // refreshes; the merge of main a landing makes would put a commit beside
     // them, and planGate refuses a plan whose head is not its integration head.
     if (d.item.kind === "plan") no(`${id} is a plan, which atelier land does not land: a plan lands with atelier merge ${id} --head INTEGRATION_HEAD, the integration head atelier plan show ${id} prints, and a plan branch that is behind main takes main through atelier plan refresh ${id}.`);
-    if (d.item.state === "accepted") no(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
+    // Through the Workflow an accepted task is not a refusal but a resume:
+    // its workspace work is behind it, and the landing goes on from the
+    // acceptance (the merge the Workflow waits for).
+    if (d.item.state === "accepted" && !workflow) no(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
     if (!existsSync(join(dir, ".git"))) no(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one.`);
     const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
     if (held.project !== name || held.item !== id) no(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace.`);
     if (existsSync(join(dir, ".git", "MERGE_HEAD"))) no(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again.`);
+    // An agent's notes and a harness's logs under .scratch/ are not work to
+    // commit (excludeScratch, t257).
+    excludeScratch(dir);
     if (git(["status", "--porcelain"], { cwd: dir })) no(`${id}'s workspace has uncommitted changes; commit or set them aside before landing.`);
     return d;
   };
@@ -242,22 +260,20 @@ export async function runLand(io) {
     return;
   }
 
+  // The Workflow landing (t280): everything below is the CLI's own
+  // pipeline, unchanged; --workflow hands the same pipeline to a
+  // Cloudflare Workflow and stays as its executor instead. --wait needs
+  // no separate handling there: the Workflow queues for the lease by
+  // itself, in the order the landings asked.
+  if (workflow) {
+    if (wait) print("--wait is the Workflow's own behaviour: it queues for the lease in the order the landings asked, and takes it when its turn comes.");
+    return runLandWorkflow(io, { d0, itemPath, dir, regenerate });
+  }
+
   // From here every failure throws rather than dying, so the lease is
-  // released and the step recorded before the command ends.
-  const record = async (step, ms, data = {}) => {
-    try { await request("POST", `${itemPath}/land`, { step, ms: Math.max(0, Math.round(ms)), ...data }); }
-    catch (error) { print(`Warning: the landing's ${step} step could not be recorded: ${error.message}`); }
-  };
-  // The regenerate command, run in the workspace the way a check runs it.
-  // Both the merge (to settle conflicts that lie only in generated files)
-  // and the regenerate step below (to bring every generated file current
-  // with the merged tree) come through here.
-  const runRegenerate = () => {
-    const r = spawnSync("/bin/sh", ["-c", regenerate], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
-    if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
-    return { ok: !r.error && r.status === 0, why: r.error ? r.error.message : `exit ${r.status}` };
-  };
+  // released and the step recorded before the command ends. The recorder
+  // is the module's own (below), shared with the Workflow executor (t280).
+  const record = landRecorder(io, itemPath);
   // The heartbeat renews the lease while the landing runs; the timer never
   // keeps the process alive on its own (unref), and a renewal the server
   // refuses says the lease is no longer this landing's, which is reported
@@ -451,177 +467,16 @@ export async function runLand(io) {
     await record("lease", Date.now() - t0);
 
     // Merge main into the workspace, no-ff, so the task carries main's
-    // commits as a merge of their own.
-    guardLease();
-    t0 = Date.now();
-    const base = await request("POST", `${itemPath}/base-token`, { scope: "read" });
-    git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
-    const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
-    let fromMain = [], mergedIn = false, settled = null, settledConflicts = [], routeLevel = null;
-    if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
-      print(`main at ${short(mainHead)} is already merged into ${id}'s workspace.`);
-    } else {
-      const forkPoint = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
-      fromMain = git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir }).split("\n").filter(Boolean);
-      const r = git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
-      if (r.status !== 0) {
-        const conflicts = git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
-        // A conflict that lies only in files the regenerate command rewrites
-        // is not the owner's to settle by hand: whichever side such a file
-        // took, the command writes it again from the merged code, so either
-        // side is a place to start. Each conflicted file is taken from ours
-        // (theirs where the task deleted the file), the command runs, and
-        // when it rewrote every conflicted file, what it wrote is committed
-        // as the resolution; what it changed elsewhere waits for the
-        // regenerate step below, which runs it once more. A file the command
-        // left exactly as the side taken is not one it rewrites, so the
-        // landing stops as it always did: the workspace was clean before the
-        // merge began, so a hard reset returns it to where the merge started
-        // and the merge made again leaves the conflicts in it for the owner.
-        let reason = null;
-        if (conflicts.length && regenerate) {
-          print(`The merge stops on conflicts in ${conflicts.join(", ")}; taking either side and regenerating with \`${regenerate}\`…`);
-          const shaOf = (file) => (existsSync(join(dir, file)) ? git(["hash-object", "--", file], { cwd: dir }) : "gone");
-          const taken = new Map();
-          let either = true, regen = null, unwritten = null;
-          for (const file of conflicts) {
-            if (git(["checkout", "--ours", "--", file], { cwd: dir, allowFail: true }).status !== 0
-              && git(["checkout", "--theirs", "--", file], { cwd: dir, allowFail: true }).status !== 0) { either = false; break; }
-            taken.set(file, shaOf(file));
-          }
-          if (either) {
-            regen = runRegenerate();
-            unwritten = regen.ok ? conflicts.filter((file) => shaOf(file) === taken.get(file)) : null;
-          }
-          if (regen?.ok && !unwritten.length) {
-            git(["add", "-A", "--", ...conflicts], { cwd: dir });
-            git(["commit", "--quiet", "--no-edit"], { cwd: dir });
-            settled = "atelier land, taking either side and regenerating";
-            settledConflicts = conflicts;
-            print(`The conflicts were all in files \`${regenerate}\` rewrites; took either side and let the command write them again.`);
-          } else {
-            reason = !either ? "a conflicted file had neither side to take"
-              : !regen.ok ? `the regenerate command \`${regenerate}\` failed (${regen.why})`
-                : `the regenerate command left ${unwritten.join(", ")} as either side had it`;
-            const back = git(["reset", "--hard", "HEAD"], { cwd: dir, allowFail: true });
-            if (back.status !== 0) print(`Warning: the workspace could not be reset after the regeneration did not settle the conflicts (${(back.stderr || back.stdout || "").trim()}); resolve what is there by hand`);
-            else git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
-          }
-        }
-        if (!settled) {
-          const data = { fromMain, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
-          await record("merge", Date.now() - t0, { failed: true, ...data });
-          // The conflicts can go back to the task's builder instead of the
-          // owner's session (t243): a merge-main dispatch makes a runner
-          // merge main here again — the workspace's reset clears the merge
-          // this landing left — and brief the builder to resolve it, where a
-          // plain rework dispatch would reset the workspace to a head that
-          // cannot reach main. The holder is named, for a task that has one.
-          const holder = typeof d0.item.owner === "string" && d0.item.owner.includes("/") ? d0.item.owner : null;
-          throw new StepError(conflicts.length
-            ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve and commit, and then atelier land ${id} again.`
-            : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
-        }
-      }
-      mergedIn = true;
-      print(`Merged main at ${short(mainHead)} into ${id}'s workspace (${fromMain.length} commit${fromMain.length === 1 ? "" : "s"} from main).`);
-    }
-    // Where main and the task each raised the route level from the fork
-    // point, the merge was clean at the number they share — both sides
-    // wrote the same line — so the merged tree carries both sides' routes
-    // under a number that names either side's alone (t248). The merged
-    // level is compared at the fork point, at the task's head before the
-    // merge and at main's head, and raised to main's plus the task's own
-    // raise, its own commit, so the number the merged CLI reports keeps
-    // meaning the routes it calls. The comparison runs wherever the
-    // workspace's HEAD holds main — the landing's own merge above, and a
-    // rerun whose conflicted merge the owner resolved by hand, which
-    // finds main already merged and would else skip it — and however main
-    // reached HEAD: a merge that brought it through a side branch (main
-    // merged into the side branch, the side branch into the task's line)
-    // lies off HEAD's first-parent line, so a --first-parent rev-list
-    // misses it and the comparison would be skipped exactly where both
-    // sides raised the level. The merge that brought main in is therefore
-    // found by ancestry: HEAD's first-parent line is walked from HEAD
-    // down, each commit tested for holding main
-    // (git merge-base --is-ancestor), and the first commit whose history
-    // does not hold it is the task's head before the merge — the merge
-    // above it on the line, however main reached that merge, is the one
-    // that brought main in. Where that head's merge base with main is
-    // main itself, the task's line already held everything main had to
-    // add, and the levels merge as they always did — as they also do for
-    // a repo with no src/route-level.ts, where the comparison is skipped
-    // and the landing goes on, or a level one side alone raised.
-    const levelAt = (rev) => {
-      const shown = git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
-      const found = /export const ROUTE_LEVEL = (\d+);/.exec(shown.stdout ?? "");
-      return found ? Number(found[1]) : null;
-    };
-    const holdsMain = (rev) => git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true }).status === 0;
-    const line = git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir }).split("\n").map((sha) => sha.trim()).filter(Boolean);
-    let stepped = 0;
-    while (stepped < line.length && holdsMain(line[stepped])) stepped++;
-    const taskHead = stepped > 0 && stepped < line.length ? line[stepped] : null;
-    const based = taskHead ? git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
-    const forkPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
-    if (taskHead && forkPoint && forkPoint !== mainHead) {
-      const baseLevel = levelAt(forkPoint), taskLevel = levelAt(taskHead), mainLevel = levelAt(mainHead), mergedLevel = levelAt("HEAD");
-      if (baseLevel !== null && taskLevel > baseLevel && mainLevel > baseLevel && mergedLevel !== null) {
-        const rightLevel = mainLevel + (taskLevel - baseLevel);
-        if (mergedLevel < rightLevel) {
-          const levelFile = join(dir, "src", "route-level.ts");
-          writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
-          git(["add", "--", "src/route-level.ts"], { cwd: dir });
-          git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
-          routeLevel = { base: baseLevel, main: mainLevel, task: taskLevel, was: mergedLevel, set: rightLevel };
-          print(`main and ${id} each raised the route level from ${baseLevel} (main to ${mainLevel}, ${id} to ${taskLevel}), and the merge left it at ${mergedLevel}: the merged CLI calls both sides' routes, so the level is raised to ${rightLevel}. Deploy the server from a checkout at route level ${rightLevel} or newer (npm run deploy, which records the commit it deploys) before the next landing or runner.`);
-        }
-      }
-    }
-    await record("merge", Date.now() - t0, { fromMain, ...(routeLevel ? { routeLevel } : {}), ...(settled ? { conflicts: settledConflicts, resolvedBy: settled } : {}), ...(mergedIn ? {} : { skipped: true }) });
-
-    // The project's fixtures, regenerated now that both lines sit in one
-    // tree, so the checks below see fixtures current with them. The command
-    // runs in the workspace as a check runs, and what it changes is
-    // committed before the push. Where the merge above already ran it to
-    // settle conflicts, running it again changes nothing: what it wrote is
-    // committed, and only anything else it changes is committed here.
-    if (regenerate) {
-      guardLease();
-      t0 = Date.now();
-      print(`Regenerating with \`${regenerate}\`…`);
-      const r = runRegenerate();
-      if (!r.ok) {
-        await record("regenerate", Date.now() - t0, { command: regenerate, failed: true });
-        throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
-      }
-      let changed = false;
-      if (git(["status", "--porcelain"], { cwd: dir })) {
-        git(["add", "-A"], { cwd: dir });
-        git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
-        changed = true;
-        print("Committed what the regeneration changed.");
-      }
-      await record("regenerate", Date.now() - t0, { command: regenerate, changed });
-    }
+    // commits as a merge of their own; settle what the project's
+    // regenerate command can settle, raise the merged route level where
+    // both sides raised it and regenerate the fixtures — the workspace half
+    // of a landing, shared with the Workflow executor (t280).
+    const { head, mainHead, mergedIn } = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard: guardLease, d0 });
 
     // Push, checks and submission run as this CLI's own commands in the
     // workspace, so their output is their own and a failure still ends the
     // landing here, with the lease released and the step recorded.
-    const step = async (kind, argv, cwd, data = {}) => {
-      guardLease();
-      const t = Date.now();
-      const r = await runCommand([process.execPath, io.atelier, ...argv, "--project", name], { cwd, env: io.env });
-      if (!r.passed) {
-        await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500) });
-        throw new StepError(`atelier ${argv[0]} failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
-      }
-      // A function names fields only the finished step knows, such as the
-      // merge commit the checkout now holds.
-      await record(kind, r.durationMs, typeof data === "function" ? data() : data);
-      return r;
-    };
-    const head = git(["rev-parse", "HEAD"], { cwd: dir });
+    const step = (kind, argv, cwd, data = {}) => { guardLease(); return landStep(io, record, kind, argv, cwd, data); };
     await step("push", ["push"], dir, { head });
     print(`Pushed ${short(head)} to ${id}'s fork.`);
     await step("check", ["check"], dir);
@@ -691,16 +546,15 @@ export async function runLand(io) {
           // (src/review/tier.ts) beside it is a second opinion: its approval
           // never satisfies the gate, so it is said and the wait goes on; its
           // rejection sends the task back as any rejection does.
-          const fresh = (d.reviews ?? []).filter((v) => v.head === head && Date.parse(v.at) >= Date.parse(since));
-          for (const v of fresh.filter((v) => v.tier && v.approve && !tierSeen.has(`${v.by}\n${v.at}`))) {
+          // Any rejection among the fresh verdicts decides, whatever came
+          // after it (src/landing-verdict.ts, which the landing Workflow
+          // shares): a tier rejection and the gate's approval that arrive
+          // between two polls leave the task rejected on the server.
+          const { verdict, tierApprovals } = landingVerdict(d.reviews ?? [], head, since);
+          for (const v of tierApprovals.filter((v) => !tierSeen.has(`${v.by}\n${v.at}`))) {
             tierSeen.add(`${v.by}\n${v.at}`);
             print(`${v.by} approved ${id} at ${short(head)} as its tier review; the landing still waits for the gate's review.`);
           }
-          // Any rejection among the fresh verdicts decides, whatever came
-          // after it: a tier rejection and the gate's approval that arrive
-          // between two polls leave the task rejected on the server.
-          const counted = fresh.filter((v) => !(v.tier && v.approve));
-          const verdict = counted.find((v) => !v.approve) ?? counted.at(-1);
           if (verdict) {
             if (!verdict.approve) {
               await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
@@ -740,4 +594,384 @@ export async function runLand(io) {
   // When another landing took the lease over, release() has said where it
   // stands; claiming a release here would say what did not happen.
   if (takenOverBy === null) print(`The landing lease for ${name} is released; another task may land.`);
+}
+
+// ── the pieces both landings share (t280) ──────────────────────────────────
+
+// A land.* step recorder: a ledger that cannot take the record warns and
+// the landing goes on, for the record is not the step.
+function landRecorder(io, itemPath) {
+  return async (step, ms, data = {}) => {
+    try { await io.request("POST", `${itemPath}/land`, { step, ms: Math.max(0, Math.round(ms)), ...data }); }
+    catch (error) { io.print(`Warning: the landing's ${step} step could not be recorded: ${error.message}`); }
+  };
+}
+
+// The regenerate command, run in the workspace the way a check runs it.
+// Both the merge (to settle conflicts that lie only in generated files)
+// and the regenerate step (to bring every generated file current with the
+// merged tree) come through here.
+function runRegenerateIn(dir, regenerate, io) {
+  const r = spawnSync("/bin/sh", ["-c", regenerate], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
+  if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
+  return { ok: !r.error && r.status === 0, why: r.error ? r.error.message : `exit ${r.status}` };
+}
+
+// One step of a landing that runs a CLI command of its own (the push, or
+// the merge below): the command's output is its own, its duration and what
+// it settled are recorded, and a failure throws the StepError that ends
+// the landing it belongs to.
+async function landStep(io, record, kind, argv, cwd, data = {}) {
+  const t = Date.now();
+  const r = await runCommand([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env });
+  if (!r.passed) {
+    await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500) });
+    throw new StepError(`atelier ${argv[0]} failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
+  }
+  // A function names fields only the finished step knows, such as the
+  // merge commit the checkout now holds.
+  await record(kind, r.durationMs, typeof data === "function" ? data() : data);
+  return r;
+}
+
+// The workspace half of a landing: merge main into the task's workspace
+// (no-ff, so the task carries main's commits as a merge of their own),
+// settle conflicts the project's regenerate command can settle, raise the
+// merged route level where main and the task each raised it (t248),
+// regenerate the fixtures and commit what changes. The CLI's own landing
+// and the Workflow executor (below) run the same code, so a landing
+// behaves the same whichever engine drives it. `guard` is the calling
+// pipeline's lease guard, which throws once the lease is no longer this
+// landing's; every failure throws a StepError carrying the failed
+// step's data. Answers the head the workspace reached, main's head and
+// whether main was merged at all.
+async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0 }) {
+  const { request, git, print } = io;
+  guard();
+  const t0 = Date.now();
+  const base = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
+  git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
+  const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
+  let fromMain = [], mergedIn = false, settled = null, settledConflicts = [], routeLevel = null;
+  if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
+    print(`main at ${short(mainHead)} is already merged into ${id}'s workspace.`);
+  } else {
+    const forkPoint = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
+    fromMain = git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir }).split("\n").filter(Boolean);
+    const r = git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+    if (r.status !== 0) {
+      const conflicts = git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+      // A conflict that lies only in files the regenerate command rewrites
+      // is not the owner's to settle by hand: whichever side such a file
+      // took, the command writes it again from the merged code, so either
+      // side is a place to start. Each conflicted file is taken from ours
+      // (theirs where the task deleted the file), the command runs, and
+      // when it rewrote every conflicted file, what it wrote is committed
+      // as the resolution; what it changed elsewhere waits for the
+      // regenerate step below, which runs it once more. A file the command
+      // left exactly as the side taken is not one it rewrites, so the
+      // landing stops as it always did: the workspace was clean before the
+      // merge began, so a hard reset returns it to where the merge started
+      // and the merge made again leaves the conflicts in it for the owner.
+      let reason = null;
+      if (conflicts.length && regenerate) {
+        print(`The merge stops on conflicts in ${conflicts.join(", ")}; taking either side and regenerating with \`${regenerate}\`…`);
+        const shaOf = (file) => (existsSync(join(dir, file)) ? git(["hash-object", "--", file], { cwd: dir }) : "gone");
+        const taken = new Map();
+        let either = true, regen = null, unwritten = null;
+        for (const file of conflicts) {
+          if (git(["checkout", "--ours", "--", file], { cwd: dir, allowFail: true }).status !== 0
+            && git(["checkout", "--theirs", "--", file], { cwd: dir, allowFail: true }).status !== 0) { either = false; break; }
+          taken.set(file, shaOf(file));
+        }
+        if (either) {
+          regen = runRegenerateIn(dir, regenerate, io);
+          unwritten = regen.ok ? conflicts.filter((file) => shaOf(file) === taken.get(file)) : null;
+        }
+        if (regen?.ok && !unwritten.length) {
+          git(["add", "-A", "--", ...conflicts], { cwd: dir });
+          git(["commit", "--quiet", "--no-edit"], { cwd: dir });
+          settled = "atelier land, taking either side and regenerating";
+          settledConflicts = conflicts;
+          print(`The conflicts were all in files \`${regenerate}\` rewrites; took either side and let the command write them again.`);
+        } else {
+          reason = !either ? "a conflicted file had neither side to take"
+            : !regen.ok ? `the regenerate command \`${regenerate}\` failed (${regen.why})`
+              : `the regenerate command left ${unwritten.join(", ")} as either side had it`;
+          const back = git(["reset", "--hard", "HEAD"], { cwd: dir, allowFail: true });
+          if (back.status !== 0) print(`Warning: the workspace could not be reset after the regeneration did not settle the conflicts (${(back.stderr || back.stdout || "").trim()}); resolve what is there by hand`);
+          else git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+        }
+      }
+      if (!settled) {
+        const data = { fromMain, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
+        await record("merge", Date.now() - t0, { failed: true, ...data });
+        // The conflicts can go back to the task's builder instead of the
+        // owner's session (t243): a merge-main dispatch makes a runner
+        // merge main here again — the workspace's reset clears the merge
+        // this landing left — and brief the builder to resolve it, where a
+        // plain rework dispatch would reset the workspace to a head that
+        // cannot reach main. The holder is named, for a task that has one.
+        const holder = typeof d0?.item?.owner === "string" && d0.item.owner.includes("/") ? d0.item.owner : null;
+        throw new StepError(conflicts.length
+          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve and commit, and then atelier land ${id} again.`
+          : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
+      }
+    }
+    mergedIn = true;
+    print(`Merged main at ${short(mainHead)} into ${id}'s workspace (${fromMain.length} commit${fromMain.length === 1 ? "" : "s"} from main).`);
+  }
+  // Where main and the task each raised the route level from the fork
+  // point, the merge was clean at the number they share — both sides
+  // wrote the same line — so the merged tree carries both sides' routes
+  // under a number that names either side's alone (t248). The merged
+  // level is compared at the fork point, at the task's head before the
+  // merge and at main's head, and raised to main's plus the task's own
+  // raise, its own commit, so the number the merged CLI reports keeps
+  // meaning the routes it calls. The comparison runs wherever the
+  // workspace's HEAD holds main — the landing's own merge above, and a
+  // rerun whose conflicted merge the owner resolved by hand, which
+  // finds main already merged and would else skip it — and however main
+  // reached HEAD: a merge that brought it in through a side branch (main
+  // merged into the side branch, the side branch into the task's line)
+  // lies off HEAD's first-parent line, so a --first-parent rev-list
+  // misses it and the comparison would be skipped exactly where both
+  // sides raised the level. The merge that brought main in is therefore
+  // found by ancestry: HEAD's first-parent line is walked from HEAD
+  // down, each commit tested for holding main
+  // (git merge-base --is-ancestor), and the first commit whose history
+  // does not hold it is the task's head before the merge — the merge
+  // above it on the line, however main reached that merge, is the one
+  // that brought main in. Where that head's merge base with main is
+  // main itself, the task's line already held everything main had to
+  // add, and the levels merge as they always did — as they also do for
+  // a repo with no src/route-level.ts, where the comparison is skipped
+  // and the landing goes on, or a level one side alone raised.
+  const levelAt = (rev) => {
+    const shown = git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
+    const found = /export const ROUTE_LEVEL = (\d+);/.exec(shown.stdout ?? "");
+    return found ? Number(found[1]) : null;
+  };
+  const holdsMain = (rev) => git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true }).status === 0;
+  const line = git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir }).split("\n").map((sha) => sha.trim()).filter(Boolean);
+  let stepped = 0;
+  while (stepped < line.length && holdsMain(line[stepped])) stepped++;
+  const taskHead = stepped > 0 && stepped < line.length ? line[stepped] : null;
+  const based = taskHead ? git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
+  const forkPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
+  if (taskHead && forkPoint && forkPoint !== mainHead) {
+    const baseLevel = levelAt(forkPoint), taskLevel = levelAt(taskHead), mainLevel = levelAt(mainHead), mergedLevel = levelAt("HEAD");
+    if (baseLevel !== null && taskLevel > baseLevel && mainLevel > baseLevel && mergedLevel !== null) {
+      const rightLevel = mainLevel + (taskLevel - baseLevel);
+      if (mergedLevel < rightLevel) {
+        const levelFile = join(dir, "src", "route-level.ts");
+        writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
+        git(["add", "--", "src/route-level.ts"], { cwd: dir });
+        git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
+        routeLevel = { base: baseLevel, main: mainLevel, task: taskLevel, was: mergedLevel, set: rightLevel };
+        print(`main and ${id} each raised the route level from ${baseLevel} (main to ${mainLevel}, ${id} to ${taskLevel}), and the merge left it at ${mergedLevel}: the merged CLI calls both sides' routes, so the level is raised to ${rightLevel}. Deploy the server from a checkout at route level ${rightLevel} or newer (npm run deploy, which records the commit it deploys) before the next landing or runner.`);
+      }
+    }
+  }
+  await record("merge", Date.now() - t0, { fromMain, ...(routeLevel ? { routeLevel } : {}), ...(settled ? { conflicts: settledConflicts, resolvedBy: settled } : {}), ...(mergedIn ? {} : { skipped: true }) });
+
+  // The project's fixtures, regenerated now that both lines sit in one
+  // tree, so the checks below see fixtures current with them. The command
+  // runs in the workspace as a check runs, and what it changes is
+  // committed before the push. Where the merge above already ran it to
+  // settle conflicts, running it again changes nothing: what it wrote is
+  // committed, and only anything else it changes is committed here.
+  if (regenerate) {
+    guard();
+    const start = Date.now();
+    print(`Regenerating with \`${regenerate}\`…`);
+    const r = runRegenerateIn(dir, regenerate, io);
+    if (!r.ok) {
+      await record("regenerate", Date.now() - start, { command: regenerate, failed: true });
+      throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
+    }
+    let changed = false;
+    if (git(["status", "--porcelain"], { cwd: dir })) {
+      git(["add", "-A"], { cwd: dir });
+      git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
+      changed = true;
+      print("Committed what the regeneration changed.");
+    }
+    await record("regenerate", Date.now() - start, { command: regenerate, changed });
+  }
+  return { head: git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn };
+}
+
+// ── the landing as a Cloudflare Workflow (t280) ────────────────────────────
+
+// `atelier land ID --workflow` lands the task through a Cloudflare Workflow
+// (src/landing-workflow.ts), which runs the server's half of the pipeline as
+// durable steps with retries: the landing lease, the required checks (in
+// the checks mode `container`) or the reading of their observed results
+// (in the mode `local`, the default), the submission, the review wait, the
+// acceptance and the watch for the merge. This command starts the instance, or attaches to
+// the task's live one, and is both its progress view and its executor for
+// the steps that need Git with a working tree: it polls the stage the
+// Workflow writes to the Ledger, says each new stage once, and
+//   - at `workspace` (the Workflow holds the lease and waits for this
+//     machine) merges main into the workspace, regenerates and pushes — the
+//     same code as the plain landing — and in the local checks mode runs
+//     the required checks in a clean clone (`atelier check`, as the plain
+//     landing does), renewing the lease meanwhile, and reports the pushed
+//     head, or the conflicts it stopped on, as a
+//     `workspace` event naming the round;
+//   - at `conflict` (a pause from an earlier run, whose conflicts the owner
+//     has since resolved and committed: the preflight refuses a workspace
+//     with a merge in progress or uncommitted changes) sends `resume`;
+//   - at `merge` (the Workflow accepted) runs `atelier merge` in the
+//     registered checkout, waiting while another landing holds the lease.
+// It ends when the instance completes or fails. Closing the laptop stops
+// only this view: the Workflow keeps its place, and the same command run
+// again attaches and goes on from the stage it reached.
+const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused"];
+
+async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
+  const { args, name, id, p, request, git, die, print } = io;
+  const reviewer = args.reviewer, noReview = args["no-review"] === true;
+  const askedChecks = args.checks ?? "local";
+  const wfPath = `${itemPath}/landing-workflow`;
+  const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
+  const record = landRecorder(io, itemPath);
+  const sleep = () => new Promise((ok) => setTimeout(ok, POLL_MS));
+  const send = (type, payload) => request("POST", wfPath, { event: { type, payload } });
+
+  // Start, or attach to the task's live instance. An accepted task has
+  // nothing left but its merge: it is landed through a live instance at
+  // its merge stage, and otherwise merged by hand, as the plain landing says.
+  let current = null;
+  try { current = await request("GET", wfPath); } catch (error) { die(error.message); }
+  const live = !!current?.instance && LIVE.includes(current.status?.status);
+  if (d0.item.state === "accepted" && !live) die(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
+  let started;
+  try { started = await request("POST", wfPath, { checks: askedChecks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) }); }
+  catch (error) { die(error.message); }
+  // The mode is the instance's, as the server recorded it: a live instance
+  // keeps the mode it was started with, and a server older than the modes
+  // records none and runs the checks in the container.
+  const checksMode = started.checks === "local" ? "local" : "container";
+  if (!started.checks && askedChecks === "local") print("Warning: the server recorded no checks mode for this landing, so it predates them and runs the required checks in a Cloudflare container; deploy the server for --checks local.");
+  else if (!started.created && args.checks !== undefined && args.checks !== checksMode) print(`The live instance keeps the checks mode it was started with (${checksMode}); --checks applies to a new landing.`);
+  print(started.created
+    ? (checksMode === "local"
+      ? `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow takes ${name}'s landing lease and runs the submission, the review and the acceptance on Cloudflare as durable steps; this machine merges main, pushes, runs the required checks in a clean clone (checks mode local) and merges when the Workflow asks, and the Workflow goes on only once the server has recorded every check passing at the pushed head. If this command stops, run atelier land ${id} --workflow again to attach.`
+      : `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow takes ${name}'s landing lease and runs the checks (in a Cloudflare container), the submission, the review and the acceptance on Cloudflare as durable steps; this machine merges main, pushes and merges when the Workflow asks. If this command stops, run atelier land ${id} --workflow again to attach.`)
+    : `Attached to ${id}'s landing Workflow (instance ${started.instance}, at ${started.stage ?? "its start"}).`);
+  if (!started.created && (reviewer || noReview)) print("The live instance keeps the review options it was started with; --reviewer and --no-review apply to a new landing.");
+
+  // The pause on a conflict, ended: the owner resolved and committed the
+  // conflicts (the preflight saw the workspace clean), so the Workflow is
+  // told to queue for the lease and ask for the workspace steps again.
+  if (!started.created && started.stage === "conflict") {
+    await send("resume", { round: started.round });
+    print(`Resumed the landing after the conflicts of round ${started.round + 1}; the Workflow queues for the lease and asks for the merge of main again.`);
+  }
+
+  // The executor's renewal of the lease while it does the workspace steps,
+  // so a live machine keeps it however long they take, and a machine that
+  // goes away lets it lapse. A renewal the server refuses says another
+  // landing holds the project now; the workspace steps stop at their next
+  // guard rather than push beside it.
+  let lost = null;
+  const guard = () => { if (lost) throw new StepError(`the landing lease of ${name} is no longer ${id}'s (${lost}); the landing Workflow stops at its next step. Run atelier land ${id} --workflow again once the other landing ends`); };
+  const heartbeat = () => {
+    const timer = setInterval(async () => {
+      try { await request("POST", leasePath, { item: id, renew: true }); }
+      catch (error) { if (/no_lease|landing_lease|held for|no landing lease/.test(error.message)) lost = error.message; }
+    }, LEASE_RENEW_MS);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  };
+
+  let said = null, workedRound = null, mergedHere = false, saidWait = false;
+  for (;;) {
+    let read;
+    try { read = await request("GET", wfPath); }
+    catch (error) { print(`Warning: the landing Workflow could not be read (${error.message}); trying again.`); await sleep(); continue; }
+    const { instance, status, stage, round = 0, detail, files } = read ?? {};
+    if (!instance || !status) die(`the landing Workflow of ${id} can no longer be read (instance ${instance ?? "none"}); its lease lapses on its own. Run atelier land ${id} --workflow again to start or attach the landing`);
+    if (status.status === "complete") {
+      if (noReview || status.output?.review === "skipped") print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id}.`);
+      else print(`${id} landed through the landing Workflow (instance ${instance}); the lease is released.`);
+      return;
+    }
+    if (status.status === "errored" || status.status === "terminated") {
+      die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}`);
+    }
+    const key = `${stage}:${round}`;
+    if (key !== said) {
+      said = key;
+      const what = {
+        lease: "queues for the landing lease",
+        workspace: "holds the lease and waits for this machine to merge main and push",
+        conflict: `is paused on conflicts in ${(files ?? []).join(", ") || "the merge of main"}`,
+        checks: checksMode === "local" ? "reads the observed results of the checks this machine ran" : "runs the required checks in a Cloudflare container",
+        review: "waits for the review verdict",
+        merge: "has accepted the reviewed head and waits for the merge",
+        done: "is done",
+        failed: `failed: ${detail ?? ""}`,
+      }[stage] ?? `is at ${stage}`;
+      print(`The landing Workflow ${what}${round ? ` (round ${round + 1})` : ""}.`);
+    }
+
+    if (stage === "workspace" && workedRound !== round) {
+      workedRound = round;
+      const stop = heartbeat();
+      try {
+        const merged = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0 });
+        guard();
+        await landStep(io, record, "push", ["push"], dir, () => ({ head: merged.head }));
+        // The local checks mode: the required checks run here, in a clean
+        // clone of the pushed head, through the same `atelier check` step as
+        // the plain landing, before the head is reported, so the server has
+        // recorded their observed results when the Workflow reads them. A
+        // failure ends the landing below, reported as a failed workspace.
+        if (checksMode === "local") {
+          print(`Pushed ${short(merged.head)} to ${id}'s fork; running the required checks in a clean clone.`);
+          guard();
+          await landStep(io, record, "check", ["check"], dir);
+          guard();
+          print(`The required checks pass at ${short(merged.head)}; reporting the head to the landing Workflow.`);
+        } else print(`Pushed ${short(merged.head)} to ${id}'s fork; reporting it to the landing Workflow.`);
+        await send("workspace", { round, head: merged.head, mainHead: merged.mainHead, mergedIn: merged.mergedIn });
+      } catch (error) {
+        const conflicts = Array.isArray(error.data?.conflicts) && error.data.conflicts.length ? error.data.conflicts : null;
+        // A conflict pauses the Workflow (it releases the lease and waits
+        // for the owner); any other failure ends it with this message.
+        try { await send("workspace", conflicts ? { round, conflict: true, files: conflicts, reason: error.message.slice(0, 2000) } : { round, failed: true, reason: String(error.message).slice(0, 2000) }); }
+        catch { /* the Workflow times out on its own and releases the lease */ }
+        die(conflicts
+          ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease. Once the conflicts are resolved and committed, run atelier land ${id} --workflow again: it resumes this landing.`
+          : error.message);
+      } finally { stop(); }
+    }
+
+    if (stage === "merge" && !mergedHere) {
+      mergedHere = true;
+      print(`${id} is accepted; merging in ${p.path}…`);
+      for (let tried = 0; ; tried++) {
+        const r = await runCommand([process.execPath, io.atelier, "merge", id, "--project", name], { cwd: p.path, env: io.env });
+        if (r.passed) {
+          await record("merged", r.durationMs, { mergeCommit: git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path }) });
+          print(`${id} merged: ${r.output.split("\n").filter(Boolean).at(-1) ?? "merged"}`);
+          break;
+        }
+        // The Workflow leaves the lease unrenewed while it waits for the
+        // merge, so a landing that took it meanwhile finishes first and the
+        // merge goes on after it.
+        if (/landing_lease|one landing runs at a time/.test(r.output) && tried < 720) {
+          if (!saidWait) { print(`The merge waits: another task's landing holds ${name}'s landing lease. Trying again every ${Math.round(POLL_MS / 1000)}s…`); saidWait = true; }
+          await sleep();
+          continue;
+        }
+        die(`atelier merge failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}\nThe landing Workflow keeps waiting for the merge; fix what failed and run atelier land ${id} --workflow again.`);
+      }
+    }
+    await sleep();
+  }
 }

@@ -117,6 +117,25 @@ test("a plan's brief says what is decided and what it waits on, in the shape any
   assert.equal(planBrief({ ...building, item: { ...item, state: "merged" } }).recommendation.verdict, "none");
 });
 
+test("an integrated plan's brief recommends merging the whole branch, the step plan show already gives", () => {
+  const head = "e".repeat(40);
+  const integrated: PlanView = {
+    ...building, phase: "ready",
+    item: { ...item, state: "submitted", head },
+    parts: [
+      part("t2", "a", { state: "integrated", owner: "claude-code/opus-5.5", head: "a".repeat(40), integration: { head: "a".repeat(40), mergeCommit: "c".repeat(40) } }),
+      part("t3", "b", { state: "integrated", owner: "codex/gpt-6-astra", head: "b".repeat(40), dependsOn: [{ key: "a", id: "t2" }], integration: { head: "b".repeat(40), mergeCommit: "d".repeat(40) } }),
+    ],
+    integration: { integrationHead: head },
+  };
+  const brief = planBrief(integrated);
+  assert.equal(brief.recommendation.verdict, "merge");
+  assert.equal(brief.recommendation.reason, `The plan is integrated (a and b); accept and land it: atelier merge t1 --head ${head}.`);
+  // The brief and plan show now give the same next step.
+  const shown = planText(integrated, "demo").split("\n");
+  assert.ok(shown.includes(`The plan is integrated (a and b); accept and land it: atelier merge t1 --head ${head} --project demo`), shown.join("\n"));
+});
+
 test("plan show prints a part's latest integration failure, its kind and whether the builder was charged", () => {
   const failed = (kind: string | null, state: PlanPartView["state"] = "open") => planText({ ...building, parts: [part("t2", "a", {
     state, integrationFailure: { reason: "the plan's checks failed after the merge: FAIL  npm test @ 11111111", kind, at: AT },

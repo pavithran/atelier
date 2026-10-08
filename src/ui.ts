@@ -20,9 +20,11 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
+import { PRECISION_MIN_JUDGED, precisionTerm, type PrecisionRecord, type ReviewerPrecision } from "./models/precision.ts";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
+import { pace, stalledText, type Measure, type RoleSpeed, type SpeedRecord } from "./models/speed.ts";
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -100,7 +102,8 @@ const ACCOUNT: [string, string][] = [
 // the two never say different things.
 const TAGLINE = "Many agents, one owner per task.";
 
-const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
+// src/render-check.ts lets the render check's browser load exactly this URL.
+export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
 // `signedIn` draws the sign-out form in the rail; the sign-in page has none.
 // `live` adds the script under its nonce; with a refresh, <main> says how
@@ -594,8 +597,9 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 // The public page: the portfolio the owner chose to show, read only. Stories
 // arrive redacted (graph.ts), and for a project shown anonymously they arrive
 // anonymised as well: titled by a neutral label from the project's kind, each
-// task titled by its kind of work, so no project name, task title, path,
-// commit message, review note, person or address reaches the HTML.
+// task titled by its kind of work, and no commit hash anywhere, so no project
+// name, task title, path, commit message, commit hash, review note, person or
+// address reaches the HTML.
 
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
@@ -685,7 +689,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     ${layersFigure()}
     <p class="meta">How a task goes from claim to merge, and the rules each step enforces: <a href="/how#the-loop">How it works</a>.</p>
   </section>
-  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message or address in them. Review notes, reports and diffs stay private in every case.</p>
+  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
 `,
   });
 }
@@ -696,7 +700,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -733,6 +737,8 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
+  ${precision ? precisionSection(precision) : ""}
+  ${speed ? speedSection(speed) : ""}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
@@ -751,34 +757,96 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
 </div>`, "Models", ownerName);
 }
 
+// ── review precision ───────────────────────────────────────────────────────
+// Each reviewer model's precision on the blocking findings the owner judged
+// over the window (src/models/precision.ts): judged n, held up (confirmed or
+// fixed), refuted, and the share held up. Under PRECISION_MIN_JUDGED judged
+// the row shows n and says it is too few to rank, as routing treats it.
+
+export function precisionSection(p: PrecisionRecord): string {
+  const from = p.window.from.slice(0, 10), to = p.window.to.slice(0, 10);
+  const rows = [...p.models.values()];
+  const row = (r: ReviewerPrecision) => `<tr><th scope="row"><code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")}</span></th>
+    <td class="num">${r.judged}</td>
+    <td class="num">${r.upheld}<span class="meta">${r.confirmed} confirmed · ${r.fixed} fixed</span></td>
+    <td class="num">${r.refuted}</td>
+    <td class="num">${r.ranked ? `${Math.round(r.precision! * 100)}%<span class="meta">routing term ${precisionTerm(r).toFixed(2)}</span>` : `<span class="meta">n=${r.judged}, too few to rank</span>`}</td></tr>`;
+  return `<section class="precision" aria-label="Review precision by reviewer">
+  <h2 class="section-title">Review precision · ${e(from)} to ${e(to)}</h2>
+  <p class="meta">Of each reviewer's blocking findings the owner judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
+  ${rows.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Reviewer</th><th scope="col">Judged blocking findings</th><th scope="col">Held up</th><th scope="col">Refuted</th><th scope="col">Precision</th></tr></thead>
+    <tbody>${rows.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">No blocking finding was judged from ${e(from)} to ${e(to)}.</p>`}
+</section>`;
+}
+
 // ── AI Gateway ─────────────────────────────────────────────────────────────
-// Each model's calls through the AI Gateway over the view's window
-// (src/usage/gateway.ts): calls, tokens, cost and median duration, the
-// median's sample size beside it, and when the logs were last pulled.
+// Each model's calls through the AI Gateway over the view's window, from the
+// GraphQL Analytics API (src/usage/gateway.ts): calls and failures, tokens,
+// cost, and the median and 90th percentile duration with the number of calls
+// they are taken over, and the calls per task the runners' cf-aig-metadata
+// tags name. Off, refused or empty, the section says which.
 
 export function gatewaySection(g: GatewayView): string {
   const head = `<h2 class="section-title">AI Gateway · last ${g.days} days</h2>`;
-  const pull = g.pull
-    ? g.pull.error
-      ? `The last pull, ${e(stamp(g.pull.at))}, failed: ${e(g.pull.error)}.`
-      : `Logs last pulled ${e(stamp(g.pull.at))}, ${plural(g.pull.added, "new call")}.`
-    : "No logs pulled yet; the Worker pulls them every five minutes.";
-  // When the figures cannot be read, the last pull still says whether the
-  // gateway's logs are reachable.
-  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p>${g.pull ? `<p class="meta">${pull}</p>` : ""}</section>`;
+  if (g.off) return `<section class="gateway" aria-label="AI Gateway costs">${head}<p class="empty">${e(g.off)}.</p></section>`;
+  const ms = (v: number | null) => (v === null ? '<span class="meta">none</span>' : e(duration(v)));
   const row = (m: GatewayView["models"][number]) => `<tr><th scope="row"><code>${e(m.model)}</code><span class="meta"> ${e(m.provider)}</span></th>
     <td class="num">${e(m.calls.toLocaleString("en"))}${m.failures ? ` <span class="meta">${e(m.failures.toLocaleString("en"))} failed</span>` : ""}</td>
     <td class="num">${e(tokens(m.tokensIn))} in · ${e(tokens(m.tokensOut))} out</td>
     <td class="num">${m.cost === null ? '<span class="meta">not priced</span>' : e(money(m.cost))}</td>
-    <td class="num">${m.medianMs === null ? '<span class="meta">none</span>' : `${e(duration(m.medianMs))} <span class="meta">n=${m.sample}</span>`}</td></tr>`;
-  const gaps = g.gaps.map((x) => `<p role="status" class="error">Incomplete: the pull at ${e(stamp(x.pulledAt))} read its limit of logs before reaching the last one written, so at least ${plural(x.atLeast, "call")} logged between ${e(stamp(x.from))} and ${e(stamp(x.to))} ${x.atLeast === 1 ? "was" : "were"} not read. The figures below undercount that stretch.</p>`).join("");
+    <td class="num">${ms(m.medianMs)} · ${ms(m.p90Ms)} <span class="meta">n=${e(m.sample.toLocaleString("en"))}</span></td></tr>`;
+  const taskRow = (t: GatewayView["tasks"][number]) => `<tr><th scope="row"><code>${e(t.task)}</code></th>
+    <td class="num">${e(t.calls.toLocaleString("en"))}${t.failures ? ` <span class="meta">${e(t.failures.toLocaleString("en"))} failed</span>` : ""}</td>
+    <td class="num">${e(tokens(t.tokensIn))} in · ${e(tokens(t.tokensOut))} out</td>
+    <td class="num">${t.cost === null ? '<span class="meta">not priced</span>' : e(money(t.cost))}</td></tr>`;
   return `<section class="gateway" aria-label="AI Gateway costs">${head}
-  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from the gateway's own logs. Calls, tokens and cost count every call; ${g.sampled ? "the medians are taken over the newest durations only, n of them" : "each median is taken over n calls"}. ${pull}</p>
-  ${gaps}
+  <p class="meta">Calls runners sent through Cloudflare AI Gateway since ${e(stamp(g.since))}, from Cloudflare's GraphQL Analytics. The median and 90th percentile durations are taken over n calls in that window. A model whose calls all cost $0 shows "not priced": the gateway records a call it could not price as $0, so the two cannot be told apart.</p>
   ${g.models.length ? `<table class="usage-table">
-    <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median duration</th></tr></thead>
+    <thead><tr><th scope="col">Model</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Median · p90 duration</th></tr></thead>
     <tbody>${g.models.map(row).join("")}</tbody>
   </table>` : `<p class="empty">No calls through the gateway in the last ${g.days} days.</p>`}
+  ${g.tasks.length ? `<h3>Calls per task</h3>
+  <p class="meta">Tasks as each call's cf-aig-metadata names it, which the runner sets per run; a task's value is its id, so the same id in two projects is one row. A call with no task tag counts under no task.</p>
+  <table class="usage-table">
+    <thead><tr><th scope="col">Task</th><th scope="col">Calls</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
+    <tbody>${g.tasks.map(taskRow).join("")}</tbody>
+  </table>` : g.models.length ? '<p class="meta">No calls carried a task tag; runners send it as cf-aig-metadata, one per run.</p>' : ""}
+</section>`;
+}
+
+// ── speed ──────────────────────────────────────────────────────────────────
+// How fast each model works over the record's window (src/models/speed.ts):
+// per model, the median time from claim to submission for its builds, from
+// review claim to verdict for its reviews and from its first claim to the
+// merge for its tasks, each with the n it is taken over, and the share of
+// its build and review runs that stalled. Below the minimum n a cell gives
+// n and no median. Its own section, so the reliability table stays as it is.
+
+function speedCell(m: Measure): string {
+  if (!m.n) return '<span class="meta">none</span>';
+  return m.median === null
+    ? `<span class="meta">n=${m.n}, too few for a median</span>`
+    : `${e(pace(m.median))}<span class="meta">n=${m.n}</span>`;
+}
+
+const roleCell = (r: RoleSpeed) => `${speedCell(r)}<span class="meta">${e(stalledText(r))}</span>`;
+
+export function speedSection(s: SpeedRecord): string {
+  const window = `the last ${s.days} days, ${dayOf(s.since)} to ${dayOf(s.until)}`;
+  const head = `<h2 class="section-title">Speed by model · ${e(window)}</h2>`;
+  const lead = `From the ledger's own timestamps over ${e(window)}: a build from the model's claim to its submission, a review from its review claim to its verdict, and a task from its first claim to the merge, counted under the model that claimed it first. Each is the median over the n runs that ended in the window; a model with fewer than ${s.minSamples} shows n and no median. Stalled counts the runs the runners reported as stalled or timed out, of every run that ended with a result or was reported.`;
+  const row = (m: SpeedRecord["models"][number]) => `<tr><th scope="row"><code>${e(m.model)}</code><span class="meta">${m.actors.map(e).join(", ")}</span></th>
+    <td class="num">${roleCell(m.build)}</td>
+    <td class="num">${roleCell(m.review)}</td>
+    <td class="num">${speedCell(m.task)}</td></tr>`;
+  return `<section class="speed" aria-label="Speed by model">${head}
+  <p class="meta">${lead}</p>
+  ${s.models.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Model</th><th scope="col">Build: claim to submission</th><th scope="col">Review: claim to verdict</th><th scope="col">Task: first claim to merge</th></tr></thead>
+    <tbody>${s.models.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">No model built, reviewed or merged anything in ${e(window)}.</p>`}
 </section>`;
 }
 
@@ -1747,13 +1815,14 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 
 // The error page keeps the owner's name and the rail, and highlights nothing:
 // it does not know which page failed (finding 18). `back` says where Go back
-// returns to. The public error paths pass no ownerName, so the name never
-// reaches a page anyone can read.
+// returns to; an empty `back` leaves the advice and the button out, for a
+// refusal that has no page to go back to (the Access 401). The public error
+// paths pass no ownerName, so the name never reaches a page anyone can read.
 export function renderError(message: string, back = "/", ownerName: string | null = null, active = ""): string {
   return page("Action needs attention", `<section class="page-width error-page">
   <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
-  <p>Go back, refresh the evidence, and try the available action again.</p>
-  <a class="button" href="${e(back)}">Go back</a>
+  ${back ? `<p>Go back, refresh the evidence, and try the available action again.</p>
+  <a class="button" href="${e(back)}">Go back</a>` : ""}
 </section>`, active, ownerName);
 }
 

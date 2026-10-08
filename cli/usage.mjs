@@ -240,20 +240,51 @@ export function describeReport(tool, body, now) {
 }
 
 // What the server read of the AI Gateway (GET /api/usage, field gateway;
-// src/usage/gateway.ts): each model's calls, tokens, cost and median
-// duration over its window, or why it is off. Every name is cleaned with
-// `safe` before it is printed.
+// src/usage/gateway.ts): each model's calls, tokens, cost, and median and
+// p90 duration over its window with the calls they are taken over, and the
+// calls per task the runners' cf-aig-metadata tags name, or why there are
+// none. A server older than this CLI sends no p90 (and a pull record this
+// CLI no longer prints), so only what is there is shown. Every name is
+// cleaned with `safe` before it is printed.
 export function describeGateway(view, safe) {
   if (!view || typeof view !== "object") return ["AI Gateway: the server reports no gateway figures; it runs routes older than this CLI."];
-  const lines = view.off ? [`AI Gateway: ${safe(view.off, 200)}.`] : [`AI Gateway, last ${view.days} days:`];
-  if (!view.off && !view.models?.length) lines.push("  no calls");
+  if (view.off) return [`AI Gateway: ${safe(view.off, 300)}.`];
+  const lines = [`AI Gateway, last ${view.days} days:`];
+  if (!view.models?.length) lines.push("  no calls");
+  const time = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+  const dollars = (n) => (n > 0 && n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
   for (const m of view.models ?? []) {
-    const ms = m.medianMs === null ? "no durations" : `median ${m.medianMs < 1000 ? `${m.medianMs} ms` : `${(m.medianMs / 1000).toFixed(1)} s`} (n=${m.sample})`;
-    lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out${m.cost === null ? "" : `, $${m.cost.toFixed(2)}`}, ${ms}`);
+    const p90 = typeof m.p90Ms === "number" ? `, p90 ${time(m.p90Ms)}` : "";
+    const ms = typeof m.medianMs === "number" ? `median ${time(m.medianMs)}${p90} (n=${m.sample})` : "no durations";
+    lines.push(`  ${safe(m.model, 128)} (${safe(m.provider, 64)}): ${m.calls} call${m.calls === 1 ? "" : "s"}${m.failures ? `, ${m.failures} failed` : ""}, ${millions(m.tokensIn)} in, ${millions(m.tokensOut)} out, ${typeof m.cost === "number" ? dollars(m.cost) : "not priced"}, ${ms}`);
   }
-  for (const g of view.gaps ?? []) lines.push(`  incomplete: at least ${g.atLeast} call${g.atLeast === 1 ? "" : "s"} between ${stamp(Date.parse(g.from))} and ${stamp(Date.parse(g.to))} not read; totals undercount`);
-  if (view.pull?.error) lines.push(`  last pull ${stamp(Date.parse(view.pull.at))} failed: ${safe(view.pull.error, 200)}`);
-  else if (view.pull) lines.push(`  logs last pulled ${stamp(Date.parse(view.pull.at))}`);
+  if (view.tasks?.length) {
+    lines.push("  calls per task:");
+    for (const t of view.tasks) {
+      lines.push(`    ${safe(t.task, 64)}: ${t.calls} call${t.calls === 1 ? "" : "s"}${t.failures ? `, ${t.failures} failed` : ""}, ${millions(t.tokensIn)} in, ${millions(t.tokensOut)} out, ${typeof t.cost === "number" ? dollars(t.cost) : "not priced"}`);
+    }
+  }
+  return lines;
+}
+
+// How fast each model worked, as the server computed it from the ledger
+// (GET /api/reliability, field speed; src/models/speed.ts): per model the
+// median build (claim to submission), review (claim to verdict) and task
+// (first claim to merge) with the n each is taken over, and the stalled
+// share of its build and review runs, over the stated window. Below the
+// server's minimum n only n is printed. A server older than this CLI sends
+// no speed field, and the lines say so. Every name is cleaned with `safe`.
+export function describeSpeed(view, safe) {
+  if (!view || typeof view !== "object" || !Array.isArray(view.models)) return ["Speed: the server reports no speed figures; it runs routes older than this CLI."];
+  const day = (iso) => (typeof iso === "string" ? iso.slice(0, 10) : "?");
+  const lines = [`Speed by model, last ${view.days} days (${day(view.since)} to ${day(view.until)}):`];
+  if (!view.models.length) lines.push("  no runs ended in the window");
+  const time = (s) => (s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`);
+  const measure = (m) => (!m?.n ? "none" : typeof m.median === "number" ? `median ${time(m.median)} (n=${m.n})` : `n=${m.n}, too few for a median`);
+  const stalls = (r) => (!r?.runs ? "no runs" : `${r.stalled} of ${r.runs} stalled (${Math.round((r.stalled / r.runs) * 100)}%)`);
+  for (const m of view.models) {
+    lines.push(`  ${safe(m.model, 128)}: build ${measure(m.build)}, ${stalls(m.build)}; review ${measure(m.review)}, ${stalls(m.review)}; task to merge ${measure(m.task)}`);
+  }
   return lines;
 }
 
@@ -280,8 +311,9 @@ function defaultIo() {
 }
 
 // io: report(tool, body, runner) comes from the CLI and answers with what the
-// server returned ({ alerts }), and gateway(), when given, answers with the
-// server's AI Gateway view; everything else has a default, so a test
+// server returned ({ alerts }), gateway(), when given, answers with the
+// server's AI Gateway view, and speed(), when given, with its speed record
+// (describeSpeed); everything else has a default, so a test
 // supplies only what it replaces.
 export async function runUsage(args, given = {}) {
   const opts = usageOptions(args);
@@ -313,6 +345,12 @@ export async function runUsage(args, given = {}) {
   if (io.gateway) {
     try { out.push("", ...describeGateway(await io.gateway(), safe)); }
     catch (error) { out.push("", `AI Gateway: could not read: ${safe(error.message, 200)}`); }
+  }
+  // The models' speed is the server's too, from the ledger; a failed read is
+  // said and does not stop the report.
+  if (io.speed) {
+    try { out.push("", ...describeSpeed(await io.speed(), safe)); }
+    catch (error) { out.push("", `Speed: could not read: ${safe(error.message, 200)}`); }
   }
   out.push("", "Not read here: Claude's plan limits (the Claude app shows them) and Gemini's spend (Google serves no balance).");
 

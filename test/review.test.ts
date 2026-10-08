@@ -6,6 +6,7 @@ import { routeParts } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import { pushActors, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
 import { BRIEF_LIMITS, reviewBrief, type BriefInput } from "../src/review/brief.ts";
+import { largeKey } from "../src/large.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
 import { DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
@@ -662,6 +663,23 @@ test("reviewBrief: quoted text cannot close its block, hidden characters are sho
   assert.equal(BRIEF_LIMITS.diff, 40_000);
 });
 
+test("reviewBrief: a diff too large to carry is named by its R2 reference, never quoted (t284)", () => {
+  const sha = "a".repeat(64);
+  const text = brief({ diff: null, diffRef: { key: largeKey("diffs", "atelier", "t21", sha), bytes: 944_332, sha256: sha }, diffFile: ".scratch/atelier-review.diff" });
+  assert.ok(text.includes(
+    `The diff is too large for this brief — 944332 bytes, sha256 aaaaaaaaaaaa — so it is carried by reference: Atelier keeps the whole diff in R2, key \`diffs/atelier/t21/${sha}\`, and the ledger names it by that key.`,
+  ), text);
+  assert.ok(text.includes(`Read the change in your clone: git diff ${H0} ${H2}.`), text);
+  assert.ok(text.includes("The whole diff is also in the file `.scratch/atelier-review.diff` in your clone."), text);
+  // The change is the change from the base to the head, as ever.
+  assert.ok(text.includes(`This is the change from the base to the head, the output of git diff ${H0} ${H2}.`), text);
+  // Nothing of the diff itself is carried inline, not even a cut.
+  assert.ok(!text.includes("```diff"), text);
+  // A brief without the reference keeps the cut it always carried.
+  const without = brief({ diff: "+one line\n", diffLimit: 40 });
+  assert.ok(without.includes("```diff\n+one line\n```"), without);
+});
+
 test("reviewBrief: an item outside a plan, with no diff and no summary", () => {
   const need = required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"], where: "runner" })] });
   const text = brief({ need, plan: null, diff: null, events: [], item: item({ scope: [] }) });
@@ -763,4 +781,42 @@ test("reviewBrief: a re-review at the same head says the owner refuted the rejec
   const both = brief({ need: round3, events: [submitted(H2, "Adds reviewNeeded with tests."), refuted] });
   assert.ok(both.includes("This is review round 3. A model rejected an earlier head and the builder has pushed since, and the project owner refuted every blocking finding of a rejection at this head, so it is reviewed again rather than reworked."), both);
   assert.ok(both.includes("Round 2, at bbbbbbbb (this head): codex/gpt-6-astra rejected."), both);
+});
+
+test("reviewBrief: says which kind of diff the reviewer reads, and names the diff file in the clone (t244)", () => {
+  const plain = brief({ diffFile: ".scratch/atelier-review.diff" });
+  assert.ok(plain.includes(`This is the change from the base to the head, the output of git diff ${H0} ${H2}.`), plain);
+  assert.ok(plain.includes("The whole diff is also in the file `.scratch/atelier-review.diff` in your clone."), plain);
+  assert.ok(!plain.includes("remerge"));
+
+  // A merge-main job's merge: measured from its first parent, the diff is its conflict resolution.
+  const resolution = "diff --git a/f.txt b/f.txt\nremerge CONFLICT (content): Merge conflict in f.txt\n-<<<<<<< part\n+both\n";
+  const merged = brief({ diff: resolution, compare: { from: H1, merge: { main: H3, files: ["f.txt", "main-only.txt"] } } });
+  for (const line of [
+    `Base: ${H1}, the head before this merge. This head merges main at ${H3} into it: its first parent is the builder's previous head, its second is main.`,
+    `The resolution is: git show --remerge-diff ${H2}`,
+    `Files the merge brought in from main (2): git diff --name-only ${H1} ${H2}.`,
+    "```\nf.txt\nmain-only.txt\n```",
+    `This is the merge's conflict resolution, the output of git show --remerge-diff ${H2}:`,
+    `\`\`\`diff\n${resolution.trimEnd()}\n\`\`\``,
+  ]) assert.ok(merged.includes(line), `missing: ${line}\n${merged}`);
+  assert.ok(!merged.includes(`git diff ${H1} ${H2}`), "a merge is not described as a diff from its base");
+  assert.ok(!merged.includes("## The task's own change"));
+
+  // An empty resolution is said to be one, and a long file list is capped.
+  const files = Array.from({ length: 305 }, (_, i) => `f${i}.txt`);
+  const clean = brief({ diff: "", compare: { from: H1, merge: { main: H3, files } } });
+  assert.ok(clean.includes("The resolution is empty: the builder committed the merge git makes on its own"), clean);
+  assert.ok(clean.includes("Files the merge brought in from main (305)"));
+  assert.ok(clean.includes("f299.txt\n```\nand 5 more."), clean);
+  assert.ok(!clean.includes("f300.txt"));
+
+  // A task's merge also carries the task's own change, which the approval covers.
+  const own = "diff --git a/task.txt b/task.txt\n+task\n";
+  const task = brief({ plan: null, diff: resolution, ownDiff: own, diffFile: ".scratch/atelier-review.diff",
+    compare: { from: H1, merge: { main: H3, files: ["f.txt"], own: { from: H3, branch: "main" } } } });
+  assert.ok(task.includes(`The task's own change, which this review also covers, is: git diff ${H3} ${H2}`), task);
+  assert.ok(task.includes(`## The task's own change\n\nThis is the task's whole change, the output of git diff ${H3} ${H2}`), task);
+  assert.ok(task.includes(`\`\`\`diff\n${own.trimEnd()}\n\`\`\``), task);
+  assert.ok(task.includes("the resolution first and the task's own change after it"), task);
 });
