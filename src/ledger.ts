@@ -144,7 +144,12 @@ export interface ProjectInit {
   approval?: string | null;
 }
 
-export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+// A project's role prompts (`atelier guide --role`, docs in the README) live
+// under `.atelier/prompts/ROLE.md`, and a runner passes a role's text to the
+// agent it runs. The path is protected in every project, so a change that
+// rewrites a role's instructions — the reviewer's, above all — needs another
+// model family's review before it lands, and never reaches a runner unvetted.
+export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"];
 
 // The steps a landing records (landEvent): taking the lease, merging main,
 // regenerating the project's fixtures, pushing, checking, the review, the

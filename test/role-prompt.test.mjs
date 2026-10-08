@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { ROLES, ROLE_PROMPTS, rolePrompt, guideText } from "../src/usage.ts";
+import { ROLES, ROLE_PROMPTS, ROLE_PROMPT_MAX, rolePrompt, guideText } from "../src/usage.ts";
 import { roleText } from "../cli/runner.mjs";
 
 // The role prompts behind `atelier guide --role ROLE`: each role has default
@@ -84,5 +84,31 @@ test("roleText reads the workspace's override and falls back to the default", ()
     assert.equal(roleText("plan", dir), ROLE_PROMPTS.plan.trimEnd());
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("roleText refuses a role override over the length cap, loudly", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-role-cap-"));
+  try {
+    mkdirSync(join(dir, ".atelier", "prompts"), { recursive: true });
+    writeFileSync(join(dir, ".atelier", "prompts", "build.md"), "x".repeat(ROLE_PROMPT_MAX + 1));
+    assert.throws(() => roleText("build", dir), new RegExp(`over the ${ROLE_PROMPT_MAX} a role prompt may be`));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atelier guide --role --project for a project not registered on this Mac dies, not silently prints the default", () => {
+  const cfgDir = mkdtempSync(join(tmpdir(), "atelier-role-cfg-"));
+  const projectDir = mkdtempSync(join(tmpdir(), "atelier-role-proj-"));
+  try {
+    writeFileSync(join(cfgDir, "config.json"), JSON.stringify({ server: null, projects: { demo: { path: projectDir } } }));
+    const r = run(["guide", "--role", "build", "--project", "typo"], { configDir: cfgDir }, projectDir);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /not a registered checkout/);
+    assert.equal(r.stdout, "");
+  } finally {
+    rmSync(cfgDir, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
   }
 });

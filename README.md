@@ -146,8 +146,9 @@ atelier init --title "My project" --check "npm test"
 `init` creates the baseline in Artifacts, pushes the current branch to it,
 and prints the policy it recorded: the branch, the required checks (each
 shown read-only) and the protected paths. Without `--protect`, those are
-`AGENTS.md`, `CLAUDE.md` and `wrangler.*`, with every file a check executes
-(here `package.json` and `.npmrc`, which decide what `npm test` runs).
+`AGENTS.md`, `CLAUDE.md`, `wrangler.*` and `.atelier/prompts/**`, with every
+file a check executes (here `package.json` and `.npmrc`, which decide what
+`npm test` runs).
 
 **5. File a task and do it as an agent.** `new` prints the task's id, here
 `t1`:
@@ -251,7 +252,11 @@ gate, check classes and checks that apply to some paths.
   `.atelier/prompts/build.md`); the command prints that file when the
   project has one, and a runner passes the same text to the agent it runs,
   so the role's instructions live with the project and stay in sync between
-  the guide and the briefs.
+  the guide and the briefs. The path is protected by default, so a change
+  that rewrites a role's text needs another model family's review; and a
+  reviewer's runner reads `.atelier/prompts/review.md` from the accepted
+  branch, never from the change under review, so a change cannot author its
+  own reviewer's instructions.
 - **The owner's actor and name.** Set `OWNER_ACTOR` and `OWNER_NAME` as
   secrets or `vars`, and `TIMEZONE` to an IANA zone for the pages' times.
 - **Project policy.** `atelier init` again changes only what it names.

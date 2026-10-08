@@ -462,6 +462,13 @@ function project() {
 // `--project` names, else this folder's workspace or registered checkout, else
 // none.
 function roleOverride(role) {
+  // A `--project` that names no checkout registered on this Mac is a typo, not
+  // a reason to print the default text: every other command that takes
+  // `--project` dies, and the quiet fallback here would hide the typo'd name
+  // and print the default as though the owner's override did not exist.
+  if (args.project && !cfg.projects?.[args.project]) {
+    die(unregisteredMessage(registeredHere().here, cfg.projects));
+  }
   const name = args.project ?? wsConfig("project") ?? registeredHere().name;
   const path = name ? cfg.projects?.[name]?.path : null;
   if (!path) return null;
