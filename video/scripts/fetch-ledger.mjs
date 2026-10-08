@@ -16,4 +16,8 @@ for (let i = 0; i < ids.length; i += 8) {
 }
 writeFileSync(new URL("../.cache/plan-t197.json", import.meta.url), JSON.stringify(await get("/projects/atelier/items/t197/plan")));
 writeFileSync(new URL("../.cache/models.json", import.meta.url), JSON.stringify(await get("/models")));
+// The Models page's figures: speed, stalls and judged findings, and the AI
+// Gateway view (whether its figures could be read).
+writeFileSync(new URL("../.cache/api-reliability.json", import.meta.url), JSON.stringify(await get("/reliability")));
+writeFileSync(new URL("../.cache/api-usage.json", import.meta.url), JSON.stringify(await get("/usage")));
 console.log(`fetched ${n} items`);

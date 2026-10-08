@@ -8,6 +8,7 @@ import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
+import { sameActor } from "../src/rules.ts";
 import { landingVerdict } from "../src/landing-verdict.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -90,6 +91,15 @@ import { landingVerdict } from "../src/landing-verdict.ts";
 // took it, which renews it. Only a release that cannot ask the server
 // warns, for then the lease really does stand in this task's name until it
 // lapses.
+//
+// The push uses the workspace's write token, which lapses 8 hours after the
+// claim that minted it (t275), and a push refused for it would end a landing
+// that already holds the lease and has merged main. So before the lease (the
+// Workflow's too, whose push runs here, and again after a --wait) a token
+// that has lapsed or lapses within TOKEN_WINDOW_MS is refreshed, and a push
+// still refused as expired is refreshed and tried once more. A refresh re-claims
+// the task as its current holder, as `atelier claim ID` run by the holder
+// does, never as the owner, whose claim would take the task over.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // The review wait outlasts a build on the runner (its task timeout is 45
@@ -100,6 +110,11 @@ const LEASE_RENEW_MS = Number(process.env.ATELIER_LAND_RENEW_MS ?? 60_000);
 // How long --wait queues for the landing lease before it gives up, so a
 // landing left holding the lease does not keep a queued one waiting for ever.
 const WAIT_TIMEOUT_MS = Number(process.env.ATELIER_LAND_WAIT_TIMEOUT ?? 3 * 60 * 60_000);
+// A write token lapsing within this span is refreshed before the lease, so
+// it outlasts the merge, the regeneration and the push that follow.
+const TOKEN_WINDOW_MS = Number(process.env.ATELIER_LAND_TOKEN_WINDOW_MS ?? 30 * 60_000);
+// How Artifacts refuses a push whose token has lapsed or was revoked.
+const EXPIRED_TOKEN = /Invalid or expired token/i;
 
 const short = (sha) => (sha ? sha.slice(0, 8) : "—");
 
@@ -267,8 +282,10 @@ export async function runLand(io) {
   // itself, in the order the landings asked.
   if (workflow) {
     if (wait) print("--wait is the Workflow's own behaviour: it queues for the lease in the order the landings asked, and takes it when its turn comes.");
+    await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
     return runLandWorkflow(io, { d0, itemPath, dir, regenerate });
   }
+  await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
 
   // From here every failure throws rather than dying, so the lease is
   // released and the step recorded before the command ends. The recorder
@@ -370,6 +387,8 @@ export async function runLand(io) {
       if (queued) {
         await queue();
         await preflight(true);
+        // The wait can outlast the token checked before it.
+        await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
       }
       // The lease step's duration is the taking alone: time spent queued
       // behind another landing is not this task's cost of landing.
@@ -477,7 +496,7 @@ export async function runLand(io) {
     // workspace, so their output is their own and a failure still ends the
     // landing here, with the lease released and the step recorded.
     const step = (kind, argv, cwd, data = {}) => { guardLease(); return landStep(io, record, kind, argv, cwd, data); };
-    await step("push", ["push"], dir, { head });
+    await pushRefreshing(io, { dir, id, itemPath }, () => step("push", ["push"], dir, { head }));
     print(`Pushed ${short(head)} to ${id}'s fork.`);
     await step("check", ["check"], dir);
     await step("submit", ["submit", "--summary", mergedIn ? `Merged with main at ${short(mainHead)}; the required checks pass.` : "The required checks pass."], dir);
@@ -607,6 +626,65 @@ function landRecorder(io, itemPath) {
   };
 }
 
+// The workspace's write token, refreshed by re-claiming the task as the
+// holder the server records (t275), whose name the claim must carry exactly:
+// the server refreshes a claim only for `item.owner === actor`, and to any
+// other name a claim is a takeover. The workspace's own atelier.actor must
+// be that holder too, so a workspace left by an earlier holder is never
+// given the current one's token; a task nobody holds is not claimed. The
+// holder's runner rides along, as the server refuses a re-claim from any
+// runner but the one holding the task. The new token replaces the old one
+// in the workspace (the old one is revoked by the claim) and its expiry is
+// recorded. Answers the new expiry.
+async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
+  const recorded = io.git(["config", "--local", "atelier.actor"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
+  const { item } = await io.request("GET", itemPath);
+  const holder = item?.owner ?? null;
+  if (!holder || !recorded || !sameActor(holder, recorded)) {
+    throw new StepError(`${id} is held by ${holder ?? "nobody"} and its workspace was claimed by ${recorded ?? "no recorded actor"}, so the landing cannot refresh the token for its holder`);
+  }
+  const r = await io.request("POST", `${itemPath}/claim`, {}, holder, item.runner ? { "x-atelier-runner": item.runner } : {});
+  if (!r?.workspace?.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
+  io.adoptWorkspaceToken(dir, r.workspace);
+  return { holder, expiresAt: r.workspace.expiresAt ?? null };
+}
+
+// Before the landing takes the lease: a write token that has lapsed or
+// lapses within TOKEN_WINDOW_MS is refreshed, and one that cannot be stops
+// the landing here, with nothing changed. The expiry is recorded at each
+// claim (recordTokenExpiry in cli/atelier.mjs); the server keeps none it
+// could answer later, so a workspace claimed before that was recorded has
+// an unknown expiry, which is refreshed once — the refresh records it, and
+// later landings read it. An accepted task has nothing left to push.
+async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
+  if (item?.state === "accepted") return;
+  const recorded = io.git(["config", "--local", "atelier.write-token-expires-at"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
+  const at = recorded ? Date.parse(recorded) : NaN;
+  if (Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
+  io.print(Number.isFinite(at)
+    ? `${id}'s workspace write token ${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC; refreshing it for its holder before the landing takes the lease…`
+    : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
+  let fresh;
+  try { fresh = await refreshWorkspaceToken(io, { dir, id, itemPath }); }
+  catch (error) { throw new StepError(`${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease, with nothing changed: ${error.message}. Have its holder run atelier claim ${id} in the workspace, then run atelier land ${id} again`); }
+  io.print(`Refreshed ${id}'s workspace write token for ${fresh.holder}${fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : ""}.`);
+}
+
+// The landing's push, refreshed and tried once more when the server refuses
+// the token as expired (it lapsed, or was revoked, after the check before
+// the lease). Any other failure, and a second refusal, ends the landing as
+// before.
+async function pushRefreshing(io, ctx, push) {
+  try { return await push(); }
+  catch (error) {
+    if (!EXPIRED_TOKEN.test(error.message)) throw error;
+    io.print(`The push was refused for an expired write token; refreshing ${ctx.id}'s token for its holder and pushing once more…`);
+    try { await refreshWorkspaceToken(io, ctx); }
+    catch (refresh) { throw new StepError(`${error.message}\n${ctx.id}'s workspace write token could not be refreshed: ${refresh.message}. Have its holder run atelier claim ${ctx.id} in the workspace, then run atelier land ${ctx.id} again`); }
+    return await push();
+  }
+}
+
 // The regenerate command, run in the workspace the way a check runs it.
 // Both the merge (to settle conflicts that lie only in generated files)
 // and the regenerate step (to bring every generated file current with the
@@ -624,7 +702,7 @@ function runRegenerateIn(dir, regenerate, io) {
 // the landing it belongs to.
 async function landStep(io, record, kind, argv, cwd, data = {}) {
   const t = Date.now();
-  const r = await runCommand([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env });
+  const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env });
   if (!r.passed) {
     await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500) });
     throw new StepError(`atelier ${argv[0]} failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
@@ -933,7 +1011,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
       try {
         const merged = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0 });
         guard();
-        await landStep(io, record, "push", ["push"], dir, () => ({ head: merged.head }));
+        await pushRefreshing(io, { dir, id, itemPath }, () => { guard(); return landStep(io, record, "push", ["push"], dir, () => ({ head: merged.head })); });
         // The local checks mode: the required checks run here, in a clean
         // clone of the pushed head, through the same `atelier check` step as
         // the plain landing, before the head is reported, so the server has

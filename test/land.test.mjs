@@ -7,6 +7,7 @@ import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { runLand } from "../cli/land.mjs";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone } from "../src/landing-lease.ts";
 
 // atelier land (t187) against a stand-in server and local bare repositories,
@@ -84,7 +85,9 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const fork = join(p, `fork-${id}.git`), workspace = join(cache, "work", "proj", id);
     git(p, "clone", "--bare", baseline, fork); mkdirSync(dirname(workspace), { recursive: true }); git(p, "clone", fork, workspace);
     for (const dir of [workspace]) { git(dir, "config", "user.name", "Fixture"); git(dir, "config", "user.email", "fixture@example.invalid"); }
-    for (const [key, value] of Object.entries({ project: "proj", item: id, actor: "codex/test", branch: "main" })) git(workspace, "config", `atelier.${key}`, value);
+    // A claim records its write token's expiry (t275); these are far off, so
+    // no landing here refreshes them.
+    for (const [key, value] of Object.entries({ project: "proj", item: id, actor: "codex/test", branch: "main", "write-token-expires-at": "2999-01-01T00:00:00.000Z" })) git(workspace, "config", `atelier.${key}`, value);
     writeFileSync(join(workspace, "work.txt"), taskChange); git(workspace, "add", "."); git(workspace, "commit", "-m", `Task ${id}`); git(workspace, "push", "-q", "origin", "main");
     box.states[id] = "submitted";
   }
@@ -1511,4 +1514,147 @@ test("land --workflow reports a finished landing, not a lost one, when the merge
   assert.match(r.output, /t1 landed through the landing Workflow; the lease is released\./);
   assert.doesNotMatch(r.output, /can no longer be read/);
   assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true && x.body.item === "t1"));
+});
+
+// The workspace's write token (t275), against runLand with injected fakes:
+// the server's answers, Git's (a real repository only where the preflight
+// reads one from disk, under .scratch/) and the CLI's own steps. The task is
+// held by codex/test, the owner is "owner", and the workspace records
+// `expiresAt` as its token's expiry (none when null).
+function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, workflow = false, push = [] } = {}) {
+  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
+  const dir = mkdtempSync(join(scratch, "land-token-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", dir]);
+  const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": "codex/test", ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
+  const calls = [], lines = [], adopted = [], commands = [];
+  const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease";
+  const fresh = new Date(Date.now() + 8 * 3600_000).toISOString();
+  const request = async (method, path, body, as, extra) => {
+    calls.push({ method, path, body, as, extra });
+    if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
+    if (path === leasePath && method === "GET") return { lease: null, waiting: [] };
+    if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state: "submitted" } };
+    if (path === itemPath) return { item: { id: "t1", state: "submitted", owner: holder, runner }, policy: { checks: [] } };
+    if (path === `${itemPath}/claim`) {
+      if (claim !== "ok") throw Object.assign(new Error(claim), { status: 409 });
+      return { item: { id: "t1" }, workspace: { remote: "https://fork.invalid/t1.git", token: "fresh-token", expiresAt: fresh, defaultBranch: "main" } };
+    }
+    if (path === `${itemPath}/base-token`) return { remote: "https://base.invalid/main.git", token: "read", defaultBranch: "main" };
+    if (path === `${itemPath}/landing-workflow`) return method === "GET" && calls.some((c) => c.method === "POST" && c.path === path)
+      ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
+      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, checks: "local", stage: "lease" };
+    return {};
+  };
+  // Git as a landing asks it: main already merged, nothing to compare or
+  // regenerate, the config above.
+  const fakeGit = (args, o = {}) => {
+    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? "a".repeat(40) : "";
+    if (o.allowFail) return { status: out === null ? 1 : 0, stdout: out ?? "", stderr: "" };
+    return out ?? "";
+  };
+  // Each `atelier push` answers the next of `push` (true passes, a string
+  // fails with that output); every other step passes.
+  const pushes = [...push];
+  const runCommand = async (argv) => {
+    commands.push(argv[2]);
+    const next = argv[2] === "push" ? pushes.shift() ?? true : true;
+    return next === true ? { passed: true, status: 0, output: "ok\n", durationMs: 1 } : { passed: false, status: 1, output: `${next}\n`, durationMs: 1 };
+  };
+  const io = {
+    args: { _: ["land", "t1"], ...(workflow ? { workflow: true } : { "no-review": true }) }, name: "proj", id: "t1", p: { path: dir, branch: "main" },
+    request, git: fakeGit, print: (line) => lines.push(line), die: (message) => { throw new Error(message); },
+    workspacePath: () => dir, atelier: "atelier.mjs", env: {}, redact: (text) => text, secrets: () => [], runCommand,
+    adoptWorkspaceToken: (where, w) => { adopted.push({ where, ...w }); config["atelier.write-token-expires-at"] = w.expiresAt; },
+  };
+  const leaseTaken = () => calls.some((c) => c.method === "POST" && c.path === leasePath && !c.body.cancel);
+  const claims = () => calls.filter((c) => c.path === `${itemPath}/claim`);
+  return { io, dir, calls, lines, adopted, commands, leaseTaken, claims, fresh };
+}
+
+test("a write token expiring within the window is refreshed for the holder before the lease is taken (t275)", async (t) => {
+  const l = tokenLanding(t, { expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), runner: "home:mbp" });
+  await runLand(l.io);
+  assert.equal(l.claims().length, 1);
+  // The re-claim is made as the holder, with the runner holding the task, never as the owner.
+  assert.equal(l.claims()[0].as, "codex/test");
+  assert.notEqual(l.claims()[0].as, "owner");
+  assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
+  assert.deepEqual(l.adopted.map((a) => [a.where, a.token, a.expiresAt]), [[l.dir, "fresh-token", l.fresh]]);
+  const claimAt = l.calls.findIndex((c) => c.path.endsWith("/claim"));
+  const leaseAt = l.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-lease") && !c.body.cancel);
+  assert.ok(claimAt >= 0 && leaseAt > claimAt, "the refresh comes before the lease");
+  assert.ok(l.lines.some((x) => /write token expires .*refreshing it for its holder before the landing takes the lease/.test(x)), l.lines.join("\n"));
+  assert.deepEqual(l.commands, ["push", "check", "submit"]);
+});
+
+test("a write token far from expiry is not refreshed, and an unknown expiry is refreshed once and recorded (t275)", async (t) => {
+  const far = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString() });
+  await runLand(far.io);
+  assert.equal(far.claims().length, 0);
+  assert.ok(far.leaseTaken());
+  const unknown = tokenLanding(t, { expiresAt: null });
+  await runLand(unknown.io);
+  assert.equal(unknown.claims().length, 1);
+  assert.equal(unknown.claims()[0].as, "codex/test");
+  assert.ok(unknown.lines.some((x) => /records no write token expiry/.test(x)), unknown.lines.join("\n"));
+  // The refresh recorded the expiry, so the next landing reads it and claims nothing.
+  await runLand(unknown.io);
+  assert.equal(unknown.claims().length, 1);
+});
+
+test("a refresh the server refuses stops the landing before the lease, naming atelier claim (t275)", async (t) => {
+  const l = tokenLanding(t, { expiresAt: new Date(Date.now() - 60_000).toISOString(), claim: "owned: t1 is held by codex/test on home:mbp, not a claim made without a runner" });
+  await assert.rejects(runLand(l.io), (error) => {
+    assert.match(error.message, /could not be refreshed, so the landing stops before taking the lease/);
+    assert.match(error.message, /atelier claim t1/);
+    return true;
+  });
+  assert.equal(l.claims().length, 1);
+  assert.equal(l.leaseTaken(), false);
+  assert.deepEqual(l.commands, []);
+  assert.deepEqual(l.adopted, []);
+});
+
+test("a workspace whose recorded actor is not the task's holder is not refreshed: nothing is claimed, as the owner or anyone (t275)", async (t) => {
+  for (const holder of ["owner", "claude-code/opus-5.5", null]) {
+    const l = tokenLanding(t, { expiresAt: null, holder });
+    await assert.rejects(runLand(l.io), /atelier claim t1/);
+    assert.equal(l.claims().length, 0, `held by ${holder}`);
+    assert.equal(l.leaseTaken(), false);
+  }
+});
+
+test("land --workflow refreshes the write token before starting the Workflow, and starts none when the refresh fails (t275)", async (t) => {
+  const ok = tokenLanding(t, { expiresAt: new Date(Date.now() + 60_000).toISOString(), workflow: true });
+  await runLand(ok.io);
+  const started = ok.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-workflow"));
+  assert.equal(ok.claims().length, 1);
+  assert.equal(ok.claims()[0].as, "codex/test");
+  assert.ok(started > ok.calls.findIndex((c) => c.path.endsWith("/claim")));
+  const refused = tokenLanding(t, { expiresAt: new Date(Date.now() + 60_000).toISOString(), workflow: true, claim: "not_owner: refused" });
+  await assert.rejects(runLand(refused.io), /atelier claim t1/);
+  assert.equal(refused.calls.filter((c) => c.method === "POST" && c.path.endsWith("/landing-workflow")).length, 0);
+});
+
+test("a push refused for an expired token is refreshed for the holder and tried exactly once more (t275)", async (t) => {
+  const once = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["remote: Invalid or expired token\nfatal: unable to access the fork"] });
+  await runLand(once.io);
+  assert.deepEqual(once.commands, ["push", "push", "check", "submit"]);
+  assert.equal(once.claims().length, 1);
+  assert.equal(once.claims()[0].as, "codex/test");
+  assert.equal(once.adopted.length, 1);
+  // Refused again after the refresh: no third push, and the landing ends.
+  const twice = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["Invalid or expired token", "Invalid or expired token"] });
+  await assert.rejects(runLand(twice.io), /atelier push failed[\s\S]*Invalid or expired token/);
+  assert.deepEqual(twice.commands, ["push", "push"]);
+  assert.equal(twice.claims().length, 1);
+  // The lease is released either way.
+  assert.ok(twice.calls.some((c) => c.method === "POST" && c.path.endsWith("/landing-lease") && c.body.cancel === true));
+});
+
+test("a push that fails for any other reason is not refreshed or retried (t275)", async (t) => {
+  const l = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["error: failed to push some refs (non-fast-forward)"] });
+  await assert.rejects(runLand(l.io), /non-fast-forward/);
+  assert.deepEqual(l.commands, ["push"]);
+  assert.equal(l.claims().length, 0);
 });

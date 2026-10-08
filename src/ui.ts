@@ -76,6 +76,7 @@ const ICONS: Record<string, string> = {
   usage: '<path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 17 4-6"/><circle cx="12" cy="17" r="1.2"/>',
   flow: '<path d="M3 6h18"/><path d="M6 6c3 0 2 6 5 6h7c3 0 2-6 5-6M6 6c3 0 2 12 5 12h4"/>',
   arrow: '<path d="m9 6 6 6-6 6"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 11.5 3.3 3.3 0 0 0 7 18Z"/>',
   laptop: '<path d="M4 6h16v10H4zM2 19h20"/>',
@@ -88,7 +89,7 @@ const icon = (name: string) =>
 // lives inside a project's own area at /p/NAME. The pages about the owner's
 // own setup sit under the account menu, out of the work navigation.
 const NAV: [string, string, string][] = [
-  ["Home", "/", "projects"],
+  ["Home", "/home", "projects"],
   ["Decisions", "/decisions", "decisions"],
   ["Studio", "/studio", "studio"],
 ];
@@ -128,7 +129,7 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 <title>${e(title)} · Atelier</title><style>${theme}\n${layout}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <aside class="rail">
-  <a class="brand" href="/">Atelier</a>
+  <a class="brand" href="/home">Atelier</a>
   <nav aria-label="Main navigation">${nav}</nav>
   ${account}
   <div class="rail-foot"><span class="avatar">${e((ownerName || "P").slice(0, 1))}</span><strong>${e(ownerName || "Project owner")}</strong>
@@ -238,7 +239,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     <p class="meta">Use the token stored in your Keychain as <code>atelier.API_TOKEN</code>.</p>
     <button class="primary">Sign in</button>
   </form>
-  <p class="meta">${showcase ? 'Not the owner? <a href="/showcase">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
+  <p class="meta">${showcase ? 'Not the owner? <a href="/">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
 </section>`,
   });
 }
@@ -337,12 +338,18 @@ export function renderInbox(
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
   ${!projects.length ? '<div class="empty"><h3>Bring your first project.</h3><p>In its checkout, run <code>atelier init</code> to register it.</p></div>' : ""}
 </section>`;
+  // On a phone the desk is two views: the list, or the selected decision with
+  // a back link to the list. The back link is drawn only there (layout.css
+  // hides it on wider screens), so the desktop's side-by-side desk keeps both.
+  const back = selected
+    ? `<a class="review-back" href="/decisions">${icon("back")}<span>All decisions</span></a>`
+    : "";
   const sheet = selected
-    ? `<section class="review-sheet" id="review" aria-label="Selected task">${reviewBody(selected)}</section>`
+    ? `<section class="review-sheet" id="review" aria-label="Selected task">${back}${reviewBody(selected)}</section>`
     : latest?.story.threads.length
       ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
-  return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
+  return page("Decisions", `<div class="desk${selected ? " has-selection" : ""}">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
 
 // ── flow ───────────────────────────────────────────────────────────────────
@@ -662,7 +669,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   return publicPage({
     title: "Atelier · public showcase",
     description: "Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.",
-    brand: "/showcase",
+    brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
     mainClass: "page-width flow",
     main: `
@@ -1559,7 +1566,7 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 // the review sheet, the area reached from Home.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
+  <nav class="breadcrumbs"><a href="/home">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   ${projectTabs(p, "Tasks")}
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
 </div>`, "Home", ownerName, 0, true, live);
@@ -1833,7 +1840,7 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 // returns to; an empty `back` leaves the advice and the button out, for a
 // refusal that has no page to go back to (the Access 401). The public error
 // paths pass no ownerName, so the name never reaches a page anyone can read.
-export function renderError(message: string, back = "/", ownerName: string | null = null, active = ""): string {
+export function renderError(message: string, back = "/home", ownerName: string | null = null, active = ""): string {
   return page("Action needs attention", `<section class="page-width error-page">
   <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
   ${back ? `<p>Go back, refresh the evidence, and try the available action again.</p>
