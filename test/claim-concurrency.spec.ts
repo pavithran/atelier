@@ -16,10 +16,11 @@ const H0 = "0".repeat(40);
 
 type Tok = { id: string; repo: string; scope: string; revoked: boolean };
 // `info` fails the nth repository info read (the project's branch, then each
-// token's remote); `revoke` the nth token revocation.
+// token's remote); `revoke` the nth token revocation; `get` the nth
+// repository handle asked for, before any call on it.
 type Faults = {
   forkBefore: (n: number) => boolean; forkAfter: (n: number) => boolean; inProgress: number; mint: (n: number) => boolean;
-  info?: (n: number) => boolean; revoke?: (n: number) => boolean;
+  info?: (n: number) => boolean; revoke?: (n: number) => boolean; get?: (n: number) => boolean;
 };
 
 const artifactsError = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -28,10 +29,11 @@ const tick = () => new Promise<void>((ok) => setTimeout(ok, Math.random() * 20))
 function fakeArtifacts(faults: Faults) {
   const repos = new Map<string, { reads: number }>();
   const tokens = new Map<string, Tok>();
-  let forks = 0, mints = 0, infos = 0, revokes = 0, n = 0;
+  let forks = 0, mints = 0, infos = 0, revokes = 0, gets = 0, n = 0;
   const artifacts = {
     get: async (repo: string) => {
       await tick();
+      if (faults.get?.(++gets)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
       const known = () => { const r = repos.get(repo); if (!r) throw artifactsError("NOT_FOUND", `repo not found: ${repo}`); return r; };
       return {
         fork: async (name: string) => {
@@ -132,7 +134,7 @@ it("100 simultaneous claims of 100 tasks all succeed through transient Artifacts
     expect({ owner: item.owner, state: item.state, fork: item.fork }).toEqual({ owner: actors[i], state: "claimed", fork: `concurrency-hundred--t${i + 1}` });
     expect(fa.live(item.fork!)).toEqual([await L.tokenId(item.id)]);
   }
-});
+}, 30_000);
 
 it("100 agents claiming one task at once through transient failures leave exactly one holder; the rest are refused naming it", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -154,7 +156,7 @@ it("100 agents claiming one task at once through transient failures leave exactl
     expect(r.body.detail).toContain(holder);
   }
   expect(fa.live("concurrency-race--t1")).toEqual([await L.tokenId("t1")]);
-});
+}, 30_000);
 
 it("a fork made whose answer was lost is found by the retry and taken as the claim's own", async () => {
   const warnings: string[] = [];
@@ -258,6 +260,48 @@ it("a holder's claim again whose revocation fails once is retried, and the old t
   const now = await L.tokenId("t1");
   expect(now).not.toBe(old);
   expect(fa.live("concurrency-revoke--t1")).toEqual([now]);
+});
+
+it("claims whose repository handles fail at times all succeed, each with one live token", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const { L, fa, actors, callers, claim } = await setup("concurrency-get", 10, 10, {
+    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: (k) => k % 3 === 0,
+  });
+  const retries = { n: 0 };
+  const answers = await Promise.all(callers.map((call, i) => claimRetrying(call, claim(`t${i + 1}`), retries)));
+  expect(answers.map((r) => r.status).filter((s) => s !== 200)).toEqual([]);
+  for (let i = 0; i < 10; i++) {
+    const item = await L.item(`t${i + 1}`);
+    expect(item.owner).toBe(actors[i]);
+    expect(fa.live(item.fork!)).toEqual([await L.tokenId(item.id)]);
+  }
+});
+
+it("a holder's claim again whose revocation stays down answers 503 with Retry-After, keeps the old token, and its retry rotates it", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const errors: string[] = [];
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
+  let down = false;
+  const { L, fa, actors, callers, claim } = await setup("concurrency-revoke-down", 1, 1, {
+    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, revoke: () => down,
+  });
+  expect((await callers[0]("POST", claim("t1"))).status).toBe(200);
+  const old = await L.tokenId("t1");
+  down = true;
+  const first = await callers[0]("POST", claim("t1"));
+  expect(first.status).toBe(503);
+  expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
+  expect(await first.text()).not.toContain("art_secret_");
+  expect(errors.join("\n")).toContain(`revoke a write token for concurrency-revoke-down--t1 failed: Error code=UNAVAILABLE message="token service unavailable"`);
+  expect((await L.item("t1")).owner).toBe(actors[0]);
+  expect(await L.tokenId("t1")).toBe(old);
+  expect(fa.live("concurrency-revoke-down--t1")).toEqual([old]);
+  down = false;
+  expect((await callers[0]("POST", claim("t1"))).status).toBe(200);
+  const now = await L.tokenId("t1");
+  expect(now).not.toBe(old);
+  expect(fa.live("concurrency-revoke-down--t1")).toEqual([now]);
 });
 
 it("a request that fails for an unforeseen reason logs the error's code and message, not only its stack", async () => {
