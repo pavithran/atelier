@@ -34,3 +34,21 @@ test("atelier land excludes .scratch/ before it judges the workspace clean", () 
   const source = readFileSync(new URL("../cli/land.mjs", import.meta.url), "utf8");
   assert.match(source, /excludeScratch\(dir\);\n\s+if \(git\(\["status", "--porcelain"\]/);
 });
+
+test("in a git worktree, whose .git is a file, .scratch/ is excluded through the repository's own exclude file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-scratch-wt-"));
+  try {
+    const main = join(dir, "main"), tree = join(dir, "tree");
+    mkdirSync(main);
+    const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" });
+    git(main, "init", "-q", "-b", "main");
+    writeFileSync(join(main, "a.txt"), "a\n");
+    git(main, "add", ".");
+    git(main, "-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-qm", "a");
+    git(main, "worktree", "add", "-q", tree);
+    mkdirSync(join(tree, ".scratch"));
+    writeFileSync(join(tree, ".scratch", "notes.md"), "notes\n");
+    excludeScratch(tree);
+    assert.equal(git(tree, "status", "--porcelain"), "");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
