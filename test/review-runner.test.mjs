@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
+import { BRIEF_LIMITS } from "../src/review/brief.ts";
 
 // The review job (docs/orchestrator.md, section 4, build step 10) driven
 // through the same stand-in io the other runner tests use: the server answers
@@ -44,7 +45,7 @@ function fixture(options = {}) {
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
     async cli(argv, cwd) {
       calls.push({ argv, cwd });
-      if (argv[0] === "review-claim") return JSON.stringify(claimed);
+      if (argv[0] === "review-claim") return JSON.stringify(options.claim ?? claimed);
       return "{}";
     },
     async clone(remote, t, dir) { calls.push({ clone: [remote, t, dir] }); },
@@ -118,6 +119,39 @@ test("runReview releases the request when the harness fails or times out", async
     assert.equal(state.phase, "failed");
     assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), JSON.stringify(options));
   }
+});
+
+test("runReview carries a diff too large for the brief by its R2 reference, not inline (t284)", async () => {
+  const sha = "f".repeat(64);
+  const diffRef = { key: `diffs/atelier/t21/${sha}`, bytes: 944_332, sha256: sha };
+  const big = `+${"a line of the change\n+".repeat(Math.ceil(BRIEF_LIMITS.diff / 21) + 5)}`;
+  assert.ok(big.length > BRIEF_LIMITS.diff);
+  const { io, calls, logs } = fixture({ claim: { ...claimed, diffRef } });
+  io.diff = async () => big;
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "reviewed");
+  const brief = calls.find((c) => c.brief).brief;
+  // The brief names the reference and where to read the whole diff, and carries none of the diff itself.
+  assert.ok(brief.includes(`too large for this brief — 944332 bytes, sha256 ${"f".repeat(12)}`), brief);
+  assert.ok(brief.includes(`key \`diffs/atelier/t21/${sha}\``), brief);
+  assert.ok(!brief.includes("a line of the change"), brief);
+  assert.ok(!brief.includes("```diff"), brief);
+  // The reviewer's file still holds the whole diff, and the runner says so.
+  assert.equal(calls.find((c) => c.writeDiff).writeDiff, big);
+  assert.ok(logs.some((l) => l.includes(`kept in R2 by reference: diffs/atelier/t21/${sha}`)), logs.join("\n"));
+});
+
+test("runReview falls back to the inline cut when the server stored no reference, however large the diff", async () => {
+  const big = `+${"a line of the change\n+".repeat(Math.ceil(BRIEF_LIMITS.diff / 21) + 5)}`;
+  const { io, calls, logs } = fixture();  // a claim from a server before t284: no diffRef
+  io.diff = async () => big;
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "reviewed");
+  const brief = calls.find((c) => c.brief).brief;
+  assert.ok(brief.includes("The diff is cut:"), brief);
+  assert.ok(brief.includes("a line of the change"), brief);
+  assert.equal(calls.find((c) => c.writeDiff).writeDiff, big);
+  assert.ok(!logs.some((l) => l.includes("R2")), logs.join("\n"));
 });
 
 test("runReview refuses an assignment outside its offer or with an unsafe path", async () => {

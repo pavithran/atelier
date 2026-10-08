@@ -1752,13 +1752,14 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 
 // The error page keeps the owner's name and the rail, and highlights nothing:
 // it does not know which page failed (finding 18). `back` says where Go back
-// returns to. The public error paths pass no ownerName, so the name never
-// reaches a page anyone can read.
+// returns to; an empty `back` leaves the advice and the button out, for a
+// refusal that has no page to go back to (the Access 401). The public error
+// paths pass no ownerName, so the name never reaches a page anyone can read.
 export function renderError(message: string, back = "/", ownerName: string | null = null, active = ""): string {
   return page("Action needs attention", `<section class="page-width error-page">
   <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
-  <p>Go back, refresh the evidence, and try the available action again.</p>
-  <a class="button" href="${e(back)}">Go back</a>
+  ${back ? `<p>Go back, refresh the evidence, and try the available action again.</p>
+  <a class="button" href="${e(back)}">Go back</a>` : ""}
 </section>`, active, ownerName);
 }
 
