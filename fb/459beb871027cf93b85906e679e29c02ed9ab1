@@ -1,0 +1,27 @@
+atelier atelier/t316 "The main button on a task waiting for an independent review is 'Approve revision', which the owner's approval cannot satisfy (the page says so lower down) (site assessment 2026-10-08): make the primary action the one that moves the task (e.g. request a review from another family, or wait), and show Approve only where it counts"
+accepted head 3afc2a86b8b04db9f2101601d2a28827ffef1257
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T15:56:10.709Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T15:56:13.398Z
+REVIEW approve by antigravity/gemini-3.1-pro at 3afc2a86b8b04db9f2101601d2a28827ffef1257, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T15:08:05.239Z pavi item.created
+2026-10-08T15:16:54.667Z pavi item.dispatched
+2026-10-08T15:17:07.122Z opencode/glm-5.3 item.claimed
+2026-10-08T15:17:21.337Z opencode/glm-5.3 fork.created
+2026-10-08T15:32:40.426Z opencode/glm-5.3 push.observed
+2026-10-08T15:36:05.680Z opencode/glm-5.3 evidence.observed
+2026-10-08T15:36:11.299Z opencode/glm-5.3 evidence.observed
+2026-10-08T15:36:12.665Z opencode/glm-5.3 item.submitted
+2026-10-08T15:52:32.788Z pavi land.lease
+2026-10-08T15:52:37.877Z pavi land.merge
+2026-10-08T15:52:46.151Z pavi land.regenerate
+2026-10-08T15:52:50.617Z opencode/glm-5.3 push.observed
+2026-10-08T15:52:50.942Z pavi land.push
+2026-10-08T15:56:11.153Z opencode/glm-5.3 evidence.observed
+2026-10-08T15:56:13.746Z opencode/glm-5.3 evidence.observed
+2026-10-08T15:56:14.286Z pavi land.check
+2026-10-08T15:56:15.558Z pavi review.requested
+2026-10-08T15:56:38.467Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T16:02:05.724Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T16:02:05.900Z pavi land.review
+2026-10-08T16:02:06.973Z pavi item.accepted
+2026-10-08T16:02:07.030Z pavi land.accept
