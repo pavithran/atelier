@@ -913,7 +913,12 @@ export function checkFailures(output) {
 // integrated, as for a plan put back to building to take main. A merge that
 // conflicts, or checks that fail, rolls the branch back with atelier push
 // --rollback, logs the reason and posts refresh-failed with its kind; the
-// refresh is the plan's, so no part's builder is charged. Any other error is
+// refresh is the plan's, so no part's builder is charged. The posted
+// refresh-failed is the plan's recorded outcome, and the server handles it:
+// the tick does not try the same main head again, and a conflict adds the
+// merge-main part. So the runner counts it toward neither failure cap
+// (`recorded`, t273) and keeps serving the plan item's jobs — the integrate
+// job that merges the part a conflict added, among them. Any other error is
 // the integrator's: the merge is rolled back if it was pushed and the plan
 // item is released, with nothing posted.
 export async function runRefresh(assignment, config, name, io) {
@@ -947,7 +952,13 @@ export async function runRefresh(assignment, config, name, io) {
     await io.cli(["refresh-failed", item.id, ...at, "--main-head", mainHead, "--kind", kind, "--reason", reason]);
     io.log(`refresh-failed recorded on ${item.id}; no part is charged, and the plan's parts are dispatched without it`);
     await release(reason);
-    return { phase: "failed", reason, taskFailure: true };
+    // The failure is recorded (refresh-failed), so the server handles it:
+    // the tick does not try the same main head again, and a conflict adds
+    // the merge-main part. It is the plan's recorded outcome, not a failure
+    // for the runner to count (t273): `recorded` counts toward neither cap,
+    // so the loop keeps serving the plan item's jobs — the integrate job
+    // that merges the part a conflict added, among them.
+    return { phase: "failed", reason, recorded: true };
   };
   try {
     if (actor !== "atelier/integrator") throw new Error("the refresh job runs as atelier/integrator");
@@ -1022,12 +1033,16 @@ export function queueBackoffMs(misses) {
   return misses <= 1 ? 30_000 : Math.min(30_000 * 2 ** (misses - 1), 5 * 60_000);
 }
 
+// A failure the job recorded on the item (`recorded`: runRefresh posted
+// refresh-failed, and the server handles it) counts toward neither cap
+// (t273): it is no task failure and no infrastructure failure, so the loop
+// keeps serving the item's jobs.
 export function failureCount(count, state) {
-  return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped ? 1 : 0);
+  return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? 1 : 0);
 }
 
 export function infrastructureFailureCount(count, state) {
-  return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped ? count + 1 : 0;
+  return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
 // The file a plan job's harness writes the plan document to, inside the
