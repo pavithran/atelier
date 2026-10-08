@@ -713,6 +713,18 @@ test("decision 2026-10-06: the inbox and the page name the override and its reas
 // the protected file it aliases.
 const defaults: ProjectPolicy = { checks: ["npm test", "./check.sh"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", "docs/caf\u00e9/**"] };
 
+test("a role prompt override is protected by default, so changing one needs a review", () => {
+  // `.atelier/prompts/**` is in DEFAULT_PROTECTED (src/ledger.ts, asserted in
+  // ledger.spec.ts and routes.spec.ts); this is the guard that keeps an
+  // unvetted role prompt from landing and reaching a runner. The matcher is
+  // what changeClass runs on, so a change to a role prompt is protected even
+  // when the project lists no protected paths of its own.
+  for (const path of [".atelier/prompts/review.md", ".atelier/prompts/build.md", ".atelier/prompts/sub/orchestrate.md"]) {
+    assert.equal(changeClass([path], { checks: [], protected: [".atelier/prompts/**"] }), "protected", path);
+  }
+  assert.equal(changeClass(["src/a.ts"], { checks: [], protected: [".atelier/prompts/**"] }), "coordinated");
+});
+
 test("a path differing from a guarded path only by letter case or Unicode form is protected", () => {
   for (const path of [
     "claude.md", "Claude.MD", "Agents.MD", "agents.md", "Wrangler.jsonc", "WRANGLER.toml",
