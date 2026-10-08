@@ -105,6 +105,8 @@ const poolList = Array.isArray(poolRaw) ? poolRaw : (poolRaw.models ?? poolRaw.p
 const localPool = poolList.filter((e) => e.where === "home" && e.provider === "ai-studio").map((e) => ({ id: e.id, harness: e.harness, family: e.family, addedAt: e.addedAt }));
 const localDispatches = items.flatMap((d) => d.events.filter((e) => e.kind === "item.dispatched" && localPool.some((p) => p.id === e.data?.model)).map((e) => ({ id: d.item.id, model: e.data.model, at: e.at, state: d.item.state })));
 const localMerged = tasks.filter((t) => t.state === "merged" && t.builders.some((b) => LOCAL.test(b))).map((t) => ({ id: t.id, builders: t.builders, mergedAt: t.mergedAt }));
+// The fleet: every pool entry and how it is paid for.
+const fleet = poolList.map((e) => ({ id: e.id, harness: e.harness, family: e.family, provider: e.provider, addedAt: e.addedAt }));
 // Two tasks Atelier filed against itself on 2026-10-07 and 08, by title.
 const selfTasks = Object.fromEntries(["t296", "t298"].filter((id) => byId[id]).map((id) => [id, { title: byId[id].item.title, createdAt: byId[id].item.createdAt, state: tasks.find((t) => t.id === id).state }]));
 const stories = Object.fromEntries(["t278", "t219", "t252", "t50"].map((id) => [id, story(id)]));
@@ -140,5 +142,5 @@ const plan = {
   mergedAt: byId.t197.events.find((e) => e.kind === "item.merged")?.at ?? null,
 };
 
-writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, moment, plan, selfTasks, localPool, localDispatches, localMerged, tasks }, null, 1) + "\n");
+writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, moment, plan, selfTasks, fleet, localPool, localDispatches, localMerged, tasks }, null, 1) + "\n");
 console.log(JSON.stringify(facts, null, 1));

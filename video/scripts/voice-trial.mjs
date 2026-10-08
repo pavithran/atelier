@@ -7,6 +7,6 @@ mkdirSync(new URL("../.cache/trial/", import.meta.url).pathname, { recursive: tr
 for (const voice of (process.argv.slice(2).length ? process.argv.slice(2) : ["cedar", "ash", "onyx"])) {
   const f = await synth(text, { voice });
   const s = wavSeconds(readFileSync(f));
-  copyFileSync(f, new URL(`../.cache/trial/v3-${voice}.wav`, import.meta.url).pathname);
+  copyFileSync(f, new URL(`../.cache/trial/v4-${voice}.wav`, import.meta.url).pathname);
   console.log(voice, s.toFixed(1) + "s", Math.round(words / s * 60) + " wpm");
 }

@@ -25,6 +25,7 @@
   --m-deepseek: #5ad1e6;
   --m-xiaomi: #ff9e40;
   --m-qwen: #b5e55c;
+  --m-moonshot: #b48cff;
   --m-minimax: #ff9f7a;
   --m-other: #8f9cab;
   --main-line: #f4f1e8;
@@ -96,7 +97,7 @@ svg text { font-family: var(--font-mono); }
   --shell: #ebe8df; --surface: #f6f4ee; --surface-raised: #fbfaf6; --inset: #e4e0d5; --line: #cfcabd; --line-bright: #a39d8f;
   --text: #14181d; --text-bright: #05070a; --text-muted: #4b5562; --text-dim: #55606d;
   --signal: #7a5600; --signal-hot: #6b4b00; --wire: #c9ad6a; --observed: #1d6b3c; --observed-line: #9cc9ad; --caution: #7d4d00; --fault: #b0173f;
-  --m-anthropic: #b4461c; --m-openai: #0b7a5c; --m-zai: #2f56c9; --m-google: #b0307a; --m-deepseek: #0f7d93; --m-xiaomi: #a35a00; --m-qwen: #4d7a12; --m-minimax: #b04a1f; --m-other: #4b5562;
+  --m-anthropic: #b4461c; --m-openai: #0b7a5c; --m-zai: #2f56c9; --m-google: #b0307a; --m-deepseek: #0f7d93; --m-xiaomi: #a35a00; --m-qwen: #4d7a12; --m-moonshot: #5f3fa8; --m-minimax: #b04a1f; --m-other: #4b5562;
   --main-line: #14181d;
   color: var(--text);
   background: radial-gradient(1300px 800px at 35% 25%, #fbfaf6 0%, #ebe8df 75%);

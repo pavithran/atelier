@@ -230,7 +230,7 @@
     const F = field(data);
     const cam = camera(F.world, F.W, F.H);
     el.append(F.world);
-    const SWEEP_A = 0.4, SWEEP_B = 11.6;
+    const SWEEP_A = 0.3, SWEEP_B = 9.6;
     const play = (t) => lerp(F.T0, F.T1, ease(clamp((t - SWEEP_A) / (SWEEP_B - SWEEP_A))) * 0.35 + clamp((t - SWEEP_A) / (SWEEP_B - SWEEP_A)) * 0.65);
     // Ticks as tasks appear, at most one each 70 ms.
     let last = -1;
@@ -278,11 +278,12 @@
     const el = h("div");
     const world = h("div");
     el.append(world);
-    const cam = camera(world, 1920, 1080);
+    const cam = camera(world, 3840, 2160);
     const svg = svgFull(); world.append(svg);
-    const title = h("div", { class: "abs display", text: "Atelier", style: { fontSize: "220px", left: "0px", width: "1920px", textAlign: "center", top: "330px", letterSpacing: "-.04em" } });
-    const sub = kinetic("a multi-agent system for software work, with Git underneath", "kin", { position: "absolute", left: 0, width: "1920px", textAlign: "center", top: "610px", font: "500 40px/1.2 var(--font-sans)", color: "var(--signal)" });
-    el.append(title, sub.el);
+    // The handoff, below the roles: the camera goes there for the last cue.
+    const R = region(0, 1080, 3840, 1080); world.append(R);
+    const tHand = c.when("handed task t50");
+    const handoff = forksReal(data, R, 1e9, c.cue(2), tHand);
     const CX = 960, CY = 420;
     const ledger = pos(h("div", { class: "card", style: { padding: "20px 26px", width: "380px", textAlign: "center", borderColor: "var(--wire)" } }, h("div", { style: { font: "700 32px/1.2 var(--font-display)" }, text: "the ledger" }), h("div", { class: "mono dim", text: "every event, recorded by the server", style: { fontSize: "17px", marginTop: "8px" } })), CX - 190, CY - 58);
     world.append(ledger);
@@ -291,13 +292,13 @@
     const famLabel = { anthropic: "Claude", zai: "GLM", openai: "GPT", deepseek: "DeepSeek", google: "Gemini", xiaomi: "MiMo" };
     // Seven roles on an ellipse around the ledger, clear of the captions.
     const spec = [
-      ["Planner", "a model splits a goal into parts", [chip(data.plan.planner), h("span", { class: "mono dim", text: " planned t197", style: { fontSize: "17px" } })], 1],
-      ["Builders", "models, many at once, each in its own fork", Object.keys(f.mergedBuilderFamilies).map((x) => famChip(x, famLabel[x] ?? x)), 2],
-      ["Reviewers", "models of another family than the builders", Object.entries(f.reviewsByModel).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([m]) => famChip(fam(m), NAMES[m] ?? m)), 3],
-      ["Orchestrator", "Atelier's code: routes each part to a builder and a reviewer", [rules("rules, no model"), h("span", { class: "mono dim", text: " src/plans/route.ts", style: { fontSize: "16px" } })], 4],
-      ["Integrator", "merges parts onto the plan's branch; a conflict goes to a model", [rules("rules, no model"), famChip("zai", "merge-main job: a model")], 5],
-      ["Runners", "on the owner's machines; start each model's own tool", [...[["zai", "opencode"], ["anthropic", "claude"], ["openai", "codex"], ["google", "antigravity"]].map(([x, n]) => famChip(x, n)), h("span", { class: "mono", text: "subscription · AI Gateway · local models", style: { fontSize: "15px", color: "var(--signal)", width: "100%" } })], 6],
-      ["Owner", "approves the plan, merges the result", [h("span", { class: "chip", style: { color: "var(--signal)", fontSize: "18px" } }, h("span", { class: "dot" }), "the owner, or a session on its decisions")], 6.5],
+      ["Planner", "a model splits a goal into parts", [chip(data.plan.planner), h("span", { class: "mono dim", text: " planned t197", style: { fontSize: "17px" } })], "A planner model"],
+      ["Builders", "models, many at once, each in its own fork", Object.keys(f.mergedBuilderFamilies).map((x) => famChip(x, famLabel[x] ?? x)), "Builder models"],
+      ["Reviewers", "models of another family than the builders", Object.entries(f.reviewsByModel).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([m]) => famChip(fam(m), NAMES[m] ?? m)), "Reviewer models"],
+      ["Orchestrator", "Atelier's code: routes each part to a builder and a reviewer", [rules("rules, no model"), h("span", { class: "mono dim", text: " src/plans/route.ts", style: { fontSize: "16px" } })], "Atelier's own code"],
+      ["Integrator", "merges parts onto the plan's branch; a conflict goes to a model", [rules("rules, no model"), famChip("zai", "merge-main job: a model")], "The integrator"],
+      ["Runners", "on the owner's machines; start each model's own tool", [...[["zai", "opencode"], ["anthropic", "claude"], ["openai", "codex"], ["google", "antigravity"]].map(([x, n]) => famChip(x, n)), h("span", { class: "mono", text: "subscription · AI Gateway · local models", style: { fontSize: "15px", color: "var(--signal)", width: "100%" } })], "Runners on"],
+      ["Owner", "approves the plan, merges the result", [h("span", { class: "chip", style: { color: "var(--signal)", fontSize: "18px" } }, h("span", { class: "dot" }), "the owner, or a session on its decisions")], "and the owner, or"],
     ];
     const roles = spec.map(([name, what, body, cueAt], i) => {
       const a = -Math.PI / 2 + i * (2 * Math.PI / spec.length);
@@ -312,23 +313,20 @@
       const d = `M ${xr} ${y + yAdj} L ${CX} ${CY}`;
       const line = s("path", { d, fill: "none", stroke: "var(--line-bright)", "stroke-width": 2.5 });
       svg.append(line);
-      const t0 = cueAt === 6.5 ? c.when("And the owner") : c.cue(cueAt);
+      const t0 = c.when(cueAt);
       return { card, line, toL: beads(svg, d, "#f4f1e8", 2, 5), fromL: beads(svg, `M ${CX} ${CY} L ${xr} ${y + yAdj}`, "#ffd166", 1, 5), t0, x: xr, y: y + yAdj };
     });
     roles.forEach((r) => c.sfx(r.t0 - 0.05, "chime", 0.3));
-    const keys = [[0, 960, 540, 1.0], [c.cue(1) - 0.6, 960, 500, 1.0]];
+    const keys = [[0, 960, 500, 0.96], [roles[0].t0 - 0.6, 960, 500, 1.0]];
     roles.forEach((r) => { const L = keys[keys.length - 1]; keys.push([r.t0 - 0.4, L[1], L[2], L[3]], [r.t0 + 0.6, (r.x + CX * 2) / 3, Math.max(440, Math.min(500, (r.y + CY * 2) / 3 + 40)), 1.0]); });
-    keys.push([c.cueEnd(6) - 2.4, keys[keys.length - 1][1], keys[keys.length - 1][2], 1.0], [c.cueEnd(6) - 1.0, 960, 500, 0.9]);
+    keys.push([c.cue(2) - 1.6, keys[keys.length - 1][1], keys[keys.length - 1][2], 1.0], [c.cue(2) - 0.9, 960, 500, 0.9], [c.cue(2) - 0.2, 960, 500, 0.9], [c.cue(2) + 0.8, 2880, 1620, 1.0]);
+    c.sfx(c.cue(2), "whoosh", 0.6); c.sfx(tHand, "chime", 0.5);
     return {
       el,
       update(t) {
         const view = cam.set(t, keys, 0.6);
-        const gone = 1 - P(t, c.cue(1) - 1.0, 0.8);
-        title.style.opacity = gone; sub.el.style.opacity = gone;
-        title.style.transform = `translateY(${-P(t, 0.8, 1.6) * 120}px) scale(${lerp(1, 0.7, P(t, 0.8, 1.6))})`;
-        sub.update(P(t, 0.3, 1.4));
-        sub.el.style.transform = `translateY(${-P(t, 0.8, 1.6) * 190}px)`;
-        pop(ledger, P(t, c.cue(1) - 0.8, 0.7), 0.6);
+        pop(ledger, P(t, 0.2, 0.7), 0.6);
+        handoff(t);
         ledger.style.boxShadow = `0 0 ${30 + 18 * Math.sin(t * 2.2)}px rgba(255,209,102,.35), 0 20px 60px rgba(0,0,0,.45)`;
         roles.forEach((r) => {
           pop(r.card, P(t, r.t0, 0.5), 0.75);
@@ -336,140 +334,6 @@
           r.toL.update(t, r.t0 + 0.6, 1.5, P(t, r.t0 + 0.6, 0.4));
           r.fromL.update(t, r.t0 + 1.2, 2.0, P(t, r.t0 + 1.2, 0.4));
         });
-        return view;
-      },
-    };
-  };
-
-  SCENES.why = (c, data) => {
-    const el = h("div");
-    const world = h("div");
-    el.append(world);
-    const STEP = 1920;
-    const PX = (i) => 960 + i * STEP;
-    const cam = camera(world, STEP * 7, 1080);
-    const starts = c.cues.map((_, i) => c.cue(i));
-    const keys = flight(starts.map((t0, i) => [t0 - (i ? 0.45 : 0), PX(i), 540, 1]), 1.0, 0.86);
-    starts.slice(1).forEach((t0) => c.sfx(t0 - 0.45, "whoosh", 0.6));
-    const f = data.facts;
-    const L = { a: "var(--m-anthropic)", o: "var(--m-openai)", z: "var(--m-zai)", g: "var(--m-google)" };
-    const intro = region(0, 0); world.append(intro);
-    const qs = ["Who owns the work?", "Did the tests really run?", "Who checked the change?"].map((q, i) => { const k = kinetic(q, "kin display", { position: "absolute", left: "160px", top: `${230 + i * 150}px`, fontSize: "92px" }); intro.append(k.el); return k; });
-    const gitLine = pos(h("div", { class: "abs mono", style: { fontSize: "28px", color: "var(--text-muted)" }, html: "git log: <span style='color:var(--text)'>commits</span>, and none of these answers" }), 166, 700);
-    intro.append(gitLine);
-    const panels = [];
-    const panel = (i, q, proof) => {
-      const p = region(PX(i) - 960, 0);
-      world.append(p);
-      const k = kinetic(q, "kin display", { position: "absolute", left: "120px", top: "84px", fontSize: "76px", width: "1700px" });
-      const Lb = pos(h("div", { class: "card side", style: { width: "820px", height: "560px", padding: "22px 26px", background: "rgba(176,23,63,.04)", borderColor: "rgba(176,23,63,.35)" } }, h("div", { class: "label", text: "With Git alone · an illustration", style: { color: "var(--fault)" } })), 120, 230);
-      const Rb = pos(h("div", { class: "card side", style: { width: "820px", height: "560px", padding: "22px 26px", borderColor: "var(--observed-line)" } }, h("div", { class: "label", text: "With Atelier", style: { color: "var(--observed)" } })), 980, 230);
-      const pr = pos(h("div", { class: "abs mono proof", style: { fontSize: "21px", color: "var(--signal)", fontWeight: 600 }, html: proof }), 1004, 822);
-      p.append(k.el, Lb, Rb, pr);
-      const o = { p, k, L: Lb, R: Rb, pr, i };
-      panels.push(o);
-      return o;
-    };
-    const inBox = (box, el2, x, y) => { pos(el2, x, y); if (!el2.classList.contains("abs") && !el2.classList.contains("card")) el2.classList.add("abs"); box.append(el2); return el2; };
-    const p1 = panel(1, "Who owns the work?", `the ledger: ${f.handoffs} handoffs, each recorded, each revoking a token`);
-    const s1 = svgFull(820, 560); p1.L.append(s1);
-    const ln1 = s("line", { x1: 40, y1: 300, x2: 780, y2: 300, "stroke-width": 4 }); ln1.style.stroke = "var(--text-dim)"; s1.append(ln1);
-    s1.append(Object.assign(s("text", { x: 40, y: 278, "font-size": 20, text: "one branch, two agents" }), {}));
-    s1.lastChild.style.fill = "var(--text-dim)";
-    const cA = [0, 1, 2, 3].map((i) => { const c1 = s("circle", { cx: 120 + i * 160, cy: 300, r: 13 }); c1.style.fill = i % 2 ? L.o : L.a; s1.append(c1); return c1; });
-    const clash = s("text", { x: 590, y: 380, "font-size": 30, text: "✕ conflict" }); clash.style.fill = "var(--fault)"; s1.append(clash);
-    const own = inBox(p1.R, h("div", { class: "card", style: { padding: "18px 22px", width: "560px" } }, h("div", { class: "label", text: "task" }), h("div", { class: "mono", style: { fontSize: "25px", marginTop: "10px", lineHeight: "1.6" }, html: "owner <span style='color:var(--m-anthropic)'>agent A 🔒</span><br><span style='color:var(--signal)'>🔑 write token: its own fork only</span><br><span class='dim'>a handoff revokes it</span>" })), 60, 110);
-    const refusedB = inBox(p1.R, h("div", { class: "abs mono", text: "agent B's claim: refused", style: { fontSize: "26px", color: "var(--fault)" } }), 60, 380);
-    const p2 = panel(2, "Did the tests run?", `the ledger: ${f.observedChecks.toLocaleString("en")} check results Atelier observed`);
-    const say = inBox(p2.L, h("div", { class: "card", style: { padding: "18px 24px", font: "500 36px/1.3 var(--font-sans)" } }, "“tests pass ✓”", h("div", { class: "mono dim", text: "the agent's own word", style: { fontSize: "18px", marginTop: "8px" } })), 110, 160);
-    const qm = inBox(p2.L, h("div", { class: "abs display", text: "?", style: { fontSize: "170px", color: "var(--fault)" } }), 580, 110);
-    const runs = inBox(p2.R, h("div", { class: "card", style: { padding: "18px 22px", width: "620px" } }, h("div", { class: "label", text: "Atelier runs them: a clean clone of the exact head" }), h("div", { class: "mono", style: { fontSize: "25px", marginTop: "12px", lineHeight: "1.8" }, html: "<div class='r1'><span style='color:var(--observed)'>✓ Observed</span> npm test</div><div class='r2'><span style='color:var(--observed)'>✓ Observed</span> typecheck</div><div class='r3' style='color:var(--fault)'>no observed pass at this head → no accept</div>" })), 60, 110);
-    const p3 = panel(3, "Who checked it?", `the ledger: ${f.modelReviews} reviews by models · <span class="n1">0</span> sent work back · <span class="n2">0</span> blocking findings`);
-    const selfA = inBox(p3.L, h("div", { class: "abs" }, famChip("anthropic", "the author")), 110, 190);
-    const selfB = inBox(p3.L, h("div", { class: "abs" }, famChip("anthropic", "the same model family"), h("span", { class: "mono", text: "  “looks right”", style: { fontSize: "24px", color: "var(--text-muted)" } })), 110, 320);
-    const r3a = inBox(p3.R, h("div", { class: "abs" }, famChip("anthropic", "the author")), 60, 130);
-    const r3b = inBox(p3.R, h("div", { class: "abs", style: { display: "flex", gap: "14px", alignItems: "center" } }, famChip("anthropic", "same family"), h("span", { class: "mono", text: "✕ does not count", style: { fontSize: "23px", color: "var(--fault)" } })), 60, 240);
-    const r3c = inBox(p3.R, h("div", { class: "abs", style: { display: "flex", gap: "14px", alignItems: "center" } }, famChip("google", "another family"), h("span", { class: "mono", text: "✓ required to approve", style: { fontSize: "23px", color: "var(--observed)" } })), 60, 330);
-    const p4 = panel(4, "Is main still sound?", "t278: three landings; merged as 5af22431 at the approved head");
-    const s4 = svgFull(820, 560); p4.L.append(s4);
-    const mainL4 = s("line", { x1: 40, y1: 420, x2: 780, y2: 420, "stroke-width": 5 }); mainL4.style.stroke = "var(--text-dim)"; s4.append(mainL4);
-    const m4a = s("path", { d: "M 120 200 C 300 200, 330 420, 460 420", fill: "none", "stroke-width": 5 }); m4a.style.stroke = L.a;
-    const m4b = s("path", { d: "M 160 300 C 320 300, 360 420, 470 420", fill: "none", "stroke-width": 5 }); m4b.style.stroke = L.z;
-    s4.append(m4a, m4b);
-    const broke = s("text", { x: 470, y: 480, "font-size": 28, text: "✕ main fails its tests" }); broke.style.fill = "var(--fault)"; s4.append(broke);
-    const steps = ["landing lease: one at a time", "merge main into the task", "run the checks again", "review by another family", "accept the reviewed head", "merge exactly that head"].map((x, i) => inBox(p4.R, h("div", { class: "abs mono", style: { fontSize: "24px" }, html: `<span style="color:var(--signal);font-weight:600">${i + 1}</span>  ${x}` }), 60, 90 + i * 64));
-    const p5 = panel(5, "What needs me now?", "real output of atelier show t278");
-    const prs = Array.from({ length: 9 }, (_, i) => inBox(p5.L, h("div", { class: "card", style: { padding: "10px 16px", width: "420px", font: "500 20px/1.2 var(--font-mono)" } }, `pull request #${101 + i * 7}  · review?`), 110 + i * 28, 70 + i * 46));
-    const recLine = data.terminal.t278.split("\n").find((x) => x.startsWith("Recommendation")) ?? "";
-    const revLine = data.terminal.t278.split("\n").find((x) => x.startsWith("Reviews at this revision")) ?? "";
-    const inbox = inBox(p5.R, h("div", { class: "card", style: { padding: "18px 22px", width: "740px" } }, h("div", { class: "label", text: "a decision brief" }), h("div", { class: "mono", style: { fontSize: "20px", marginTop: "10px", lineHeight: "1.55" }, html: `${esc(revLine)}<br><span style="color:var(--signal)">${esc(recLine)}</span>` })), 40, 90);
-    const n1 = p3.pr.querySelector(".n1"), n2 = p3.pr.querySelector(".n2");
-    c.sfx(starts[1] + 1.3, "reject", 0.5); c.sfx(starts[4] + 1.3, "reject", 0.5);
-    [1, 2, 3, 4, 5].forEach((i) => c.sfx(starts[i] + 2.4, "approve", 0.4));
-    return {
-      el,
-      update(t) {
-        const view = cam.set(t, keys, 0.6);
-        qs.forEach((k, i) => k.update(P(t, 0.1 + i * 0.7, 0.9)));
-        gitLine.style.opacity = P(t, 2.4, 0.6);
-        panels.forEach((p) => {
-          const q = t - starts[p.i];
-          p.k.update(P(q, -0.4, 0.9));
-          fadeIn(p.L, P(q, -0.1, 0.5), 16);
-          fadeIn(p.R, P(q, 1.2, 0.5), 16);
-          p.L.style.opacity = P(q, -0.1, 0.5) * lerp(1, 0.7, P(q, 1.8, 0.8));
-          fadeIn(p.pr, P(q, 2.2, 0.5), 8);
-        });
-        { const q = t - starts[1]; cA.forEach((x, i) => (x.style.opacity = P(q, 0.1 + i * 0.2, 0.3))); clash.style.opacity = P(q, 1.0, 0.3); pop(own, P(q, 1.4, 0.5), 0.8); refusedB.style.opacity = P(q, 2.2, 0.4); }
-        { const q = t - starts[2]; pop(say, P(q, 0.0, 0.5), 0.8); qm.style.opacity = P(q, 0.7, 0.4); fadeIn(runs, P(q, 1.3, 0.5)); ["r1", "r2", "r3"].forEach((x, i) => (runs.querySelector("." + x).style.opacity = P(q, 1.7 + i * 0.5, 0.3))); }
-        { const q = t - starts[3]; fadeIn(selfA, P(q, 0.0, 0.4)); fadeIn(selfB, P(q, 0.5, 0.4)); fadeIn(r3a, P(q, 1.3, 0.4)); fadeIn(r3b, P(q, 1.7, 0.4)); fadeIn(r3c, P(q, 2.1, 0.4));
-          count(n1, f.modelRejections, (q - 2.3) / 1.5); count(n2, f.blockingFindings, (q - 2.6) / 1.5); }
-        { const q = t - starts[4]; draw(m4a, P(q, 0.0, 0.7)); draw(m4b, P(q, 0.3, 0.7)); broke.style.opacity = P(q, 1.2, 0.3); mainL4.style.stroke = q > 1.2 ? "var(--fault)" : "var(--text-dim)";
-          steps.forEach((x, i) => fadeIn(x, P(q, 1.4 + i * 0.45, 0.35), 8)); }
-        { const q = t - starts[5]; prs.forEach((x, i) => fadeIn(x, P(q, 0.0 + i * 0.1, 0.3), -20)); fadeIn(inbox, P(q, 1.4, 0.5)); }
-        return view;
-      },
-    };
-  };
-
-  SCENES.commit = (c, data) => {
-    const el = h("div");
-    const world = h("div");
-    el.append(world);
-    const cam = camera(world, 1920, 1080);
-    const st = data.stories.t278;
-    const ttl = kinetic("A commit message, and a record", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" });
-    world.append(ttl.el);
-    const left = pos(h("div", { class: "card", style: { padding: "20px 24px", width: "700px", height: "640px" } },
-      h("div", { class: "label", text: "git log -1 de67194 · written by the agent", style: { color: "var(--fault)" } }),
-      h("pre", { class: "mono", style: { fontSize: "21px", lineHeight: "1.6", whiteSpace: "pre-wrap", margin: "16px 0 0", color: "var(--text)" }, text: data.terminal.commit }),
-      h("div", { class: "mono claims", style: { fontSize: "19px", marginTop: "26px", lineHeight: "1.8", color: "var(--text-muted)" }, html: "no head it was checked at<br>no test results<br>no reviewer, no rejections<br>nothing verifies the author line" })), 120, 200);
-    // The ledger's record, from the events.
-    const L = st.landing;
-    const evLine = (e) => {
-      const who = e.actor === "pavi" ? "the owner" : nice(e.actor);
-      const what = { "item.claimed": "claimed", "push.observed": `pushed, head ${e.head} read from Artifacts`, "evidence.observed": `check observed passing at ${e.head}`, "review.rejected": "rejected, with blocking findings", "review.approved": "approved", "item.accepted": `accepted at ${e.head}`, "item.merged": `merged as ${e.mergeCommit}` }[e.kind];
-      return what ? `<span class="dim">${utc(e.at, true).replace(" UTC", "")}</span>  <span style="color:${e.kind.startsWith("review.rejected") ? "var(--fault)" : e.kind.startsWith("review.approved") || e.kind === "item.merged" ? "var(--observed)" : "var(--text)"}">${esc(who)}</span> ${esc(what)}` : null;
-    };
-    const claimed = { at: "2026-10-07T20:27:16.169Z", kind: "item.claimed", actor: st.builders[0] };
-    const seen = new Set();
-    const lines = [claimed, ...L].filter((e) => { if (e.kind === "evidence.observed") { if (seen.has(e.head)) return false; seen.add(e.head); } return true; }).map(evLine).filter(Boolean);
-    const right = pos(h("div", { class: "card", style: { padding: "20px 24px", width: "940px", height: "640px", borderColor: "var(--observed-line)" } },
-      h("div", { class: "label", text: "t278 in the ledger · written by the server, from what it observed", style: { color: "var(--observed)" } }),
-      h("div", { class: "mono", style: { fontSize: "18px", lineHeight: "1.75", marginTop: "14px" } }, ...lines.map((x) => h("div", { class: "ev", html: x })))), 860, 200);
-    const note = pos(h("div", { class: "abs mono", style: { fontSize: "18px", color: "var(--signal)", width: "1680px", fontWeight: 600 }, html: `git notes --ref=atelier show 5af22431 → ${esc(data.terminal.note.split("\n")[0])} · ${esc((data.terminal.note.split("\n")[3] ?? "").slice(0, 70))}…` }), 120, 860);
-    world.append(left, right, note);
-    c.sfx(c.cue(2), "swell", 0.6);
-    return {
-      el,
-      update(t) {
-        const view = cam.set(t, [[0, 960, 520, 1.04], [c.cue(1), 560, 520, 1.12], [c.cue(2) - 0.2, 1300, 520, 1.08], [c.when("as a note"), 960, 560, 1.0]], 0.6);
-        ttl.update(P(t, 0.1, 1.0));
-        fadeIn(left, P(t, c.cue(1) - 0.3, 0.6));
-        left.querySelector(".claims").style.opacity = P(t, c.when("That is all"), 0.5);
-        fadeIn(right, P(t, c.cue(2), 0.6));
-        [...right.querySelectorAll(".ev")].forEach((x, i) => fadeIn(x, P(t, c.cue(2) + 0.4 + i * 0.28, 0.3), 6));
-        fadeIn(note, P(t, c.when("as a note") - 0.2, 0.6));
         return view;
       },
     };
@@ -507,17 +371,21 @@
     const ttlB = B.lastChild;
     const gw = h("div", { class: "shot", style: { position: "absolute", left: "120px", top: "220px", width: "1584px", height: "443px", borderRadius: "14px", overflow: "hidden", boxShadow: "0 30px 80px rgba(20,24,29,.25), 0 0 0 1px var(--line-bright)" } }, h("img", { src: "../.cache/screens/gateway.png", style: { width: "1584px" } }));
     B.append(gw, pos(h("div", { class: "abs mono", text: "atelier.zone/models · AI Gateway, from Cloudflare's GraphQL Analytics · captured from the live site", style: { fontSize: "18px", color: "var(--text-muted)" } }), 120, 690));
-    // B2: local models.
-    const B2 = region(3840, 0); world.append(B2);
-    B2.append(kinetic("Local models, no per-call cost", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
+    // B2: the fleet, by how each model is paid for.
+    const B2 = region(5760, 0); world.append(B2);
+    B2.append(kinetic("One fleet, one gate", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
     const ttlB2 = B2.lastChild;
-    const pool = pos(h("div", { class: "card", style: { padding: "20px 26px", width: "1680px" } },
-      h("div", { class: "label", text: `joined the pool ${day(data.localPool[0].addedAt)}, ${utc(data.localPool[0].addedAt)} · served on the owner's network · the same gate as every model` }),
-      h("div", { style: { display: "flex", gap: "16px", marginTop: "16px", flexWrap: "wrap" } }, ...data.localPool.map((e) => h("span", { class: "chip", style: { color: col(e.family), fontSize: "26px" } }, h("span", { class: "dot" }), e.id)))), 120, 210);
-    const disp = data.localDispatches.map((x, i) => pos(h("div", { class: "card", style: { padding: "16px 22px", width: "820px" } }, h("div", { class: "label", text: `dispatched ${utc(x.at)}, ${day(x.at)} · ${x.state === "merged" ? "merged" : "taking the work"}` }), h("div", { class: "mono", style: { fontSize: "26px", marginTop: "8px" }, html: `${x.id} → <span style="color:${col(fam(x.model))}">${esc(x.model)}</span>` })), 120 + i * 860, 430));
-    const earlier = pos(h("div", { class: "card", style: { padding: "16px 22px", width: "1680px" } }, h("div", { class: "label", text: "merged tasks local builds worked on earlier · from the ledger" }), h("div", { class: "mono", style: { fontSize: "22px", marginTop: "10px", lineHeight: "1.6" }, html: data.localMerged.map((x) => `${x.id} <span class="dim">${x.builders.map((b) => esc(nice(b))).join(" + ")} · ${day(x.mergedAt)}</span>`).join("<br>") })), 120, 600);
-    B2.append(pool, ...disp, earlier);
-    const C = region(5760, 0); world.append(C);
+    const groups = [
+      ["Subscriptions", (e) => e.provider === "subscription", ""],
+      ["Pay per use", (e) => e.provider === "openrouter" || e.provider === "deepseek", "kimi-k2.7-code joined " + day((data.fleet.find((e) => e.id === "kimi-k2.7-code") ?? { addedAt: data.facts.cutoff }).addedAt)],
+      ["Local, no per-call cost", (e) => e.provider === "ai-studio", "on the owner's network · " + data.localDispatches.map((x) => `${x.id} → ${x.model}`).join(", ")],
+    ];
+    const cols = groups.map(([name, pick, note], i) => pos(h("div", { class: "card", style: { padding: "20px 24px", width: "540px", height: "560px" } },
+      h("div", { class: "display", text: name, style: { fontSize: "36px" } }),
+      h("div", { style: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "18px", alignItems: "flex-start" } }, ...data.fleet.filter(pick).map((e) => h("span", { class: "chip", style: { color: col(e.family), fontSize: "24px" } }, h("span", { class: "dot" }), e.id))),
+      note ? h("div", { class: "mono", text: note, style: { fontSize: "18px", marginTop: "18px", color: "var(--signal)", fontWeight: 600 } }) : null), 120 + i * 570, 200));
+    B2.append(...cols);
+    const C = region(3840, 0); world.append(C);
     C.append(kinetic("Each model's record", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
     const ttlC = C.lastChild;
     const rel = h("div", { class: "shot", style: { position: "absolute", left: "120px", top: "200px", width: "1584px", height: "640px", borderRadius: "14px", overflow: "hidden", boxShadow: "0 30px 80px rgba(20,24,29,.25), 0 0 0 1px var(--line-bright)" } }, h("img", { src: "../.cache/screens/reliability.png", style: { width: "1584px", position: "absolute", left: 0, top: 0 } }));
@@ -538,28 +406,27 @@
       return pos(h("div", { class: "card", style: { padding: "18px 24px", width: "820px", height: "300px" } }, h("div", { class: "label", text: `${id} · filed ${tk ? utc(tk.createdAt) + ", " + day(tk.createdAt) : ""} · ${tk?.state ?? ""}` }), h("div", { style: { font: "500 22px/1.45 var(--font-sans)", marginTop: "10px" }, text: (tk?.title ?? "").slice(0, 260).replace(/\s+\S*$/, "") + " …" })), 120 + i * 860, 560);
     });
     D.append(formula, ...tasks);
-    const tS = c.cue(1), tL = c.cue(2), tC = c.cue(3), tD = c.cue(4);
-    [tS, tL, tC, tD].forEach((x) => c.sfx(x - 0.5, "whoosh", 0.6));
-    c.sfx(c.cue(5), "chime", 0.5);
-    const keys = flight([[0, 960, 540, 1.0], [tS - 0.5, 2880, 540, 1.0], [tL - 0.5, 4800, 540, 1.0], [tC - 0.5, 6720, 540, 1.0], [tD - 0.5, 8640, 540, 1.0]], 1.1, 0.86);
+    const tS = c.when("Calls through Cloudflare"), tC = c.when("The Models page keeps"), tL = c.cue(1), tD = c.cue(2);
+    [tS, tC, tL, tD].forEach((x) => c.sfx(x - 0.5, "whoosh", 0.6));
+    c.sfx(c.cue(3), "chime", 0.5);
+    const keys = flight([[0, 960, 540, 1.0], [tS - 0.5, 2880, 540, 1.0], [tC - 0.5, 4800, 540, 1.0], [tL - 0.5, 6720, 540, 1.0], [tD - 0.5, 8640, 540, 1.0]], 1.0, 0.86);
     return {
       el,
       update(t) {
         const view = cam.set(t, keys, 0.6);
         [[ttlA, 0], [ttlB, tS - 0.3], [ttlB2, tL - 0.3], [ttlC, tC - 0.3], [ttlD, tD - 0.3]].forEach(([x, a]) => [...x.children].forEach((w, i) => { const e = ease(clamp((t - a) / 0.9 * (x.children.length + 2) - i)); w.style.opacity = e; w.style.transform = `translateY(${(1 - e) * 30}px)`; }));
-        fadeIn(head, P(t, 0.6, 0.5));
-        [...head.querySelectorAll(".hf")].forEach((x, i) => count(x, Number(x.dataset.n), (t - 0.8 - i * 0.15) / 1.4));
-        fadeIn(chart, P(t, 1.6, 0.5));
-        [...chart.querySelectorAll(".bar")].forEach((x, i) => { x.style.transformOrigin = "0 50%"; x.style.transform = `scaleX(${P(t, 1.8 + i * 0.08, 0.8)})`; });
         fadeIn(gw, P(t, tS, 0.6)); gw.firstChild.style.transform = `scale(${1 + 0.03 * clamp((t - tS) / 8)})`;
-        fadeIn(pool, P(t, tL + 0.2, 0.5)); [...pool.querySelectorAll(".chip")].forEach((x, i) => pop(x, P(t, tL + 0.6 + i * 0.25, 0.4), 0.7));
-        disp.forEach((x, i) => fadeIn(x, P(t, c.when("Two tasks were dispatched") + i * 0.4, 0.5)));
-        fadeIn(earlier, P(t, c.when("Earlier, local builds"), 0.5));
-        fadeIn(rel, P(t, tC, 0.6)); rel.firstChild.style.transform = `translateY(${-P(t, tC + 1.5, 9) * 420}px)`;
-        fadeIn(verdict, P(t, c.when("So far the owner"), 0.5));
+        fadeIn(head, P(t, 0.4, 0.5));
+        [...head.querySelectorAll(".hf")].forEach((x, i) => count(x, Number(x.dataset.n), (t - 0.6 - i * 0.15) / 1.4));
+        fadeIn(chart, P(t, 1.2, 0.5));
+        [...chart.querySelectorAll(".bar")].forEach((x, i) => { x.style.transformOrigin = "0 50%"; x.style.transform = `scaleX(${P(t, 1.4 + i * 0.08, 0.8)})`; });
+        const tSub = c.when("subscription models"), tPay = c.when("pay-per-use"), tLoc = c.when("and local models");
+        cols.forEach((x, i) => { fadeIn(x, P(t, [tSub, tPay, tLoc][i] - 0.2, 0.5)); [...x.querySelectorAll(".chip")].forEach((ch, j) => pop(ch, P(t, [tSub, tPay, tLoc][i] + j * 0.15, 0.35), 0.7)); });
+        fadeIn(rel, P(t, tC, 0.6)); rel.firstChild.style.transform = `translateY(${-P(t, tC + 1.5, 9) * 300}px)`;
+        fadeIn(verdict, P(t, c.when("So far"), 0.5));
         fadeIn(formula, P(t, tD, 0.6));
-        formula.querySelector(".soon").style.opacity = P(t, c.when("Routing by speed"), 0.5);
-        tasks.forEach((x, i) => fadeIn(x, P(t, i ? c.when("When tests failed") : c.when("When a runner lost"), 0.5)));
+        formula.querySelector(".soon").style.opacity = P(t, c.when("Speed and reviewer"), 0.5);
+        tasks.forEach((x, i) => fadeIn(x, P(t, i ? c.when("Tests failed") : c.when("A runner lost"), 0.5)));
         return view;
       },
     };
@@ -630,20 +497,6 @@
     };
   }
 
-  SCENES.forks = (c, data) => {
-    const el = h("div");
-    const world = h("div");
-    el.append(world);
-    const cam = camera(world, 3840, 1080);
-    const R = region(0, 0, 3840, 1080);
-    world.append(R);
-    const tHand = c.when("handed task t50");
-    const real = forksReal(data, R, c.cue(0) + 0.2, c.cue(1), tHand);
-    c.sfx(c.cue(1) - 0.5, "whoosh", 0.7); c.sfx(tHand, "chime", 0.6);
-    const keys = flight([[0, 960, 540, 1.04], [c.cue(1) - 0.5, 2880, 540, 1.0]], 1.3, 0.82);
-    return { el, update(t) { const view = cam.set(t, keys); real(t); return view; } };
-  };
-
   SCENES.gate = (c, data) => {
     const st = data.stories.t278;
     const el = h("div");
@@ -710,17 +563,25 @@
     const marks = data.screens.t278.marks;
     const thread = marks["Thread"].y - 40, reviewsY = marks["Checks and reviews"].y - 30;
     // Beats.
-    const tB = c.when("Opus 5.5 built t278") - 3.2;
+    const tB = c.when("Opus 5.5 built t278");
+    const tDrop = c.when("then for logs"), tFixed = c.when("Both were fixed"), tThird = c.when("The third head");
     const R = [
-      { head: tB + 3.4, checks: tB + 4.0, rev: c.when("so Gemini 3.1 Pro"), verdict: c.when("and rejected it") + 0.3 },
-      { head: c.cue(1) + 0.3, checks: c.cue(1) + 0.9, rev: c.cue(1) + 1.4, verdict: c.when("Gemini rejected the next") + 0.4 },
-      { head: c.cue(2) - 0.4, checks: c.cue(2) + 0.1, rev: c.cue(2) + 0.5, verdict: c.cue(2) + 1.0 },
+      { head: tB + 0.3, checks: tB + 0.8, rev: c.when("so Gemini reviewed"), verdict: c.when("and rejected it twice") + 0.3 },
+      { head: tDrop - 0.6, checks: tDrop - 0.3, rev: tDrop - 0.1, verdict: tDrop + 0.4 },
+      { head: tFixed, checks: tFixed + 0.4, rev: tFixed + 0.8, verdict: tThird + 0.4 },
     ];
+    const r219 = data.stories.t219.reviews.find((r) => !r.approve);
+    const f219 = r219.findings.find((x) => x.severity === "blocking");
+    const p219 = pos(h("div", { class: "abs" }, h("div", { class: "label", text: `t219 · built by ${data.stories.t219.builders.map(nice).join(" and ")} · rejected by ${nice(r219.by)}` }),
+      h("div", { class: "quote", style: { marginTop: "14px", width: "1500px" }, html: `“${quoteHtml(f219.text.split(/(?<=[.;])\s/)[0])}”<span class="src">${esc(f219.file)}:${f219.line} · blocking · ${utc(r219.at)}, ${day(r219.at)}</span>` }),
+      h("div", { class: "mono", style: { fontSize: "24px", marginTop: "18px", color: "var(--fault)", fontWeight: 600 }, text: `models have sent work back ${data.facts.modelRejections} times` })), 2040, 640);
+    world.append(p219);
     R.forEach((r, i) => c.sfx(r.verdict, i < 2 ? "reject" : "approve", 1));
     
     c.sfx(c.when("merged eleven seconds") + 1.2, "chime", 0.8);
-    const ts = c.cueEnd(2) + 0.5;
-    const keys = [[0, 2880, 520, 1.06], [c.cue(1), 2880, 560, 1.0], [c.cue(2), 2880, 540, 1.0]];
+    const ts = c.cueEnd(2) + 0.6;
+    c.sfx(tB - 0.5, "whoosh", 0.6);
+    const keys = [[0, 960, 600, 1.06], [tB - 0.6, 1000, 580, 1.0], [tB + 0.4, 2880, 540, 1.0]];
     return {
       el,
       update(t) {
@@ -733,8 +594,8 @@
         fadeIn(repTag, P(t, 1.9, 0.5));
         fadeIn(famRow, P(t, 2.2, 0.5));
         famRow.querySelector(".x1").style.opacity = lerp(1, 0.45, P(t, 2.6, 0.4));
-        fadeIn(header, P(t, tB + 2.6, 0.7));
-        colHead.forEach((x, i) => fadeIn(x, P(t, tB + 3.0 + i * 0.15, 0.5), 8));
+        fadeIn(header, P(t, tB - 0.2, 0.6));
+        colHead.forEach((x, i) => fadeIn(x, P(t, tB + 0.1 + i * 0.1, 0.4), 8));
         rows.forEach((r, i) => {
           fadeIn(r.head, P(t, R[i].head, 0.5), 10);
           [...r.checks.children].forEach((x, j) => fadeIn(x, P(t, R[i].checks + j * 0.5, 0.4), 6));
@@ -748,74 +609,16 @@
         const red = Math.max(wash(R[0].verdict), wash(R[1].verdict)), green = wash(R[2].verdict);
         tint.style.boxShadow = red > 0 ? `inset 0 0 ${240 * red}px rgba(255,77,116,${0.55 * red})` : green > 0 ? `inset 0 0 ${240 * green}px rgba(95,224,143,${0.5 * green})` : "none";
         const win = (p, a, b) => { p.style.display = t >= a && t < b + 0.4 ? "block" : "none"; p.style.opacity = P(t, a, 0.5) * (1 - P(t, b, 0.4)); };
-        win(pF1, R[0].verdict + 0.6, c.cue(1) + 0.6);
-        [...pF1.querySelectorAll(".src span")].forEach((x) => { x.style.opacity = P(t, c.cue(1), 0.4); });
-        win(pF2, R[1].verdict + 0.6, c.cue(2));
-        [...pF2.querySelectorAll(".src span")].forEach((x) => { x.style.opacity = P(t, c.when("That was fixed"), 0.4); });
-        win(pMerge, c.cue(2) + 1.4, c.dur + 1);
-        shot.show(t, ts, ts + 3.2);
-        shot.pan(t, [[ts, thread - 40, 1.45, 360], [ts + 3.6, thread + 10, 1.45, 360]]);
-        shot2.show(t, ts + 3.2);
-        shot2.pan(t, [[ts + 3.2, reviewsY - 60, 1.45, 360], [c.dur, reviewsY, 1.45, 360]]);
-        return view;
-      },
-    };
-  };
-
-  SCENES.catches = (c, data) => {
-    const el = h("div");
-    const world = h("div");
-    el.append(world);
-    const cam = camera(world, 1920, 1080);
-    const card = (id, x, rejectIdx) => {
-      const st = data.stories[id];
-      const rej = st.reviews.filter((r) => !r.approve);
-      const r = rej[rejectIdx];
-      const f = r.findings.find((x) => x.severity === "blocking");
-      const ok = st.reviews.filter((x) => x.approve).at(-1);
-      const first = f.text.split(/(?<=[.;])\s/)[0];
-      const el2 = pos(h("div", { class: "card", style: { height: "420px" } },
-        h("div", { class: "label", text: `Task ${id} · built by` }),
-        h("div", { style: { display: "flex", gap: "12px", margin: "12px 0 18px", flexWrap: "wrap" } }, ...st.builders.map((b) => chip(b))),
-        h("div", { style: { display: "flex", gap: "14px", alignItems: "center" } }, h("span", { class: "label", text: "reviewed by" }), chip(r.by),
-          h("span", { class: "stamp rej", text: rej.length > 1 ? `rejected ×${rej.length}` : "rejected", style: { color: "var(--fault)", fontSize: "20px" } })),
-        h("div", { class: "quote", style: { marginTop: "20px", fontSize: "22px" }, html: `“${quoteHtml(first)}”<span class="src">${esc(f.file)}:${f.line} · ${utc(r.at)}, ${day(r.at)}</span>` }),
-        h("div", { class: "mono ok", style: { position: "absolute", bottom: "20px", fontSize: "20px", color: "var(--observed)" }, text: `fixed · approved by ${nice(ok.by)} ${utc(ok.at)} · merged` })), x, 112, 820);
-      world.append(el2);
-      return el2;
-    };
-    const a = card("t219", 120, 0), b = card("t252", 980, 1);
-    const f = data.facts;
-
-    const models = Object.entries(f.reviewsByModel).sort((x, y) => y[1] - x[1]);
-    const max = models[0][1];
-    const chart = pos(h("div", { class: "abs" }, h("div", { class: "label", text: "Reviews (bar) and rejections (red) by reviewing model, atelier project", style: { marginBottom: "10px" } }),
-      ...models.map(([m, n]) => {
-        const rj = f.rejectionsByModel[m] ?? 0;
-        return h("div", { style: { display: "flex", alignItems: "center", gap: "12px", height: "33px" } },
-          h("div", { class: "mono", text: NAMES[m] ?? m, style: { width: "260px", fontSize: "18px", color: col(fam(m)), textAlign: "right" } }),
-          h("div", { class: "bar", style: { position: "relative", height: "18px", width: `${n / max * 420}px`, background: col(fam(m)), opacity: 0.85, borderRadius: "3px" } },
-            h("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: `${rj / n * 100}%`, background: "var(--fault)", borderRadius: "3px" } })),
-          h("div", { class: "mono dim", text: `${n} · ${rj}`, style: { fontSize: "17px" } }));
-      })), 560, 568);
-    world.append(chart);
-    const tb = c.when("Gemini found in t252");
-    c.sfx(c.cue(0) + 4, "reject", 0.5); c.sfx(tb + 1.5, "reject", 0.5);
-    const tz = c.when("Both were fixed");
-    return {
-      el,
-      update(t) {
-        const view = cam.set(t, [[0, 900, 380, 1.12], [tb, 1060, 380, 1.12], [tz, 960, 560, 1.0]]);
-        fadeIn(a, P(t, c.cue(0) + 0.4, 0.7));
-        a.querySelector(".rej").style.opacity = P(t, c.cue(0) + 4.0, 0.4);
-        a.querySelector(".quote").style.opacity = P(t, c.cue(0) + 4.6, 0.6);
-        a.querySelector(".ok").style.opacity = P(t, tz, 0.5);
-        fadeIn(b, P(t, tb, 0.7));
-        b.querySelector(".rej").style.opacity = P(t, tb + 1.5, 0.4);
-        b.querySelector(".quote").style.opacity = P(t, tb + 2.2, 0.6);
-        b.querySelector(".ok").style.opacity = P(t, tz + 0.4, 0.5);
-        fadeIn(chart, P(t, tz + 0.4, 0.6));
-        [...chart.querySelectorAll(".bar")].forEach((x, i) => { x.style.transformOrigin = "0 50%"; x.style.transform = `scaleX(${P(t, tz + 0.6 + i * 0.12, 0.7)})`; });
+        win(pF1, R[0].verdict + 0.4, tDrop - 0.1);
+        [...pF1.querySelectorAll(".src span")].forEach((x) => { x.style.opacity = P(t, R[0].verdict + 1.5, 0.4); });
+        win(pF2, R[1].verdict + 0.3, tThird);
+        [...pF2.querySelectorAll(".src span")].forEach((x) => { x.style.opacity = P(t, tFixed, 0.4); });
+        win(pMerge, R[2].verdict + 0.5, c.cue(2) - 0.2);
+        win(p219, c.cue(2), c.dur + 1);
+        shot.show(t, ts, ts + 2.6);
+        shot.pan(t, [[ts, thread - 40, 1.45, 360], [ts + 3.0, thread + 10, 1.45, 360]]);
+        shot2.show(t, ts + 2.6);
+        shot2.pan(t, [[ts + 2.6, reviewsY - 60, 1.45, 360], [c.dur, reviewsY, 1.45, 360]]);
         return view;
       },
     };
@@ -914,11 +717,11 @@
     el.append(shot.el);
     const H = data.screens.plans.height;
     const tReal = -0.4;
-    const tWho = c.cue(1), tInt = c.when("As main moved"), tMerged = c.cue(2);
-    c.sfx(c.when("by hash eleven") + 0.3, "chime", 0.6); c.sfx(tMerged + 2.5, "approve", 0.8);
+    const tWho = c.cue(1), tInt = c.cue(1) + 1.5, tMerged = c.cue(2);
+    c.sfx(c.when("by hash eleven") + 0.3, "chime", 0.6); c.sfx(c.when("the whole plan merged"), "approve", 0.8);
     const ts = c.cueEnd(2) + 0.6;
     const tRoute = -10;
-    const keys = [[0, 2880, 520, 1.04], [tWho, 2880, 540, 1.0], [tInt - 0.5, 2880, 540, 1.0], [tInt + 0.8, 2980, 700, 1.12], [tMerged + 3, 3080, 720, 1.12]];
+    const keys = [[0, 2880, 520, 1.04], [tWho, 2880, 540, 1.0], [tInt - 0.5, 2880, 540, 1.0], [tInt + 0.8, 2880, 560, 1.02], [c.dur, 2890, 565, 1.03]];
     return {
       el,
       update(t) {
@@ -951,196 +754,13 @@
         approve.style.opacity = ka; approve.style.transform = `scale(${lerp(1.4, 1, ka)})`; approve.style.transformOrigin = "100% 0";
         [branch, bl, axis].forEach((x) => (x.style.opacity = P(t, tInt - 1.5, 0.6)));
         [mainL, ml].forEach((x) => (x.style.opacity = P(t, tInt - 1.2, 0.6)));
-        const span = tMerged + 2 - tInt;
+        const span = c.when("the whole plan merged") - tInt;
         marks.forEach((m, i) => { const k = P(t, tInt - 0.8 + i * span / marks.length, 0.4); m.g.style.opacity = k; m.g.style.transform = `translateY(${(1 - k) * -30}px)`; });
         addedNote.style.opacity = P(t, tInt + 1, 0.5);
-        toMain.style.opacity = P(t, tMerged + 2.2, 0.5);
-        fadeIn(mergedStamp, P(t, tMerged + 2.6, 0.6), 10);
+        toMain.style.opacity = P(t, c.when("the whole plan merged"), 0.5);
+        fadeIn(mergedStamp, P(t, c.when("the whole plan merged") + 0.3, 0.6), 10);
         shot.show(t, ts);
         shot.pan(t, [[ts, 250, 1.22, 330], [ts + 1.2, 250, 1.22, 330], [c.dur, Math.min(H - 840, 1500), 1.22, 330]]);
-        return view;
-      },
-    };
-  };
-
-  SCENES.replay = (c, data) => {
-    const el = h("div");
-    const world = h("div");
-    el.append(world);
-    const cam = camera(world, 3840, 1080);
-    // A: events into the ledger.
-    const A = region(0, 0); world.append(A);
-    const sA = svgFull(); A.append(sA);
-    const ttl = kinetic("Every step is an event", "kin display", { position: "absolute", left: "150px", top: "110px", fontSize: "64px" });
-    A.append(ttl.el);
-    const ledger = pos(h("div", { class: "card", style: { padding: "26px 30px", width: "420px", textAlign: "center" } }, h("div", { style: { font: "600 30px/1.2 var(--font-sans)" }, text: "the ledger" }), h("div", { class: "mono dim", text: "an append-only event log", style: { fontSize: "20px", marginTop: "8px" } })), 1300, 460);
-    A.append(ledger);
-    const evs = [["item.claimed", "#ff8a5b"], ["push.observed", "#6f9bff"], ["evidence.observed", "#5fe08f"], ["review.approved", "#ff8fcf"], ["item.merged", "#f4f1e8"]].map(([n, color], i) => {
-      const e = pos(h("div", { class: "abs mono", text: n, style: { fontSize: "24px", color, padding: "8px 14px", border: `1.5px solid ${color}`, borderRadius: "8px", background: "rgba(0,0,0,.4)" } }), 160, 340 + i * 90);
-      A.append(e);
-      return e;
-    });
-    const flows = evs.map((_, i) => beads(sA, `M 460 ${360 + i * 90} C 900 ${360 + i * 90}, 1000 520, 1300 520`, "#ffd166", 2, 6));
-    // B: the record.
-    const B = region(1920, 0); world.append(B);
-    const merged = data.tasks.filter((t) => t.state === "merged").sort((a, b) => (a.mergedAt < b.mergedAt ? -1 : 1));
-    const FAMS = ["anthropic", "zai", "openai", "deepseek", "google", "xiaomi"];
-    const T0 = Date.parse("2026-10-03T21:00:00Z"), T1 = Date.parse(data.facts.cutoff);
-    const X0 = 150, X1 = 1470;
-    const X = (ms) => X0 + (ms - T0) / (T1 - T0) * (X1 - X0);
-    const laneH = { anthropic: 230, zai: 120, openai: 64, deepseek: 64, google: 48, xiaomi: 40 };
-    let y = 190;
-    const laneY = {};
-    for (const f of FAMS) { laneY[f] = y + laneH[f]; y += laneH[f] + 14; }
-    const AXY = y + 6;
-    const svg = svgFull(); B.append(svg);
-    for (const f of FAMS) svg.append(s("line", { x1: X0, y1: laneY[f], x2: X1, y2: laneY[f], stroke: "var(--line)", "stroke-width": 1 }));
-    svg.append(s("line", { x1: X0, y1: AXY, x2: X1, y2: AXY, stroke: "var(--line-bright)", "stroke-width": 2 }));
-    const days = ["2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07"];
-    const dayEls = days.map((d) => {
-      const a = Math.max(T0, Date.parse(d + "T00:00:00Z")), b = Math.min(T1, Date.parse(d + "T00:00:00Z") + 86400000);
-      svg.append(s("line", { x1: X(b), y1: 180, x2: X(b), y2: AXY + 8, stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": "4 6" }));
-      svg.append(s("text", { x: (X(a) + X(b)) / 2, y: AXY + 30, "text-anchor": "middle", fill: "var(--text-dim)", "font-size": 18, text: day(d + "T00:00:00Z") }));
-      const total = s("text", { x: (X(a) + X(b)) / 2, y: AXY + 70, "text-anchor": "middle", fill: "var(--text-bright)", "font-size": 34, "font-weight": 600, text: data.facts.mergedByDay[d] ?? 0 });
-      svg.append(total);
-      return { end: b, total, n: data.facts.mergedByDay[d] ?? 0 };
-    });
-    const stacks = {};
-    const dots = merged.map((t) => {
-      const f = t.builderFamilies[0] ?? "other";
-      const lane = FAMS.includes(f) ? f : "anthropic";
-      const x = X(Date.parse(t.mergedAt));
-      const bin = Math.round(x / 11);
-      const n = (stacks[lane + bin] = (stacks[lane + bin] ?? -1) + 1);
-      const ring = t.crossBy[0];
-      const dot = s("circle", { cx: bin * 11, cy: laneY[lane] - 7 - n * 11, r: 4.6, fill: HEX[f] ?? HEX.other, stroke: ring ? HEX[ring] : "none", "stroke-width": ring ? 2.4 : 0 });
-      svg.append(dot);
-      return { dot, ms: Date.parse(t.mergedAt), cross: t.crossAtFinal, families: t.builderFamilies };
-    });
-    const playhead = s("line", { x1: X0, y1: 176, x2: X0, y2: AXY, stroke: "#ffd166", "stroke-width": 2 });
-    playhead.style.filter = "drop-shadow(0 0 8px #ffd166)";
-    const clock = s("text", { x: X0, y: 166, fill: "var(--signal)", "font-size": 18, "text-anchor": "middle", text: "" });
-    svg.append(playhead, clock);
-    const panel = pos(h("div", { class: "abs" }, h("div", { class: "label", text: "Merged tasks built, by family", style: { marginBottom: "14px" } }),
-      ...FAMS.map((f) => h("div", { class: "row", style: { display: "flex", alignItems: "center", gap: "12px", height: "46px" } },
-        h("span", { style: { width: "16px", height: "16px", borderRadius: "50%", background: HEX[f], boxShadow: `0 0 10px ${HEX[f]}` } }),
-        h("span", { class: "n mono", text: "0", style: { width: "56px", fontSize: "24px", color: "var(--text-bright)", textAlign: "right" } }),
-        h("span", { text: FAMILY_NAME[f], style: { fontSize: "22px" } }))),
-      h("div", { class: "mono dim", text: "A task two families built counts for each.", style: { fontSize: "15px", marginTop: "10px" } })), 1530, 190);
-    B.append(panel);
-    const head = pos(h("div", { class: "abs label", text: "Each dot: a merged task, at its merge time, in its builder's colour; ring: the family that approved it" }), 150, 112);
-    B.append(head);
-    FAMS.forEach((f) => svg.append(s("text", { x: X0 - 12, y: laneY[f] - 6, "text-anchor": "end", fill: HEX[f], "font-size": 16, text: { anthropic: "Claude", zai: "GLM", openai: "GPT", deepseek: "DeepSeek", google: "Gemini", xiaomi: "MiMo" }[f] })));
-    const since = Date.parse(data.facts.lastMergeWithoutCrossApproval.at);
-    const sinceG = s("g", {});
-    sinceG.append(s("rect", { x: X(since), y: 180, width: X1 - X(since), height: AXY - 180, fill: "rgba(95,224,143,.07)" }));
-    sinceG.append(s("line", { x1: X(since), y1: 180, x2: X(since), y2: AXY, stroke: "#5fe08f", "stroke-width": 2 }));
-    svg.append(sinceG);
-    const sinceLbl = pos(h("div", { class: "abs mono", style: { fontSize: "18px", color: "var(--observed)", width: "520px" }, text: `from ${utc(data.facts.lastMergeWithoutCrossApproval.at)}, ${day(data.facts.lastMergeWithoutCrossApproval.at)}: every task merged carries another family's approval` }), X(since) + 12, 140);
-    B.append(sinceLbl);
-    const big = pos(h("div", { class: "abs" }, h("span", { class: "big-num nn", text: "0", style: { fontSize: "80px", color: "var(--observed)" } }), h("span", { class: "big-num", text: ` of ${data.facts.states.merged}`, style: { fontSize: "44px", color: "var(--text-muted)" } }),
-      h("div", { class: "label", text: "approved by another family at the merged revision", style: { width: "330px", marginTop: "6px" } })), 1530, 650);
-    B.append(big);
-    const shot = browser("flow", "atelier.zone<b>/p/atelier/flow</b>", "captured from the live site");
-    el.append(shot.el);
-    const g = data.screens.flow.marks;
-    const gy = Object.entries(g).find(([k, v]) => k.startsWith("svg@") && v.h > 1000)?.[1].y ?? 300;
-    const a = c.cue(0) + 0.6, b = c.cue(1) - 0.3;
-    // A soft tick as each day's merges land.
-    for (let tt = a; tt < b; tt += 1 / 30) {
-      const now0 = lerp(T0, T1, clamp((tt - a) / (b - a))), now1 = lerp(T0, T1, clamp((tt + 1 / 30 - a) / (b - a)));
-      if (merged.some((m) => { const ms = Date.parse(m.mergedAt); return ms > now0 && ms <= now1; })) c.sfx(tt, "tick", 0.5);
-    }
-    c.sfx(c.cue(1) + 0.4, "swell", 0.8);
-    const ts = c.cueEnd(1) + 0.8;
-    const keys = [[0, 2880, 540, 1.02], [c.cue(1) + 0.2, 2880, 540, 1.0], [c.cue(1) + 2.2, 1920 + X(since) + 250, 470, 1.32]];
-    return {
-      el,
-      update(t) {
-        const view = cam.set(t, keys);
-        ttl.update(P(t, 0.2, 1.2));
-        evs.forEach((e, i) => fadeIn(e, P(t, 0.8 + i * 0.3, 0.5), 10));
-        fadeIn(ledger, P(t, 1.2, 0.6));
-        flows.forEach((f, i) => f.update(t, 1.6 + i * 0.25, 1.6, 1));
-        ledger.style.boxShadow = `0 0 ${20 + 14 * Math.sin(t * 3)}px rgba(255,209,102,.35), 0 20px 60px rgba(0,0,0,.45)`;
-        fadeIn(head, P(t, 0.2, 0.6));
-        panel.style.opacity = P(t, 0.4, 0.6);
-        const now = lerp(T0, T1, clamp((t - a) / (b - a)));
-        playhead.setAttribute("x1", X(now)); playhead.setAttribute("x2", X(now)); clock.setAttribute("x", X(now));
-        clock.textContent = t > a && t < b + 0.5 ? new Date(now).toISOString().slice(5, 16).replace("T", " ") + " UTC" : "";
-        playhead.style.opacity = t > a - 0.3 && t < b + 1 ? 1 : 0;
-        const live = {};
-        const dim = P(t, c.cue(1) + 0.3, 0.8);
-        for (const d of dots) {
-          const k = clamp((now - d.ms) / 3.6e6 / 3);
-          d.dot.style.opacity = (k > 0 ? 0.35 + 0.65 * k : 0) * (d.cross ? 1 : lerp(1, 0.2, dim));
-          d.dot.setAttribute("r", k > 0 && k < 1 ? 4.6 + 4 * (1 - k) : 4.6);
-          if (now >= d.ms) for (const f of d.families) live[f] = (live[f] ?? 0) + 1;
-        }
-        dayEls.forEach((dd) => { const k = clamp((now - dd.end + 6 * 3600e3) / (6 * 3600e3)); dd.total.style.opacity = k > 0 ? 1 : 0; dd.total.textContent = Math.round(dd.n * clamp(k)); });
-        [...panel.querySelectorAll(".row")].forEach((r, i) => {
-          r.querySelector(".n").textContent = live[FAMS[i]] ?? 0;
-          const hi = 0;
-          r.style.transform = `translateX(${hi * 14}px)`; r.style.filter = hi > 0.1 ? `drop-shadow(0 0 8px ${HEX[FAMS[i]]})` : "";
-        });
-        sinceG.style.opacity = P(t, c.when("every task merged since"), 0.6);
-        sinceLbl.style.opacity = sinceG.style.opacity;
-        fadeIn(big, P(t, c.cue(1) + 0.3, 0.6));
-        count(big.querySelector(".nn"), data.facts.mergedWithCrossFamilyApprovalAtFinalHead, (t - c.cue(1) - 0.3) / 2.0);
-        shot.show(t, ts);
-        shot.pan(t, [[ts, gy - 100, 1.24, 330], [ts + 1.0, gy - 100, 1.24, 330], [c.dur, gy + 700, 1.24, 330]]);
-        return view;
-      },
-    };
-  };
-
-  SCENES.runners = (c, data) => {
-    const el = h("div");
-    const world = h("div");
-    el.append(world);
-    const cam = camera(world, 3840, 1080);
-    const term = pos(h("div", { class: "term", style: { height: "800px" } }, h("div", { class: "bar" }, h("i"), h("i"), h("i"), h("span", { text: "  atelier — the owner's terminal", style: { marginLeft: "10px" } })), h("div", { style: { position: "absolute", top: "40px", left: 0, right: 0, bottom: 0, overflow: "hidden" } }, h("pre", {}))), 120, 120, 1680);
-    world.append(term);
-    const pre = term.querySelector("pre");
-    const B = region(1920, 0); world.append(B);
-    const sB = svgFull(); B.append(sB);
-    const ttl = kinetic("The agents run on your machines", "kin display", { position: "absolute", left: "150px", top: "110px", fontSize: "64px" });
-    B.append(ttl.el);
-    const q = pos(h("div", { class: "card", style: { padding: "20px 26px", width: "380px" } }, h("div", { class: "label", text: "atelier.zone · the queue" }), h("div", { class: "mono", style: { fontSize: "23px", marginTop: "10px", lineHeight: "1.7" }, html: "build jobs<br>plan jobs<br>review jobs" })), 160, 380);
-    const mac = pos(h("div", { class: "card", style: { padding: "20px 26px", width: "880px" } }, h("div", { class: "label", text: "the owner's machine · atelier runner" }),
-      h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginTop: "16px" } },
-        ...[["zai", "opencode", "GLM-5.3 · DeepSeek V4 Pro"], ["anthropic", "claude", "Opus 5.5 · Sonnet 5.5 · Fable 5.1"], ["openai", "codex", "gpt-6-astra · gpt-6.1-sol"], ["google", "antigravity", "Gemini 3.1 Pro · GPT-OSS 120B"]].map(([f, tool, ms]) => h("div", { class: "tool", style: { padding: "12px 14px", border: `1.5px solid ${HEX[f]}`, borderRadius: "10px" } }, h("div", { class: "mono", text: tool, style: { fontSize: "22px", color: HEX[f] } }), h("div", { class: "mono dim", text: ms, style: { fontSize: "16px", marginTop: "4px" } }))))), 880, 330);
-    B.append(q, mac);
-    const jobs = beads(sB, "M 560 450 C 700 420, 760 420, 870 440", "#ffd166", 3, 8);
-    const back = beads(sB, "M 870 620 C 760 660, 700 660, 560 600", "#5fe08f", 3, 7);
-    const C = region(3840 - 1920, 0);
-    const shot = browser("gateway", "atelier.zone<b>/models</b> · AI Gateway", "captured from the live site");
-    Object.assign(shot.el.style, { top: "250px", height: "530px" });
-    el.append(shot.el);
-    const out = data.terminal.t278;
-    const cmd = "atelier show t278";
-    const t0 = c.cue(0) + 0.6;
-    c.sfx(c.cue(1) - 0.3, "whoosh", 0.6);
-    return {
-      el,
-      update(t) {
-        const view = cam.set(t, [[0, 960, 560, 1.06], [c.cue(1), 960, 520, 1.0]]);
-        fadeIn(term, P(t, 0.1, 0.5)); term.style.opacity = P(t, 0.1, 0.5) * (1 - 0.85 * P(t, c.cue(1) - 0.2, 0.6));
-        let html = "";
-        if (t >= t0) {
-          const typed = Math.floor(clamp((t - t0) / (cmd.length / 20)) * cmd.length);
-          html += `<span class="prompt">~/atelier $</span> ${esc(cmd.slice(0, typed))}`;
-          const tOut = t0 + cmd.length / 20 + 0.35;
-          if (t < tOut) html += `<span class="cursor"></span>`;
-          else { const lines = out.trimEnd().split("\n"); html += "\n" + lines.slice(0, Math.min(lines.length, Math.floor((t - tOut) / 0.12) + 1)).map(esc).join("\n"); }
-        }
-        pre.innerHTML = html;
-        ttl.update(P(t, c.cue(1) - 0.2, 1.2));
-        fadeIn(q, P(t, c.cue(1) + 0.6, 0.5)); fadeIn(mac, P(t, c.cue(1) + 1.2, 0.5));
-        [...mac.querySelectorAll(".tool")].forEach((x, i) => pop(x, P(t, c.cue(1) + 2.4 + i * 0.35, 0.4), 0.8));
-        jobs.update(t, c.cue(1) + 2.0, 1.6, P(t, c.cue(1) + 2, 0.3)); back.update(t, c.cue(1) + 3.2, 1.6, P(t, c.cue(1) + 3.2, 0.3));
-        shot.show(t, c.cue(1) - 0.2);
-        shot.pan(t, [[c.cue(1) - 0.2, 0, 1.0, 0], [c.dur, 40, 1.05, 30]]);
         return view;
       },
     };
@@ -1188,8 +808,8 @@
     const E = { cli: edge(cli, worker), runner: edge(runner, worker), ledger: edge(worker, ledger), index: edge(worker, index), art: edge(worker, art, "#5fe08f") };
     const tA = c.when("Artifacts holds"), tL = c.when("Each project's ledger");
     const vis = { cli: 0.8, runner: 1.2, ledger: tL + 0.4, index: tL + 2.6, art: tA + 0.6 };
-    [tL, tA, c.cue(1)].forEach((x) => c.sfx(x, "chime", 0.35));
-    const keys = [[0, 960, 430, 1.08], [tL - 0.3, 960, 450, 1.08], [tL + 0.8, 900, 540, 1.05], [tA - 0.2, 900, 540, 1.05], [tA + 1.0, 1010, 580, 1.05], [c.cue(1) - 0.4, 1010, 580, 1.05], [c.cue(1) + 0.8, 960, 540, 0.98]];
+    [tL, tA, c.cue(1)].forEach((x) => c.sfx(x, "chime", 0.3));
+    const keys = [[0, 960, 480, 1.04], [tL - 0.3, 960, 490, 1.04], [tL + 0.8, 900, 540, 1.05], [tA - 0.2, 900, 540, 1.05], [tA + 1.0, 1010, 580, 1.05], [c.cue(1) - 0.4, 1010, 580, 1.05], [c.cue(1) + 0.8, 960, 540, 0.98]];
     return {
       el,
       update(t) {
@@ -1203,8 +823,97 @@
         bNext.style.opacity = P(t, c.when("Access and R2"), 0.5);
         next.forEach((b, i) => show(b, c.when("Access and R2") + 0.2 + i * 0.35));
         worker.el.style.boxShadow = `0 0 ${24 + 16 * Math.sin(t * 2.4)}px rgba(95,224,143,.3), 0 20px 60px rgba(0,0,0,.45)`;
-        ledger.el.style.boxShadow = t > c.when("one owner per task holds") && t < c.when("one owner per task holds") + 2 ? "0 0 40px var(--observed)" : "";
+        ledger.el.style.boxShadow = t > c.when("Each project's ledger") && t < c.when("Each project's ledger") + 2 ? "0 0 40px var(--observed)" : "";
         for (const [k, { p, b }] of Object.entries(E)) { const k0 = P(t, vis[k], 0.5); p.style.opacity = k0; b.update(t, vis[k] + 0.4, 1.8, k0); }
+        return view;
+      },
+    };
+  };
+
+  const CHAPTERS = ["Why Git alone isn't enough", "Who does the work", "Nothing merges without proof", "Big goals become plans", "It measures, and it learns", "It runs on Cloudflare"];
+
+  SCENES.contents = (c, data) => {
+    const el = h("div");
+    const F = field(data);
+    const cam = camera(F.world, F.W, F.H);
+    el.append(F.world);
+    const title = h("div", { class: "abs display", text: "Atelier", style: { fontSize: "220px", left: "0px", width: "1920px", textAlign: "center", top: "330px", letterSpacing: "-.04em" } });
+    const sub = h("div", { class: "abs", text: "A Git platform for many coding agents", style: { left: "0px", width: "1920px", textAlign: "center", top: "610px", font: "500 40px/1.2 var(--font-sans)", color: "var(--signal)" } });
+    el.append(title, sub);
+    const head = pos(h("div", { class: "abs label", text: "In this video", style: { fontSize: "22px", color: "var(--signal)" } }), 760, 250);
+    el.append(head);
+    const words = ["why Git alone", "who does the work", "nothing merges without", "big goals become", "measures and learns", "what it runs on"];
+    const rows = CHAPTERS.map((t, i) => {
+      const r = pos(h("div", { class: "abs", style: { display: "flex", alignItems: "baseline", gap: "26px" } }, h("span", { class: "mono", text: String(i + 1), style: { fontSize: "34px", color: "var(--signal)", width: "30px" } }), h("span", { class: "display", text: t, style: { fontSize: "54px" } })), 760, 300 + i * 82);
+      el.append(r);
+      return { r, t0: c.when(words[i]) };
+    });
+    rows.forEach((x) => c.sfx(x.t0, "tick", 0.8));
+    return {
+      el,
+      update(t) {
+        F.at(F.T1, 0.28);
+        const view = cam.set(t, [[0, F.W / 2, F.MAINY - 80, 0.36], [c.dur, F.W / 2, F.MAINY - 60, 0.4]], 0.5);
+        const up = P(t, c.when("Here's what's coming") - 0.4, 1.2);
+        title.style.transform = `translate(${-up * 560}px, ${-up * 120}px) scale(${lerp(1, 0.5, up)})`;
+        sub.style.opacity = 1 - up;
+        head.style.opacity = up;
+        rows.forEach((x, i) => {
+          const k = P(t, x.t0 - 0.1, 0.4);
+          x.r.style.opacity = k * (t > x.t0 + 1.4 && i < rows.length - 1 ? 0.55 : 1) + (t > x.t0 + 1.4 && i < rows.length - 1 ? 0 : 0);
+          x.r.style.transform = `translateX(${(1 - k) * 40}px)`;
+        });
+        rows.forEach((x) => { if (t > c.cueEnd(0) - 0.3) x.r.style.opacity = 1; });
+        return view;
+      },
+    };
+  };
+
+  SCENES.why = (c, data) => {
+    const el = h("div");
+    const world = h("div");
+    el.append(world);
+    const cam = camera(world, 3840, 1080);
+    const A = region(0, 0); world.append(A);
+    const qs = ["Who owns the work?", "Did the tests really run?", "Who checked the change?"].map((q, i) => { const k = kinetic(q, "kin display", { position: "absolute", left: "160px", top: `${230 + i * 150}px`, fontSize: "92px" }); A.append(k.el); return k; });
+    const gitLine = pos(h("div", { class: "abs mono", style: { fontSize: "28px", color: "var(--text-muted)" }, html: "git log: <span style='color:var(--text)'>commits</span>, and none of these answers" }), 166, 700);
+    A.append(gitLine);
+    const B = region(1920, 0); world.append(B);
+    const st = data.stories.t278;
+    const ttl = kinetic("A commit message, and a record", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" });
+    B.append(ttl.el);
+    const left = pos(h("div", { class: "card", style: { padding: "20px 24px", width: "700px", height: "620px" } },
+      h("div", { class: "label", text: "git log -1 de67194 · written by the agent", style: { color: "var(--fault)" } }),
+      h("pre", { class: "mono", style: { fontSize: "21px", lineHeight: "1.6", whiteSpace: "pre-wrap", margin: "16px 0 0", color: "var(--text)" }, text: data.terminal.commit }),
+      h("div", { class: "mono claims", style: { fontSize: "19px", marginTop: "26px", lineHeight: "1.8", color: "var(--text-muted)" }, html: "no head it was checked at<br>no test results<br>no reviewer, no rejections<br>nothing verifies the author line" })), 120, 190);
+    const L = st.landing;
+    const evLine = (e) => {
+      const who = e.actor === "pavi" ? "the owner" : nice(e.actor);
+      const what = { "item.claimed": "claimed", "push.observed": `pushed, head ${e.head} read from Artifacts`, "evidence.observed": `check observed passing at ${e.head}`, "review.rejected": "rejected, with blocking findings", "review.approved": "approved", "item.accepted": `accepted at ${e.head}`, "item.merged": `merged as ${e.mergeCommit}` }[e.kind];
+      return what ? `<span class="dim">${utc(e.at, true).replace(" UTC", "")}</span>  <span style="color:${e.kind === "review.rejected" ? "var(--fault)" : e.kind === "review.approved" || e.kind === "item.merged" ? "var(--observed)" : "var(--text)"}">${esc(who)}</span> ${esc(what)}` : null;
+    };
+    const claimed = { at: "2026-10-07T20:27:16.169Z", kind: "item.claimed", actor: st.builders[0] };
+    const seen = new Set();
+    const lines = [claimed, ...L].filter((e) => { if (e.kind === "evidence.observed") { if (seen.has(e.head)) return false; seen.add(e.head); } return true; }).map(evLine).filter(Boolean);
+    const right = pos(h("div", { class: "card", style: { padding: "20px 24px", width: "940px", height: "620px", borderColor: "var(--observed-line)" } },
+      h("div", { class: "label", text: "t278 in the ledger · written by the server, from what it observed", style: { color: "var(--observed)" } }),
+      h("div", { class: "mono", style: { fontSize: "18px", lineHeight: "1.75", marginTop: "14px" } }, ...lines.map((x) => h("div", { class: "ev", html: x })))), 860, 190);
+    const note = pos(h("div", { class: "abs mono", style: { fontSize: "18px", color: "var(--signal)", width: "1680px", fontWeight: 600 }, html: `git notes --ref=atelier show 5af22431 → ${esc(data.terminal.note.split("\n")[0])} · ${esc((data.terminal.note.split("\n")[3] ?? "").slice(0, 70))}…` }), 120, 830);
+    B.append(left, right, note);
+    c.sfx(c.cue(1) - 0.4, "whoosh", 0.6); c.sfx(c.cue(2), "swell", 0.6);
+    const keys = [[0, 960, 540, 1.02], [c.cue(1) - 0.4, 960, 540, 1.0], [c.cue(1) + 0.6, 2880 - 400, 520, 1.12], [c.cue(2) - 0.2, 2880 - 400, 520, 1.12], [c.cue(2) + 0.6, 2880 + 340, 520, 1.08], [c.when("as a note"), 2880, 560, 1.0]];
+    return {
+      el,
+      update(t) {
+        const view = cam.set(t, keys, 0.6);
+        qs.forEach((k, i) => k.update(P(t, c.when(["who owns", "whether the tests", "or who checked"][i]) - 0.2, 0.8)));
+        gitLine.style.opacity = P(t, c.when("or who checked") + 1.2, 0.5);
+        ttl.update(P(t, c.cue(1) - 0.2, 0.9));
+        fadeIn(left, P(t, c.cue(1) + 0.2, 0.5));
+        left.querySelector(".claims").style.opacity = P(t, c.when("Nothing checks"), 0.5);
+        fadeIn(right, P(t, c.cue(2), 0.5));
+        [...right.querySelectorAll(".ev")].forEach((x, i) => fadeIn(x, P(t, c.cue(2) + 0.3 + i * 0.3, 0.3), 6));
+        fadeIn(note, P(t, c.when("as a note") - 0.2, 0.6));
         return view;
       },
     };
@@ -1218,26 +927,34 @@
     const hud = h("div", { class: "abs", style: { inset: 0 } });
     el.append(hud);
     const f = data.facts;
-    const line = kinetic("Git keeps the code. Atelier keeps the record.", "kin display", { position: "absolute", left: 0, right: 0, top: "210px", textAlign: "center", fontSize: "92px" });
+    const lines = ["One owner per task.", "Checks Atelier ran itself.", "Another model family's approval.", "Plans built in parallel.", "A record of every model."].map((t, i) => {
+      const l = pos(h("div", { class: "abs display", text: t, style: { fontSize: "52px", width: "1920px", textAlign: "center", left: 0 } }), 0, 170 + i * 74);
+      hud.append(l); return l;
+    });
+    const key = ["One owner", "Checks Atelier", "Another model", "Plans built", "A record"];
+    const line = kinetic("Git keeps the code. Atelier keeps the record.", "kin display", { position: "absolute", left: 0, right: 0, top: "250px", textAlign: "center", fontSize: "84px" });
     hud.append(line.el);
     const nums = pos(h("div", { class: "abs", style: { display: "flex", gap: "120px", justifyContent: "center", width: "1920px", left: 0 } },
-      ...[[f.tasks, "tasks"], [f.states.merged, "merged"], [Object.keys(f.mergedBuilderFamilies).length, "model families"]].map(([n, l]) => h("div", { style: { textAlign: "center" } }, h("div", { class: "big-num", "data-n": n, text: "0" }), h("div", { class: "label", text: l, style: { marginTop: "8px" } })))), 0, 370);
+      ...[[f.tasks, "tasks"], [f.states.merged, "merged"]].map(([n, l]) => h("div", { style: { textAlign: "center" } }, h("div", { class: "big-num", "data-n": n, text: "0" }), h("div", { class: "label", text: l, style: { marginTop: "8px" } })))), 0, 400);
     const url = pos(h("div", { class: "abs display", text: "atelier.zone", style: { fontSize: "120px", width: "1920px", textAlign: "center", left: 0 } }), 0, 600);
     const repo = pos(h("div", { class: "abs mono", text: "github.com/pavithran/atelier · MIT licence", style: { fontSize: "34px", width: "1920px", textAlign: "center", color: "var(--signal)" } }), 0, 760);
     const t293 = pos(h("div", { class: "abs mono dim", text: `This film is task t293 in the same ledger · figures as of ${f.cutoff.slice(0, 10)} ${f.cutoff.slice(11, 16)} UTC`, style: { fontSize: "20px", width: "1920px", textAlign: "center" } }), 0, 830);
     hud.append(nums, url, repo, t293);
-    c.sfx(c.cue(0) + 0.2, "swell", 0.7); c.sfx(c.cue(1), "chime", 0.9);
+    key.forEach((k) => c.sfx(c.when(k), "tick", 0.7));
+    c.sfx(c.cue(1), "swell", 0.7); c.sfx(c.cue(2), "chime", 0.9);
     return {
       el,
       update(t) {
         F.at(F.T1, 0.2 + 0.06 * Math.sin(t * 0.8));
         const view = cam.set(t, [[0, F.W / 2, F.MAINY - 80, 0.42], [c.dur, F.W / 2, F.MAINY - 60, 0.46]], 0.5);
-        line.update(P(t, c.cue(0) + 0.3, 1.6));
+        const out = 1 - P(t, c.cue(1) - 0.4, 0.5);
+        lines.forEach((l, i) => fadeIn(l, P(t, c.when(key[i]) - 0.1, 0.4) * out, 14));
+        line.update(P(t, c.cue(1), 1.2));
         nums.style.opacity = P(t, c.when("It built itself") - 0.2, 0.6);
-        [...nums.querySelectorAll(".big-num")].forEach((x, i) => count(x, Number(x.dataset.n), (t - c.when("It built itself") - i * 0.5) / 2.0));
-        fadeIn(url, P(t, c.cue(1), 0.8));
-        fadeIn(repo, P(t, c.when("open source") + 0.2, 0.8));
-        fadeIn(t293, P(t, c.cueEnd(1) + 0.4, 0.8));
+        [...nums.querySelectorAll(".big-num")].forEach((x, i) => count(x, Number(x.dataset.n), (t - c.when("It built itself") - i * 0.4) / 1.6));
+        fadeIn(url, P(t, c.cue(2), 0.7));
+        fadeIn(repo, P(t, c.when("open source") + 0.1, 0.7));
+        fadeIn(t293, P(t, c.cueEnd(2) + 0.3, 0.7));
         return view;
       },
     };
@@ -1248,8 +965,9 @@
   const capEl = () => document.querySelector("#caption span");
   // Scenes that hand over without a dip to black, because the next one
   // continues the picture.
-  const MATCH = new Set(["cold>cast"]);
-  const LIGHT = new Set(["why", "commit", "metrics"]);
+  const MATCH = new Set(["cold>contents"]);
+  const LIGHT = new Set(["why", "metrics"]);
+  const CHAPTER_OF = { why: 1, cast: 2, gate: 3, plan: 4, metrics: 5, cloud: 6 };
 
   async function init(tl, data) {
     for (const spec of ['800 60px "Bricolage Grotesque"', '700 60px "Bricolage Grotesque"', '400 20px "IBM Plex Sans"', '500 20px "IBM Plex Sans"', '600 20px "IBM Plex Sans"', '400 20px "IBM Plex Mono"', '500 20px "IBM Plex Mono"']) await document.fonts.load(spec);
@@ -1308,7 +1026,7 @@
     document.getElementById("vignette").style.opacity = cur.wrap.classList.contains("light") ? 0.35 : 1;
     document.getElementById("grain").querySelector("feTurbulence").setAttribute("seed", String(Math.floor(T * 15) % 97 + 1));
     const ch = document.getElementById("chapter");
-    ch.innerHTML = ["cold", "cast", "close"].includes(cur.sc.id) ? "" : `<b>${String(cur.n).padStart(2, "0")}</b>${esc(cur.sc.title)}`;
+    ch.innerHTML = CHAPTER_OF[cur.sc.id] ? `<b>${CHAPTER_OF[cur.sc.id]}</b>${esc(CHAPTERS[CHAPTER_OF[cur.sc.id] - 1])}` : "";
     ch.style.opacity = P(t, 0.3, 0.6);
     const cap = captions.find((k) => T >= k.start && T < k.end + 0.25);
     capEl().textContent = cap ? cap.text : "";
