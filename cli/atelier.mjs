@@ -229,10 +229,10 @@ export const FLAGS = {
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
   publish: {},
-  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
-  // edit takes the same three; one empty value clears the field, so the
-  // owner can take a framing back.
-  edit: { "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
+  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
+  // edit takes the same, and --title; one empty value clears the field, so
+  // the owner can take a framing back.
+  edit: { title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
   block: {},
   unblock: {},
   ls: { all: true, json: true },
@@ -533,14 +533,23 @@ function coreArg() {
   return values.map((v) => v.trim());
 }
 
-// --non-goal, --stop-when and --next-gate, as new and edit send them: a list
-// per use for the first two, one line for the gate, each trimmed. A flag not
+// --brief, --accept, --non-goal, --stop-when and --next-gate, as new and
+// edit send them, and edit's --title: a list per use for --accept,
+// --non-goal and --stop-when, text for the others, each trimmed. A flag not
 // given is not sent, so the server keeps the item's value. For edit, one
-// empty value clears the field; for new, an empty value is refused as a
-// bare flag is, with the flag table's wording.
+// empty value clears the field (the title cannot be cleared); for new, an
+// empty value is refused as a bare flag is, with the flag table's wording.
 function fieldsArg(cmd) {
   const out = {};
-  for (const [flag, key] of [["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
+  if (args.title !== undefined) {
+    if (typeof args.title !== "string" || !args.title.trim()) die(FLAGS[cmd].title);
+    out.title = args.title.trim();
+  }
+  if (args.brief !== undefined) {
+    if (typeof args.brief !== "string" || (!args.brief.trim() && cmd !== "edit")) die(FLAGS[cmd].brief);
+    out.brief = args.brief.trim() || null;
+  }
+  for (const [flag, key] of [["accept", "accept"], ["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
     const values = args.multi[flag];
     if (values === undefined) continue;
     if (cmd === "edit" && values.length === 1 && values[0] === "") { out[key] = []; continue; }
@@ -1132,17 +1141,20 @@ export function formatDone(gate) {
 }
 
 // The owner's framing of a task, one line per field that is set, for the
-// task an agent starts and the brief it reads.
+// task an agent starts and the brief it reads; acceptance criteria one per
+// line, numbered.
 export function formatFields(fields) {
   return [
+    ...(fields.accept ?? []).map((c, i) => `Acceptance criterion ${i + 1}: ${flat(c)}`),
     fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
     fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
     fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
   ].filter(Boolean);
 }
 
+// The task an agent starts: its short title, then its whole brief.
 export function formatTask(item) {
-  return [flat(item.title), `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
+  return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
     item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
@@ -2034,12 +2046,21 @@ const commands = {
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
   },
 
+  // The title is the words given; with --brief the long text goes apart.
+  // One long string alone is sent as the title, as an older CLI sends it:
+  // the server keeps it as the brief and derives the short title, and the
+  // answer says so.
   async new() {
     const title = args._.slice(1).join(" ");
-    if (!title) die(COMMAND_USAGE.new);
+    const fields = fieldsArg("new");
+    if (!title && !fields.brief) die(COMMAND_USAGE.new);
     const scope = listArg("scope", "new");
-    const item = await call("POST", `${P(project())}/items`, { title, scope, ...fieldsArg("new") }, await actor(OWNER));
-    console.log([`${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`, ...formatFields(item)].join("\n"));
+    const item = await call("POST", `${P(project())}/items`, { title, scope, ...fields }, await actor(OWNER));
+    console.log([
+      `${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`,
+      ...(item.derived ? [`The text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit ${item.id} --title "TEXT".`] : []),
+      ...formatFields(item),
+    ].join("\n"));
   },
 
   // The project owner changes a task's framing; the server keeps every field
@@ -2049,7 +2070,11 @@ const commands = {
     const fields = fieldsArg("edit");
     if (!Object.keys(fields).length) die(COMMAND_USAGE.edit);
     const item = await call("POST", `${I(name, id)}/edit`, fields, OWNER);
-    const lines = formatFields(item);
+    const lines = [
+      ...(fields.title !== undefined ? [`Title: ${flat(item.title)}`] : []),
+      ...(fields.brief !== undefined ? [item.brief ? `Brief: ${item.brief.length} characters, shown on the task's page.` : "Brief: cleared."] : []),
+      ...formatFields(item),
+    ];
     console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
   },
 
