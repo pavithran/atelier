@@ -5,7 +5,7 @@ import worker from "../src/index.ts";
 // random and stored hashed, so a test cannot compute it from the token.
 // Extra headers (an Access assertion, on a server behind Access) ride along.
 export async function signIn(token: string, bindings: Env, headers: Record<string, string> = {}): Promise<string> {
-  const res = await worker.fetch(new Request("https://atelier.test/login", { method: "POST", body: new URLSearchParams({ token }), headers }), bindings);
+  const res = await worker.fetch(new Request("https://atelier.test/login", { method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ token }) }), bindings);
   const set = res.headers.get("set-cookie") ?? "";
   const id = /^atelier=([a-f0-9]{64});/.exec(set)?.[1];
   if (res.status !== 303 || !id) throw new Error(`sign-in failed: ${res.status} ${set}`);

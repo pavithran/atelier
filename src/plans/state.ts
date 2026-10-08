@@ -6,7 +6,7 @@
 // `node --test` as phase.ts's are.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { liveOffers, offering, type SeenOffer } from "../dispatch/rules.ts";
+import { liveOffers, offeredActors, type SeenOffer } from "../dispatch/rules.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { route } from "../models/routing.ts";
@@ -300,7 +300,7 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[]): PlannerPick {
   const entries = new Map(pool.map((entry) => [actorOf(entry), entry]));
   const ranked = route({ kind: "research" }, pool.map((entry) => profileFor(entry, profiles)), recordFor(pool, events), { localOnly: false, allowedWhere: "any" });
-  const offered = offers ? offering(liveOffers(offers)) : null;
+  const offered = offers ? offeredActors(liveOffers(offers)) : null;
   const passedOver: Choice[] = [];
   for (const [i, candidate] of ranked.entries()) {
     const entry = entries.get(candidate.actor!)!;
