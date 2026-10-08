@@ -1,0 +1,29 @@
+atelier atelier/t296 "A runner that claims a task back (t235) resets the workspace and removes untracked files, so a run that timed out with uncommitted work loses it: on 2026-10-07 GLM's t283 (524 lines, its tests passing) was deleted when home:mbp-2 reclaimed the task, and was recovered only from a patch the orchestrator had saved. Before resetting, keep any uncommitted work: commit it to a recovery ref (refs/atelier/recovered/ID/TIME) or save it as a patch the brief names, and tell the next run to start from it"
+accepted head b2ba054138b4f7e44d437e771d6be884a5302e98
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T03:04:17.681Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T03:04:20.732Z
+REVIEW approve by antigravity/gemini-3.1-pro at b2ba054138b4f7e44d437e771d6be884a5302e98, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T00:33:30.307Z pavi item.created
+2026-10-08T00:33:35.762Z pavi item.dispatched
+2026-10-08T01:00:49.726Z opencode/glm-5.3 item.claimed
+2026-10-08T01:00:54.489Z opencode/glm-5.3 fork.created
+2026-10-08T01:21:49.208Z opencode/glm-5.3 push.observed
+2026-10-08T01:25:43.157Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:25:45.868Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:25:46.487Z opencode/glm-5.3 item.submitted
+2026-10-08T02:59:54.751Z pavi land.lease
+2026-10-08T02:59:58.026Z pavi land.merge
+2026-10-08T03:00:06.090Z pavi land.regenerate
+2026-10-08T03:00:09.294Z opencode/glm-5.3 push.observed
+2026-10-08T03:00:09.427Z pavi land.push
+2026-10-08T03:04:18.636Z opencode/glm-5.3 evidence.observed
+2026-10-08T03:04:20.964Z opencode/glm-5.3 evidence.observed
+2026-10-08T03:04:21.434Z pavi land.check
+2026-10-08T03:04:21.819Z opencode/glm-5.3 item.submitted
+2026-10-08T03:04:22.106Z pavi land.submit
+2026-10-08T03:04:22.252Z pavi review.requested
+2026-10-08T03:04:35.584Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T03:11:15.600Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T03:11:19.594Z pavi land.review
+2026-10-08T03:11:20.634Z pavi item.accepted
+2026-10-08T03:11:20.769Z pavi land.accept
