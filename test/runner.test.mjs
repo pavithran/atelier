@@ -789,6 +789,9 @@ test("failure counts use task identity and exclude refusals and skipped tasks", 
   for (const state of [{ phase: "failed" }, { phase: "submitted" }, { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(failureCount(1, state), 1);
   }
+  // t273: a failure the job recorded on the item (refresh-failed) is the
+  // server's to handle, so it is no task failure for the cap.
+  assert.equal(failureCount(1, { phase: "failed", recorded: true }), 1);
 });
 
 test("runner remembers unsupported project names and claims the task behind them", async (t) => {
@@ -1122,6 +1125,9 @@ test("infrastructure failures are consecutive and separate from task failures", 
     { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(infrastructureFailureCount(2, state), 0);
   }
+  // Nor an infrastructure failure (t273): a recorded refresh-failed is the
+  // server's to handle, so it neither advances nor keeps the streak.
+  assert.equal(infrastructureFailureCount(2, { phase: "failed", recorded: true }), 0);
 });
 
 test("real runner caps reset, claim and finish failures while serving the next task each poll", async (t) => {
