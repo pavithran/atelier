@@ -82,7 +82,7 @@ async function readyPart(L: L, plan = doc(part("a"))) {
   const waiting = await L.reviewWaiting();
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
   await L.claimReview(partId, reviewer, RUNNER);
-  await L.addReview({ itemId: partId, by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
+  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
   return { id: item.id, partId, head, builder };
 }
 
@@ -119,7 +119,7 @@ it("an integration is recorded, and the plan submits when every part is integrat
   expect(result).toMatchObject({ allIntegrated: true, parts: ["a"] });
   expect(await L.item(partId)).toMatchObject({ state: "integrated" });
   expect((await L.planView(id)).integration.integrationHead).toBe(MA);
-  expect((await L.planView(id)).parts[0].integration).toEqual({ head, mergeCommit: MA });
+  expect((await L.planView(id)).parts[0].integration).toEqual({ head, mergeCommit: MA, criteria: await L.criteria(partId) });
   expect((await L.item(id)).dispatch).toBeNull();
   expect((await events(L, partId)).find((e) => e.kind === "part.integrated")).toMatchObject({
     actor: INTEGRATOR, data: { head, mergeCommit: MA },

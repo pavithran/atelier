@@ -79,7 +79,7 @@ async function submittedPlan(L: L) {
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === a);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
   await L.claimReview(a, reviewer, RUNNER);
-  await L.addReview({ itemId: a, by: reviewer, head: PART_A, approve: true, note: "Good", at: new Date().toISOString() });
+  await L.addReview({ itemId: a, criteria: await L.criteria(a), by: reviewer, head: PART_A, approve: true, note: "Good", at: new Date().toISOString() });
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
   await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
   await L.recordPush(item.id, INTEGRATOR, MA, MA);

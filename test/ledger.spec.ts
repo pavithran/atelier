@@ -2,8 +2,9 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import { briefFor } from "../src/brief.ts";
-import { Ledger, type LedgerEvent } from "../src/ledger.ts";
-import { parseRuleError, type Evidence, type ProjectPolicy, type Review } from "../src/rules.ts";
+import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
+import { Ledger, type CriteriaChange, type LedgerEvent, type ReviewClaim } from "../src/ledger.ts";
+import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
 // storage, inside the Workers test pool. The pure policy underneath is tested
@@ -37,7 +38,7 @@ function observed(itemId: string, head: string, changedPaths: string[] = ["src/a
 }
 
 function review(itemId: string, by: string, head: string, approve: boolean, note = ""): Review {
-  return { itemId, by, head, approve, note, at: new Date().toISOString() };
+  return { itemId, by, head, criteria: NO_CRITERIA, approve, note, at: new Date().toISOString() };
 }
 
 // A refusal must arrive with its code and detail intact: the worker turns
@@ -480,7 +481,7 @@ it("HTTP review and acceptance preserve the displayed revision through successfu
  const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setFork('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
  const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Artifacts;
  const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token'};
- const post=(action:string,note:string)=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://atelier.test'},body:new URLSearchParams({head:H1,note})}),bindings);
+ const post=(action:string,note:string)=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://atelier.test'},body:new URLSearchParams({head:H1,criteria:NO_CRITERIA,note})}),bindings);
  // The owner's approval is recorded at the displayed revision, but it is not
  // the independent review AGENTS.md needs, so Accept is refused; the
  // override form, with its reason, accepts at the same revision.
@@ -510,7 +511,7 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   expect(claimed).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash" });
   expect(await L.waiting()).toEqual([]);
   const events = (await L.events(item.id)) as unknown as LedgerEvent[];
-  expect(events.find((e) => e.kind === "item.claimed")?.data).toEqual({ runner: "home:studio" });
+  expect(events.find((e) => e.kind === "item.claimed")?.data).toEqual({ runner: "home:studio", criteria: NO_CRITERIA });
   // A refused dispatch leaves the holder in place.
   await refusal(L.dispatch(item.id, "owner", { to: "mars" }), "bad_dispatch", /send to cloud, home or any/);
   expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash" });
@@ -736,7 +737,7 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(tiered, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewTier");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
-  expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], eligible: [], refuseOverlap: false, sandboxOnly: false });
+  expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], eligible: [], refuseOverlap: false, sandboxOnly: false });
   expect([reset.title, reset.createdAt, reset.revision]).toEqual(["T", full.createdAt, 2]);
   // The index keeps the newest copy, whatever order two inits register in.
   const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
@@ -1170,4 +1171,286 @@ it("a task sent back for rework gets the rejecting review's findings in its job 
   for (const text of [B, "the guard is missing", "docs/a.md:7 guard the empty case", "docs/b.md rename the heading", "Blocking findings", "Follow-ups"]) expect(brief.text).toContain(text);
   // Only the holder reads it.
   await refusal(L.jobBrief(item.id, A), "not_a_plan", /writes its own brief/);
+});
+
+// ── t326: reviews bound to the acceptance criteria ───────────────────────
+
+const GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
+const RUNNER = { runner: "home:studio", kind: "home" } as const;
+const ONE = ["Nested lists parse"];
+const TWO = ["Nested lists parse", "Errors name the line"];
+
+// A task with these criteria, claimed by A, pushed at H1 touching a protected
+// path, its check observed passing, and submitted.
+async function submittedWith(L: Awaited<ReturnType<typeof setup>>, accept: string[] | undefined, id = "t1") {
+  await L.newItem("Parse nested lists", [], "owner", accept === undefined ? {} : { accept });
+  await L.claim(id, A);
+  await L.setFork(id, `fork-${id}`, H0, A);
+  await L.recordPush(id, A, H1, H1);
+  await L.addEvidence(observed(id, H1, ["AGENTS.md"]));
+  await L.submit(id, A);
+}
+// A review as recorded before reviews were bound, or as sent without a binding.
+const unbound = (r: Review): Review => { const { criteria: _c, ...rest } = r; return rest; };
+const bound = (r: Review, criteria: string, request?: number): Review => ({ ...r, criteria, ...(request !== undefined ? { request } : {}) });
+const gateOf = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => ((await L.detail(id)) as unknown as { gate: { ready: boolean; needsAssessor: boolean; blockers: string[] } }).gate;
+const live = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => (await L.reviewRequests(id)).filter((r) => r.state === "open" || r.state === "claimed");
+
+it("a claim records the binding of the task's stored, ordered criteria: equal for equal lists, apart for any change", async () => {
+  const L = await setup("criteria-claim");
+  const lists = [TWO, [...TWO], [...TWO].reverse(), ["Nested lists parse Errors name the line"], ["Nested lists parse", "Errors name the line."]];
+  for (const [i, accept] of lists.entries()) {
+    await L.newItem(`Task ${i + 1}`, [], "owner", { accept });
+    await L.claim(`t${i + 1}`, A);
+  }
+  const claimed = await Promise.all(lists.map(async (_, i) => ((await L.events(`t${i + 1}`)) as unknown as LedgerEvent[]).find((e) => e.kind === "item.claimed")!.data.criteria));
+  expect(claimed[0]).toBe(criteriaHash(TWO));
+  expect(claimed[1]).toBe(claimed[0]);
+  expect(new Set(claimed).size).toBe(4);
+  // The detail and the brief give the same binding, so a reviewer can name it.
+  expect((await L.detail("t1") as unknown as { criteria: string }).criteria).toBe(claimed[0]);
+  expect(await L.criteria("t3")).toBe(claimed[2]);
+});
+
+it("changing criteria withdraws every standing review and live request, keeps their history and the head and checks, and changing back revives none", async () => {
+  const L = await setup("criteria-withdraw", { ...policy, reviewTier: [GLM] });
+  await submittedWith(L, ONE);
+  const one = criteriaHash(ONE), two = criteriaHash(TWO);
+  // An approval by another family, the owner asks GPT by name, the tier asks
+  // GLM beside it; GLM claims the tier review and rejects; GPT claims the gate's.
+  await L.addReview(bound(review("t1", B, H1, true, "fine"), one), undefined, true);
+  await L.requestReview("t1", "owner", GPT, [], true);
+  const tier = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
+  expect(tier).toMatchObject({ tier: true, criteria: one });
+  await L.addReview(bound(review("t1", GLM, H1, false, "unsafe"), one, tier.request), undefined, true);
+  const gateClaim = await L.claimReview("t1", GPT, RUNNER) as unknown as ReviewClaim;
+  expect(gateClaim.criteria).toBe(one);
+  expect(await live(L)).toEqual([expect.objectContaining({ state: "claimed", claimedBy: GPT })]);
+  const evidence = (await L.evidenceFor("t1")).length;
+
+  const changed = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(changed.criteriaChange).toMatchObject({ from: one, to: two, reviews: 2, requests: 1, acceptance: false, override: false, asked: [GPT] });
+  expect(changed).toMatchObject({ state: "submitted", head: H1, accept: TWO });
+  // History stays: both reviews are kept, bound to what they judged, marked withdrawn.
+  const reviews = await L.reviewsFor("t1");
+  expect(reviews.map((r) => [r.by, r.approve, r.criteria, r.withdrawn?.reason])).toEqual([[B, true, one, "the acceptance criteria changed"], [GLM, false, one, "the acceptance criteria changed"]]);
+  expect((await L.evidenceFor("t1")).length).toBe(evidence);
+  const withdrawn = ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "review.withdrawn");
+  expect(withdrawn.map((e) => e.data)).toEqual(expect.arrayContaining([expect.objectContaining({ head: H1, reviewer: GPT, reason: "the acceptance criteria changed" })]));
+  const g = await gateOf(L);
+  expect(g).toMatchObject({ ready: false, needsAssessor: true });
+  expect(g.blockers.join()).not.toMatch(/rejected by/);
+  // GPT's verdict on the claim the change withdrew is refused, whatever it names.
+  await refusal(L.addReview(bound(review("t1", GPT, H1, true), one, gateClaim.request), undefined, true), "stale_criteria", /changed since this review read them.*refresh/);
+
+  // Back to the first criteria: the binding is the first one again, and still nothing revives.
+  const back = await L.editItem("t1", "owner", { accept: ONE }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(back.criteriaChange).toMatchObject({ from: two, to: one, reviews: 0, requests: 2 });
+  expect(await L.criteria("t1")).toBe(one);
+  expect((await L.reviewsFor("t1")).every((r) => r.withdrawn)).toBe(true);
+  expect(await gateOf(L)).toMatchObject({ ready: false, needsAssessor: true });
+  // The old verdict, bound to criteria the task has again, still answers
+  // nothing: its request was withdrawn and replaced.
+  const replacement = await L.claimReview("t1", GPT, RUNNER) as unknown as ReviewClaim;
+  expect(replacement.request).not.toBe(gateClaim.request);
+  await refusal(L.addReview(bound(review("t1", GPT, H1, true), one, gateClaim.request), undefined, true), "stale_request", /withdrawn or replaced.*refresh/);
+  expect(await live(L)).toEqual(expect.arrayContaining([expect.objectContaining({ state: "claimed", claimedBy: GPT })]));
+  // A fresh review at the same head, bound to its claim, stands.
+  await L.addReview(bound(review("t1", GPT, H1, true, "read the criteria"), one, replacement.request), undefined, true);
+  expect(await gateOf(L)).toMatchObject({ ready: true });
+  expect((await L.item("t1")).head).toBe(H1);
+  expect(kinds(await L.events("t1")).filter((k) => k === "item.criteria_changed").length).toBe(2);
+});
+
+it("edits that leave the stored criteria as they are change no binding, review or request", async () => {
+  const L = await setup("criteria-unchanged");
+  await submittedWith(L, TWO);
+  const two = criteriaHash(TWO);
+  await L.addReview(bound(review("t1", B, H1, true), two), undefined, true);
+  await L.requestReview("t1", "owner", GPT, [], true);
+  const before = { reviews: await L.reviewsFor("t1"), requests: await L.reviewRequests("t1") };
+  for (const fields of [{ title: "Parse lists" }, { brief: "The whole task." }, { nonGoals: ["No new syntax"] }, { stopWhen: ["The grammar changes"] }, { nextGate: "Owner review" }, { accept: [...TWO] }, { title: "Again", accept: TWO }]) {
+    const edited = await L.editItem("t1", "owner", fields) as unknown as Item & { criteriaChange?: CriteriaChange };
+    expect(edited.criteriaChange, JSON.stringify(fields)).toBeUndefined();
+    expect(await L.criteria("t1")).toBe(two);
+  }
+  expect(await L.reviewsFor("t1")).toEqual(before.reviews);
+  expect(await L.reviewRequests("t1")).toEqual(before.requests);
+  expect(await gateOf(L)).toMatchObject({ ready: true });
+  expect(kinds(await L.events("t1"))).not.toContain("item.criteria_changed");
+  // Reordering is a change.
+  const reordered = await L.editItem("t1", "owner", { accept: [...TWO].reverse() }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(reordered.criteriaChange).toMatchObject({ reviews: 1, requests: 1 });
+  expect(await gateOf(L)).toMatchObject({ ready: false });
+});
+
+it("missing and empty criteria bind alike; clearing criteria withdraws once, and a task without criteria is claimed and reviewed as before", async () => {
+  const L = await setup("criteria-empty");
+  await submittedWith(L, undefined, "t1");
+  await submittedWith(L, [], "t2");
+  const claims = await Promise.all(["t1", "t2"].map(async (id) => ((await L.events(id)) as unknown as LedgerEvent[]).find((e) => e.kind === "item.claimed")!.data.criteria));
+  expect(claims).toEqual([NO_CRITERIA, NO_CRITERIA]);
+  for (const id of ["t1", "t2"]) {
+    await L.addReview(bound(review(id, B, H1, true), NO_CRITERIA), undefined, true);
+    expect(await gateOf(L, id)).toMatchObject({ ready: true });
+  }
+  // Clearing nonempty criteria withdraws what judged them; clearing again changes nothing.
+  await submittedWith(L, ONE, "t3");
+  await L.addReview(bound(review("t3", B, H1, true), criteriaHash(ONE)), undefined, true);
+  const cleared = await L.editItem("t3", "owner", { accept: [] }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(cleared.criteriaChange).toMatchObject({ from: criteriaHash(ONE), to: NO_CRITERIA, reviews: 1 });
+  expect(cleared.accept).toEqual([]);
+  expect(await gateOf(L, "t3")).toMatchObject({ ready: false });
+  const again = await L.editItem("t3", "owner", { accept: [] }) as unknown as Item & { criteriaChange?: CriteriaChange };
+  expect(again.criteriaChange).toBeUndefined();
+  await L.addReview(bound(review("t3", B, H1, true), NO_CRITERIA), undefined, true);
+  expect(await gateOf(L, "t3")).toMatchObject({ ready: true });
+  // A review naming no binding, or another, is refused and records nothing.
+  await refusal(L.addReview(unbound(review("t3", GLM, H1, false))), "criteria_unbound", /names no binding.*refresh/);
+  await refusal(L.addReview(bound(review("t3", GLM, H1, false), criteriaHash(ONE))), "stale_criteria", /refresh/);
+  expect((await L.reviewsFor("t3")).length).toBe(2);
+});
+
+it("reviews recorded before reviews were bound stay as history, unstamped, and neither satisfy nor block", async () => {
+  const stub = env.LEDGER.get(env.LEDGER.idFromName("project:criteria-legacy"));
+  await runInDurableObject(stub, async (_instance, state) => {
+    const L = new Ledger(state, env);
+    L.initProject({ name: "criteria-legacy", repo: "criteria-legacy", reset: false, checks: ["npm test"], protected: ["AGENTS.md"] }, "owner");
+    for (const [id, accept] of [["t1", undefined], ["t2", ONE]] as const) {
+      L.newItem("Legacy", [], "owner", accept ? { accept: [...accept] } : {});
+      L.claim(id, A);
+      L.setFork(id, `fork-${id}`, H0, A);
+      L.recordPush(id, A, H1, H1);
+      L.addEvidence(observed(id, H1, ["AGENTS.md"]));
+      L.submit(id, A);
+      // The rows as a ledger before t326 left them: no binding.
+      for (const r of [unbound(review(id, B, H1, true)), unbound(review(id, GLM, H1, false, "old"))]) {
+        state.storage.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, id, JSON.stringify({ ...r, recordedBy: r.by, proved: true, claimed: false }));
+      }
+    }
+    const after = new Ledger(state, env);
+    for (const [id, accept] of [["t1", undefined], ["t2", ONE]] as const) {
+      const d = after.detail(id);
+      expect(d.reviews.map((r) => [r.by, r.approve, r.criteria])).toEqual([[B, true, undefined], [GLM, false, undefined]]);
+      expect(d.gate.ready).toBe(false);
+      expect(d.gate.needsAssessor).toBe(true);
+      expect(d.gate.blockers.join()).not.toMatch(/rejected by/);
+      after.addReview(bound(review(id, GPT, H1, true), criteriaHash(accept)), undefined, true);
+      expect(after.detail(id).gate.ready).toBe(true);
+      expect(after.reviewsFor(id).slice(0, 2).every((r) => r.criteria === undefined)).toBe(true);
+    }
+  });
+});
+
+it("changing criteria takes back an acceptance and an override, the task claimed again; refused under a landing; a submitted task stays submitted", async () => {
+  const L = await setup("criteria-accepted");
+  // Accepted with an independent approval.
+  await submittedWith(L, ONE, "t1");
+  await L.addReview(bound(review("t1", B, H1, true), criteriaHash(ONE)), undefined, true);
+  await L.accept("t1", "owner", H1);
+  const evidence = (await L.evidenceFor("t1")).length;
+  const reopened = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(reopened.criteriaChange).toMatchObject({ acceptance: true, override: false, reviews: 1 });
+  expect(reopened).toMatchObject({ state: "claimed", acceptedHead: null, head: H1, owner: A });
+  expect((await L.evidenceFor("t1")).length).toBe(evidence);
+  await refusal(L.beginLanding("t1", "owner", H1), "acceptance_changed", /no longer accepted/);
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /claimed, not submitted/);
+  // Submitted, reviewed against the new criteria and accepted again, it lands.
+  await L.submit("t1", A);
+  await L.addReview(bound(review("t1", B, H1, true), criteriaHash(TWO)), undefined, true);
+  await L.accept("t1", "owner", H1);
+  expect(await L.beginLanding("t1", "owner", H1)).toMatchObject({ state: "accepted" });
+  // Under the merge's landing lease the criteria cannot change, and nothing is written.
+  const held = await L.events("t1") as unknown as LedgerEvent[];
+  await refusal(L.editItem("t1", "owner", { accept: ONE }), "landing", /holds the landing lease.*nothing was changed/);
+  expect(await L.item("t1")).toMatchObject({ state: "accepted", accept: TWO, acceptedHead: H1 });
+  expect(((await L.events("t1")) as unknown as LedgerEvent[]).length).toBe(held.length);
+  // An unrelated edit is still allowed there.
+  await L.editItem("t1", "owner", { nextGate: "Deploy" });
+
+  // Accepted with the owner's override: the override goes with the acceptance.
+  await submittedWith(L, ONE, "t2");
+  await L.accept("t2", "owner", H1, "No reviewer of another family is available");
+  expect((await L.item("t2")).reviewOverride).toBeDefined();
+  const overridden = await L.editItem("t2", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(overridden.criteriaChange).toMatchObject({ acceptance: true, override: true });
+  expect(overridden.reviewOverride).toBeUndefined();
+  expect(overridden).toMatchObject({ state: "claimed", acceptedHead: null });
+  expect((await L.events("t2") as unknown as LedgerEvent[]).find((e) => e.kind === "item.criteria_changed")!.data).toMatchObject({ acceptanceWithdrawn: true, overrideWithdrawn: true });
+
+  // Under the project's landing lease (atelier land) the criteria cannot change.
+  await submittedWith(L, ONE, "t3");
+  await L.beginProjectLanding("t3", "owner");
+  await refusal(L.editItem("t3", "owner", { accept: TWO }), "landing_lease", /landing t3.*nothing was changed/);
+  expect((await L.item("t3")).accept).toEqual(ONE);
+  await L.cancelProjectLanding("t3", "owner");
+  // A submitted task stays submitted, waiting for a fresh review.
+  const fresh = await L.editItem("t3", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(fresh).toMatchObject({ state: "submitted", head: H1 });
+  expect(fresh.criteriaChange).toMatchObject({ acceptance: false });
+});
+
+// t326 review finding: a tier request withdrawn by a change of criteria, or
+// one made before requests recorded their criteria, must not count as the
+// tier already asked, or the tier review is never asked again.
+const liveTier = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => (await L.reviewRequests(id)).filter((r) => r.tier && (r.state === "open" || r.state === "claimed"));
+
+it("criteria changed A to B and back to A at one head: the tier is asked again each time, and a live tier request stands", async () => {
+  const L = await setup("criteria-tier-aba", { ...policy, reviewTier: [GLM] });
+  await submittedWith(L, ONE);
+  await L.requestReview("t1", "owner", GPT, [], true);
+  expect((await liveTier(L)).length).toBe(1);
+  await L.editItem("t1", "owner", { accept: TWO });
+  expect((await liveTier(L)).length).toBe(1);
+  await L.editItem("t1", "owner", { accept: ONE });
+  // A's tier request, withdrawn when the criteria first changed, does not stand in for a new one.
+  const tier = await liveTier(L);
+  expect(tier).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
+  expect((await L.reviewRequests("t1")).filter((r) => r.tier).map((r) => r.state)).toEqual(["withdrawn", "withdrawn", "open"]);
+  const claim = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
+  expect(claim).toMatchObject({ tier: true, criteria: criteriaHash(ONE) });
+});
+
+it("requests and reviews made before reviews were bound stop counting as already asked once the criteria change", async () => {
+  const stub = env.LEDGER.get(env.LEDGER.idFromName("project:criteria-tier-legacy"));
+  await runInDurableObject(stub, async (_instance, state) => {
+    const L = new Ledger(state, env);
+    L.initProject({ name: "criteria-tier-legacy", repo: "criteria-tier-legacy", reset: false, checks: ["npm test"], protected: ["AGENTS.md"], reviewTier: [GLM] }, "owner");
+    L.newItem("Legacy", [], "owner", { accept: [...ONE] });
+    L.claim("t1", A);
+    L.setFork("t1", "fork-t1", H0, A);
+    L.recordPush("t1", A, H1, H1);
+    L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+    L.submit("t1", A);
+    L.requestReview("t1", "owner", GPT, [], true);
+    // As a ledger before t326 left them: requests with no criteria, and a
+    // tier review with no binding at the head.
+    state.storage.sql.exec(`UPDATE review_requests SET criteria = NULL`);
+    state.storage.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, "t1", JSON.stringify({ ...unbound(review("t1", "antigravity/gemini-3.1-pro", H1, true)), tier: true, recordedBy: "owner", proved: false, claimed: true }));
+    const after = new Ledger(state, env);
+    expect(after.reviewRequests("t1").filter((r) => r.tier).map((r) => r.state)).toEqual(["open"]);
+    const change = after.editItem("t1", "owner", { accept: [...TWO] });
+    expect(change.criteriaChange).toMatchObject({ requests: 2, asked: [GPT] });
+    // The legacy review stays in the record, unstamped, withdrawn with the change.
+    const legacy = after.reviewsFor("t1")[0];
+    expect(legacy).toMatchObject({ withdrawn: { reason: "the acceptance criteria changed" } });
+    expect("criteria" in legacy).toBe(false);
+    const live = after.reviewRequests("t1").filter((r) => r.state === "open" || r.state === "claimed");
+    expect(live.map((r) => !!r.tier).sort()).toEqual([false, true]);
+  });
+});
+
+it("a gate request the criteria change withdrew is carried at the same head once the gate needs the review", async () => {
+  const L = await setup("criteria-carry");
+  await submittedWith(L, ONE);
+  await L.requestReview("t1", "owner", GPT, []);
+  // The check fails at the head while the criteria change, so no review is needed and none is asked yet.
+  await L.addEvidence({ ...observed("t1", H1, ["AGENTS.md"]), passed: false });
+  const change = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(change.criteriaChange).toMatchObject({ requests: 1, asked: [] });
+  expect(await live(L)).toEqual([]);
+  // The check passes again at the same head: the withdrawn request is carried to the same reviewer.
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  expect(await live(L)).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
+  expect(((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "review.requested")!.data).toMatchObject({ reviewer: GPT, via: "head-moved" });
 });

@@ -25,3 +25,18 @@ console.log("captured the provenance note of 5af22431");
 const msg = execFileSync("git", ["-C", checkout, "log", "-1", "--format=commit %H%n%n%B", "de67194"], { encoding: "utf8" });
 writeFileSync(out + "commit-de67194.txt", msg.replace(/<[^>]*@[^>]*>/g, "<…>").trimEnd() + "\n");
 console.log("captured the commit message of de67194");
+
+// The whole note, for the terminal shot of the opening scene.
+writeFileSync(out + "note-5af22431-full.txt", note);
+console.log("captured the whole provenance note of 5af22431");
+
+// The fresh project of 2026-10-08, run through the README's quickstart: its
+// history and the note on its merge, read with git from its checkout.
+const fresh = JSON.parse(readFileSync(homedir() + "/.config/atelier/config.json", "utf8")).projects["fresh-demo"]?.path;
+if (fresh) {
+  const log = execFileSync("git", ["-C", fresh, "log", "--format=%h %ad %s", "--date=format-local:%H:%M:%S", "-3"], { encoding: "utf8", env: { ...process.env, TZ: "UTC" } });
+  const fnote = execFileSync("git", ["-C", fresh, "notes", "--ref=atelier", "show", "HEAD"], { encoding: "utf8" });
+  writeFileSync(out + "fresh-log.txt", log);
+  writeFileSync(out + "fresh-note.txt", fnote);
+  console.log("captured fresh-demo's history and note");
+}
