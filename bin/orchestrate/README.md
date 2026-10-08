@@ -39,12 +39,20 @@ exec opencode "$@"
 | Wrapper | Config's provider | Key file | Model ids |
 | --- | --- | --- | --- |
 | `opencode-glm` | `zai-coding`, base URL `https://api.z.ai/api/coding/paas/v4` | `z.ai.key` | `glm-5.3` |
-| `opencode-deepseek` | `deepseek-api`, base URL `https://api.deepseek.com` | `deepseek.key` | `deepseek-v4-pro` |
-| `opencode-openrouter` | `openrouter-api`, base URL `https://openrouter.ai/api/v1` | `openrouter.key` | any OpenRouter id listed in the config |
+| `opencode-deepseek` | `deepseek-api`, through the AI Gateway `https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek` | `deepseek.key` | `deepseek-v4-pro` |
+| `opencode-openrouter` | `openrouter-api`, through the AI Gateway `https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/openrouter` | `openrouter.key` | any OpenRouter id listed in the config |
 
 Each config uses `"npm": "@ai-sdk/openai-compatible"` with
 `"apiKey": "{env:VARIABLE}"`, and disables every MCP server so an agent sees
-only its workspace.
+only its workspace. The DeepSeek and OpenRouter configs give their providers
+the gateway's base URL and two headers: `cf-aig-authorization`
+(`Bearer {env:CF_AIG_TOKEN}`, a Cloudflare API token with AI Gateway · Run),
+read from the environment opencode runs in, and `cf-aig-metadata`
+(`{env:CF_AIG_METADATA}`), which the home runner sets per run — task, role,
+runner — and `run-agent.sh` sets from the brief's task line, so the gateway's
+figures count calls per task (docs/models-and-usage.md, "AI Gateway costs").
+The provider's own key still goes in its own header; the gateway passes it
+through and logs the call.
 
 Reviews run through Antigravity's CLI, `agy`, signed in to a Google account
 with Gemini access; its models include `gemini-3.1-pro-high` and
