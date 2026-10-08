@@ -67,12 +67,32 @@ test("revert refuses invalid ids and unsupported servers before claiming", async
   assert.throws(() => itemFields({ revertOf: "HEAD" }), /revertOf must name a task/);
 });
 
-test("revert refuses a dirty workspace without changing HEAD", async (t) => {
+for (const kind of ["untracked", "unstaged", "staged"]) test(`revert refuses ${kind} work without changing HEAD or files`, async (t) => {
   const { dir, git, io, mergeCommit } = fixture(t);
-  writeFileSync(join(dir, "untracked"), "keep");
+  const file = kind === "untracked" ? "untracked" : "change";
+  writeFileSync(join(dir, file), "keep");
+  if (kind === "staged") git(["add", file]);
+  const status = git(["status", "--porcelain"]);
   await assert.rejects(runRevert("t1", "codex/test", io), /set aside its changes/);
   assert.equal(git(["rev-parse", "HEAD"]), mergeCommit);
-  assert.equal(readFileSync(join(dir, "untracked"), "utf8"), "keep");
+  assert.equal(readFileSync(join(dir, file), "utf8"), "keep");
+  assert.equal(git(["status", "--porcelain"]), status);
+});
+
+for (const priorUndo of ["revert", "manual"]) test(`an already-undone merge (${priorUndo}) reports no changes without committing`, async (t) => {
+  const { dir, git, io, mergeCommit } = fixture(t);
+  if (priorUndo === "revert") git(["revert", "-m", "1", "--no-edit", mergeCommit]);
+  else {
+    writeFileSync(join(dir, "change"), "before\n");
+    git(["commit", "-am", "Undo manually"]);
+  }
+  const before = git(["rev-parse", "HEAD"]), messages = [];
+  const result = await runRevert("t1", "codex/test", { ...io, say: (s) => messages.push(s) });
+  assert.equal(result.id, "t2");
+  assert.match(messages.join("\n"), /changes nothing.*No commit was made.*t2 remains claimed/);
+  assert.equal(git(["rev-parse", "HEAD"]), before);
+  assert.equal(git(["status", "--porcelain"]), "");
+  assert.equal(git(["rev-parse", "--verify", "REVERT_HEAD"], { allowFail: true }).status, 128);
 });
 
 test("a recorded non-merge or merge outside the workspace history is refused", async (t) => {
