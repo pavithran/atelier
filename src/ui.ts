@@ -613,13 +613,15 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
 export const REPO_URL = "https://github.com/pavithran/atelier";
 
 // One shown project as the portfolio draws it: the project's record (for its
-// title when named), how it is shown, its story, and its two weeks of moves
-// for the card's bar graph when the events were read.
+// title when named), how it is shown, its story, its two weeks of moves
+// for the card's bar graph when the events were read, and every merge it has
+// ever had, from its whole item list.
 export interface ShownProject {
   project: ProjectRecord;
   mode: "named" | "anonymous";
   story: Story;
   pulse?: Pulse;
+  allTimeMerged?: number;
 }
 
 // The task stories under the cards: two or three threads from different shown
@@ -643,6 +645,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   // as the portfolio themselves, shown named.
   const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
   const total = drawnTotal(stories);
+  const allMerged = cards.some((c) => c.allTimeMerged !== undefined) ? cards.reduce((n, c) => n + (c.allTimeMerged ?? 0), 0) : undefined;
   const who = ownerName || "the owner";
   const { moments, journey, shown: drawn } = flowParts(stories, total, owner, undefined, who, imported);
   const body = drawn.length
@@ -659,7 +662,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     return `<li class="show-card" id="card-${i + 1}">
     <h2>${e(shownLabel(c))}</h2>
     ${c.pulse ? pulseGraph(c.pulse) : ""}
-    <p class="card-tally"><span><b>${t.merges}</b>merged</span><span><b>${t.sentBack}</b>sent back</span><span><b>${inProgress}</b>in progress</span></p>
+    <p class="card-tally"><span><b>${t.merges}</b>merged, last two weeks</span>${c.allTimeMerged === undefined ? "" : `<span><b>${c.allTimeMerged}</b>merged, all time</span>`}<span><b>${t.sentBack}</b>sent back, last two weeks</span><span><b>${inProgress}</b>in progress, last two weeks</span></p>
     ${families ? `<ul class="legend-line" aria-label="Families that worked on it">${families}</ul>` : '<p class="meta">No agent has worked here yet.</p>'}
   </li>`;
   }).join("");
@@ -678,8 +681,8 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>A Git platform for many coding agents</h1>
-      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its real two weeks of activity; under them, task stories drawn as threads, from claim to merge.</p>
-      <p class="subhead">${headline(total, who)}</p></div>
+      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
+      <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
     ${tallyBlock(total, who)}
   </header>
   ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
