@@ -20,6 +20,7 @@ import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
+import { PRECISION_MIN_JUDGED, precisionTerm, type PrecisionRecord, type ReviewerPrecision } from "./models/precision.ts";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
@@ -100,7 +101,8 @@ const ACCOUNT: [string, string][] = [
 // the two never say different things.
 const TAGLINE = "Many agents, one owner per task.";
 
-const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
+// src/render-check.ts lets the render check's browser load exactly this URL.
+export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
 // `signedIn` draws the sign-out form in the rail; the sign-in page has none.
 // `live` adds the script under its nonce; with a refresh, <main> says how
@@ -697,7 +699,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -734,6 +736,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${group("home", "At home", "No home models yet. Add one served by your Mac Studio or another local server.")}
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
+  ${precision ? precisionSection(precision) : ""}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
@@ -750,6 +753,30 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
     </form>
   </details>
 </div>`, "Models", ownerName);
+}
+
+// ── review precision ───────────────────────────────────────────────────────
+// Each reviewer model's precision on the blocking findings the owner judged
+// over the window (src/models/precision.ts): judged n, held up (confirmed or
+// fixed), refuted, and the share held up. Under PRECISION_MIN_JUDGED judged
+// the row shows n and says it is too few to rank, as routing treats it.
+
+export function precisionSection(p: PrecisionRecord): string {
+  const from = p.window.from.slice(0, 10), to = p.window.to.slice(0, 10);
+  const rows = [...p.models.values()];
+  const row = (r: ReviewerPrecision) => `<tr><th scope="row"><code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")}</span></th>
+    <td class="num">${r.judged}</td>
+    <td class="num">${r.upheld}<span class="meta">${r.confirmed} confirmed · ${r.fixed} fixed</span></td>
+    <td class="num">${r.refuted}</td>
+    <td class="num">${r.ranked ? `${Math.round(r.precision! * 100)}%<span class="meta">routing term ${precisionTerm(r).toFixed(2)}</span>` : `<span class="meta">n=${r.judged}, too few to rank</span>`}</td></tr>`;
+  return `<section class="precision" aria-label="Review precision by reviewer">
+  <h2 class="section-title">Review precision · ${e(from)} to ${e(to)}</h2>
+  <p class="meta">Of each reviewer's blocking findings the owner judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
+  ${rows.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Reviewer</th><th scope="col">Judged blocking findings</th><th scope="col">Held up</th><th scope="col">Refuted</th><th scope="col">Precision</th></tr></thead>
+    <tbody>${rows.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">No blocking finding was judged from ${e(from)} to ${e(to)}.</p>`}
+</section>`;
 }
 
 // ── AI Gateway ─────────────────────────────────────────────────────────────
