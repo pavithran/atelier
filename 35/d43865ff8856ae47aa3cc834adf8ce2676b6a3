@@ -1,0 +1,24 @@
+atelier atelier/t304 "The check container runs Atelier's own suite out of time: on 2026-10-08, with git now in the container (t303), the sandbox's npm test was stopped at the 600 s step limit, and the CheckRunner container has no instance_type, so it runs on a small default. Give check containers instance_type standard-3 (2 vCPU, 8 GiB) and a 1,800 s step limit, so a project's full suite can finish there and the landing Workflow can pass its checks"
+accepted head a2c56a0ffa8019d60a9dca7e1de5c60ebd1920fe
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T08:42:47.028Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T08:42:49.768Z
+REVIEW approve by antigravity/gemini-3.1-pro at a2c56a0ffa8019d60a9dca7e1de5c60ebd1920fe, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T08:33:44.249Z pavi item.created
+2026-10-08T08:33:44.601Z claude-code/opus-5.5 item.claimed
+2026-10-08T08:33:56.713Z claude-code/opus-5.5 fork.created
+2026-10-08T08:40:03.213Z pavi land.lease
+2026-10-08T08:40:04.200Z pavi land.merge
+2026-10-08T08:40:12.162Z pavi land.regenerate
+2026-10-08T08:40:13.921Z claude-code/opus-5.5 push.observed
+2026-10-08T08:40:14.033Z pavi land.push
+2026-10-08T08:42:47.720Z claude-code/opus-5.5 evidence.observed
+2026-10-08T08:42:49.879Z claude-code/opus-5.5 evidence.observed
+2026-10-08T08:42:50.271Z pavi land.check
+2026-10-08T08:42:50.716Z claude-code/opus-5.5 item.submitted
+2026-10-08T08:42:50.891Z pavi land.submit
+2026-10-08T08:42:50.989Z pavi review.requested
+2026-10-08T08:42:55.522Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T08:46:40.968Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T08:46:42.109Z pavi land.review
+2026-10-08T08:46:42.662Z pavi item.accepted
+2026-10-08T08:46:42.764Z pavi land.accept
