@@ -625,6 +625,9 @@ test("a child's background processes end with it, whether it succeeded, failed o
       else await new Promise((ok) => setTimeout(ok, 10));
     }
     const result = await run;
+    // The leader can write the pid file and exit inside one 10 ms wait, which
+    // ends the loop with the file unseen; look once more after the run.
+    if (!readyAt && existsSync(file)) readyAt = Date.now();
     const took = Date.now() - start;
     const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
     // The run can settle without the pid file only when the deadline caught
