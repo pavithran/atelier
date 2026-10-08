@@ -321,13 +321,18 @@ const FINDING_COLON = new RegExp(`^finding${E}\\s*:`, "i");
 const findingHead = (line: string) => FINDING_COLON.test(line) || /^FINDING\s/.test(line);
 const FINDING_LINE = new RegExp(`^finding${E}\\s*:?\\s*${E}\\s*\\[?([a-z_-]+)\\]?${E}\\s*:?\\s+(\\S+)\\s+(.+)$`, "i");
 const SUMMARY_LINE = new RegExp(`^summary${E}\\s*:\\s*${E}\\s*(.*?)\\s*${E}\\s*$`, "i");
-// A CRITERION line starts with "criterion" and its number, colon or not, in
-// any case; "Criteria:" is a heading and "criterion" in prose carries no
-// number. Only a reply asked for criteria (replyFormat) has its CRITERION
-// lines read; elsewhere they are prose.
-const CRITERION_HEAD = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\d`, "i");
+// A CRITERION line starts with "criterion" and its number, bracketed or not,
+// colon or not, in any case; "Criteria:" is a heading and "criterion" in
+// prose carries no number. The head recognises the number in every form the
+// line parser reads, so a line that declares a criterion met or unmet is
+// never mistaken for prose. Only a reply asked for criteria (replyFormat)
+// has its CRITERION lines read; elsewhere they are prose.
+const CRITERION_HEAD = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?\\d`, "i");
 const criterionHead = (line: string) => CRITERION_HEAD.test(line);
-const CRITERION_LINE = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(unmet|not met|met)\\b\\]?\\s*(?:[-–—:]\\s*)?(.*?)\\s*$`, "i");
+// The met or unmet word ends at anything but a letter or digit, so an
+// underscore closes formatting (**, __, backticks) rather than extending the
+// word, as a \b would read it.
+const CRITERION_LINE = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(unmet|not met|met)(?![a-z0-9])\\]?\\s*(?:[-–—:]\\s*)?(.*?)\\s*$`, "i");
 
 function lineStatements(reply: string, criteria: number): { verdicts: Statement["verdict"][]; findings: Finding[]; summary: string[]; criteria: Map<number, boolean> } {
   const verdicts: Statement["verdict"][] = [];
@@ -362,13 +367,15 @@ function lineStatements(reply: string, criteria: number): { verdicts: Statement[
 // unmet, then how it was proved — the proof is the point of the line, so a
 // line without one is refused rather than read as a bare met. The pattern
 // takes an empty proof so the refusal can name the missing proof, not the
-// line's shape.
+// line's shape. Closing formatting around the met or unmet (**, __,
+// backticks) is captured as if it were proof, so markers are not counted:
+// only the proof's words are.
 function criterionLine(line: string, at: string, of: number): { n: number; met: boolean } {
   const m = CRITERION_LINE.exec(line);
   if (!m) refuse(`${at}: a CRITERION line gives the criterion's number, met or unmet, and how it was proved`);
   const n = Number(m[1]);
   if (n < 1 || n > of) refuse(`${at}: CRITERION ${n} is not one of the ${of} acceptance criteria the brief numbers`);
-  if (!plain(m[3])) refuse(`${at}: a CRITERION line ends with how the criterion was proved`);
+  if (!plain(m[3]).replace(/[*_`]/g, "")) refuse(`${at}: a CRITERION line ends with how the criterion was proved`);
   return { n, met: m[2].toLowerCase() === "met" };
 }
 

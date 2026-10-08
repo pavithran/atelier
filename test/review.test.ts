@@ -495,6 +495,30 @@ test("parseVerdict: refuses an approval whose criteria are missing, unmet or mis
   ok("VERDICT: REJECT\nSUMMARY: One.\nFINDING: blocking a.ts:1 Bad.", 2);
 });
 
+// t325 rework, from review of 76e8b6f5: a bracket-numbered criterion line
+// was read as prose, so its unmet vanished under an approval, and the
+// closing formatting of a wrapped met counted as the proof. The head now
+// recognises the number in every form the line parser reads, and formatting
+// is not proof.
+test("parseVerdict: a bracket-numbered criterion line is read, and formatting around met is not its proof", () => {
+  const met = (n: number) => `CRITERION ${n}: met — Broke the change; test ${n} failed without it.`;
+  // A bracket-numbered unmet cannot hide as prose under a met line: the
+  // contradiction is refused, like its unbracketed form.
+  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", met(1), "CRITERION [1]: unmet — Test 1 still passes."].join("\n"), /proves criterion 1 both met and unmet/, 1);
+  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION [1]: unmet — Test 1 still passes."].join("\n"), /an approval cannot declare criterion 1 unmet/, 1);
+  // A bracket-numbered met is the criterion's line, not prose.
+  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION [2]: met — Proved."].join("\n"), /criterion 1 has none/, 2);
+  ok(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION [1]: met — Broke it; test 1 failed."].join("\n"), 1);
+  // A met wrapped in bold, underscores or code still needs words of proof:
+  // the closing markers are not the proof.
+  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION 1: **met**"].join("\n"), /a CRITERION line ends with how the criterion was proved/, 1);
+  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION 1: __met__"].join("\n"), /a CRITERION line ends with how the criterion was proved/, 1);
+  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION 1: `met`"].join("\n"), /a CRITERION line ends with how the criterion was proved/, 1);
+  // Formatting around a proof that says something still proves it.
+  ok(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION 1: **met** — `npm test` fails without the change."].join("\n"), 1);
+  ok(["VERDICT: APPROVE", "SUMMARY: One.", "CRITERION 1: __met__ — Broke it; test 1 failed."].join("\n"), 1);
+});
+
 test("parseVerdict: without criteria, CRITERION lines are prose and no approval is refused for them", () => {
   // The caller that names no criteria (verdict.mjs, say) reads the reply as
   // before: a CRITERION line in it is not a statement it was asked for,
