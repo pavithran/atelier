@@ -47,7 +47,7 @@ const stripe = (c: Commit) => `<i class="stripe" style="--c:${commitFamily(c).co
 function frame(w: Where, title: string, crumb: string, tab: "code" | "log" | "commit", head: Commit | null, body: string, ownerName: string | null): string {
   const name = titleOf(w.project);
   const active = tab === "commit" ? "Log" : tab === "code" ? "Code" : "Log";
-  const crumbs = `<nav class="breadcrumbs"><a href="/">Home</a> / <a href="/p/${enc(w.project.name)}">${e(name)}</a>${
+  const crumbs = `<nav class="breadcrumbs"><a href="/home">Home</a> / <a href="/p/${enc(w.project.name)}">${e(name)}</a>${
     w.item ? ` / <a href="/p/${enc(w.project.name)}/${enc(w.item)}">${e(w.item)}</a>` : ""} / ${e(crumb)}</nav>`;
   const what = w.item ? `${e(w.item)}'s fork` : "the baseline";
   const at = head ? `<p class="meta repo-at">${w.at ? "At" : "Head of"} ${what}: <a class="mono" href="${commitHref(w, head.hash)}">${short(head.hash)}</a> · ${e(firstLine(head.message))} · ${e(head.author.name)} · ${day(head.authoredAt)}${w.at ? ` · <a href="${root(w)}/code">back to the head</a>` : ""}</p>` : "";

@@ -127,7 +127,7 @@ it("the setting is the owner's alone: agent tokens and unsigned callers cannot c
   }), testEnv);
   expect(form.status).toBe(303);
   expect(await (await OWNER_TOKEN_CALL("GET", "/showcase")).text()).toContain('"mode": "anonymous"');
-  const home = await (await worker.fetch(new Request("https://atelier.test/", { headers: { cookie } }), testEnv)).text();
+  const home = await (await worker.fetch(new Request("https://atelier.test/home", { headers: { cookie } }), testEnv)).text();
   expect(home).toContain('action="/projects/showcase"');
   expect((await OWNER_TOKEN_CALL("DELETE", "/showcase/owner-only")).status).toBe(200);
   expect(await (await OWNER_TOKEN_CALL("GET", "/showcase")).text()).not.toContain("owner-only");
