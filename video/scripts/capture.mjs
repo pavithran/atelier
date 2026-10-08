@@ -20,6 +20,9 @@ export const SHOTS = [
   // Only the AI Gateway section of the Models page: per-model gateway
   // figures, which name models, not projects.
   { name: "gateway", path: "/models", section: "AI Gateway" },
+  // The reliability table's first rows: models and their measures, across
+  // projects, naming none.
+  { name: "reliability", path: "/models", section: "Reliability by model", maxHeight: 1100 },
 ];
 
 // Words that must never be on a captured owner page: the names of the
@@ -59,6 +62,7 @@ for (const pub of [true, false]) {
         for (let n = h2.nextElementSibling; n && n.tagName !== "H2"; n = n.nextElementSibling) { const q = n.getBoundingClientRect(); bottom = Math.max(bottom, q.bottom + scrollY); right = Math.max(right, q.right); }
         return { x: Math.max(0, left - 40), y: Math.max(0, top - 40), width: Math.min(innerWidth, right + 40) - Math.max(0, left - 40), height: bottom - top + 80 };
       }, shot.section);
+      if (shot.maxHeight) box.height = Math.min(box.height, shot.maxHeight);
       await page.screenshot({ path: OUT + shot.name + ".png", fullPage: true, clip: box });
       console.log("captured", shot.name);
       continue;

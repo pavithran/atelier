@@ -24,6 +24,8 @@
   --m-google: #ff8fcf;
   --m-deepseek: #5ad1e6;
   --m-xiaomi: #ff9e40;
+  --m-qwen: #b5e55c;
+  --m-minimax: #ff9f7a;
   --m-other: #8f9cab;
   --main-line: #f4f1e8;
   --font-sans: "IBM Plex Sans", -apple-system, sans-serif;
@@ -88,3 +90,19 @@ svg text { font-family: var(--font-mono); }
 .kin span { display: inline-block; will-change: transform, opacity; }
 .ring { width: 120px; height: 120px; border-radius: 50%; border: 3px solid; pointer-events: none; opacity: 0; }
 .card { transition: none; }
+
+/* Bright scenes: the site's light theme. */
+.scene.light {
+  --shell: #ebe8df; --surface: #f6f4ee; --surface-raised: #fbfaf6; --inset: #e4e0d5; --line: #cfcabd; --line-bright: #a39d8f;
+  --text: #14181d; --text-bright: #05070a; --text-muted: #4b5562; --text-dim: #55606d;
+  --signal: #7a5600; --signal-hot: #6b4b00; --wire: #c9ad6a; --observed: #1d6b3c; --observed-line: #9cc9ad; --caution: #7d4d00; --fault: #b0173f;
+  --m-anthropic: #b4461c; --m-openai: #0b7a5c; --m-zai: #2f56c9; --m-google: #b0307a; --m-deepseek: #0f7d93; --m-xiaomi: #a35a00; --m-qwen: #4d7a12; --m-minimax: #b04a1f; --m-other: #4b5562;
+  --main-line: #14181d;
+  color: var(--text);
+  background: radial-gradient(1300px 800px at 35% 25%, #fbfaf6 0%, #ebe8df 75%);
+}
+.scene.light::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(20,24,29,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(20,24,29,.04) 1px, transparent 1px); background-size: 64px 64px; }
+.scene.light .card { background: var(--surface-raised); box-shadow: 0 18px 50px rgba(20,24,29,.12); }
+.scene.light .chip { background: rgba(255,255,255,.6); }
+.scene.light .chip .dot { box-shadow: none; }
+.scene.light .quote code, .scene.light .card code { color: var(--signal); }

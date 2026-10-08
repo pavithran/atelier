@@ -52,10 +52,12 @@
     ["google", /^(gemini|gemma)|google/i],
     ["deepseek", /deepseek/i],
     ["xiaomi", /^mimo\b|xiaomi/i],
+    ["qwen", /^qwen|qwq/i],
+    ["minimax", /minimax/i],
   ];
   const fam = (a) => { const n = a.split("/").pop(); return (FAMILIES.find(([, re]) => re.test(n) || re.test(a)) ?? ["other"])[0]; };
   const col = (f) => `var(--m-${f})`;
-  const HEX = { anthropic: "#ff8a5b", openai: "#3fe0b0", zai: "#6f9bff", google: "#ff8fcf", deepseek: "#5ad1e6", xiaomi: "#ff9e40", other: "#8f9cab" };
+  const HEX = { anthropic: "#ff8a5b", openai: "#3fe0b0", zai: "#6f9bff", google: "#ff8fcf", deepseek: "#5ad1e6", xiaomi: "#ff9e40", qwen: "#b5e55c", minimax: "#ff9f7a", other: "#8f9cab" };
   const FAMILY_NAME = { anthropic: "Anthropic · Claude", zai: "Zhipu · GLM", openai: "OpenAI · GPT", deepseek: "DeepSeek", google: "Google · Gemini", xiaomi: "Xiaomi · MiMo" };
   const NAMES = {
     "opus-5.5": "Opus 5.5", "sonnet-5.5": "Sonnet 5.5", "fable-5.1": "Fable 5.1", "glm-5.3": "GLM-5.3", "GLM-5.3-Flash-4_8bit": "GLM-5.3 Flash",
@@ -278,58 +280,61 @@
     el.append(world);
     const cam = camera(world, 1920, 1080);
     const svg = svgFull(); world.append(svg);
-    // The title, where the cold open left it, rises into a header.
     const title = h("div", { class: "abs display", text: "Atelier", style: { fontSize: "220px", left: "0px", width: "1920px", textAlign: "center", top: "330px", letterSpacing: "-.04em" } });
     const sub = kinetic("a multi-agent system for software work, with Git underneath", "kin", { position: "absolute", left: 0, width: "1920px", textAlign: "center", top: "610px", font: "500 40px/1.2 var(--font-sans)", color: "var(--signal)" });
     el.append(title, sub.el);
-    const CX = 960, CY = 560;
-    const ledger = pos(h("div", { class: "card", style: { padding: "22px 28px", width: "400px", textAlign: "center", borderColor: "var(--wire)" } }, h("div", { style: { font: "700 34px/1.2 var(--font-display)" }, text: "the ledger" }), h("div", { class: "mono dim", text: "a Durable Object per project; every event recorded", style: { fontSize: "17px", marginTop: "8px" } })), CX - 200, CY - 62);
+    const CX = 960, CY = 420;
+    const ledger = pos(h("div", { class: "card", style: { padding: "20px 26px", width: "380px", textAlign: "center", borderColor: "var(--wire)" } }, h("div", { style: { font: "700 32px/1.2 var(--font-display)" }, text: "the ledger" }), h("div", { class: "mono dim", text: "every event, recorded by the server", style: { fontSize: "17px", marginTop: "8px" } })), CX - 190, CY - 58);
     world.append(ledger);
     const f = data.facts;
-    const revs = Object.entries(f.reviewsByModel).sort((a, b) => b[1] - a[1]).slice(0, 4);
-    const roles = [
-      { at: [960, 175], name: "Planner", what: "splits a goal into parts", body: [chip(data.plan.planner), h("span", { class: "mono dim", text: ` plan t197: ${data.plan.proposed.length} parts`, style: { fontSize: "18px" } })] },
-      { at: [1540, 360], name: "Builders", what: "many at once, each in its own fork", body: ["anthropic", "zai", "openai", "deepseek", "google", "xiaomi"].map((x) => famChip(x, { anthropic: "Claude", zai: "GLM", openai: "GPT", deepseek: "DeepSeek", google: "Gemini", xiaomi: "MiMo" }[x])) },
-      { at: [1540, 790], name: "Reviewers", what: "another family than the builders", body: revs.map(([m, n]) => famChip(fam(m), `${NAMES[m] ?? m} ${n}`)) },
-      { at: [960, 945], name: "Integrator", what: "merges parts onto a plan's branch; runs no model", body: [h("span", { class: "mono", text: "atelier/integrator", style: { fontSize: "20px", color: "var(--signal)" } })] },
-      { at: [380, 790], name: "Runners", what: "on the owner's machines; take jobs from the queue", body: [["zai", "opencode"], ["anthropic", "claude"], ["openai", "codex"], ["google", "antigravity"]].map(([x, n]) => famChip(x, n)) },
-      { at: [380, 360], name: "Owner", what: "approves the plan, accepts the result; the only person", body: [h("span", { class: "chip", style: { color: "var(--signal)" } }, h("span", { class: "dot" }), "the owner")] },
-    ].map((r, i) => {
-      const card = h("div", { class: "card", style: { padding: "16px 20px", width: "460px" } },
-        h("div", { style: { display: "flex", alignItems: "baseline", gap: "12px" } }, h("span", { class: "display", text: r.name, style: { fontSize: "34px" } }), h("span", { class: "mono dim", text: r.what, style: { fontSize: "16px" } })),
-        h("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" } }, ...r.body));
-      pos(card, r.at[0] - 230, r.at[1] - 70);
+    const rules = (txt) => h("span", { class: "chip", style: { color: "var(--signal)" } }, h("span", { class: "dot" }), txt);
+    const famLabel = { anthropic: "Claude", zai: "GLM", openai: "GPT", deepseek: "DeepSeek", google: "Gemini", xiaomi: "MiMo" };
+    // Seven roles on an ellipse around the ledger, clear of the captions.
+    const spec = [
+      ["Planner", "a model splits a goal into parts", [chip(data.plan.planner), h("span", { class: "mono dim", text: " planned t197", style: { fontSize: "17px" } })], 1],
+      ["Builders", "models, many at once, each in its own fork", Object.keys(f.mergedBuilderFamilies).map((x) => famChip(x, famLabel[x] ?? x)), 2],
+      ["Reviewers", "models of another family than the builders", Object.entries(f.reviewsByModel).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([m]) => famChip(fam(m), NAMES[m] ?? m)), 3],
+      ["Orchestrator", "Atelier's code: routes each part to a builder and a reviewer", [rules("rules, no model"), h("span", { class: "mono dim", text: " src/plans/route.ts", style: { fontSize: "16px" } })], 4],
+      ["Integrator", "merges parts onto the plan's branch; a conflict goes to a model", [rules("rules, no model"), famChip("zai", "merge-main job: a model")], 5],
+      ["Runners", "on the owner's machines; start each model's own tool", [...[["zai", "opencode"], ["anthropic", "claude"], ["openai", "codex"], ["google", "antigravity"]].map(([x, n]) => famChip(x, n)), h("span", { class: "mono", text: "subscription · AI Gateway · local models", style: { fontSize: "15px", color: "var(--signal)", width: "100%" } })], 6],
+      ["Owner", "approves the plan, merges the result", [h("span", { class: "chip", style: { color: "var(--signal)", fontSize: "18px" } }, h("span", { class: "dot" }), "the owner, or a session on its decisions")], 6.5],
+    ];
+    const roles = spec.map(([name, what, body, cueAt], i) => {
+      const a = -Math.PI / 2 + i * (2 * Math.PI / spec.length);
+      const x = CX + Math.cos(a) * 700 * (Math.abs(Math.cos(a)) > 0.9 ? 0.97 : 1), y = CY + Math.sin(a) * 285 + (Math.sin(a) > 0.6 ? 20 : 0) - (Math.sin(a) < -0.9 ? 10 : 0);
+      const xr = Math.max(255, Math.min(1665, x));
+      const yAdj = name === "Runners" ? -75 : name === "Owner" ? -35 : 0;
+      const card = h("div", { class: "card", style: { padding: "14px 18px", width: "470px" } },
+        h("div", { style: { display: "flex", alignItems: "baseline", gap: "12px", flexWrap: "wrap" } }, h("span", { class: "display", text: name, style: { fontSize: "32px" } }), h("span", { class: "mono dim", text: what, style: { fontSize: "15px" } })),
+        h("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" } }, ...body));
+      pos(card, xr - 235, y + yAdj - 62);
       world.append(card);
-      const d = `M ${r.at[0]} ${r.at[1]} L ${CX} ${CY}`;
+      const d = `M ${xr} ${y + yAdj} L ${CX} ${CY}`;
       const line = s("path", { d, fill: "none", stroke: "var(--line-bright)", "stroke-width": 2.5 });
       svg.append(line);
-      const toL = beads(svg, d, i === 5 ? "#ffd166" : "#f4f1e8", 2, 5), fromL = beads(svg, `M ${CX} ${CY} L ${r.at[0]} ${r.at[1]}`, "#ffd166", 1, 5);
-      return { ...r, card, line, toL, fromL, t0: i === 5 ? c.cue(6) : c.cue(i + 1) };
+      const t0 = cueAt === 6.5 ? c.when("And the owner") : c.cue(cueAt);
+      return { card, line, toL: beads(svg, d, "#f4f1e8", 2, 5), fromL: beads(svg, `M ${CX} ${CY} L ${xr} ${y + yAdj}`, "#ffd166", 1, 5), t0, x: xr, y: y + yAdj };
     });
-    roles.forEach((r) => c.sfx(r.t0 - 0.1, "chime", 0.35));
-    const keys = [[0, 960, 540, 1.0], [c.cue(0) + 3.5, 960, 560, 1.0]];
-    roles.forEach((r) => { keys.push([r.t0 - 0.5, keys[keys.length - 1][1], keys[keys.length - 1][2], keys[keys.length - 1][3]]); keys.push([r.t0 + 0.7, (r.at[0] + CX) / 2, (r.at[1] + CY) / 2, 1.12]); });
-    keys.push([c.cueEnd(6) - 1.6, keys[keys.length - 1][1], keys[keys.length - 1][2], 1.12], [c.cueEnd(6) + 0.2, 960, 560, 0.9]);
+    roles.forEach((r) => c.sfx(r.t0 - 0.05, "chime", 0.3));
+    const keys = [[0, 960, 540, 1.0], [c.cue(1) - 0.6, 960, 500, 1.0]];
+    roles.forEach((r) => { const L = keys[keys.length - 1]; keys.push([r.t0 - 0.4, L[1], L[2], L[3]], [r.t0 + 0.6, (r.x + CX * 2) / 3, Math.max(440, Math.min(500, (r.y + CY * 2) / 3 + 40)), 1.0]); });
+    keys.push([c.cueEnd(6) - 2.4, keys[keys.length - 1][1], keys[keys.length - 1][2], 1.0], [c.cueEnd(6) - 1.0, 960, 500, 0.9]);
     return {
       el,
       update(t) {
-        const view = cam.set(t, keys, 0.7);
-        const up = P(t, 1.0, 1.8);
-        title.style.transform = `translate(${-up * 640}px, ${-up * 330}px) scale(${lerp(1, 0.32, up)})`;
-        title.style.transformOrigin = "50% 50%";
-        sub.update(P(t, 0.4, 1.6));
-        sub.el.style.transform = `translate(${-up * 300}px, ${-up * 575}px) scale(${lerp(1, 0.62, up)})`;
-        sub.el.style.transformOrigin = "50% 50%";
-        const gone = 1 - P(t, c.cue(1) - 0.8, 0.8);
+        const view = cam.set(t, keys, 0.6);
+        const gone = 1 - P(t, c.cue(1) - 1.0, 0.8);
         title.style.opacity = gone; sub.el.style.opacity = gone;
-        pop(ledger, P(t, 2.2, 0.7), 0.6);
+        title.style.transform = `translateY(${-P(t, 0.8, 1.6) * 120}px) scale(${lerp(1, 0.7, P(t, 0.8, 1.6))})`;
+        sub.update(P(t, 0.3, 1.4));
+        sub.el.style.transform = `translateY(${-P(t, 0.8, 1.6) * 190}px)`;
+        pop(ledger, P(t, c.cue(1) - 0.8, 0.7), 0.6);
         ledger.style.boxShadow = `0 0 ${30 + 18 * Math.sin(t * 2.2)}px rgba(255,209,102,.35), 0 20px 60px rgba(0,0,0,.45)`;
         roles.forEach((r) => {
-          pop(r.card, P(r.t0 ? t : 0, r.t0, 0.6), 0.7);
-          [...r.card.querySelectorAll(".chip")].forEach((x, i) => fadeIn(x, P(t, r.t0 + 0.5 + i * 0.18, 0.4), 8));
-          draw(r.line, P(t, r.t0 + 0.2, 0.8));
-          r.toL.update(t, r.t0 + 0.8, 1.6, P(t, r.t0 + 0.8, 0.4));
-          r.fromL.update(t, r.t0 + 1.6, 2.0, P(t, r.t0 + 1.6, 0.4));
+          pop(r.card, P(t, r.t0, 0.5), 0.75);
+          draw(r.line, P(t, r.t0 + 0.1, 0.7));
+          r.toL.update(t, r.t0 + 0.6, 1.5, P(t, r.t0 + 0.6, 0.4));
+          r.fromL.update(t, r.t0 + 1.2, 2.0, P(t, r.t0 + 1.2, 0.4));
         });
         return view;
       },
@@ -342,111 +347,219 @@
     el.append(world);
     const STEP = 1920;
     const PX = (i) => 960 + i * STEP;
-    const cam = camera(world, STEP * 9, 1080);
+    const cam = camera(world, STEP * 7, 1080);
     const starts = c.cues.map((_, i) => c.cue(i));
-    const keys = flight(starts.map((t0, i) => [t0 - (i ? 0.5 : 0), PX(i), 540, 1]), 1.2, 0.84);
-    starts.slice(1).forEach((t0) => c.sfx(t0 - 0.5, "whoosh", 0.7));
+    const keys = flight(starts.map((t0, i) => [t0 - (i ? 0.45 : 0), PX(i), 540, 1]), 1.0, 0.86);
+    starts.slice(1).forEach((t0) => c.sfx(t0 - 0.45, "whoosh", 0.6));
     const f = data.facts;
-    // Intro: the three questions.
+    const L = { a: "var(--m-anthropic)", o: "var(--m-openai)", z: "var(--m-zai)", g: "var(--m-google)" };
     const intro = region(0, 0); world.append(intro);
-    const qs = ["Who owns this work?", "Did the tests really run?", "Who checked the change?"].map((q, i) => { const k = kinetic(q, "kin display", { position: "absolute", left: "160px", top: `${250 + i * 150}px`, fontSize: "88px" }); intro.append(k.el); return k; });
-    const gitLine = pos(h("div", { class: "abs mono", style: { fontSize: "26px", color: "var(--text-muted)" }, html: "git log: <span style='color:var(--text)'>commits</span>, and nothing about these" }), 166, 730);
+    const qs = ["Who owns the work?", "Did the tests really run?", "Who checked the change?"].map((q, i) => { const k = kinetic(q, "kin display", { position: "absolute", left: "160px", top: `${230 + i * 150}px`, fontSize: "92px" }); intro.append(k.el); return k; });
+    const gitLine = pos(h("div", { class: "abs mono", style: { fontSize: "28px", color: "var(--text-muted)" }, html: "git log: <span style='color:var(--text)'>commits</span>, and none of these answers" }), 166, 700);
     intro.append(gitLine);
     const panels = [];
     const panel = (i, q, proof) => {
       const p = region(PX(i) - 960, 0);
       world.append(p);
-      const k = kinetic(q, "kin display", { position: "absolute", left: "120px", top: "90px", fontSize: "70px", width: "1700px" });
-      const L = pos(h("div", { class: "card side", style: { width: "820px", height: "560px", padding: "22px 26px", background: "rgba(255,77,116,.035)", borderColor: "rgba(255,77,116,.35)" } }, h("div", { class: "label", text: "With Git alone · an illustration", style: { color: "var(--fault)" } })), 120, 230);
-      const R = pos(h("div", { class: "card side", style: { width: "820px", height: "560px", padding: "22px 26px", borderColor: "var(--observed-line)" } }, h("div", { class: "label", text: "With Atelier", style: { color: "var(--observed)" } })), 980, 230);
-      const pr = pos(h("div", { class: "abs mono proof", style: { fontSize: "21px", color: "var(--signal)" }, html: proof }), 1004, 830);
-      p.append(k.el, L, R, pr);
-      const o = { p, k, L, R, pr, i, sL: svgFull(820, 560), sR: svgFull(820, 560) };
-      L.append(o.sL); R.append(o.sR);
+      const k = kinetic(q, "kin display", { position: "absolute", left: "120px", top: "84px", fontSize: "76px", width: "1700px" });
+      const Lb = pos(h("div", { class: "card side", style: { width: "820px", height: "560px", padding: "22px 26px", background: "rgba(176,23,63,.04)", borderColor: "rgba(176,23,63,.35)" } }, h("div", { class: "label", text: "With Git alone · an illustration", style: { color: "var(--fault)" } })), 120, 230);
+      const Rb = pos(h("div", { class: "card side", style: { width: "820px", height: "560px", padding: "22px 26px", borderColor: "var(--observed-line)" } }, h("div", { class: "label", text: "With Atelier", style: { color: "var(--observed)" } })), 980, 230);
+      const pr = pos(h("div", { class: "abs mono proof", style: { fontSize: "21px", color: "var(--signal)", fontWeight: 600 }, html: proof }), 1004, 822);
+      p.append(k.el, Lb, Rb, pr);
+      const o = { p, k, L: Lb, R: Rb, pr, i };
       panels.push(o);
       return o;
     };
     const inBox = (box, el2, x, y) => { pos(el2, x, y); if (!el2.classList.contains("abs") && !el2.classList.contains("card")) el2.classList.add("abs"); box.append(el2); return el2; };
-    // 1 Ownership.
-    const p1 = panel(1, "Who owns this work?", `the ledger: ${f.handoffs} handoffs, each recorded, each revoking a token`);
-    p1.sL.append(s("line", { x1: 40, y1: 300, x2: 780, y2: 300, stroke: "#8f9cab", "stroke-width": 4 }));
-    p1.sL.append(s("text", { x: 40, y: 280, fill: "#8f9cab", "font-size": 20, text: "one branch, two agents" }));
-    const cA = [0, 1, 2, 3].map((i) => { const c1 = s("circle", { cx: 120 + i * 160, cy: 300, r: 12, fill: i % 2 ? "#3fe0b0" : "#ff8a5b" }); p1.sL.append(c1); return c1; });
-    const clash = s("text", { x: 600, y: 380, fill: "#ff4d74", "font-size": 30, text: "✕ conflict" }); p1.sL.append(clash);
-    const own = inBox(p1.R, h("div", { class: "card", style: { padding: "18px 22px", width: "520px" } }, h("div", { class: "label", text: "task" }), h("div", { class: "mono", style: { fontSize: "24px", marginTop: "10px" }, html: "owner <span style='color:var(--m-anthropic)'>agent A 🔒</span><br><span style='color:var(--signal)'>🔑 write token: its own fork only</span><br><span class='dim'>a handoff revokes it</span>" })), 60, 120);
-    const refusedB = inBox(p1.R, h("div", { class: "abs mono", text: "agent B's claim: refused", style: { fontSize: "24px", color: "var(--fault)" } }), 60, 380);
-    // 2 Tests.
-    const p2 = panel(2, "Did the tests really run?", `the ledger: ${f.observedChecks.toLocaleString("en")} observed check results`);
-    const say = inBox(p2.L, h("div", { class: "card", style: { padding: "18px 24px", font: "500 34px/1.3 var(--font-sans)" } }, "“tests pass ✓”", h("div", { class: "mono dim", text: "the agent's word", style: { fontSize: "18px", marginTop: "8px" } })), 120, 160);
-    const qm = inBox(p2.L, h("div", { class: "abs display", text: "?", style: { fontSize: "160px", color: "var(--fault)" } }), 560, 120);
-    const runs = inBox(p2.R, h("div", { class: "card", style: { padding: "18px 22px", width: "560px" } }, h("div", { class: "label", text: "Atelier runs them: a clean clone of the exact head" }), h("div", { class: "mono", style: { fontSize: "24px", marginTop: "12px", lineHeight: "1.8" }, html: "<div class='r1'><span style='color:var(--observed)'>✓ Observed</span> npm test</div><div class='r2'><span style='color:var(--observed)'>✓ Observed</span> typecheck</div><div class='r3 dim'>no pass at this head → no accept</div>" })), 60, 110);
-    // 3 Review.
-    const p3 = panel(3, "Who checked the change?", `the ledger: ${f.modelReviews} reviews by models · <span class="n1">0</span> sent back · <span class="n2">0</span> blocking findings`);
-    const selfA = inBox(p3.L, h("div", { class: "abs" }, famChip("anthropic", "the author")), 120, 200);
-    const selfB = inBox(p3.L, h("div", { class: "abs" }, famChip("anthropic", "the same model family"), h("span", { class: "mono", text: "  “looks right”", style: { fontSize: "24px", color: "var(--text-muted)" } })), 120, 330);
-    const r3a = inBox(p3.R, h("div", { class: "abs" }, famChip("anthropic", "the author")), 60, 140);
-    const r3b = inBox(p3.R, h("div", { class: "abs", style: { display: "flex", gap: "14px", alignItems: "center" } }, famChip("anthropic", "same family"), h("span", { class: "mono", text: "✕ does not count", style: { fontSize: "22px", color: "var(--fault)" } })), 60, 250);
-    const r3c = inBox(p3.R, h("div", { class: "abs", style: { display: "flex", gap: "14px", alignItems: "center" } }, famChip("google", "another family"), h("span", { class: "mono", text: "✓ required to approve", style: { fontSize: "22px", color: "var(--observed)" } })), 60, 340);
-    // 4 Main.
-    const p4 = panel(4, "Is main still sound after merging?", "t278: three landings, merged as 5af22431 at the approved head");
-    p4.sL.append(s("line", { x1: 40, y1: 420, x2: 780, y2: 420, stroke: "#8f9cab", "stroke-width": 5, class: "mainL" }));
-    const m4a = s("path", { d: "M 120 200 C 300 200, 330 420, 460 420", fill: "none", stroke: "#ff8a5b", "stroke-width": 4 });
-    const m4b = s("path", { d: "M 160 300 C 320 300, 360 420, 470 420", fill: "none", stroke: "#6f9bff", "stroke-width": 4 });
-    p4.sL.append(m4a, m4b);
-    const broke = s("text", { x: 500, y: 480, fill: "#ff4d74", "font-size": 28, text: "✕ main fails its tests" }); p4.sL.append(broke);
-    const steps = ["landing lease: one at a time", "merge main into the task", "run the checks again", "review by another family", "accept the reviewed head", "merge exactly that head"].map((x, i) => inBox(p4.R, h("div", { class: "abs mono", style: { fontSize: "23px" }, html: `<span style="color:var(--signal)">${i + 1}</span>  ${x}` }), 60, 90 + i * 62));
-    const planNote = inBox(p4.R, h("div", { class: "abs mono dim", text: "a plan's parts meet first on the plan's own branch", style: { fontSize: "20px" } }), 60, 480);
-    // 5 Inbox.
+    const p1 = panel(1, "Who owns the work?", `the ledger: ${f.handoffs} handoffs, each recorded, each revoking a token`);
+    const s1 = svgFull(820, 560); p1.L.append(s1);
+    const ln1 = s("line", { x1: 40, y1: 300, x2: 780, y2: 300, "stroke-width": 4 }); ln1.style.stroke = "var(--text-dim)"; s1.append(ln1);
+    s1.append(Object.assign(s("text", { x: 40, y: 278, "font-size": 20, text: "one branch, two agents" }), {}));
+    s1.lastChild.style.fill = "var(--text-dim)";
+    const cA = [0, 1, 2, 3].map((i) => { const c1 = s("circle", { cx: 120 + i * 160, cy: 300, r: 13 }); c1.style.fill = i % 2 ? L.o : L.a; s1.append(c1); return c1; });
+    const clash = s("text", { x: 590, y: 380, "font-size": 30, text: "✕ conflict" }); clash.style.fill = "var(--fault)"; s1.append(clash);
+    const own = inBox(p1.R, h("div", { class: "card", style: { padding: "18px 22px", width: "560px" } }, h("div", { class: "label", text: "task" }), h("div", { class: "mono", style: { fontSize: "25px", marginTop: "10px", lineHeight: "1.6" }, html: "owner <span style='color:var(--m-anthropic)'>agent A 🔒</span><br><span style='color:var(--signal)'>🔑 write token: its own fork only</span><br><span class='dim'>a handoff revokes it</span>" })), 60, 110);
+    const refusedB = inBox(p1.R, h("div", { class: "abs mono", text: "agent B's claim: refused", style: { fontSize: "26px", color: "var(--fault)" } }), 60, 380);
+    const p2 = panel(2, "Did the tests run?", `the ledger: ${f.observedChecks.toLocaleString("en")} check results Atelier observed`);
+    const say = inBox(p2.L, h("div", { class: "card", style: { padding: "18px 24px", font: "500 36px/1.3 var(--font-sans)" } }, "“tests pass ✓”", h("div", { class: "mono dim", text: "the agent's own word", style: { fontSize: "18px", marginTop: "8px" } })), 110, 160);
+    const qm = inBox(p2.L, h("div", { class: "abs display", text: "?", style: { fontSize: "170px", color: "var(--fault)" } }), 580, 110);
+    const runs = inBox(p2.R, h("div", { class: "card", style: { padding: "18px 22px", width: "620px" } }, h("div", { class: "label", text: "Atelier runs them: a clean clone of the exact head" }), h("div", { class: "mono", style: { fontSize: "25px", marginTop: "12px", lineHeight: "1.8" }, html: "<div class='r1'><span style='color:var(--observed)'>✓ Observed</span> npm test</div><div class='r2'><span style='color:var(--observed)'>✓ Observed</span> typecheck</div><div class='r3' style='color:var(--fault)'>no observed pass at this head → no accept</div>" })), 60, 110);
+    const p3 = panel(3, "Who checked it?", `the ledger: ${f.modelReviews} reviews by models · <span class="n1">0</span> sent work back · <span class="n2">0</span> blocking findings`);
+    const selfA = inBox(p3.L, h("div", { class: "abs" }, famChip("anthropic", "the author")), 110, 190);
+    const selfB = inBox(p3.L, h("div", { class: "abs" }, famChip("anthropic", "the same model family"), h("span", { class: "mono", text: "  “looks right”", style: { fontSize: "24px", color: "var(--text-muted)" } })), 110, 320);
+    const r3a = inBox(p3.R, h("div", { class: "abs" }, famChip("anthropic", "the author")), 60, 130);
+    const r3b = inBox(p3.R, h("div", { class: "abs", style: { display: "flex", gap: "14px", alignItems: "center" } }, famChip("anthropic", "same family"), h("span", { class: "mono", text: "✕ does not count", style: { fontSize: "23px", color: "var(--fault)" } })), 60, 240);
+    const r3c = inBox(p3.R, h("div", { class: "abs", style: { display: "flex", gap: "14px", alignItems: "center" } }, famChip("google", "another family"), h("span", { class: "mono", text: "✓ required to approve", style: { fontSize: "23px", color: "var(--observed)" } })), 60, 330);
+    const p4 = panel(4, "Is main still sound?", "t278: three landings; merged as 5af22431 at the approved head");
+    const s4 = svgFull(820, 560); p4.L.append(s4);
+    const mainL4 = s("line", { x1: 40, y1: 420, x2: 780, y2: 420, "stroke-width": 5 }); mainL4.style.stroke = "var(--text-dim)"; s4.append(mainL4);
+    const m4a = s("path", { d: "M 120 200 C 300 200, 330 420, 460 420", fill: "none", "stroke-width": 5 }); m4a.style.stroke = L.a;
+    const m4b = s("path", { d: "M 160 300 C 320 300, 360 420, 470 420", fill: "none", "stroke-width": 5 }); m4b.style.stroke = L.z;
+    s4.append(m4a, m4b);
+    const broke = s("text", { x: 470, y: 480, "font-size": 28, text: "✕ main fails its tests" }); broke.style.fill = "var(--fault)"; s4.append(broke);
+    const steps = ["landing lease: one at a time", "merge main into the task", "run the checks again", "review by another family", "accept the reviewed head", "merge exactly that head"].map((x, i) => inBox(p4.R, h("div", { class: "abs mono", style: { fontSize: "24px" }, html: `<span style="color:var(--signal);font-weight:600">${i + 1}</span>  ${x}` }), 60, 90 + i * 64));
     const p5 = panel(5, "What needs me now?", "real output of atelier show t278");
-    const prs = Array.from({ length: 9 }, (_, i) => inBox(p5.L, h("div", { class: "card", style: { padding: "10px 16px", width: "420px", font: "500 20px/1.2 var(--font-mono)" } }, `pull request #${101 + i * 7}  · review?`), 120 + i * 28, 70 + i * 46));
+    const prs = Array.from({ length: 9 }, (_, i) => inBox(p5.L, h("div", { class: "card", style: { padding: "10px 16px", width: "420px", font: "500 20px/1.2 var(--font-mono)" } }, `pull request #${101 + i * 7}  · review?`), 110 + i * 28, 70 + i * 46));
     const recLine = data.terminal.t278.split("\n").find((x) => x.startsWith("Recommendation")) ?? "";
     const revLine = data.terminal.t278.split("\n").find((x) => x.startsWith("Reviews at this revision")) ?? "";
-    const inbox = inBox(p5.R, h("div", { class: "card", style: { padding: "18px 22px", width: "740px" } }, h("div", { class: "label", text: "a decision brief" }), h("div", { class: "mono", style: { fontSize: "19px", marginTop: "10px", lineHeight: "1.55" }, html: `${esc(revLine)}<br><span style="color:var(--signal)">${esc(recLine)}</span>` })), 40, 90);
-    const land = inBox(p5.R, h("div", { class: "abs mono", style: { fontSize: "26px" }, html: "<span style='color:var(--observed)'>$</span> atelier land t278 <span class='dim'> one command lands a task</span>" }), 40, 400);
-    // 6 Models.
-    const p6 = panel(6, "Which model is worth it?", "each model's record on the Models page; AI Gateway figures from GraphQL Analytics");
-    const qms = ["anthropic", "zai", "openai", "google", "deepseek"].map((x, i) => inBox(p6.L, h("div", { class: "abs", style: { display: "flex", gap: "16px", alignItems: "center" } }, famChip(x, { anthropic: "Claude", zai: "GLM", openai: "GPT", google: "Gemini", deepseek: "DeepSeek" }[x]), h("span", { class: "display", text: "?", style: { fontSize: "40px", color: "var(--text-dim)" } })), 120, 90 + i * 80));
-    const models = Object.entries(f.reviewsByModel).sort((a, b) => b[1] - a[1]).slice(0, 6);
-    const max = models[0][1];
-    const bars = models.map(([m, n], i) => {
-      const rj = f.rejectionsByModel[m] ?? 0;
-      return inBox(p6.R, h("div", { class: "abs", style: { display: "flex", alignItems: "center", gap: "12px" } },
-        h("div", { class: "mono", text: NAMES[m] ?? m, style: { width: "240px", fontSize: "18px", color: col(fam(m)), textAlign: "right" } }),
-        h("div", { class: "bar", style: { position: "relative", height: "18px", width: `${n / max * 360}px`, background: col(fam(m)), opacity: 0.85, borderRadius: "3px" } }, h("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: `${rj / n * 100}%`, background: "var(--fault)", borderRadius: "3px" } })),
-        h("div", { class: "mono dim", text: `${n} reviews · ${rj} sent back`, style: { fontSize: "16px" } })), 20, 90 + i * 50);
-    });
-    const gw = inBox(p6.R, h("div", { class: "abs mono", style: { fontSize: "20px", color: "var(--text-muted)" }, text: "AI Gateway: calls · failures · tokens · cost · median and p90 latency" }), 40, 420);
-    // 7 Provenance.
-    const p7 = panel(7, "What happened, and who did it?", "git notes --ref=atelier show 5af22431, the merge of t278");
-    const commit = inBox(p7.L, h("div", { class: "card", style: { padding: "18px 22px", width: "660px", font: "400 22px/1.6 var(--font-mono)" } }, "commit a1b2c3d", h("br"), h("span", { class: "dim", text: "an example commit message" }), h("br"), h("span", { text: "Co-Authored-By: a model", style: { color: "var(--text-muted)" } }), h("div", { class: "dim", text: "a claim in a message; nothing checks it", style: { fontSize: "18px", marginTop: "10px", color: "var(--fault)" } })), 80, 120);
-    const note = inBox(p7.R, h("div", { class: "card", style: { padding: "18px 22px", width: "760px" } }, h("div", { class: "label", text: "the provenance note on the merge, refs/notes/atelier" }), h("pre", { class: "mono", style: { fontSize: "15px", lineHeight: "1.6", whiteSpace: "pre-wrap", margin: "12px 0 0", color: "var(--text)" }, text: data.terminal.note })), 30, 90);
+    const inbox = inBox(p5.R, h("div", { class: "card", style: { padding: "18px 22px", width: "740px" } }, h("div", { class: "label", text: "a decision brief" }), h("div", { class: "mono", style: { fontSize: "20px", marginTop: "10px", lineHeight: "1.55" }, html: `${esc(revLine)}<br><span style="color:var(--signal)">${esc(recLine)}</span>` })), 40, 90);
     const n1 = p3.pr.querySelector(".n1"), n2 = p3.pr.querySelector(".n2");
-    [[3, 1.8, "reject"], [4, 2.0, "reject"]].forEach(([i, d, type]) => c.sfx(starts[i] + d, type, 0.6));
-    [1, 2, 3, 4, 5, 6, 7].forEach((i) => c.sfx(starts[i] + 3.4, "approve", 0.45));
+    c.sfx(starts[1] + 1.3, "reject", 0.5); c.sfx(starts[4] + 1.3, "reject", 0.5);
+    [1, 2, 3, 4, 5].forEach((i) => c.sfx(starts[i] + 2.4, "approve", 0.4));
     return {
       el,
       update(t) {
-        const view = cam.set(t, keys, 0.7);
-        qs.forEach((k, i) => k.update(P(t, 0.3 + i * 1.1, 1.1)));
-        gitLine.style.opacity = P(t, c.when("Git records commits"), 0.6);
+        const view = cam.set(t, keys, 0.6);
+        qs.forEach((k, i) => k.update(P(t, 0.1 + i * 0.7, 0.9)));
+        gitLine.style.opacity = P(t, 2.4, 0.6);
         panels.forEach((p) => {
           const q = t - starts[p.i];
-          p.k.update(P(q, -0.4, 1.0));
-          fadeIn(p.L, P(q, 0.0, 0.5), 16);
-          fadeIn(p.R, P(q, 1.8, 0.6), 16);
-          p.L.style.filter = `grayscale(${0.3 + 0.5 * P(q, 2.4, 0.8)})`;
-          p.L.style.opacity = P(q, 0, 0.5) * lerp(1, 0.75, P(q, 2.4, 0.8));
-          fadeIn(p.pr, P(q, 3.0, 0.6), 8);
+          p.k.update(P(q, -0.4, 0.9));
+          fadeIn(p.L, P(q, -0.1, 0.5), 16);
+          fadeIn(p.R, P(q, 1.2, 0.5), 16);
+          p.L.style.opacity = P(q, -0.1, 0.5) * lerp(1, 0.7, P(q, 1.8, 0.8));
+          fadeIn(p.pr, P(q, 2.2, 0.5), 8);
         });
-        { const q = t - starts[1]; cA.forEach((x, i) => (x.style.opacity = P(q, 0.3 + i * 0.25, 0.3))); clash.style.opacity = P(q, 1.3, 0.3); pop(own, P(q, 2.0, 0.5), 0.8); refusedB.style.opacity = P(q, 2.8, 0.4); }
-        { const q = t - starts[2]; pop(say, P(q, 0.2, 0.5), 0.8); qm.style.opacity = P(q, 1.0, 0.4); fadeIn(runs, P(q, 1.9, 0.5)); ["r1", "r2", "r3"].forEach((x, i) => (runs.querySelector("." + x).style.opacity = P(q, 2.3 + i * 0.5, 0.3))); }
-        { const q = t - starts[3]; fadeIn(selfA, P(q, 0.2, 0.4)); fadeIn(selfB, P(q, 0.8, 0.4)); fadeIn(r3a, P(q, 1.9, 0.4)); fadeIn(r3b, P(q, 2.3, 0.4)); fadeIn(r3c, P(q, 2.8, 0.4));
-          count(n1, f.modelRejections, (q - 3.2) / 1.6); count(n2, f.blockingFindings, (q - 3.5) / 1.6); }
-        { const q = t - starts[4]; draw(m4a, P(q, 0.2, 0.8)); draw(m4b, P(q, 0.5, 0.8)); broke.style.opacity = P(q, 1.4, 0.3); p4.sL.querySelector(".mainL").setAttribute("stroke", q > 1.4 ? "#ff4d74" : "#8f9cab");
-          steps.forEach((x, i) => fadeIn(x, P(q, 2.0 + i * 0.55, 0.35), 8)); planNote.style.opacity = P(q, c.when("Plans are integrated") - starts[4], 0.5); }
-        { const q = t - starts[5]; prs.forEach((x, i) => fadeIn(x, P(q, 0.1 + i * 0.12, 0.3), -20)); fadeIn(inbox, P(q, 2.0, 0.5)); fadeIn(land, P(q, c.when("one command lands") - starts[5], 0.5)); }
-        { const q = t - starts[6]; qms.forEach((x, i) => fadeIn(x, P(q, 0.1 + i * 0.15, 0.3))); bars.forEach((x, i) => { fadeIn(x, P(q, 1.9 + i * 0.12, 0.3), 6); const b = x.querySelector(".bar"); b.style.transformOrigin = "0 50%"; b.style.transform = `scaleX(${P(q, 2.0 + i * 0.12, 0.7)})`; }); gw.style.opacity = P(q, c.when("calls through Cloudflare") - starts[6], 0.5); }
-        { const q = t - starts[7]; fadeIn(commit, P(q, 0.2, 0.5)); fadeIn(note, P(q, 1.9, 0.6)); }
+        { const q = t - starts[1]; cA.forEach((x, i) => (x.style.opacity = P(q, 0.1 + i * 0.2, 0.3))); clash.style.opacity = P(q, 1.0, 0.3); pop(own, P(q, 1.4, 0.5), 0.8); refusedB.style.opacity = P(q, 2.2, 0.4); }
+        { const q = t - starts[2]; pop(say, P(q, 0.0, 0.5), 0.8); qm.style.opacity = P(q, 0.7, 0.4); fadeIn(runs, P(q, 1.3, 0.5)); ["r1", "r2", "r3"].forEach((x, i) => (runs.querySelector("." + x).style.opacity = P(q, 1.7 + i * 0.5, 0.3))); }
+        { const q = t - starts[3]; fadeIn(selfA, P(q, 0.0, 0.4)); fadeIn(selfB, P(q, 0.5, 0.4)); fadeIn(r3a, P(q, 1.3, 0.4)); fadeIn(r3b, P(q, 1.7, 0.4)); fadeIn(r3c, P(q, 2.1, 0.4));
+          count(n1, f.modelRejections, (q - 2.3) / 1.5); count(n2, f.blockingFindings, (q - 2.6) / 1.5); }
+        { const q = t - starts[4]; draw(m4a, P(q, 0.0, 0.7)); draw(m4b, P(q, 0.3, 0.7)); broke.style.opacity = P(q, 1.2, 0.3); mainL4.style.stroke = q > 1.2 ? "var(--fault)" : "var(--text-dim)";
+          steps.forEach((x, i) => fadeIn(x, P(q, 1.4 + i * 0.45, 0.35), 8)); }
+        { const q = t - starts[5]; prs.forEach((x, i) => fadeIn(x, P(q, 0.0 + i * 0.1, 0.3), -20)); fadeIn(inbox, P(q, 1.4, 0.5)); }
+        return view;
+      },
+    };
+  };
+
+  SCENES.commit = (c, data) => {
+    const el = h("div");
+    const world = h("div");
+    el.append(world);
+    const cam = camera(world, 1920, 1080);
+    const st = data.stories.t278;
+    const ttl = kinetic("A commit message, and a record", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" });
+    world.append(ttl.el);
+    const left = pos(h("div", { class: "card", style: { padding: "20px 24px", width: "700px", height: "640px" } },
+      h("div", { class: "label", text: "git log -1 de67194 · written by the agent", style: { color: "var(--fault)" } }),
+      h("pre", { class: "mono", style: { fontSize: "21px", lineHeight: "1.6", whiteSpace: "pre-wrap", margin: "16px 0 0", color: "var(--text)" }, text: data.terminal.commit }),
+      h("div", { class: "mono claims", style: { fontSize: "19px", marginTop: "26px", lineHeight: "1.8", color: "var(--text-muted)" }, html: "no head it was checked at<br>no test results<br>no reviewer, no rejections<br>nothing verifies the author line" })), 120, 200);
+    // The ledger's record, from the events.
+    const L = st.landing;
+    const evLine = (e) => {
+      const who = e.actor === "pavi" ? "the owner" : nice(e.actor);
+      const what = { "item.claimed": "claimed", "push.observed": `pushed, head ${e.head} read from Artifacts`, "evidence.observed": `check observed passing at ${e.head}`, "review.rejected": "rejected, with blocking findings", "review.approved": "approved", "item.accepted": `accepted at ${e.head}`, "item.merged": `merged as ${e.mergeCommit}` }[e.kind];
+      return what ? `<span class="dim">${utc(e.at, true).replace(" UTC", "")}</span>  <span style="color:${e.kind.startsWith("review.rejected") ? "var(--fault)" : e.kind.startsWith("review.approved") || e.kind === "item.merged" ? "var(--observed)" : "var(--text)"}">${esc(who)}</span> ${esc(what)}` : null;
+    };
+    const claimed = { at: "2026-10-07T20:27:16.169Z", kind: "item.claimed", actor: st.builders[0] };
+    const seen = new Set();
+    const lines = [claimed, ...L].filter((e) => { if (e.kind === "evidence.observed") { if (seen.has(e.head)) return false; seen.add(e.head); } return true; }).map(evLine).filter(Boolean);
+    const right = pos(h("div", { class: "card", style: { padding: "20px 24px", width: "940px", height: "640px", borderColor: "var(--observed-line)" } },
+      h("div", { class: "label", text: "t278 in the ledger · written by the server, from what it observed", style: { color: "var(--observed)" } }),
+      h("div", { class: "mono", style: { fontSize: "18px", lineHeight: "1.75", marginTop: "14px" } }, ...lines.map((x) => h("div", { class: "ev", html: x })))), 860, 200);
+    const note = pos(h("div", { class: "abs mono", style: { fontSize: "18px", color: "var(--signal)", width: "1680px", fontWeight: 600 }, html: `git notes --ref=atelier show 5af22431 → ${esc(data.terminal.note.split("\n")[0])} · ${esc((data.terminal.note.split("\n")[3] ?? "").slice(0, 70))}…` }), 120, 860);
+    world.append(left, right, note);
+    c.sfx(c.cue(2), "swell", 0.6);
+    return {
+      el,
+      update(t) {
+        const view = cam.set(t, [[0, 960, 520, 1.04], [c.cue(1), 560, 520, 1.12], [c.cue(2) - 0.2, 1300, 520, 1.08], [c.when("as a note"), 960, 560, 1.0]], 0.6);
+        ttl.update(P(t, 0.1, 1.0));
+        fadeIn(left, P(t, c.cue(1) - 0.3, 0.6));
+        left.querySelector(".claims").style.opacity = P(t, c.when("That is all"), 0.5);
+        fadeIn(right, P(t, c.cue(2), 0.6));
+        [...right.querySelectorAll(".ev")].forEach((x, i) => fadeIn(x, P(t, c.cue(2) + 0.4 + i * 0.28, 0.3), 6));
+        fadeIn(note, P(t, c.when("as a note") - 0.2, 0.6));
+        return view;
+      },
+    };
+  };
+
+  SCENES.metrics = (c, data) => {
+    const el = h("div");
+    const world = h("div");
+    el.append(world);
+    const cam = camera(world, 1920 * 5, 1080);
+    const f = data.facts;
+    // A: built and reviewed, on one scale.
+    const A = region(0, 0); world.append(A);
+    A.append(kinetic("Built, and reviewed", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
+    const ttlA = A.lastChild;
+    const head = pos(h("div", { class: "abs" }, h("div", { class: "label", text: "Merged tasks built, by family (headline)" }),
+      h("div", { style: { display: "flex", gap: "34px", marginTop: "12px" } }, ...Object.entries(f.mergedBuilderFamilies).sort((a, b) => b[1] - a[1]).map(([x, n]) => h("div", {}, h("div", { class: "big-num hf", "data-n": n, text: "0", style: { fontSize: "64px", color: col(x) } }), h("div", { class: "label", text: FAMILY_NAME[x] }))))), 120, 190);
+    A.append(head);
+    const both = {};
+    for (const [m, n] of Object.entries(f.mergedBuilderModels)) (both[m] ??= { b: 0, r: 0 }).b += n;
+    for (const [m, n] of Object.entries(f.reviewsByModel)) (both[m] ??= { b: 0, r: 0 }).r += n;
+    const rows = Object.entries(both).filter(([, v]) => v.b + v.r >= 5).sort((a, b) => (b[1].b + b[1].r) - (a[1].b + a[1].r)).slice(0, 9);
+    const max = Math.max(...rows.map(([, v]) => Math.max(v.b, v.r)));
+    const chart = pos(h("div", { class: "abs" },
+      h("div", { style: { display: "flex", gap: "30px", marginBottom: "10px", marginLeft: "290px" } }, h("span", { class: "mono", html: "<span style='display:inline-block;width:14px;height:14px;background:var(--text);margin-right:8px'></span>built: merged tasks it worked on", style: { fontSize: "18px" } }), h("span", { class: "mono", html: "<span style='display:inline-block;width:14px;height:14px;border:2px solid var(--text-muted);margin-right:8px'></span>reviewed: reviews it recorded", style: { fontSize: "18px" } })),
+      ...rows.map(([m, v]) => h("div", { style: { display: "flex", alignItems: "center", gap: "12px", height: "50px" } },
+        h("div", { class: "mono", text: NAMES[m] ?? m, style: { width: "280px", fontSize: "19px", textAlign: "right", color: col(fam(m)), fontWeight: 600 } }),
+        h("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } }, h("div", { class: "bar", style: { height: "15px", width: `${Math.max(2, v.b / max * 1100)}px`, background: col(fam(m)), borderRadius: "3px" } }), h("span", { class: "mono", text: `built ${v.b}`, style: { fontSize: "15px", color: "var(--text-muted)" } })),
+          h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } }, h("div", { class: "bar", style: { height: "15px", width: `${Math.max(2, v.r / max * 1100)}px`, border: `2px solid ${col(fam(m))}`, borderRadius: "3px", boxSizing: "border-box" } }), h("span", { class: "mono", text: `reviewed ${v.r}`, style: { fontSize: "15px", color: "var(--text-muted)" } })))))), 120, 400);
+    A.append(chart);
+    // B: AI Gateway, C: the record.
+    const B = region(1920, 0); world.append(B);
+    B.append(kinetic("Cost and latency, per model", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
+    const ttlB = B.lastChild;
+    const gw = h("div", { class: "shot", style: { position: "absolute", left: "120px", top: "220px", width: "1584px", height: "443px", borderRadius: "14px", overflow: "hidden", boxShadow: "0 30px 80px rgba(20,24,29,.25), 0 0 0 1px var(--line-bright)" } }, h("img", { src: "../.cache/screens/gateway.png", style: { width: "1584px" } }));
+    B.append(gw, pos(h("div", { class: "abs mono", text: "atelier.zone/models · AI Gateway, from Cloudflare's GraphQL Analytics · captured from the live site", style: { fontSize: "18px", color: "var(--text-muted)" } }), 120, 690));
+    // B2: local models.
+    const B2 = region(3840, 0); world.append(B2);
+    B2.append(kinetic("Local models, no per-call cost", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
+    const ttlB2 = B2.lastChild;
+    const pool = pos(h("div", { class: "card", style: { padding: "20px 26px", width: "1680px" } },
+      h("div", { class: "label", text: `joined the pool ${day(data.localPool[0].addedAt)}, ${utc(data.localPool[0].addedAt)} · served on the owner's network · the same gate as every model` }),
+      h("div", { style: { display: "flex", gap: "16px", marginTop: "16px", flexWrap: "wrap" } }, ...data.localPool.map((e) => h("span", { class: "chip", style: { color: col(e.family), fontSize: "26px" } }, h("span", { class: "dot" }), e.id)))), 120, 210);
+    const disp = data.localDispatches.map((x, i) => pos(h("div", { class: "card", style: { padding: "16px 22px", width: "820px" } }, h("div", { class: "label", text: `dispatched ${utc(x.at)}, ${day(x.at)} · ${x.state === "merged" ? "merged" : "taking the work"}` }), h("div", { class: "mono", style: { fontSize: "26px", marginTop: "8px" }, html: `${x.id} → <span style="color:${col(fam(x.model))}">${esc(x.model)}</span>` })), 120 + i * 860, 430));
+    const earlier = pos(h("div", { class: "card", style: { padding: "16px 22px", width: "1680px" } }, h("div", { class: "label", text: "merged tasks local builds worked on earlier · from the ledger" }), h("div", { class: "mono", style: { fontSize: "22px", marginTop: "10px", lineHeight: "1.6" }, html: data.localMerged.map((x) => `${x.id} <span class="dim">${x.builders.map((b) => esc(nice(b))).join(" + ")} · ${day(x.mergedAt)}</span>`).join("<br>") })), 120, 600);
+    B2.append(pool, ...disp, earlier);
+    const C = region(5760, 0); world.append(C);
+    C.append(kinetic("Each model's record", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
+    const ttlC = C.lastChild;
+    const rel = h("div", { class: "shot", style: { position: "absolute", left: "120px", top: "200px", width: "1584px", height: "640px", borderRadius: "14px", overflow: "hidden", boxShadow: "0 30px 80px rgba(20,24,29,.25), 0 0 0 1px var(--line-bright)" } }, h("img", { src: "../.cache/screens/reliability.png", style: { width: "1584px", position: "absolute", left: 0, top: 0 } }));
+    const fv = f.findingVerdicts;
+    const verdict = pos(h("div", { class: "abs mono", style: { fontSize: "24px", fontWeight: 600 }, html: `the owner's verdicts on review findings: <span style="color:var(--observed)">${(fv.confirmed ?? 0) + (fv.fixed ?? 0)} confirmed or fixed</span> · <span style="color:var(--fault)">${fv.refuted ?? 0} refuted</span>` }), 120, 870);
+    C.append(rel, verdict);
+    // D: how it learns.
+    const D = region(7680, 0); world.append(D);
+    D.append(kinetic("How it learns from use", "kin display", { position: "absolute", left: "120px", top: "70px", fontSize: "70px" }).el);
+    const ttlD = D.lastChild;
+    const formula = pos(h("div", { class: "card", style: { padding: "22px 28px", width: "1680px" } },
+      h("div", { class: "label", text: "plan routing's score for each model · src/models/routing.ts, src/plans/route.ts" }),
+      h("div", { class: "mono", style: { fontSize: "30px", marginTop: "14px", lineHeight: "1.6" }, html: "evidence  <span style='color:var(--observed)'>+ 100 × (observed passes + approvals + merges)</span>  <span style='color:var(--fault)'>− 100 × (failures + rejections)</span>" }),
+      h("div", { class: "mono dim", style: { fontSize: "20px", marginTop: "6px" }, text: "from this project's ledger; ties go to the better reliability across projects" }),
+      h("div", { class: "mono soon", style: { fontSize: "21px", marginTop: "14px", color: "var(--signal)", fontWeight: 600 }, text: "in progress: a speed term (t260) and reviewers ranked by precision (t263)" })), 120, 190);
+    const tasks = ["t296", "t298"].map((id, i) => {
+      const tk = data.selfTasks?.[id];
+      return pos(h("div", { class: "card", style: { padding: "18px 24px", width: "820px", height: "300px" } }, h("div", { class: "label", text: `${id} · filed ${tk ? utc(tk.createdAt) + ", " + day(tk.createdAt) : ""} · ${tk?.state ?? ""}` }), h("div", { style: { font: "500 22px/1.45 var(--font-sans)", marginTop: "10px" }, text: (tk?.title ?? "").slice(0, 260).replace(/\s+\S*$/, "") + " …" })), 120 + i * 860, 560);
+    });
+    D.append(formula, ...tasks);
+    const tS = c.cue(1), tL = c.cue(2), tC = c.cue(3), tD = c.cue(4);
+    [tS, tL, tC, tD].forEach((x) => c.sfx(x - 0.5, "whoosh", 0.6));
+    c.sfx(c.cue(5), "chime", 0.5);
+    const keys = flight([[0, 960, 540, 1.0], [tS - 0.5, 2880, 540, 1.0], [tL - 0.5, 4800, 540, 1.0], [tC - 0.5, 6720, 540, 1.0], [tD - 0.5, 8640, 540, 1.0]], 1.1, 0.86);
+    return {
+      el,
+      update(t) {
+        const view = cam.set(t, keys, 0.6);
+        [[ttlA, 0], [ttlB, tS - 0.3], [ttlB2, tL - 0.3], [ttlC, tC - 0.3], [ttlD, tD - 0.3]].forEach(([x, a]) => [...x.children].forEach((w, i) => { const e = ease(clamp((t - a) / 0.9 * (x.children.length + 2) - i)); w.style.opacity = e; w.style.transform = `translateY(${(1 - e) * 30}px)`; }));
+        fadeIn(head, P(t, 0.6, 0.5));
+        [...head.querySelectorAll(".hf")].forEach((x, i) => count(x, Number(x.dataset.n), (t - 0.8 - i * 0.15) / 1.4));
+        fadeIn(chart, P(t, 1.6, 0.5));
+        [...chart.querySelectorAll(".bar")].forEach((x, i) => { x.style.transformOrigin = "0 50%"; x.style.transform = `scaleX(${P(t, 1.8 + i * 0.08, 0.8)})`; });
+        fadeIn(gw, P(t, tS, 0.6)); gw.firstChild.style.transform = `scale(${1 + 0.03 * clamp((t - tS) / 8)})`;
+        fadeIn(pool, P(t, tL + 0.2, 0.5)); [...pool.querySelectorAll(".chip")].forEach((x, i) => pop(x, P(t, tL + 0.6 + i * 0.25, 0.4), 0.7));
+        disp.forEach((x, i) => fadeIn(x, P(t, c.when("Two tasks were dispatched") + i * 0.4, 0.5)));
+        fadeIn(earlier, P(t, c.when("Earlier, local builds"), 0.5));
+        fadeIn(rel, P(t, tC, 0.6)); rel.firstChild.style.transform = `translateY(${-P(t, tC + 1.5, 9) * 420}px)`;
+        fadeIn(verdict, P(t, c.when("So far the owner"), 0.5));
+        fadeIn(formula, P(t, tD, 0.6));
+        formula.querySelector(".soon").style.opacity = P(t, c.when("Routing by speed"), 0.5);
+        tasks.forEach((x, i) => fadeIn(x, P(t, i ? c.when("When tests failed") : c.when("When a runner lost"), 0.5)));
         return view;
       },
     };
@@ -524,7 +637,7 @@
     const cam = camera(world, 3840, 1080);
     const R = region(0, 0, 3840, 1080);
     world.append(R);
-    const tHand = c.when("GLM-5.3 took the task");
+    const tHand = c.when("handed task t50");
     const real = forksReal(data, R, c.cue(0) + 0.2, c.cue(1), tHand);
     c.sfx(c.cue(1) - 0.5, "whoosh", 0.7); c.sfx(tHand, "chime", 0.6);
     const keys = flight([[0, 960, 540, 1.04], [c.cue(1) - 0.5, 2880, 540, 1.0]], 1.3, 0.82);
@@ -597,17 +710,17 @@
     const marks = data.screens.t278.marks;
     const thread = marks["Thread"].y - 40, reviewsY = marks["Checks and reviews"].y - 30;
     // Beats.
-    const tB = c.when("Opus 5.5 built task");
+    const tB = c.when("Opus 5.5 built t278") - 3.2;
     const R = [
-      { head: tB + 3.2, checks: c.when("Its checks were observed"), rev: c.when("so Gemini 3.1 Pro"), verdict: c.cue(1) + 0.2 },
-      { head: c.cue(2) + 0.3, checks: c.cue(2) + 0.9, rev: c.cue(2) + 1.4, verdict: c.when("Gemini rejected the second") + 0.4 },
-      { head: c.cue(3) - 0.4, checks: c.cue(3) + 0.1, rev: c.cue(3) + 0.5, verdict: c.cue(3) + 1.2 },
+      { head: tB + 3.4, checks: tB + 4.0, rev: c.when("so Gemini 3.1 Pro"), verdict: c.when("and rejected it") + 0.3 },
+      { head: c.cue(1) + 0.3, checks: c.cue(1) + 0.9, rev: c.cue(1) + 1.4, verdict: c.when("Gemini rejected the next") + 0.4 },
+      { head: c.cue(2) - 0.4, checks: c.cue(2) + 0.1, rev: c.cue(2) + 0.5, verdict: c.cue(2) + 1.0 },
     ];
     R.forEach((r, i) => c.sfx(r.verdict, i < 2 ? "reject" : "approve", 1));
-    c.sfx(tB + 2.0, "whoosh", 0.8);
+    
     c.sfx(c.when("merged eleven seconds") + 1.2, "chime", 0.8);
-    const ts = c.cueEnd(3) + 0.5;
-    const keys = [[0, 900, 600, 1.1], [tB + 2.0, 1000, 580, 1.0], [tB + 3.2, 2880, 540, 1.0], [c.cue(2), 2880, 560, 1.0], [c.cue(3), 2880, 540, 1.0]];
+    const ts = c.cueEnd(2) + 0.5;
+    const keys = [[0, 2880, 520, 1.06], [c.cue(1), 2880, 560, 1.0], [c.cue(2), 2880, 540, 1.0]];
     return {
       el,
       update(t) {
@@ -635,11 +748,11 @@
         const red = Math.max(wash(R[0].verdict), wash(R[1].verdict)), green = wash(R[2].verdict);
         tint.style.boxShadow = red > 0 ? `inset 0 0 ${240 * red}px rgba(255,77,116,${0.55 * red})` : green > 0 ? `inset 0 0 ${240 * green}px rgba(95,224,143,${0.5 * green})` : "none";
         const win = (p, a, b) => { p.style.display = t >= a && t < b + 0.4 ? "block" : "none"; p.style.opacity = P(t, a, 0.5) * (1 - P(t, b, 0.4)); };
-        win(pF1, R[0].verdict + 0.6, c.when("Both were fixed") + 0.6);
-        [...pF1.querySelectorAll(".src span")].forEach((x) => { x.style.opacity = P(t, c.when("Both were fixed"), 0.4); });
-        win(pF2, R[1].verdict + 0.6, c.cue(3));
+        win(pF1, R[0].verdict + 0.6, c.cue(1) + 0.6);
+        [...pF1.querySelectorAll(".src span")].forEach((x) => { x.style.opacity = P(t, c.cue(1), 0.4); });
+        win(pF2, R[1].verdict + 0.6, c.cue(2));
         [...pF2.querySelectorAll(".src span")].forEach((x) => { x.style.opacity = P(t, c.when("That was fixed"), 0.4); });
-        win(pMerge, c.cue(3) + 1.6, c.dur + 1);
+        win(pMerge, c.cue(2) + 1.4, c.dur + 1);
         shot.show(t, ts, ts + 3.2);
         shot.pan(t, [[ts, thread - 40, 1.45, 360], [ts + 3.6, thread + 10, 1.45, 360]]);
         shot2.show(t, ts + 3.2);
@@ -800,12 +913,12 @@
     const shot = browser("plans", "atelier.zone<b>/p/atelier/plans</b>", "captured from the live site");
     el.append(shot.el);
     const H = data.screens.plans.height;
-    const tReal = c.cue(1);
-    const tWho = c.cue(2), tInt = c.when("When main moved"), tMerged = c.cue(3);
-    c.sfx(tReal - 0.5, "whoosh", 0.8); c.sfx(c.when("approved them") + 1.5, "chime", 0.6); c.sfx(tMerged + 2.5, "approve", 0.8);
-    const ts = c.cueEnd(3) + 0.6;
-    const tRoute = c.when("Atelier routes each part");
-    const keys = [[0, 960, 520, 1.06], [tRoute, 1000, 600, 1.0], [tReal - 0.5, 1000, 600, 1.0], [tReal + 0.8, 2880, 540, 1.0], [tInt - 0.5, 2880, 540, 1.0], [tInt + 0.8, 2980, 700, 1.12], [tMerged + 3, 3080, 720, 1.12]];
+    const tReal = -0.4;
+    const tWho = c.cue(1), tInt = c.when("As main moved"), tMerged = c.cue(2);
+    c.sfx(c.when("by hash eleven") + 0.3, "chime", 0.6); c.sfx(tMerged + 2.5, "approve", 0.8);
+    const ts = c.cueEnd(2) + 0.6;
+    const tRoute = -10;
+    const keys = [[0, 2880, 520, 1.04], [tWho, 2880, 540, 1.0], [tInt - 0.5, 2880, 540, 1.0], [tInt + 0.8, 2980, 700, 1.12], [tMerged + 3, 3080, 720, 1.12]];
     return {
       el,
       update(t) {
@@ -821,7 +934,7 @@
           draw(p.path, P(t, tRoute + 2.6 + Math.floor(i / 2) * 1.4, 1.2));
         });
         [...sA.querySelectorAll(".dep")].forEach((e, i) => (e.style.opacity = P(t, 3.4 + i * 0.2, 0.4)));
-        pop(hashA, P(t, c.when("The owner approves the split"), 0.4), 1.4);
+        
         draw(toMainA, P(t, tRoute + 5.6, 1.0));
         fadeIn(goal, P(t, tReal + 0.4, 0.7));
         fadeIn(planner, P(t, c.when("Opus 5.5 proposed"), 0.6));
@@ -834,7 +947,7 @@
           n.el.querySelector(".who").style.opacity = k2;
         });
         edges.forEach(({ e, d }) => { e.style.opacity = P(t, c.when("Opus 5.5 proposed") + 0.6 + d * 0.4, 0.5); });
-        const ka = P(t, c.when("approved them"), 0.35);
+        const ka = P(t, c.when("by hash eleven"), 0.35);
         approve.style.opacity = ka; approve.style.transform = `scale(${lerp(1.4, 1, ka)})`; approve.style.transformOrigin = "100% 0";
         [branch, bl, axis].forEach((x) => (x.style.opacity = P(t, tInt - 1.5, 0.6)));
         [mainL, ml].forEach((x) => (x.style.opacity = P(t, tInt - 1.2, 0.6)));
@@ -932,15 +1045,15 @@
     el.append(shot.el);
     const g = data.screens.flow.marks;
     const gy = Object.entries(g).find(([k, v]) => k.startsWith("svg@") && v.h > 1000)?.[1].y ?? 300;
-    const a = c.cue(1) + 0.8, b = c.when("Models of six families") - 0.2;
+    const a = c.cue(0) + 0.6, b = c.cue(1) - 0.3;
     // A soft tick as each day's merges land.
     for (let tt = a; tt < b; tt += 1 / 30) {
       const now0 = lerp(T0, T1, clamp((tt - a) / (b - a))), now1 = lerp(T0, T1, clamp((tt + 1 / 30 - a) / (b - a)));
       if (merged.some((m) => { const ms = Date.parse(m.mergedAt); return ms > now0 && ms <= now1; })) c.sfx(tt, "tick", 0.5);
     }
-    c.sfx(c.cue(1) - 0.6, "whoosh", 0.8); c.sfx(c.cue(3) + 0.4, "swell", 0.8);
-    const ts = c.cueEnd(3) + 0.8;
-    const keys = [[0, 960, 540, 1.04], [c.cue(1) - 0.6, 960, 540, 1.0], [c.cue(1) + 0.6, 2880, 540, 1.0], [c.cue(3) + 0.2, 2880, 540, 1.0], [c.cue(3) + 2.2, 1920 + X(since) + 250, 470, 1.32]];
+    c.sfx(c.cue(1) + 0.4, "swell", 0.8);
+    const ts = c.cueEnd(1) + 0.8;
+    const keys = [[0, 2880, 540, 1.02], [c.cue(1) + 0.2, 2880, 540, 1.0], [c.cue(1) + 2.2, 1920 + X(since) + 250, 470, 1.32]];
     return {
       el,
       update(t) {
@@ -950,14 +1063,14 @@
         fadeIn(ledger, P(t, 1.2, 0.6));
         flows.forEach((f, i) => f.update(t, 1.6 + i * 0.25, 1.6, 1));
         ledger.style.boxShadow = `0 0 ${20 + 14 * Math.sin(t * 3)}px rgba(255,209,102,.35), 0 20px 60px rgba(0,0,0,.45)`;
-        fadeIn(head, P(t, c.cue(1) + 0.4, 0.6));
-        panel.style.opacity = P(t, c.cue(1) + 0.6, 0.6);
+        fadeIn(head, P(t, 0.2, 0.6));
+        panel.style.opacity = P(t, 0.4, 0.6);
         const now = lerp(T0, T1, clamp((t - a) / (b - a)));
         playhead.setAttribute("x1", X(now)); playhead.setAttribute("x2", X(now)); clock.setAttribute("x", X(now));
         clock.textContent = t > a && t < b + 0.5 ? new Date(now).toISOString().slice(5, 16).replace("T", " ") + " UTC" : "";
         playhead.style.opacity = t > a - 0.3 && t < b + 1 ? 1 : 0;
         const live = {};
-        const dim = P(t, c.cue(3) + 0.3, 0.8);
+        const dim = P(t, c.cue(1) + 0.3, 0.8);
         for (const d of dots) {
           const k = clamp((now - d.ms) / 3.6e6 / 3);
           d.dot.style.opacity = (k > 0 ? 0.35 + 0.65 * k : 0) * (d.cross ? 1 : lerp(1, 0.2, dim));
@@ -967,13 +1080,13 @@
         dayEls.forEach((dd) => { const k = clamp((now - dd.end + 6 * 3600e3) / (6 * 3600e3)); dd.total.style.opacity = k > 0 ? 1 : 0; dd.total.textContent = Math.round(dd.n * clamp(k)); });
         [...panel.querySelectorAll(".row")].forEach((r, i) => {
           r.querySelector(".n").textContent = live[FAMS[i]] ?? 0;
-          const hi = P(t, c.when("Models of six families") + 1.6 + i * 0.6, 0.3) * (1 - P(t, c.when("Models of six families") + 2.2 + i * 0.6, 0.3));
+          const hi = 0;
           r.style.transform = `translateX(${hi * 14}px)`; r.style.filter = hi > 0.1 ? `drop-shadow(0 0 8px ${HEX[FAMS[i]]})` : "";
         });
-        sinceG.style.opacity = P(t, c.when("Every task merged since"), 0.6);
+        sinceG.style.opacity = P(t, c.when("every task merged since"), 0.6);
         sinceLbl.style.opacity = sinceG.style.opacity;
-        fadeIn(big, P(t, c.cue(3) + 0.6, 0.6));
-        count(big.querySelector(".nn"), data.facts.mergedWithCrossFamilyApprovalAtFinalHead, (t - c.cue(3) - 0.6) / 2.2);
+        fadeIn(big, P(t, c.cue(1) + 0.3, 0.6));
+        count(big.querySelector(".nn"), data.facts.mergedWithCrossFamilyApprovalAtFinalHead, (t - c.cue(1) - 0.3) / 2.0);
         shot.show(t, ts);
         shot.pan(t, [[ts, gy - 100, 1.24, 330], [ts + 1.0, gy - 100, 1.24, 330], [c.dur, gy + 700, 1.24, 330]]);
         return view;
@@ -1047,7 +1160,7 @@
     };
     const bMac = band(90, 200, "The owner's machines", "rgba(255,255,255,.015)");
     const bCf = band(320, 450, "Cloudflare", "rgba(95,224,143,.035)");
-    const bNext = band(800, 110, "In progress", "rgba(255,255,255,.01)");
+    const bNext = band(800, 110, "Next", "rgba(255,255,255,.01)");
     bNext.querySelector("rect").setAttribute("stroke-dasharray", "8 8");
     const box = (x, y, w, hh, title, sub, opts = {}) => {
       const b = pos(h("div", { class: "card", style: { padding: "14px 18px", height: hh + "px", borderColor: opts.color ?? "var(--observed-line)", borderStyle: opts.dashed ? "dashed" : "solid", background: opts.dashed ? "transparent" : "var(--surface-raised)" } },
@@ -1063,7 +1176,7 @@
     const art = box(1120, 540, 650, 100, "Artifacts", "Git repositories: a baseline per project,<br>a fork for every task and plan", { live: true });
     const logs = box(150, 660, 440, 100, "Workers Logs", "the Worker's logs, kept", { live: true });
     const aig = box(620, 660, 1150, 100, "AI Gateway · GraphQL Analytics API", "runners' pay-per-use calls through the gateway; the Models page<br>reads calls, failures, tokens, cost and latency per model", { live: true });
-    const next = [["Access", "t270"], ["Browser Rendering", "t283"], ["R2", "t284"], ["Workflows", "t280"]].map(([n, id], i) => box(420 + i * 350, 826, 320, 66, n, `task ${id}`, { dashed: true, color: "var(--line-bright)" }));
+    const next = [["Access", "t270 · built, not yet on"], ["R2", "t284 · built, not yet on"], ["Browser Rendering", "t283 · in progress"], ["Workflows", "t280 · in progress"]].map(([n, id], i) => box(420 + i * 350, 826, 320, 66, n, id, { dashed: true, color: "var(--line-bright)" }));
     const centre = (b, side) => side === "top" ? [b.x + b.w / 2, b.y] : [b.x + b.w / 2, b.y + b.h];
     const edge = (a, b, color = "#ffd166") => {
       const [x1, y1] = centre(a, "bottom"), [x2, y2] = centre(b, "top");
@@ -1075,8 +1188,8 @@
     const E = { cli: edge(cli, worker), runner: edge(runner, worker), ledger: edge(worker, ledger), index: edge(worker, index), art: edge(worker, art, "#5fe08f") };
     const tA = c.when("Artifacts holds"), tL = c.when("Each project's ledger");
     const vis = { cli: 0.8, runner: 1.2, ledger: tL + 0.4, index: tL + 2.6, art: tA + 0.6 };
-    [tL, tA, c.cue(2)].forEach((x) => c.sfx(x, "chime", 0.35));
-    const keys = [[0, 960, 430, 1.08], [tL - 0.3, 960, 450, 1.08], [tL + 0.8, 900, 540, 1.05], [tA - 0.2, 900, 540, 1.05], [tA + 1.0, 1010, 580, 1.05], [c.cue(2) - 0.4, 1010, 580, 1.05], [c.cue(2) + 0.8, 960, 540, 0.98]];
+    [tL, tA, c.cue(1)].forEach((x) => c.sfx(x, "chime", 0.35));
+    const keys = [[0, 960, 430, 1.08], [tL - 0.3, 960, 450, 1.08], [tL + 0.8, 900, 540, 1.05], [tA - 0.2, 900, 540, 1.05], [tA + 1.0, 1010, 580, 1.05], [c.cue(1) - 0.4, 1010, 580, 1.05], [c.cue(1) + 0.8, 960, 540, 0.98]];
     return {
       el,
       update(t) {
@@ -1086,9 +1199,9 @@
         bCf.style.opacity = P(t, c.cue(0) + 0.4, 0.5);
         show(worker, c.cue(0) + 0.9);
         show(ledger, tL + 0.2); show(index, tL + 2.4);
-        show(art, tA + 0.3); show(logs, c.when("Workers Logs keeps")); show(aig, c.when("Workers Logs keeps") + 1.4);
-        bNext.style.opacity = P(t, c.cue(2), 0.5);
-        next.forEach((b, i) => show(b, c.cue(2) + 0.4 + i * 0.35));
+        show(art, tA + 0.3); show(logs, c.cue(1) + 0.2); show(aig, c.cue(1) + 0.9);
+        bNext.style.opacity = P(t, c.when("Access and R2"), 0.5);
+        next.forEach((b, i) => show(b, c.when("Access and R2") + 0.2 + i * 0.35));
         worker.el.style.boxShadow = `0 0 ${24 + 16 * Math.sin(t * 2.4)}px rgba(95,224,143,.3), 0 20px 60px rgba(0,0,0,.45)`;
         ledger.el.style.boxShadow = t > c.when("one owner per task holds") && t < c.when("one owner per task holds") + 2 ? "0 0 40px var(--observed)" : "";
         for (const [k, { p, b }] of Object.entries(E)) { const k0 = P(t, vis[k], 0.5); p.style.opacity = k0; b.update(t, vis[k] + 0.4, 1.8, k0); }
@@ -1123,7 +1236,7 @@
         nums.style.opacity = P(t, c.when("It built itself") - 0.2, 0.6);
         [...nums.querySelectorAll(".big-num")].forEach((x, i) => count(x, Number(x.dataset.n), (t - c.when("It built itself") - i * 0.5) / 2.0));
         fadeIn(url, P(t, c.cue(1), 0.8));
-        fadeIn(repo, P(t, c.when("its source") + 0.2, 0.8));
+        fadeIn(repo, P(t, c.when("open source") + 0.2, 0.8));
         fadeIn(t293, P(t, c.cueEnd(1) + 0.4, 0.8));
         return view;
       },
@@ -1136,6 +1249,7 @@
   // Scenes that hand over without a dip to black, because the next one
   // continues the picture.
   const MATCH = new Set(["cold>cast"]);
+  const LIGHT = new Set(["why", "commit", "metrics"]);
 
   async function init(tl, data) {
     for (const spec of ['800 60px "Bricolage Grotesque"', '700 60px "Bricolage Grotesque"', '400 20px "IBM Plex Sans"', '500 20px "IBM Plex Sans"', '600 20px "IBM Plex Sans"', '400 20px "IBM Plex Mono"', '500 20px "IBM Plex Mono"']) await document.fonts.load(spec);
@@ -1165,7 +1279,7 @@
         dur: sc.dur,
         sfx: (t, type, gain = 1) => sounds.push({ t: sc.start + t, type, gain, scene: sc.id }),
       };
-      const wrap = h("div", { class: "scene" });
+      const wrap = h("div", { class: "scene" + (LIGHT.has(sc.id) ? " light" : "") });
       root.append(wrap);
       wrap.classList.add("on");
       const scene = make(ctx, data);
@@ -1191,6 +1305,7 @@
     document.getElementById("fade").style.opacity = clamp(Math.max(kOut, kIn) * 0.95 + (T < 0.4 ? 1 - T / 0.4 : 0));
     // Parallax: the grid behind moves a little with the camera.
     document.getElementById("bg").style.backgroundPosition = `${(-view.cx * 0.12 * view.s).toFixed(1)}px ${(-view.cy * 0.12 * view.s).toFixed(1)}px`;
+    document.getElementById("vignette").style.opacity = cur.wrap.classList.contains("light") ? 0.35 : 1;
     document.getElementById("grain").querySelector("feTurbulence").setAttribute("seed", String(Math.floor(T * 15) % 97 + 1));
     const ch = document.getElementById("chapter");
     ch.innerHTML = ["cold", "cast", "close"].includes(cur.sc.id) ? "" : `<b>${String(cur.n).padStart(2, "0")}</b>${esc(cur.sc.title)}`;
