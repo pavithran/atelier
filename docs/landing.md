@@ -169,6 +169,101 @@ stopped on and who resolved it, the reviewer and the verdict), so the cost
 of integrating a task can be read from the ledger. `--dry-run` prints the
 steps and the refusals without changing anything.
 
+## Landing through a Cloudflare Workflow
+
+`atelier land t9 --workflow` lands the task through a Cloudflare Workflow
+(`src/landing-workflow.ts`, the `LANDING_WORKFLOW` binding in
+`wrangler.jsonc`) instead of running every step on the owner's machine.
+Without `--workflow`, `atelier land` runs exactly as the section above
+describes; the Workflow is an opt-in per landing, and `--dry-run` with
+`--workflow` is refused.
+
+The Workflow runs the steps a Worker can do alone as durable steps
+(`step.do`) with retries: five tries, 2 to 16 seconds apart, each step
+bounded at five minutes. Each step reads and writes the Ledger Durable
+Object directly, so it needs no write token, and a transient failure (a 503
+from Artifacts, a Durable Object reset) is retried rather than ending the
+landing. In order:
+
+1. Read the task: a merged, abandoned or accepted task, or a plan, ends the
+   Workflow at once with the plain landing's words.
+2. Take the project's landing lease, queueing for it in the order the
+   landings asked (as `--wait` does), for up to three hours.
+3. Wait for the workspace (stage `workspace`, below), then see the pushed
+   head in the Ledger.
+4. Renew the lease (a lease another landing took over stops this one), and
+   run the required checks in a Cloudflare container, the same CheckRunner
+   that `atelier check --sandbox` starts, polling the run to its end. A
+   check the container refuses (one that deploys, installs or pushes) ends
+   the Workflow; land such a project without `--workflow`.
+5. Submit the task in its holder's name, as `atelier submit` in the
+   workspace does.
+6. Request the review and wait for the verdict, polling the Ledger and
+   renewing the lease on each poll; the verdict is judged by
+   `src/landing-verdict.ts`, which the plain landing uses too.
+   `--no-review` ends here, leaving the task submitted.
+7. Read the fork's head from Artifacts, which must be the reviewed head,
+   then accept it.
+8. Wait for the merge to be recorded (stage `merge`, below), then release
+   the lease.
+
+Two kinds of step need Git with a working tree, which a Worker does not
+have, and stay on the machine that holds the task's workspace: merging main
+into the workspace (with the regenerate command and the route-level raise)
+and pushing it, and the final `atelier merge` in the registered checkout,
+which publishes to the baseline. The Workflow writes its stage to the
+Ledger (`lease`, `workspace`, `conflict`, `checks`, `review`, `merge`,
+`done` or `failed`), and `atelier land t9 --workflow` reads it through
+`GET .../items/t9/landing-workflow`, says each new stage once, and acts on
+two of them:
+
+- At `workspace` the Workflow holds the lease, and the command merges main,
+  regenerates and pushes with the same code as the plain landing, renewing
+  the lease meanwhile, then reports the pushed head as a `workspace` event.
+  Every report names its round, so a report the Workflow buffered from an
+  earlier round is passed over.
+- At `merge` the Workflow has accepted, and the command runs `atelier merge
+  t9` in the registered checkout, retrying while another landing holds the
+  lease.
+
+A merge of main that stops on conflicts is reported as such. The Workflow
+releases the lease and pauses at stage `conflict`, naming the files, for up
+to a week. The owner (or the builder, through `atelier dispatch t9 --job
+merge-main`) resolves and commits them, then runs `atelier land t9
+--workflow` again: the command attaches to the live instance and sends a
+`resume` event, and the Workflow queues for the lease again and asks for the
+workspace steps in a new round, since main may have moved while it waited.
+
+What this protects against, and what it does not:
+
+- A closed laptop or a killed command stops only the view. The Workflow
+  keeps its place, and the same command run again attaches to the live
+  instance and goes on from its stage. The checks, the submission and the
+  review wait proceed with no machine attached; the workspace steps and the
+  final merge wait for one. While the Workflow waits for the workspace,
+  the lease is renewed only by a live executor, and while it waits for the
+  merge it is not renewed at all, so a machine that is gone lets the lease
+  lapse after 15 minutes rather than hold the project. Once the workspace
+  reports, the Workflow takes the lease again before the checks.
+- A transient failure of the server's own steps is retried. A failure that
+  outlasts the retries ends the Workflow with the stage `failed`, the
+  reason, and the lease released; run the command again to start a new
+  landing.
+- The push uses the workspace's write token, as in the plain landing; an
+  expired token there fails the workspace step, which ends the Workflow with
+  the CLI's own message.
+- Timeouts: a workspace that never reports ends the Workflow after 24 hours,
+  a review after one hour, a merge after 24 hours, all with the lease
+  released and the by-hand command named.
+
+The routes the command calls (`landing-workflow`, GET and POST) raised the
+route level to 14. The Workflow is tested in workerd with the Workflows test
+helpers (`test/landing-workflow.spec.ts`: the step sequence, a retry after a
+transient failure, a failure that outlasts the retries, the pause on a
+conflict and its resume, and the routes), and the command against a
+stand-in server (`test/land.test.mjs`). No test yet drives the command
+against a running Workflow, and none has run on Cloudflare itself.
+
 ## Integration basis
 
 The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts fork from an updated basis. For a single task, `atelier land` merges main into the task's workspace before checks run. Local verification does not establish a successful production container run.
