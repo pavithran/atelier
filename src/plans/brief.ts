@@ -29,6 +29,7 @@ import { TEXT_CONTROLS } from "../text.ts";
 import { VERDICT_LIMITS, type Finding, type Severity } from "../review/verdict.ts";
 import { PLAN_LIMITS, TASK_KINDS, type PlanPart } from "./schema.ts";
 import { PLANNER_ATTEMPTS } from "./state.ts";
+import type { LargeRef } from "../large.ts";
 
 // build: the part's first attempt, or another after a runner gave up with no
 // commit. rework: the earlier attempt's commits are in the workspace, and
@@ -55,12 +56,14 @@ export interface ReviewFindings {
 }
 
 // The required check that failed when the orchestrator ran it after the
-// earlier attempt, and what it printed.
+// earlier attempt, and what it printed. `log`, when the run kept the whole
+// output in R2 (t284), is its reference; `output` is the tail held inline.
 export interface CheckFailure {
   claim: string;
   head?: string | null;
   where?: "sandbox" | "runner" | null;
   output: string;
+  log?: LargeRef | null;
 }
 
 export interface JobBriefLimits {
@@ -119,7 +122,7 @@ interface Resolved {
   attempt: number | null;
   reason: string | null;
   findings: { by: string; head: string; summary: string | null; findings: ResolvedFinding[] } | null;
-  failure: { claim: string; head: string | null; where: "sandbox" | "runner" | null; output: string } | null;
+  failure: { claim: string; head: string | null; where: "sandbox" | "runner" | null; output: string; log: LargeRef | null } | null;
   mergeMain?: { head: string };  // left out for any other part, so its hash is as before
   mergePlan?: { head: string };  // left out unless the part's integration conflicted, so other briefs' hashes are as before
   limits: JobBriefLimits;
@@ -229,7 +232,7 @@ function resolve(input: JobBriefInput): Resolved {
     findings: findings
       ? { by: findings.by, head: findings.head, summary: findings.summary ?? null, findings: findings.findings.map((f) => ({ file: f.file, line: f.line ?? null, severity: f.severity, text: f.text })) }
       : null,
-    failure: failure ? { claim: failure.claim, head: failure.head ?? null, where: failure.where ?? null, output: failure.output } : null,
+    failure: failure ? { claim: failure.claim, head: failure.head ?? null, where: failure.where ?? null, output: failure.output, log: failure.log ?? null } : null,
     mergeMain: input.mergeMain ? { head: input.mergeMain.head } : undefined,
     mergePlan: input.mergePlan ? { head: input.mergePlan.head } : undefined,
     limits: { findings: limit(input.limits?.findings, JOB_BRIEF_LIMITS.findings), output: limit(input.limits?.output, JOB_BRIEF_LIMITS.output) },
@@ -365,7 +368,7 @@ function render(r: Resolved): string {
   if (r.findings) section(findingsSection(r.findings, r.limits.findings));
 
   if (r.failure) {
-    const { claim, head, output } = r.failure;
+    const { claim, head, output, log } = r.failure;
     const cut = cutOutput(output, r.limits.output);
     section(
       "## Rework: the failing check",
@@ -374,6 +377,9 @@ function render(r: Resolved): string {
       ...(cut.text
         ? [cut.cut ? `${cut.cut} Run the check yourself for the whole output.` : "Its output:", block(cut.text)]
         : ["The check printed nothing."]),
+      // The whole log, when the run kept it in R2, is named by reference: the
+      // key says where it is, and the sha256 says what it holds (t284).
+      ...(log ? [`Its whole output is kept in R2 by reference: ${log.bytes} bytes, sha256 ${inline(log.sha256.slice(0, 12))}, key ${code(log.key)}.`] : []),
     );
   }
 
