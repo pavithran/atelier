@@ -11,5 +11,6 @@
 // workspace's HEAD holds main — its own merge or a rerun of one resolved
 // by hand — compares this file at the task's fork point, its head and
 // main's head, and raises the merged level to main's plus the task's own
-// raise, so each number keeps meaning one set of routes.
-export const ROUTE_LEVEL = 13;
+// raise, so each number keeps meaning one set of routes. 14: the
+// landing-workflow routes, behind atelier land --workflow (t280).
+export const ROUTE_LEVEL = 14;

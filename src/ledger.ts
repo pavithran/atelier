@@ -149,6 +149,18 @@ export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
 // The steps a landing records (landEvent): taking the lease, merging main,
 // regenerating the project's fixtures, pushing, checking, the review, the
 // acceptance and the merge that lands the task.
+// Where a landing Workflow stands (t280, setLandingWorkflowStage).
+export type LandingWorkflowStage = "lease" | "workspace" | "conflict" | "checks" | "review" | "merge" | "done" | "failed";
+export interface LandingWorkflowRecord {
+  instance: string;
+  at: string;
+  stage: LandingWorkflowStage;
+  stageAt: string;
+  round: number;
+  detail?: string;
+  files?: string[];
+}
+
 const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
 
 // What a land.* event may carry beside its duration, and as what: hashes and
@@ -1560,6 +1572,49 @@ export class Ledger extends DurableObject<Env> {
     return this.projectLanding();
   }
 
+  // The landing Workflow instance that runs one task's landing (t280), and
+  // where it stands. The landing-workflow route records the instance it
+  // creates, so a later `atelier land ID --workflow` attaches to the live
+  // instance instead of starting a second landing of the same task; the
+  // Workflow writes its stage here as it goes (setLandingWorkflowStage), so
+  // the CLI shows it and knows when the workspace steps are its to do. The
+  // stage is one of lease, workspace, conflict, checks, review, merge, done
+  // or failed; `round` counts the passes through the workspace steps (a
+  // conflict paused for the owner starts a new round), and every report the
+  // executor sends names its round, so a report from an earlier round that
+  // the Workflow buffered is never taken for the current one. Whether the
+  // instance still runs is read from the Workflow itself. The record is
+  // cleared when the task closes, like the rest of its landing state (see
+  // merged and abandon).
+  setLandingWorkflow(id: string, instance: string, actor: string): LandingWorkflowRecord {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    this.item(id);
+    const at = new Date().toISOString();
+    const record: LandingWorkflowRecord = { instance, at, stage: "lease", stageAt: at, round: 0 };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
+    return record;
+  }
+
+  // The Workflow's own report of its stage. An instance that is no longer
+  // the one recorded for the task (a newer landing replaced it) writes
+  // nothing, so a stale instance never overwrites the live one's stage.
+  setLandingWorkflowStage(id: string, instance: string, stage: LandingWorkflowStage, round: number, detail?: string, files?: string[]): LandingWorkflowRecord | null {
+    const record = this.landingWorkflowOf(id);
+    if (!record || record.instance !== instance) return null;
+    const next: LandingWorkflowRecord = {
+      instance, at: record.at, stage, stageAt: new Date().toISOString(), round,
+      ...(detail ? { detail: detail.slice(0, 2000) } : {}),
+      ...(files?.length ? { files: files.slice(0, 200).map((f) => String(f).slice(0, 500)) } : {}),
+    };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(next));
+    return next;
+  }
+
+  landingWorkflowOf(id: string): LandingWorkflowRecord | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing-workflow:${id}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
   // The queue of landings waiting for the lease with --wait (t249): the
   // server hands a freed lease to the landing that queued first, not to
   // whichever waiting poll happens to land next, so one landing cannot take
@@ -1724,6 +1779,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409);
     }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
@@ -1755,6 +1811,7 @@ export class Ledger extends DurableObject<Env> {
     // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}) }, at);
     this.withdrawTierRequests(id, "the task was closed", at);
     this.afterPlanChange(id);
