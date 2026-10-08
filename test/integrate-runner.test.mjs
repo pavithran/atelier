@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runIntegrate, runRefresh, runRunner, execute, readsOutput, checked } from "../cli/runner.mjs";
+import { runIntegrate, runRefresh, runRunner, execute, readsOutput, checked, failureCount, infrastructureFailureCount } from "../cli/runner.mjs";
 
 // The integrate and refresh jobs (docs/orchestrator.md, section 5, build step
 // 14) driven through a stand-in io, as the review runner tests are: the server
@@ -300,6 +300,63 @@ test("runRefresh aborts a conflicting merge and posts refresh-failed with kind c
   assert.equal(argv[argv.indexOf("--kind") + 1], "conflict");
   assert.match(argv[argv.indexOf("--reason") + 1], /docs\/using-atelier\.md/);
   assert.ok(!calls.some((c) => c.argv?.[0] === "push"));
+});
+
+// t273: a refresh whose failure the server recorded (refresh-failed) counts
+// toward neither failure cap, whatever its kind: the tick does not try the
+// same main head again, and a conflict adds the merge-main part, so the
+// runner keeps serving the plan item's jobs.
+test("a recorded refresh-failed counts toward neither failure cap", async () => {
+  for (const options of [{ mergeCode: 1, mergeOutput: "CONFLICT (content): Merge conflict in docs/using-atelier.md" }, { checkFails: true }]) {
+    const { io, calls } = refreshFixture(options);
+    const state = await runRefresh(refreshJob, config, name, io);
+    assert.equal(state.phase, "failed");
+    assert.ok(state.recorded, "the failure was recorded on the plan item");
+    assert.ok(!state.taskFailure, "a recorded refresh-failed is no task failure");
+    assert.equal(failureCount(1, state), 1, "the recorded failure does not advance the failure cap");
+    assert.equal(infrastructureFailureCount(2, state), 0, "the recorded failure is no infrastructure failure and starts no streak");
+    assert.ok(calls.some((c) => c.argv?.[0] === "refresh-failed"));
+  }
+});
+
+// t273, through the loop: after two refreshes that conflict, the runner
+// still serves the plan item — whose integrate job now merges the
+// merge-main part the conflict added. Before, the second conflict logged
+// that the plan needed the owner's attention and the part was never
+// integrated.
+test("a --integrate runner keeps serving a plan whose refresh conflicts twice", async () => {
+  const claimed = [], logs = [];
+  let polls = 0;
+  const integrate = {
+    project: "atelier",
+    item: { id: "t1", dispatch: { job: "integrate", part: `main-${MAIN.slice(0, 8)}`, head: H1, partId: "t269" } },
+    agent: "atelier", model: "integrator", actor: "atelier/integrator",
+  };
+  const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true };
+  await runRunner(args, {
+    workspacePath: () => "/cache/work/atelier/t1", wait: async () => {},
+    taskIO: { log: (s) => logs.push(s) },
+    async queue() {
+      polls++;
+      if (polls === 4) process.emit("SIGTERM");
+      return polls === 3 ? [integrate] : [refreshJob];
+    },
+    async executeChild(argv) {
+      if (argv[0] === "git") {
+        if (argv[1] === "rev-parse") return { code: 0, output: "before" };
+        if (argv[1] === "stash") return { code: 0, output: "" };
+        if (argv[1] === "merge" && argv.at(-1) === MAIN) return { code: 1, output: "CONFLICT (content): Merge conflict in docs/using-atelier.md" };
+        return { code: 0, output: "main" };
+      }
+      const command = argv[2];
+      if (command === "claim") claimed.push(argv[3]);
+      if (command === "read-token") return { code: 0, output: JSON.stringify({ remote: "r", token: "t", defaultBranch: "main" }) };
+      if (command === "integrated") return { code: 0, output: JSON.stringify({ allIntegrated: false, parts: [] }) };
+      return { code: 0, output: "{}" };
+    },
+  });
+  assert.deepEqual(claimed, ["t1", "t1", "t1"], "the integrate job follows two recorded refresh failures");
+  assert.ok(!logs.some((s) => s.includes("needs the owner's attention")), "a recorded refresh-failed asks for no owner's attention");
 });
 
 test("runRefresh skips a refresh job that names no main head", async () => {
