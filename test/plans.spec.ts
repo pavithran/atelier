@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
-import type { Ledger, LedgerEvent } from "../src/ledger.ts";
+import type { CriteriaChange, Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
+import { criteriaHash } from "../src/criteria.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { PLAN_LIMITS, type PlanPart } from "../src/plans/schema.ts";
-import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+import { parseRuleError, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
+const INTEGRATOR = "atelier/integrator";
 
 // Plans on the Ledger, end to end over Durable Object RPC with real SQLite
 // storage (docs/orchestrator.md, sections 1 to 3 and 6 to 8, build step 5).
@@ -463,3 +465,54 @@ it("a tick that fails is undone and logged, and the change that ran it stands", 
     actor: "atelier/orchestrator", data: { after: parts.a, error: expect.stringMatching(/approved proposal ffffffffffff is not in the ledger/) },
   });
 });
+
+// t326: a part's review is bound to the task's criteria and the plan's
+// acceptance; a change of the part's criteria while it waits to integrate
+// takes its review back, the integration refuses it until a fresh review of
+// the new criteria, and an integrated part's criteria cannot change.
+it("a submitted part's criteria change needs a fresh review before it integrates; an integrated part's criteria stay as they are", async () => {
+  const L = await setup("plan-criteria");
+  const { id: planId, hash } = await proposed(L);
+  await L.setFork(planId, `fork-${planId}`, H0, "owner");
+  const { parts } = await L.approvePlan(planId, "owner", hash, false, POOL);
+  const partId = parts[0].id;
+  const d = (await L.item(partId)).dispatch!;
+  const builder = `${d.agent}/${d.model}`;
+  const head = "a".repeat(40);
+  await L.claim(partId, builder, RUNNER);
+  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.recordPush(partId, builder, head, head);
+  await L.addEvidence(observed(partId, head));
+  await L.submit(partId, builder);
+  const ask = (await L.reviewWaiting())[0].dispatch!;
+  const reviewer = `${ask.agent}/${ask.model}`;
+  const first = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
+  expect(first.criteria).toBe(criteriaHash([], ["It works"]));
+  await L.addReview({ itemId: partId, by: reviewer, head, criteria: first.criteria, request: first.request, approve: true, note: "Good", at: new Date().toISOString() }, undefined, true);
+  expect((await L.item(planId)).dispatch).toMatchObject({ job: "integrate", partId });
+
+  // The owner adds a criterion: the approval is withdrawn, and the integrator
+  // is refused the part it was dispatched for.
+  const edited = await L.editItem(partId, "owner", { accept: ["Errors name the line"] }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(edited.criteriaChange).toMatchObject({ reviews: 1 });
+  expect(edited.state).toBe("submitted");
+  await L.claim(planId, INTEGRATOR, RUNNER, true);
+  const MA = "1".repeat(40);
+  await refusal(L.integratePart(planId, INTEGRATOR, "a", MA, true), "not_integrable", /has no approval from another model family/);
+  expect((await L.item(partId)).state).toBe("submitted");
+  // The tick asked a fresh review; bound to the new criteria, it lets the part in.
+  const fresh = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
+  expect(fresh.criteria).toBe(criteriaHash(["Errors name the line"], ["It works"]));
+  await L.addReview({ itemId: partId, by: reviewer, head, criteria: fresh.criteria, request: fresh.request, approve: true, note: "Good again", at: new Date().toISOString() }, undefined, true);
+  await L.integratePart(planId, INTEGRATOR, "a", MA, true);
+  expect((await L.planView(planId)).parts[0].integration).toEqual({ head, mergeCommit: MA, criteria: fresh.criteria });
+
+  // Integrated, its criteria cannot change, and nothing is written.
+  const before = (await events(L, partId)).length;
+  await refusal(L.editItem(partId, "owner", { accept: ["Something else"] }), "integrated", /integrated into its plan's branch.*nothing was changed/);
+  expect(await L.item(partId)).toMatchObject({ state: "integrated", accept: ["Errors name the line"] });
+  expect((await events(L, partId)).length).toBe(before);
+  expect((await L.reviewsFor(partId)).at(-1)?.withdrawn).toBeUndefined();
+  // Other fields of an integrated part may still be edited.
+  await L.editItem(partId, "owner", { nextGate: "Plan review" });
+}, 30_000);

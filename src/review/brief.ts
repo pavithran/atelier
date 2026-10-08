@@ -367,7 +367,8 @@ function mergeLines(previous: string | null, merge: NonNullable<NonNullable<Brie
 // Earlier reviews, oldest first. A round is a head a model rejected and this
 // review moves past, numbered in the order those heads were first rejected;
 // the head under review is among them when the owner refuted its rejection's
-// every blocking finding. A review at the head under review is marked so.
+// every blocking finding. A review at the head under review is marked so,
+// and one withdrawn when the criteria changed says so.
 // Each finding is numbered as `atelier finding --index` counts it, and the
 // owner's verdicts follow its review's block, outside it, since the owner
 // wrote them.
@@ -380,7 +381,7 @@ function earlier(previous: readonly ReviewRecord[], head: string, owner: string,
   for (const r of previous) {
     const who = r.by === owner ? "the project owner" : r.by;
     const round = rounds.get(r.head);
-    lines.push("", `${round ? `Round ${round}, at` : "At"} ${short(r.head)}${r.head === head ? " (this head)" : ""}: ${who} ${r.approve ? "approved" : "rejected"}.`);
+    lines.push("", `${round ? `Round ${round}, at` : "At"} ${short(r.head)}${r.head === head ? " (this head)" : ""}: ${who} ${r.approve ? "approved" : "rejected"}.${r.withdrawn ? " Withdrawn when the acceptance criteria changed: it judged other criteria than the ones above, and no longer counts." : ""}`);
     const findings = r.findings ?? [];
     const body = [
       ...(r.note.trim() ? [`note: ${r.note.trim()}`] : []),

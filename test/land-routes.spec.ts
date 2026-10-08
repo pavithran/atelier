@@ -287,7 +287,7 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, reviewer: GPT });
   expect(await L.reviewWaiting()).toEqual([]);
   expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ head, state: "claimed", claimedBy: GPT });
-  await L.addReview({ itemId: id, by: GPT, head, approve: true, note: "Independently reviewed", at: new Date().toISOString() });
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Independently reviewed", at: new Date().toISOString() });
   expect(await L.reviewWaiting()).toEqual([]);
   // With the independent approval counted, no review is needed.
   const after = await L.requestReview(id, "owner", null, POOL);
@@ -317,7 +317,7 @@ it("a wanted review is requested for the named reviewer though the gate needs no
   const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { need: { basis: string } | null };
   expect(claim.need).toMatchObject({ basis: "requested" });
   // A rejection at this head stops the gate, and a wanted review is refused with that reason.
-  await L.addReview({ itemId: id, by: GPT, head, approve: false, note: "Wrong.", findings: [{ file: "docs/note.md", line: 1, severity: "blocking" as const, text: "It is wrong." }], at: new Date().toISOString() });
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: false, note: "Wrong.", findings: [{ file: "docs/note.md", line: 1, severity: "blocking" as const, text: "It is wrong." }], at: new Date().toISOString() });
   await refusal(L.requestReview(id, "owner", GPT, POOL, true), "review_blocked", /rejected dddddddd/);
   // t240: once the owner has refuted every blocking finding of that rejection,
   // the same head is asked for a second opinion rather than refused — no
@@ -408,12 +408,12 @@ it("a landing's review request with an explicit --reviewer outside the tier asks
   // accepted at once, without waiting for it: its request is withdrawn.
   await L.claimReview(id, SONNET, RUNNER);
   await L.claimReview(id, GPT, RUNNER);
-  await L.addReview({ itemId: id, by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
   await L.accept(id, "owner", head);
   expect((await L.reviewRequests(id)).find((r) => r.tier)).toMatchObject({ state: "withdrawn" });
   expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: SONNET, tier: true } });
   // The tier verdict arriving late is refused and does not reopen the accepted task.
-  await refusal(L.addReview({ itemId: id, by: SONNET, head, approve: false, note: "Late.", at: new Date().toISOString() }), "tier_withdrawn", /no longer asked for/);
+  await refusal(L.addReview({ itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: false, note: "Late.", at: new Date().toISOString() }), "tier_withdrawn", /no longer asked for/);
   expect(await L.item(id)).toMatchObject({ state: "accepted" });
   // Where every tier model built the change or reviews it for the gate, no tier review is asked.
   const solo = await setup("land-tier-none", { ...policy, reviewTier: [OPUS, GEMINI] });
@@ -430,7 +430,7 @@ it("a tier approval alone does not let the task be accepted", async () => {
   await submittedTask(L, id, head);
   await L.requestReview(id, "owner", GPT, POOL);
   await L.claimReview(id, "claude-code/sonnet-5.5", RUNNER);
-  await L.addReview({ itemId: id, by: "claude-code/sonnet-5.5", head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: "claude-code/sonnet-5.5", head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
   await refusal(L.accept(id, "owner", head), "not_ready", /another family/);
   // The gate's request still stands for GPT.
   expect((await L.reviewRequests(id)).find((r) => !r.tier)).toMatchObject({ state: "open" });
@@ -450,7 +450,7 @@ it("a landing's review goes to a tier model of another family first, and its one
   expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
   expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { reviewer: GPT, topTier: true } });
   await L.claimReview(id, GPT, RUNNER);
-  await L.addReview({ itemId: id, by: GPT, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
   expect((await L.reviewsFor(id))[0]).toMatchObject({ by: GPT, topTier: true });
   expect((await L.reviewsFor(id))[0].tier).toBeUndefined();
   await L.accept(id, "owner", head);

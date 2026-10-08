@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import { briefFor, cleanSummary } from "../src/brief.ts";
 import { gate, inboxFor, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
@@ -19,7 +20,7 @@ const pass = (over: Partial<Evidence> = {}): Evidence => ({
   itemId: "t21", claim: "npm test", grade: "observed", head: H1, passed: true,
   by: "owner", at: T, changedPaths: ["src/a.ts"], where: "sandbox", ...over,
 });
-const rev = (over: Partial<Review> = {}): Review => ({ itemId: "t21", by: "codex/gpt-5.5", head: H1, approve: true, note: "", at: T, ...over });
+const rev = (over: Partial<Review> = {}): Review => ({ itemId: "t21", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, ...over });
 const submitted = (seq: number, head: string, summary?: string, actor = "claude-code/opus-5.5"): LedgerEvent =>
   ({ seq, itemId: "t21", at: T, actor, kind: "item.submitted", data: { head, ...(summary ? { summary } : {}) } });
 
