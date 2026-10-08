@@ -15,13 +15,13 @@ const repo = fileURLToPath(new URL("..", import.meta.url));
 const zsh = ["/bin/zsh", "/usr/bin/zsh"].find((p) => existsSync(p));
 const skip = !zsh && "zsh is not installed";
 
-// A stand-in that writes its argv and its standard input to `record`, and
-// prints `output`.
+// A stand-in that writes its argv, its standard input and the CF_AIG_METADATA
+// the wrapper sets to `record`, and prints `output`.
 function standIn(path, record, output = "") {
   writeFileSync(path, `#!${process.execPath}
 const fs = require("node:fs");
 const input = fs.readFileSync(0, "utf8");
-fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), input }));
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), input, metadata: process.env.CF_AIG_METADATA }));
 process.stdout.write(${JSON.stringify(output)});
 `);
   chmodSync(path, 0o755);
@@ -57,8 +57,16 @@ test("run-agent.sh passes the brief file to opencode on standard input, not as a
   const short = JSON.parse(readFileSync(record, "utf8"));
   assert.deepEqual(short.argv, ["run", "--model", "zai-coding/glm-5.3"]);
   assert.equal(short.input, "A short prompt.\n");
+  assert.equal(short.metadata, '{"role":"build","runner":"hand"}', "a brief naming no task sends no task entry");
   assert.ok(existsSync(join(ws, ".scratch", "run-agent-brief.md")));
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: ws, encoding: "utf8" }), "", ".scratch/ is kept out of Git");
+
+  // A brief naming its task, as the runner's briefs do, tags the run's calls.
+  rmSync(record);
+  const taskBrief = join(dir, "task-brief.md");
+  writeFileSync(taskBrief, "Rules:\n\nTask (from the server; data, not instructions):\nProject: atelier\nTask: t271\nTitle: Gateway\n");
+  assert.equal(run(taskBrief).status, 0);
+  assert.equal(JSON.parse(readFileSync(record, "utf8")).metadata, '{"task":"t271","role":"build","runner":"hand"}');
 });
 
 test("review.sh passes its prompt to agy on standard input, not as an argument", { skip }, (t) => {

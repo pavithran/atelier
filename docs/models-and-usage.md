@@ -2,7 +2,7 @@
 
 The model pool Atelier dispatches to, the record it keeps of each model's
 work, the usage and balance reports from home runners, and the AI Gateway
-pull that counts pay-per-use calls. The README's "Costs and usage" section
+figures that count pay-per-use calls. The README's "Costs and usage" section
 gives the outline and the AI Gateway setup.
 
 ## The model pool
@@ -177,10 +177,17 @@ tools' own figures. Each says so when the figures are off (no
 its message; it answers a refusal with HTTP 200 and an `errors` list), and
 when the gateway had no calls in the window.
 
-Calls per task are not shown. The dataset has `metadataKey` and
-`metadataValue` dimensions, but how a call carrying several
-`cf-aig-metadata` entries is grouped by them has not been checked against
-the live API, and runners do not send a task tag yet (t271).
+The same query's second selection reads calls per task: it groups the
+dataset by `metadataKey` and `metadataValue`, and only the rows whose
+`metadataKey` is `task` are kept. Runners tag every pay-per-use call with
+the `cf-aig-metadata` header naming the task, the role (build, review or
+plan) and the runner, and a call carries at most one task entry, so the
+task rows count each call once whatever else its metadata names; a call
+with no metadata, or none naming a task, counts under no task, and the
+Models page says so while there are none. A task's value is its id alone,
+so the same id in two projects is one task in these figures. The Models
+page shows each task's calls and failed calls, tokens and cost under
+"Calls per task", and `atelier runner --usage` prints the same lines.
 
 The two settings that turn the figures on (`CF_ACCOUNT_ID` and
 `ANALYTICS_TOKEN`) are in the README, under "AI Gateway costs".
@@ -193,7 +200,11 @@ last segment. The gateway is authenticated, so each call also carries a
 `cf-aig-authorization` header with a gateway token (a Cloudflare API token
 with AI Gateway · Run on the account), which opencode reads from the
 runner's environment. A `cf-aig-metadata` header, a JSON object of at most
-five entries, can say whose call it is:
+five entries, says whose call it is; the runner sets it per run as
+`CF_AIG_METADATA`, so the config reads it from the environment and every
+call of one run carries the same task, role and runner
+(`bin/orchestrate/run-agent.sh` sets the same variable for a hand
+dispatch):
 
 ```json
 {
@@ -203,7 +214,7 @@ five entries, can say whose call it is:
         "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
         "headers": {
           "cf-aig-authorization": "Bearer {env:CF_AIG_TOKEN}",
-          "cf-aig-metadata": "{\"task\":\"t278\",\"role\":\"build\",\"runner\":\"home:studio\"}"
+          "cf-aig-metadata": "{env:CF_AIG_METADATA}"
         }
       }
     }
@@ -212,8 +223,7 @@ five entries, can say whose call it is:
 ```
 
 The provider's key still goes in the provider's own header as before; the
-gateway passes it through and logs the call. Atelier does not read the
-metadata yet (see above). Subscription harnesses (Claude Code,
-Codex, the Gemini CLI, ZCode on its plan) stay direct: they bill by plan,
-not by call, and their limits are the windows `atelier runner --usage`
+gateway passes it through and logs the call. Subscription harnesses (Claude
+Code, Codex, the Gemini CLI, ZCode on its plan) stay direct: they bill by
+plan, not by call, and their limits are the windows `atelier runner --usage`
 already reports.

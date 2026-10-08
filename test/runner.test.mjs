@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -1241,7 +1241,7 @@ test("an opencode run gets a data folder beside the workspace, removed as the ha
     // Made after the claim, given to the harness alone, and removed before anything else runs.
     assert.deepEqual(homes.slice(0, 4), [{ cli: "claim" }, { made: home }, { ran: home }, { removed: home }], JSON.stringify(options));
     assert.equal(homes.filter((h) => h.made || h.removed).length, 2);
-    assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: home });
+    assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   }
 });
 
@@ -1251,7 +1251,7 @@ test("other harnesses run with no data folder", async () => {
   const state = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${entry.models[0]}` }, { agents: [claude] }, "home:studio", io);
   assert.equal(state.phase, "submitted");
   assert.deepEqual(homes, [{ ran: undefined }]);
-  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin" });
+  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
 });
 
 // The variables of a runner's environment on the owner's Mac, with dummy values.
@@ -1294,14 +1294,22 @@ test("runTask hands the harness the filtered environment, and reads the owner's 
   const { io, calls, logs } = fixture({ env: base, ownerTokens: [RUNNER_ENV.ATELIER_TOKEN] });
   assert.equal((await runTask(assignment, { agents: [named] }, "home:studio", io)).phase, "submitted");
   const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
-  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home });
+  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   assert.ok(logs.includes("OWNER_COPY holds the Atelier owner token, so opencode does not get it; take it out of env in the runner config"));
   assert.equal(calls.filter((c) => c.ownerTokens).length, 1);
 
   const plain = fixture({ env: base });
   await runTask(assignment, config, "home:studio", plain.io);
-  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home });
+  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   assert.equal(plain.calls.filter((c) => c.ownerTokens).length, 0, "no token is read when no variable is named");
+});
+
+test("gatewayMetadata names the run the gateway's figures count, and harnessRunEnv adds it to the filtered environment", () => {
+  assert.equal(gatewayMetadata("t13", "build", "home:studio"), '{"task":"t13","role":"build","runner":"home:studio"}');
+  // A run with no task (a hand dispatch whose brief names none) sends the rest.
+  assert.equal(gatewayMetadata("", "review", "home:mbp"), '{"role":"review","runner":"home:mbp"}');
+  assert.deepEqual(harnessRunEnv({ PATH: "/bin" }, null, "t7", "plan", "home:mbp"), { PATH: "/bin", CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:mbp"}' });
+  assert.deepEqual(harnessRunEnv({}, { dir: "/data" }, "t21", "review", "home:mbp"), { XDG_DATA_HOME: "/data", CF_AIG_METADATA: '{"task":"t21","role":"review","runner":"home:mbp"}' });
 });
 
 test("a real harness gets neither Atelier's credentials nor the owner's other keys, only what its entry names", async (t) => {
@@ -1344,6 +1352,7 @@ test("a real harness gets neither Atelier's credentials nor the owner's other ke
     assert.equal(env.HOME, process.env.HOME, agent);
     assert.equal(env.LANG, "en_US.UTF-8", agent);
     assert.equal(!!env.XDG_DATA_HOME, agent === "opencode", agent);
+    assert.equal(env.CF_AIG_METADATA, '{"task":"t13","role":"build","runner":"home:studio"}', agent);
     assert.ok(!Object.values(env).some((value) => value.includes("stored-owner-token") || value.includes(RUNNER_ENV.ATELIER_TOKEN)), agent);
   }
 });

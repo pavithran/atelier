@@ -1,15 +1,17 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
+import { itemDiff, measureWorkspace, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
+import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
+import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -64,6 +66,11 @@ type Settings = {
   // and read by GET /api/version beside the route level, so a CLI can
   // refuse a server older than the routes it calls (atelier land).
   DEPLOYED_MAIN?: string;
+  // Cloudflare Access in front of the owner's pages (src/access.ts): the
+  // team's URL, the Access application's audience tag, and the owner's email
+  // as the token's email claim must name it. All three set, and every owner
+  // route — /login among them — must carry an assertion Access signed.
+  CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
 };
 
 function thresholds(env: Env): Thresholds {
@@ -1093,6 +1100,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
     return json(await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, (await L.project()).repo), item.fork));
   }
+  // A whole check log or review diff kept in R2 (src/large.ts), served by the
+  // sha256 that names it. The key is rebuilt from the project and item the
+  // path already names, so a reference read here can point nowhere but its
+  // own item's payload. Nothing is stored until the owner creates the bucket
+  // (wrangler.jsonc, LARGE), and a payload never stored and one no longer
+  // held answer the same 404.
+  if ((verb === "logs" || verb === "diffs") && parts.length === 6 && m === "GET") {
+    const sha = parts[5];
+    if (!LARGE_SHA.test(sha)) throw new RuleError("bad_ref", "name the stored payload by its sha256, as the reference in the brief or the ledger does", 400);
+    await L.item(id);
+    const stored = await getLarge(env.LARGE, largeKey(verb === "logs" ? "logs" : "diffs", ref.key, id, sha));
+    if (stored === null) throw new RuleError("no_such_payload", `nothing is stored under ${sha.slice(0, 12)} for ${id}`, 404);
+    return new Response(stored, { headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" } });
+  }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
   // The runner offers come with it, so an open review request is judged
@@ -1345,6 +1366,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "review-claim": {
       const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
+      // The review's diff, kept in R2 by reference when the change is too
+      // large for a brief (t284): the claim hands the reference to the
+      // runner, and the brief carries it instead of the diff's text. The
+      // reviewer reads the whole diff in the clone as ever (.scratch/, t244).
+      const diffRef = await storedReviewDiff(env, L, claim, ref.key, actor, !!c.token);
       // The review job clones the part read-only, so the claim also carries a
       // read token for the fork, as the read-token route mints one. It also
       // carries a read token for the branch the item merges into (the plan's
@@ -1359,11 +1385,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
+          ...(diffRef ? { diffRef } : {}),
           readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
           target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
         });
       }
-      return json(claim);
+      return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
     case "review-release": {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
@@ -1789,6 +1816,35 @@ async function diffFor(env: Env, baselineRepo: string, fork: string | null): Pro
     }
   }
   return diff;
+}
+
+// A review's diff, kept in R2 by reference (t284): when the change, read from
+// Artifacts as the item's own diff, is too large for a review brief to carry
+// — the 888 KB diff that broke a review on 2026-10-07 — it is stored whole
+// and the claim names the reference, so a brief and the ledger hold a key
+// instead of megabytes. Nothing is stored when the diff cannot be read, when
+// it is small enough to carry, or when no bucket sits behind the LARGE
+// binding: the reviewer reads the diff in the clone either way, and the
+// brief falls back to the cut it always carried.
+async function storedReviewDiff(
+  env: Env, L: ReturnType<typeof ledger>, claim: ReviewClaim, projectKey: string, actor: string, proved: boolean,
+) {
+  const item = claim.item;
+  if (!item.fork) return null;
+  try {
+    const p = await L.project();
+    const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+    if (!diff) return null;
+    const text = renderDiffText(item.id, diff);
+    if (text.length <= DIFF_INLINE_MAX) return null;
+    const ref = await putLarge(env.LARGE, "diffs", projectKey, item.id, text);
+    if (!ref) return null;
+    await L.reviewDiffStored(item.id, actor, claim.head, ref, proved);
+    return ref;
+  } catch (err) {
+    console.error("review diff not stored", codeOf(err).trim());
+    return null;
+  }
 }
 
 function runnerOffer(body: Record<string, unknown>): RunnerOffer {
@@ -2245,6 +2301,19 @@ export default {
       }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
       if (pathname === "/how" && (req.method === "GET" || req.method === "HEAD")) { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
+      // Cloudflare Access in front of the owner's pages (src/access.ts). When
+      // the server names its Access team, application and owner, every route
+      // that needs a sign-in must carry an Access assertion the Worker verifies
+      // against the team's published keys and the owner's email — /login and its
+      // token form too, so the server token can no longer be tried, let alone
+      // guessed, without Access's sign-in first (the open form the 2026-10-06
+      // audit noted). Never the /api routes, which take bearer tokens the CLI
+      // sends without passing Access; the sign-out form stays open.
+      const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const access = accessSettings(env as unknown as Record<string, string | undefined>);
+      if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
+        return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
+      }
       if (pathname === "/login") {
         if (req.method === "POST") {
           // A cross-site form post carries another origin and is refused. A
@@ -2266,7 +2335,6 @@ export default {
         return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
       const how = await authorised(req, env);
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       if (parts[0] === "api") {
         // The server's version: the deployed main commit and its route
         // level (src/route-level.ts). It answers without a token: the
