@@ -25,7 +25,7 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const ONLY = opt("--only");
 const PREVIEW = flag("--preview");
 const WORKERS = Number(opt("--workers") ?? 8);
-const NAME = opt("--name") ?? "atelier-v5";
+const NAME = opt("--name") ?? "atelier-v6";
 
 // ── the script ─────────────────────────────────────────────────────────────
 
@@ -102,9 +102,9 @@ function captionCue(text, words, dur) {
 
 // Seconds before the first cue, between cues, and after the last; some
 // scenes hold longer after their narration to show a real page.
-const LEAD = { cold: 11.0, contents: 0.6, default: 0.8 };
-const GAP = 0.5;
-const TAIL = { default: 1.2, cold: 2.0, contents: 1.2, why: 1.7, cast: 2.2, gate: 4.0, plan: 3.6, metrics: 1.6, cloud: 1.8, close: 3.4 };
+const LEAD = { cold: 1.2, default: 0.8 };
+const GAP = 0.38;
+const TAIL = { default: 1.4, cold: 6.5, why: 4.2, cast: 2.4, gate: 3.0, stories: 2.0, plan: 2.0, metrics: 2.0, who: 2.2, cloud: 2.0, close: 3.5 };
 
 async function timeline(scenes) {
   let t = 0;
@@ -203,6 +203,13 @@ async function renderFrames(tl, data, startSec, endSec, size, dir) {
 const script = parseScript(readFileSync(HERE + "../docs/video.md", "utf8"));
 if (!script.length) throw new Error("no scenes found in docs/video.md");
 if (!existsSync(CACHE + "screens/meta.json")) execFileSync("node", [HERE + "scripts/capture.mjs"], { stdio: "inherit" });
+// The live page of t278, captured signed in at 3840 by 1906 (two pixels a
+// CSS pixel) and kept out of Git in public/footage/, cut to the two panels
+// the film shows: the Thread, and Checks and reviews.
+mkdirSync(CACHE + "footage", { recursive: true });
+for (const [name, from, crop] of [["t278-thread", "t278-2-thread", "1740:380:1060:20"], ["t278-reviews", "t278-3-reviews", "1740:720:1060:630"]]) {
+  if (!existsSync(`${CACHE}footage/${name}.png`)) execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-i", `${HERE}public/footage/${from}.png`, "-vf", `crop=${crop}`, `${CACHE}footage/${name}.png`]);
+}
 
 console.log(`Narration: ${script.reduce((n, s) => n + s.cues.join(" ").split(/\s+/).length, 0)} words in ${script.length} scenes, voice ${VOICE}.`);
 const tl = await timeline(script);
@@ -211,7 +218,8 @@ for (const s of tl.scenes) console.log(`  ${s.id.padEnd(9)} ${fmt(s.start).padSt
 console.log(`Total ${fmt(tl.total)} (${tl.total.toFixed(1)} s). TTS so far: ${JSON.stringify(spendSoFar())}`);
 
 const data = JSON.parse(readFileSync(HERE + "data/ledger.json", "utf8"));
-data.terminal = { t278: readFileSync(HERE + "data/terminal/show-t278.txt", "utf8"), t197: readFileSync(HERE + "data/terminal/show-t197.txt", "utf8"), note: readFileSync(HERE + "data/terminal/note-5af22431.txt", "utf8"), commit: readFileSync(HERE + "data/terminal/commit-de67194.txt", "utf8") };
+const term = (f) => readFileSync(HERE + "data/terminal/" + f, "utf8");
+data.terminal = { note: term("note-5af22431.txt"), noteFull: term("note-5af22431-full.txt"), commit: term("commit-de67194.txt"), freshLog: term("fresh-log.txt"), freshNote: term("fresh-note.txt") };
 data.screens = JSON.parse(readFileSync(CACHE + "screens/meta.json", "utf8"));
 writeFileSync(CACHE + "timeline.json", JSON.stringify(tl, null, 1));
 

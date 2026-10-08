@@ -43,9 +43,11 @@ body { color: var(--text); font: 26px/1.45 var(--font-sans); -webkit-font-smooth
 .scene { position: absolute; inset: 0; display: none; }
 .scene.on { display: block; }
 #fade { position: absolute; inset: 0; background: #000; pointer-events: none; opacity: 0; }
-#chapter { position: absolute; left: 64px; top: 40px; font: 500 18px/1 var(--font-mono); color: var(--text-dim); letter-spacing: .08em; text-transform: uppercase; }
-#source { position: absolute; right: 64px; top: 40px; font: 500 18px/1 var(--font-mono); color: var(--signal); letter-spacing: .08em; text-transform: uppercase; text-align: right; }
+#chapter { position: absolute; left: 64px; top: 36px; font: 500 20px/1 var(--font-mono); color: var(--text-muted); letter-spacing: .08em; text-transform: uppercase; }
+#source { position: absolute; right: 64px; top: 36px; font: 500 20px/1 var(--font-mono); color: var(--signal); letter-spacing: .08em; text-transform: uppercase; text-align: right; }
 #source.on-light { color: #7a5600; }
+#chapter .crit { margin-left: 18px; vertical-align: 1px; display: inline-block; font: 600 17px/1 var(--font-mono); color: #07090c; background: var(--signal); padding: 5px 10px 6px; border-radius: 6px; letter-spacing: .1em; text-transform: uppercase; }
+#chapter.on-light .crit { background: #7a5600; color: #fbfaf6; }
 #chapter b { color: var(--signal); font-weight: 500; margin-right: 14px; }
 #caption { position: absolute; left: 0; right: 0; bottom: 44px; display: flex; justify-content: center; pointer-events: none; }
 #caption span { max-width: 1540px; text-align: center; font: 500 34px/1.32 var(--font-sans); color: var(--text-bright); background: rgba(5,7,10,.82); padding: 10px 26px 12px; border-radius: 12px; box-shadow: 0 0 0 1px rgba(255,255,255,.06); }
@@ -60,10 +62,10 @@ body { color: var(--text); font: 26px/1.45 var(--font-sans); -webkit-font-smooth
 .card { position: absolute; background: var(--surface-raised); border: 1px solid var(--line-bright); border-radius: 14px; padding: 22px 26px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
 .chip { display: inline-flex; align-items: center; gap: 10px; padding: 6px 14px 7px; border-radius: 999px; font: 500 22px/1 var(--font-mono); border: 1.5px solid currentColor; background: rgba(0,0,0,.35); white-space: nowrap; }
 .chip .dot { width: 12px; height: 12px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
-.label { font: 500 17px/1.2 var(--font-mono); color: var(--text-dim); letter-spacing: .08em; text-transform: uppercase; }
+.label { font: 500 19px/1.25 var(--font-mono); color: var(--text-muted); letter-spacing: .08em; text-transform: uppercase; }
 .stamp { display: inline-block; font: 700 26px/1 var(--font-mono); letter-spacing: .12em; padding: 10px 16px; border: 3px solid currentColor; border-radius: 8px; text-transform: uppercase; }
 .quote { font: 400 23px/1.45 var(--font-sans); color: var(--text); border-left: 4px solid var(--fault); padding: 4px 0 4px 20px; }
-.quote .src { display: block; margin-top: 8px; font: 500 17px/1.3 var(--font-mono); color: var(--text-dim); }
+.quote .src { display: block; margin-top: 8px; font: 500 19px/1.3 var(--font-mono); color: var(--text-muted); }
 .quote code, .card code { font-family: var(--font-mono); font-size: .9em; color: var(--signal-hot); }
 .big-num { font: 800 120px/1 var(--font-display); letter-spacing: -.04em; color: var(--text-bright); font-variant-numeric: tabular-nums; }
 svg text { font-family: var(--font-mono); }
@@ -76,13 +78,13 @@ svg text { font-family: var(--font-mono); }
 .browser .url b { color: var(--text); font-weight: 500; }
 .browser .view { position: absolute; top: 46px; left: 0; right: 0; bottom: 0; overflow: hidden; }
 .browser .view img { position: absolute; left: 0; top: 0; width: 1600px; transform-origin: 0 0; }
-.browser .note { position: absolute; right: 18px; top: 8px; font: 500 15px/30px var(--font-mono); color: var(--text-dim); }
+.browser .note { position: absolute; right: 18px; top: 8px; font: 500 17px/30px var(--font-mono); color: var(--text-muted); }
 
 /* Terminal */
 .term { position: absolute; background: #06080b; border-radius: 14px; box-shadow: 0 30px 90px rgba(0,0,0,.6), 0 0 0 1px var(--line-bright); overflow: hidden; }
 .term .bar { height: 40px; background: #12171e; display: flex; align-items: center; gap: 9px; padding: 0 16px; font: 500 16px/1 var(--font-mono); color: var(--text-dim); }
 .term .bar i { width: 12px; height: 12px; border-radius: 50%; background: #2c3744; }
-.term pre { margin: 0; padding: 22px 26px; font: 400 19px/1.5 var(--font-mono); color: #d7dee6; white-space: pre-wrap; word-break: break-word; }
+.term pre { margin: 0; padding: 20px 26px; font: 400 20px/1.45 var(--font-mono); color: #d7dee6; white-space: pre-wrap; word-break: break-word; }
 .term .prompt { color: var(--observed); }
 .term .cursor { display: inline-block; width: 11px; height: 22px; background: var(--signal); vertical-align: -4px; }
 

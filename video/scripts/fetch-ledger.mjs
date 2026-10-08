@@ -19,5 +19,6 @@ writeFileSync(new URL("../.cache/models.json", import.meta.url), JSON.stringify(
 // The Models page's figures: speed, stalls and judged findings, and the AI
 // Gateway view (whether its figures could be read).
 writeFileSync(new URL("../.cache/api-reliability.json", import.meta.url), JSON.stringify(await get("/reliability")));
-writeFileSync(new URL("../.cache/api-usage.json", import.meta.url), JSON.stringify(await get("/usage")));
+writeFileSync(new URL("../.cache/api-usage.json", import.meta.url), JSON.stringify({ ...(await get("/usage")), readAt: new Date().toISOString() }));
+writeFileSync(new URL("../.cache/api-runs.json", import.meta.url), JSON.stringify(await get("/runs")));
 console.log(`fetched ${n} items`);
