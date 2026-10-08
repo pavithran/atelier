@@ -128,6 +128,17 @@ const fleet = poolList.map((e) => ({ id: e.id, harness: e.harness, family: e.fam
 // Two tasks Atelier filed against itself on 2026-10-07 and 08, by title.
 const selfTasks = Object.fromEntries(["t296", "t313"].filter((id) => byId[id]).map((id) => [id, { title: byId[id].item.title, createdAt: byId[id].item.createdAt, state: tasks.find((t) => t.id === id).state }]));
 const stories = Object.fromEntries(["t278", "t219", "t283", "t296", "t209", "t275", "t313", "t255", "t197"].map((id) => [id, story(id)]));
+// t324 happened after the cut-off; its story is read whole from its own file.
+{
+  const late = JSON.parse(readFileSync(new URL("../.cache/late-t324.json", import.meta.url), "utf8"));
+  const L = late;
+  stories.t324 = {
+    id: "t324", builders: (L.item.pushActors ?? []).filter(isModel),
+    reviews: L.reviews.sort((a, b) => a.at < b.at ? -1 : 1).map((r) => ({ by: r.by, approve: r.approve, head: r.head.slice(0, 8), at: r.at, note: r.note, tier: !!r.tier, findings: (r.findings ?? []).map((f) => ({ file: f.file, line: f.line, severity: f.severity, text: f.text })) })),
+    verdicts: L.events.filter((e) => e.kind === "review.finding").map((e) => ({ at: e.at, head: e.data.head.slice(0, 8), index: e.data.index, verdict: e.data.verdict, note: e.data.note })),
+    state: L.item.state,
+  };
+}
 
 // Who held which task at one moment: the five tasks held at once at
 // 14:40:53 UTC on 5 October, the most families working together.

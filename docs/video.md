@@ -83,7 +83,7 @@ without proof · 4 Big goals become plans · 5 It measures, and it learns ·
 
 > Many AI agents, one repository. When their work merges, what can you trust?
 >
-> Three things to remember: tests Atelier runs itself, not the agent's claim; approval by a model from a different company; and a record of every agent, kept on Cloudflare.
+> Three things to remember. One: Atelier runs the tests itself. Two: independent review, by another company's model. Three: every step is on the record.
 
 ## 2. Why Git alone isn't enough {#why}
 
@@ -118,7 +118,7 @@ project, runners as many as are started, one landing on main at a time;
 >
 > A reviewer checks each change, and only approval by a model from a different company counts. The lead developer, the one human, merges.
 >
-> That's concurrency. Each task is its own fork in Artifacts, and each project's ledger its own Durable Object; runners, small programs on the lead developer's machines, take jobs from Atelier and start the right agent; any number can run, and only landing on main waits its turn. The most tasks held at once here was fifteen; beyond that, it hasn't been measured.
+> That's concurrency. Each task is its own fork in Artifacts, and each project's ledger its own Durable Object; runners, the Atelier command left running on any machine you choose, take jobs and start the right agent; any number can run, and only landing on main waits its turn. The most tasks held at once here was fifteen; beyond that, it hasn't been measured.
 
 ## 4. Nothing merges without proof {#gate}
 
@@ -132,7 +132,7 @@ seconds after the approval. Then the live page of t278: its Thread, with the
 two send-backs, and its Checks and reviews, with Gemini's approval. Tag:
 from the ledger, t278, 7 October 2026; on the footage, the live page.
 
-> Proof comes first, then review. Checks run on the lead developer's machine, in a clean clone of the exact head pushed to Artifacts, and Atelier records what it saw, never the agent's claim.
+> Proof comes first, then review. Tests run on a runner, in a clean clone of the exact head pushed to Artifacts, and Atelier records what it saw, never the agent's claim.
 >
 > Opus 5.5 built task t278, so no Anthropic model could approve it. Gemini rejected it twice, quoting file and line: a pull could drop logs past a thousand, then one bad log could end paging early. All four findings were real, and fixed; the third head merged eleven seconds after its approval.
 >
@@ -159,6 +159,8 @@ the waivers of 6 October and the merges since t193. Tags: t283 and t296,
 > Then Opus rejected the check: with JavaScript on and no request filter, any project's checks could reach the internet through the browser. Once that was fixed, Gemini approved.
 >
 > In t219, Opus caught a leak: a signed-out visitor could confirm a private project's name by guessing it.
+>
+> And in t324, Gemini approved a change, but GLM found it let a change write its own reviewer's instructions.
 >
 > In all, agents sent work back 99 times in 346 reviews. The lead developer has judged 52 of Gemini's findings against the code: 30 were real defects and 22 did not hold up, which is why every reviewer's precision is tracked.
 
@@ -210,7 +212,7 @@ showcase at atelier.zone/showcase, its latest moves, signed out. Badge: "Ease
 of use". Tags: from the ledger, fresh-demo t1, 8 October 2026; the public
 showcase.
 
-> Who is it for? Anyone running several coding agents on one codebase. On 8 October the README's quickstart took a new project with a failing test through init, new, start, done and land: merged, with its record, under a minute after the first commit.
+> Who needs Atelier? Anyone running several coding agents on one codebase. On 8 October the README's quickstart took a new project with a failing test through init, new, start, done and land: merged, with its record, under a minute after the first commit.
 >
 > A team gets one holder per task, checks it can trust, another company's review, and a ledger of who did what.
 >
@@ -235,7 +237,7 @@ On screen, dark: the field of light returns. Four lines, then "Git keeps
 the code. Atelier brings the receipts.", 321 tasks and 240 merged counting up,
 with the rest beneath; then atelier.zone and the repository's address.
 
-> Tests Atelier runs itself, not the agent's claim. Approval by a model from a different company. A record of every agent, kept on Cloudflare.
+> Atelier runs the tests itself. Independent review, by another company's model. Every step is on the record.
 >
 > Git keeps the code. Atelier brings the receipts. It built itself this way: 321 tasks, 240 merged.
 >
