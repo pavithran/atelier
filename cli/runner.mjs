@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
-import { reviewBrief, BRIEF_LIMITS } from "../src/review/brief.ts";
+import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -773,7 +773,10 @@ export async function runReview(assignment, config, name, io) {
     // request is released like any other unusable verdict.
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
-    const parsed = parseVerdict(reply);
+    // The reply was asked for one CRITERION line per acceptance criterion
+    // (the brief's reply format), so the parser is told how many there are
+    // and refuses an approval that misses one or declares one unmet.
+    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan));
     if (!parsed.ok) {
       await release(parsed.error);
       io.log(`review released: ${parsed.error}`);
