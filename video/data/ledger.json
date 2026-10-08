@@ -7700,6 +7700,67 @@
      "mergeCommit": "5c76f7ac"
     }
    ]
+  },
+  "t324": {
+   "id": "t324",
+   "builders": [
+    "opencode/deepseek-v4-pro"
+   ],
+   "reviews": [
+    {
+     "by": "antigravity/gemini-3.1-pro",
+     "approve": true,
+     "head": "2b6c65b5",
+     "at": "2026-10-08T17:51:25.983Z",
+     "note": "Checked the CLI argument parsing, file reading logic, and runner integration for role prompts, and found the implementation correct, safe, and well-tested.",
+     "tier": true,
+     "findings": []
+    },
+    {
+     "by": "opencode/glm-5.3",
+     "approve": false,
+     "head": "2b6c65b5",
+     "at": "2026-10-08T18:00:05.163Z",
+     "note": "I verified the flag parsing, override readers, brief construction, prompt command names and the test suite, and found the review role's override is read from the change under review, letting a change author its own reviewer's instructions.",
+     "tier": false,
+     "findings": [
+      {
+       "file": "cli/runner.mjs",
+       "line": 103,
+       "severity": "blocking",
+       "text": "roleText reads `.atelier/prompts/review.md` from the reviewer's clone of the head under review (applied at cli/runner.mjs:710), so an un-landed change is prepended to the independent reviewer's brief as unfenced instructions ahead of the server's bar and blocking rules — change-authored text posing as Atelier's instructions, exactly what src/review/brief.ts's fencing discipline exists to prevent, and it persists as the project's reviewer text once landed; read the review override from the accepted base/main or the claim instead."
+      },
+      {
+       "file": "cli/atelier.mjs",
+       "line": 464,
+       "severity": "follow-up",
+       "text": "`guide --role --project NAME` for a project not registered on this machine silently prints the default text, where every other command dies with the unregistered message; the quiet fallback can hide a typo'd project name."
+      },
+      {
+       "file": "src/usage.ts",
+       "line": 663,
+       "severity": "follow-up",
+       "text": "the default review prompt restates the blocking rules the server brief also states, so the two copies can drift apart; one source, or a check that they agree, would keep them in sync."
+      },
+      {
+       "file": "cli/runner.mjs",
+       "line": 103,
+       "severity": "follow-up",
+       "text": "writeBrief caps nothing, so an unusually large override file can crowd the actual brief and its reply format out of the agent's context window; a length cap would make that fail loudly instead of silently degrading the review."
+      }
+     ]
+    }
+   ],
+   "verdicts": [
+    {
+     "at": "2026-10-08T18:00:38.920Z",
+     "head": "2b6c65b5",
+     "index": 1,
+     "verdict": "confirmed",
+     "note": "Confirmed in cli/runner.mjs roleText: the review role's override is read from the workspace, which for a review job is a clone of the change under review, so a change can write its own reviewer's instructions."
+    }
+   ],
+   "state": "open"
   }
  },
  "runs": [
