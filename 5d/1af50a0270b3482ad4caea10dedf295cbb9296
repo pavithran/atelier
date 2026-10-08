@@ -1,0 +1,24 @@
+atelier atelier/t303 "The check container has no git: on 2026-10-08 the first Workflow landing (t302) ran its required checks in the CheckRunner container in production, where npm run types and npm run typecheck passed (the first production container run on record) but npm test failed, every test that makes a git repo dying with spawnSync git ENOENT. Give the container image git (and anything else the suite needs that the sandbox's npm-only egress allows), keep the image's no-credential and no-Internet rules, and prove it with a check run that passes; then the Workflow landing path can pass checks for atelier itself"
+accepted head 28b1f537b9631e0b64fca4ddcaa7ce9fdbf7eb31
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T08:15:37.257Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T08:15:43.230Z
+REVIEW approve by antigravity/gemini-3.1-pro at 28b1f537b9631e0b64fca4ddcaa7ce9fdbf7eb31, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T08:04:07.770Z pavi item.created
+2026-10-08T08:04:24.314Z claude-code/opus-5.5 item.claimed
+2026-10-08T08:04:38.415Z claude-code/opus-5.5 fork.created
+2026-10-08T08:12:47.550Z pavi land.lease
+2026-10-08T08:12:50.572Z pavi land.merge
+2026-10-08T08:12:58.172Z pavi land.regenerate
+2026-10-08T08:13:00.531Z claude-code/opus-5.5 push.observed
+2026-10-08T08:13:00.638Z pavi land.push
+2026-10-08T08:15:37.945Z claude-code/opus-5.5 evidence.observed
+2026-10-08T08:15:43.628Z claude-code/opus-5.5 evidence.observed
+2026-10-08T08:15:44.713Z pavi land.check
+2026-10-08T08:15:45.937Z claude-code/opus-5.5 item.submitted
+2026-10-08T08:15:46.962Z pavi land.submit
+2026-10-08T08:15:47.319Z pavi review.requested
+2026-10-08T08:16:09.041Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T08:19:22.011Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T08:19:24.982Z pavi land.review
+2026-10-08T08:19:25.511Z pavi item.accepted
+2026-10-08T08:19:25.615Z pavi land.accept
