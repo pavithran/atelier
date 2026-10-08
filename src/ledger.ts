@@ -159,6 +159,10 @@ export interface LandingWorkflowRecord {
   round: number;
   detail?: string;
   files?: string[];
+  // Where the instance runs the required checks (t305): "local" on the
+  // machine holding the workspace, "container" in the CheckRunner. The
+  // executor reads it to know whether the checks are its to run.
+  checks?: "local" | "container";
 }
 
 const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
@@ -1586,11 +1590,11 @@ export class Ledger extends DurableObject<Env> {
   // instance still runs is read from the Workflow itself. The record is
   // cleared when the task closes, like the rest of its landing state (see
   // merged and abandon).
-  setLandingWorkflow(id: string, instance: string, actor: string): LandingWorkflowRecord {
+  setLandingWorkflow(id: string, instance: string, actor: string, checks: "local" | "container" = "container"): LandingWorkflowRecord {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
     this.item(id);
     const at = new Date().toISOString();
-    const record: LandingWorkflowRecord = { instance, at, stage: "lease", stageAt: at, round: 0 };
+    const record: LandingWorkflowRecord = { instance, at, stage: "lease", stageAt: at, round: 0, checks };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
     return record;
   }
@@ -1603,6 +1607,7 @@ export class Ledger extends DurableObject<Env> {
     if (!record || record.instance !== instance) return null;
     const next: LandingWorkflowRecord = {
       instance, at: record.at, stage, stageAt: new Date().toISOString(), round,
+      ...(record.checks ? { checks: record.checks } : {}),
       ...(detail ? { detail: detail.slice(0, 2000) } : {}),
       ...(files?.length ? { files: files.slice(0, 200).map((f) => String(f).slice(0, 500)) } : {}),
     };
