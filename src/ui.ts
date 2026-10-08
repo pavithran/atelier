@@ -38,7 +38,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
+  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -1650,7 +1650,8 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
   const live = item.state === "claimed" || item.state === "submitted";
   const action = (verb: string) => href("ui", p.name, item.id, verb);
-  const revision = `<input type="hidden" name="head" value="${e(item.head ?? "")}">`;
+  // The criteria the page shows are the ones an approval or rejection from it judged.
+  const revision = `<input type="hidden" name="head" value="${e(item.head ?? "")}"><input type="hidden" name="criteria" value="${e(bindingOf(item).criteria)}">`;
   const evidenceVisible = !!diff && diff !== "unavailable" && diff.head === item.head;
   // The checks on the would-be merge, read against main's head as the
   // preview read it, so a run main has moved past is marked stale.
@@ -1667,7 +1668,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     ? `<div class="notice" role="status"><h3>${diff && diff !== "unavailable" ? "The displayed revision has changed" : "Changes are unavailable"}</h3>
       <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${href("p", p.name, item.id)}">Reload this task</a>. If the revision changed, the task owner should run <code>atelier push</code> and rerun checks.</p></div>`
     : "";
-  const reviewWanted = decision.action === "review" || latestReviews(d.reviews, item.head).some((r) => !r.approve);
+  const reviewWanted = decision.action === "review" || latestReviews(d.reviews, bindingOf(item)).some((r) => !r.approve);
   // While the gate needs the independent review, the owner's approval cannot
   // satisfy it — the decision line and the protected note below both say so —
   // so Approve records the owner's own opinion as a secondary action, never
@@ -1850,7 +1851,7 @@ ${framing}${openScope}
       <p class="meta">Reported, not verified; these never satisfy a required check.</p>
       ${view.reports.map((r) => `<p>${tag("Reported")} ${e(r.claim)} <span class="meta">${e(r.by)}</span></p>`).join("")}</details>`
     : "";
-  const reviews = latestReviews(d.reviews, item.head).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
+  const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
     <p>${e(r.note || "No note provided.")}</p><p class="meta">${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   const overrideNote = overridden
