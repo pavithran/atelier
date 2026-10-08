@@ -2,9 +2,11 @@
 // atelier_metrics, bound as METRICS in wrangler.jsonc, written with
 // writeMetric and read back with query through the Analytics Engine SQL
 // API. Every data point names its kind in blob1, so each kind of metric
-// (AI Gateway calls, src/usage/gateway.ts; model speed; reviewer precision)
-// reads its own rows with `WHERE blob1 = 'KIND'`; the blobs and doubles
-// after that are the kind's own, in the order its writer gives them.
+// (model speed, reviewer precision; nothing writes one yet) reads its own
+// rows with `WHERE blob1 = 'KIND'`; the blobs and doubles after that are the
+// kind's own, in the order its writer gives them. The AI Gateway's figures
+// are not kept here: src/usage/gateway.ts reads them from the GraphQL
+// Analytics API.
 //
 // Reading needs the ANALYTICS_TOKEN secret, an API token with Account
 // Analytics: Read on the account CF_ACCOUNT_ID names. Writing needs only

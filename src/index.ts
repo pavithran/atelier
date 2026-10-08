@@ -1,20 +1,24 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
+import { itemDiff, measureWorkspace, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
+import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
+import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
+import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
+import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -25,8 +29,7 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
-import { durationsSql, fetchNewLogs, gatewayConfig, gatewayView, parseDurations, parseTotals, totalsSql, writeLog, type GatewayGap, type GatewayMark, type GatewayPull, type GatewayView } from "./usage/gateway.ts";
-import { query, queryConfig, neverWritten } from "./metrics.ts";
+import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
@@ -36,6 +39,8 @@ import { actionForm, actionsApi } from "./actions-api.ts";
 import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
+export { LandingWorkflow } from "./landing-workflow.ts";
+import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow.ts";
 import { renderHow } from "./how.ts";
 
 const WRITE_TTL = 8 * 3600;
@@ -65,6 +70,11 @@ type Settings = {
   // and read by GET /api/version beside the route level, so a CLI can
   // refuse a server older than the routes it calls (atelier land).
   DEPLOYED_MAIN?: string;
+  // Cloudflare Access in front of the owner's pages (src/access.ts): the
+  // team's URL, the Access application's audience tag, and the owner's email
+  // as the token's email claim must name it. All three set, and every owner
+  // route — /login among them — must carry an assertion Access signed.
+  CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
 };
 
 function thresholds(env: Env): Thresholds {
@@ -816,8 +826,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     throw new RuleError("not_found", "no such route", 404);
   }
   if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
-    const { reliability, events, unread } = await trackRecords(env);
-    const res = json({ events, models: reliabilityJson(reliability) });
+    // `speed` is each model's pace over the window; `atelier runner --usage`
+    // prints it, and says so when an older server sends none.
+    const { reliability, speed, events, unread } = await trackRecords(env);
+    const res = json({ events, models: reliabilityJson(reliability), speed });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
@@ -828,9 +840,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
-    // Every runner polls here, so a signed-in poll also starts a due AI
-    // Gateway pull in the background; its failure never touches this answer.
-    if (m === "POST") c.waitUntil?.(pullGatewayIfDue(env).catch((err) => console.error("AI Gateway pull failed", err instanceof Error ? err.message : String(err))));
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -846,18 +855,29 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // One call per project reads both its waiting tasks and its open review requests.
     const lists = await Promise.all(projects.map(async (p) => {
       try {
-        const { waiting, reviews } = await ledgerOf(env, p).queued();
-        return [...waiting, ...reviews].map((item) => ({ project: p.name, item }));
+        // The runner's own held jobs come first (heldJobs, t235): a run that
+        // died mid-build leaves its claim behind, and the process that takes
+        // over settles it, finishing the commits the dead run made, before
+        // it starts new work.
+        const L = ledgerOf(env, p);
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
+        return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
     const read = Date.now();
-    const queued = lists.flat().sort((a, b) => (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
+    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // the claim a dead run left behind is settled before new work starts.
+    const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer
       ? queued.flatMap(({ project, item }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
-          return a && (!c.token || a.actor === actor) ? [{ project, item, ...a }] : [];
+          // A held job is offered only as the claim it already is: the
+          // assignment must name its holder, or the re-claim would be refused
+          // as another's claim (claim guards the runner name; assign the actor).
+          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1086,6 +1106,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
     return json(await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, (await L.project()).repo), item.fork));
   }
+  // A whole check log or review diff kept in R2 (src/large.ts), served by the
+  // sha256 that names it. The key is rebuilt from the project and item the
+  // path already names, so a reference read here can point nowhere but its
+  // own item's payload. Nothing is stored until the owner creates the bucket
+  // (wrangler.jsonc, LARGE), and a payload never stored and one no longer
+  // held answer the same 404.
+  if ((verb === "logs" || verb === "diffs") && parts.length === 6 && m === "GET") {
+    const sha = parts[5];
+    if (!LARGE_SHA.test(sha)) throw new RuleError("bad_ref", "name the stored payload by its sha256, as the reference in the brief or the ledger does", 400);
+    await L.item(id);
+    const stored = await getLarge(env.LARGE, largeKey(verb === "logs" ? "logs" : "diffs", ref.key, id, sha));
+    if (stored === null) throw new RuleError("no_such_payload", `nothing is stored under ${sha.slice(0, 12)} for ${id}`, 404);
+    return new Response(stored, { headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" } });
+  }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
   // The runner offers come with it, so an open review request is judged
@@ -1093,6 +1127,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "plan" && parts.length === 5 && m === "GET") {
     requireOwner(env, actor);
     return json(await L.planView(id, await index(env).models(), await mainHeadOf(env, L), await index(env).runnerOffers()));
+  }
+  // The landing Workflow of one task (t280): GET answers the instance the
+  // ledger remembers, the stage the Workflow last wrote (lease, workspace,
+  // conflict, checks, review, merge, done or failed, with its round and,
+  // for a conflict, the files) and the instance's own status (complete or
+  // errored among them) — nulls when none is remembered — so the CLI shows
+  // the landing's progress, does the workspace steps when they are its to
+  // do, and re-attaches to a live instance.
+  if (verb === "landing-workflow" && parts.length === 5 && m === "GET") {
+    requireOwner(env, actor);
+    const remembered = await L.landingWorkflowOf(id);
+    if (!remembered) return json({ instance: null, status: null, stage: null });
+    const status = await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null);
+    return json({ ...remembered, status });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -1338,6 +1386,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "review-claim": {
       const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
+      // The review's diff, kept in R2 by reference when the change is too
+      // large for a brief (t284): the claim hands the reference to the
+      // runner, and the brief carries it instead of the diff's text. The
+      // reviewer reads the whole diff in the clone as ever (.scratch/, t244).
+      const diffRef = await storedReviewDiff(env, L, claim, ref.key, actor, !!c.token);
       // The review job clones the part read-only, so the claim also carries a
       // read token for the fork, as the read-token route mints one. It also
       // carries a read token for the branch the item merges into (the plan's
@@ -1352,11 +1405,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
+          ...(diffRef ? { diffRef } : {}),
           readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
           target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
         });
       }
-      return json(claim);
+      return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
     case "review-release": {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
@@ -1381,6 +1435,68 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       delete data.step;
       delete data.ms;
       return json({ item: await L.landEvent(id, actor, String(body.step ?? ""), body.ms, data, !!c.token) });
+    }
+    // The landing Workflow behind atelier land --workflow (t280). With
+    // { event: { type, payload } } the executor sends the instance the ledger
+    // remembers its workspace report or the owner's resume after a conflict,
+    // each naming its round; an event sent before the Workflow reaches its
+    // wait is buffered, so the report never races it. Otherwise the owner starts a
+    // landing: a live instance for the task is returned as it stands (the
+    // executor re-attaches to it, however it was started), and with none live
+    // a fresh instance is created and remembered, taking the same options the
+    // command was given.
+    case "landing-workflow": {
+      requireOwner(env, actor);
+      const remembered = await L.landingWorkflowOf(id);
+      if (body.event !== undefined) {
+        const event = body.event as { type?: unknown; payload?: unknown };
+        if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404);
+        // The two events the Workflow waits for: the executor's report of
+        // the workspace steps, and the owner's resume after a conflict.
+        if (event.type !== "workspace" && event.type !== "resume") throw new RuleError("bad_event", "a landing Workflow takes a workspace or a resume event", 400);
+        if (typeof event.payload !== "object" || event.payload === null || !Number.isInteger((event.payload as { round?: unknown }).round)) throw new RuleError("bad_event", "an event's payload names the round it answers", 400);
+        const type: string = event.type;
+        try {
+          await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.sendEvent({ type, payload: event.payload ?? {} }));
+        } catch (error) {
+          throw new RuleError("workflow_not_listening", `the landing Workflow ${remembered.instance} could not take the ${type} event (${(error as Error).message}); it may have finished or failed. Read it with GET again, or run atelier land ${id} --workflow to start or attach the landing`, 409);
+        }
+        return json({ sent: true, instance: remembered.instance });
+      }
+      // Where the checks run (t305): "local" or "container" as the CLI
+      // sends it; absent is "container", since a CLI older than the mode
+      // runs no checks on its machine.
+      if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
+      const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
+      const live = async () => remembered ? await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null) : null;
+      const standing = await live();
+      if (standing && ["queued", "running", "waiting", "waitingForPause", "paused"].includes(standing.status)) {
+        return json({ ...remembered!, created: false, status: standing });
+      }
+      // The timeouts the landing waits with, each a positive number of
+      // milliseconds; anything else keeps the Workflow's default.
+      const ms = (name: string) => Number.isInteger(body[name]) && (body[name] as number) > 0 ? { [name]: body[name] as number } : {};
+      // A new instance for a closed or accepted task would only fail its
+      // first step; it is refused here with the same words, before one is made.
+      const item = await L.item(id);
+      if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
+      if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
+      // The instance is recorded under the id chosen here before it is
+      // created, so the stage it writes from its first step is never
+      // written ahead of the record (and dropped as a stale instance's).
+      const instanceId = `land-${id}-${Date.now()}`;
+      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
+      const instance = await env.LANDING_WORKFLOW.create({
+        id: instanceId,
+        params: {
+          project, key: ref.key, item: id, actor,
+          ...(typeof body.reviewer === "string" && body.reviewer ? { reviewer: body.reviewer } : {}),
+          ...(body.noReview === true ? { noReview: true } : {}),
+          origin: c.url.origin, checks,
+          ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
+        },
+      });
+      return json({ ...record, created: true, status: await instance.status() }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
@@ -1681,92 +1797,25 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway), error ? 400 : 200);
+  // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
+  // each model's speed comes with the track record (trackRecords).
+  const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed), error ? 400 : 200);
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
-// The scheduled pull of the AI Gateway's logs into Analytics Engine
-// (src/usage/gateway.ts) and what the Models page and GET /api/usage show of
-// them, read back through the SQL API (src/metrics.ts). With no gateway
-// token the pull does nothing and the view says the gateway is off.
+// What the Models page and GET /api/usage show of the AI Gateway's calls,
+// read from the GraphQL Analytics API each time (src/usage/gateway.ts).
 
-// Writes the logs newer than the last one written, oldest first, and moves
-// the mark to the newest log written: a missing binding or a failed write
-// stops the writing there, so the mark never passes a log that was not
-// written and the next pull reads it again. A pull capped short of the
-// mark records the stretch it did not read. Null when the gateway is off or
-// the logs could not be read.
-export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
-  const cfg = gatewayConfig(env);
-  if (typeof cfg === "string") return null;
-  const I = index(env);
-  const at = new Date(now).toISOString();
-  let read;
-  try {
-    read = await fetchNewLogs(cfg, await I.gatewayMark(), now, fetcher);
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    await I.recordGatewayPull({ at, added: 0, error }, null);
-    console.error("AI Gateway pull failed", error);
-    return null;
-  }
-  let added = 0, mark: GatewayMark | null = null, error: string | null = null;
-  if (read.logs.length && !env.METRICS) error = "the METRICS binding is missing, so no log was written";
-  else {
-    for (const log of [...read.logs].reverse()) {
-      try {
-        if (!writeLog(env.METRICS, log)) throw new Error("no dataset");
-      } catch (err) {
-        error = `writing log ${log.id} failed: ${err instanceof Error ? err.message : String(err)}`;
-        break;
-      }
-      added++;
-      mark = { id: log.id, at: log.at };
-    }
-  }
-  // The gap lies below the oldest log read, the first written; it is lost
-  // only once the mark has moved past it.
-  const gap = read.gap && added ? { ...read.gap, pulledAt: at } : null;
-  await I.recordGatewayPull({ at, added, error }, mark, gap);
-  if (error) console.error("AI Gateway pull failed", error);
-  return { added, error };
-}
-
-// How often a pull may start. The cron asks every five minutes; requests
-// ask too (the queue route every runner polls), because on 2026-10-07 the
-// cron was listed but never ran. A little under five minutes, so the cron's
-// own tick is never refused for a request's pull a moment before it.
-export const GATEWAY_PULL_EVERY_MS = 4.5 * 60_000;
-
-// Pulls when no pull was started in the last GATEWAY_PULL_EVERY_MS, and
-// otherwise does nothing; the index grants one attempt per interval. Nothing
-// is asked of the index when the gateway is off.
-export async function pullGatewayIfDue(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
-  if (typeof gatewayConfig(env) === "string") return null;
-  if (!(await index(env).claimGatewayPull(now, GATEWAY_PULL_EVERY_MS))) return null;
-  return pullGateway(env, now, fetcher);
-}
-
-export async function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
-  const cfg = gatewayConfig(env);
-  if (typeof cfg === "string") return gatewayView(cfg, [], [], null, [], now);
-  const read = queryConfig(env);
-  if (typeof read === "string") return gatewayView(`AI Gateway costs cannot be read: ${read}`, [], [], null, [], now);
-  const I = index(env);
-  const [pull, gaps] = await Promise.all([I.gatewayPull() as Promise<GatewayPull | null>, I.gatewayGaps() as Promise<GatewayGap[]>]);
-  try {
-    const [totals, durations] = await Promise.all([query(read, totalsSql(), fetcher), query(read, durationsSql(), fetcher)]);
-    return gatewayView(null, parseTotals(totals), parseDurations(durations), pull, gaps, now);
-  } catch (err) {
-    if (neverWritten(err)) return gatewayView(null, [], [], pull, gaps, now);
-    return gatewayView(`AI Gateway costs could not be read just now: ${err instanceof Error ? err.message : String(err)}`, [], [], pull, gaps, now);
-  }
+export function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
+  return readGatewayFigures(env, now, fetcher);
 }
 
 // Each model's record is read from every event of every project, and
-// its reliability from those and the runners' reports. The pages and the
-// API say how many events, and which projects could not be read.
-async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; events: number; unread: ProjectRecord[] }> {
+// its reliability and its speed (src/models/speed.ts, over the last
+// SPEED_DAYS) from those and the runners' reports. The pages and the API say
+// how many events, and which projects could not be read.
+async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; speed: SpeedRecord; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
@@ -1774,7 +1823,7 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
     try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
-  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), speed: buildSpeed(sources, runs, ownerActor(env), Date.now()), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -1855,6 +1904,35 @@ async function diffFor(env: Env, baselineRepo: string, fork: string | null): Pro
   return diff;
 }
 
+// A review's diff, kept in R2 by reference (t284): when the change, read from
+// Artifacts as the item's own diff, is too large for a review brief to carry
+// — the 888 KB diff that broke a review on 2026-10-07 — it is stored whole
+// and the claim names the reference, so a brief and the ledger hold a key
+// instead of megabytes. Nothing is stored when the diff cannot be read, when
+// it is small enough to carry, or when no bucket sits behind the LARGE
+// binding: the reviewer reads the diff in the clone either way, and the
+// brief falls back to the cut it always carried.
+async function storedReviewDiff(
+  env: Env, L: ReturnType<typeof ledger>, claim: ReviewClaim, projectKey: string, actor: string, proved: boolean,
+) {
+  const item = claim.item;
+  if (!item.fork) return null;
+  try {
+    const p = await L.project();
+    const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+    if (!diff) return null;
+    const text = renderDiffText(item.id, diff);
+    if (text.length <= DIFF_INLINE_MAX) return null;
+    const ref = await putLarge(env.LARGE, "diffs", projectKey, item.id, text);
+    if (!ref) return null;
+    await L.reviewDiffStored(item.id, actor, claim.head, ref, proved);
+    return ref;
+  } catch (err) {
+    console.error("review diff not stored", codeOf(err).trim());
+    return null;
+  }
+}
+
 function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const r = parseRunner(typeof body.runner === "string" ? body.runner : null);
   if (!r) throw new RuleError("bad_runner", "say which runner is asking, e.g. home:studio", 400);
@@ -1871,6 +1949,12 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
         : [];
     }),
   };
+}
+
+// Whether an item coming off the queue is a claim a runner already holds, as
+// heldJobs lists it: the queue offers it back to its holder alone.
+function isHeld(item: Item): boolean {
+  return item.state === "claimed" && !!item.owner;
 }
 
 async function inbox(env: Env, token?: AgentToken) {
@@ -2261,10 +2345,6 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
-  // The cron in wrangler.jsonc pulls the AI Gateway's new logs.
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(pullGatewayIfDue(env));
-  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
@@ -2307,6 +2387,19 @@ export default {
       }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
       if (pathname === "/how" && (req.method === "GET" || req.method === "HEAD")) { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
+      // Cloudflare Access in front of the owner's pages (src/access.ts). When
+      // the server names its Access team, application and owner, every route
+      // that needs a sign-in must carry an Access assertion the Worker verifies
+      // against the team's published keys and the owner's email — /login and its
+      // token form too, so the server token can no longer be tried, let alone
+      // guessed, without Access's sign-in first (the open form the 2026-10-06
+      // audit noted). Never the /api routes, which take bearer tokens the CLI
+      // sends without passing Access; the sign-out form stays open.
+      const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const access = accessSettings(env as unknown as Record<string, string | undefined>);
+      if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
+        return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
+      }
       if (pathname === "/login") {
         if (req.method === "POST") {
           // A cross-site form post carries another origin and is refused. A
@@ -2328,7 +2421,6 @@ export default {
         return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
       const how = await authorised(req, env);
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       if (parts[0] === "api") {
         // The server's version: the deployed main commit and its route
         // level (src/route-level.ts). It answers without a token: the

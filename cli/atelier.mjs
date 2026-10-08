@@ -260,7 +260,7 @@ export const FLAGS = {
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
-  land: { reviewer: false, "no-review": true, "dry-run": true, wait: true, "release-lease": true },
+  land: { reviewer: false, "no-review": true, "dry-run": true, wait: true, "release-lease": true, workflow: true, checks: "--checks needs a mode: atelier land ID --workflow --checks local|container" },
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
@@ -1432,7 +1432,8 @@ async function discoverModels() {
 
 // Each tool's usage goes to the usage route under the runner's name; one
 // that fails does not stop the others, and runUsage names every failure.
-// The AI Gateway's figures are read back from GET /api/usage.
+// The AI Gateway's figures are read back from GET /api/usage, and each
+// model's speed from GET /api/reliability (a route older servers have too).
 async function reportUsage() {
   const { runUsage } = await import("./usage.mjs");
   const controller = new AbortController();
@@ -1442,6 +1443,7 @@ async function reportUsage() {
       signal: controller.signal,
       report: (tool, body, runner) => postAsRunner(`/usage/${encodeURIComponent(tool)}`, body, runner, controller.signal),
       gateway: async () => (await request("GET", "/usage", undefined, OWNER)).gateway,
+      speed: async () => (await request("GET", "/reliability", undefined, OWNER)).speed,
     });
   } catch (error) { die(error.message); }
 }
