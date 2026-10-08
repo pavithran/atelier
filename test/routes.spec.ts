@@ -256,12 +256,12 @@ it("init again changes only what it names, and --reset starts over", async () =>
   expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
   // --reset rebuilds from what it is given and the defaults.
   await put({ reset: true, checks: ["npm test"] });
-  expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"], sandboxOnly: false });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], sandboxOnly: false });
   // A first init of a new project with nothing named gets the defaults.
   const fresh = await worker.fetch(new Request("https://atelier.test/api/projects/fresh", {
     method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: "{}",
   }), { ...testEnv, ARTIFACTS } as typeof env);
-  expect((await fresh.json() as { project: { policy: unknown } }).project.policy).toMatchObject({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*"] });
+  expect((await fresh.json() as { project: { policy: unknown } }).project.policy).toMatchObject({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"] });
 });
 
 it("only the project owner can init, reset or not", async () => {

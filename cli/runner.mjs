@@ -12,7 +12,7 @@ import { reviewBrief, BRIEF_LIMITS } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
-import { rolePrompt } from "../src/usage.ts";
+import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -100,12 +100,49 @@ export function commandFor(entry, { model, briefFile, workspace, planFile, diffF
 // what the owner's checkout would print for the role. Returned without a
 // trailing newline, so the caller joins it to the brief with a single blank
 // line, however it was written.
+//
+// A role's override cannot name the role's own prompt as something for the
+// change to write, so an override over the cap is refused rather than cut or
+// carried: a cut would drop instructions the owner wrote, and an unbounded
+// one would crowd the actual brief out of the context window.
 export function roleText(role, workspace) {
-  try {
-    const text = readFileSync(join(workspace, ".atelier", "prompts", `${role}.md`), "utf8");
-    if (text.trim()) return text.replace(/\s+$/, "");
-  } catch { /* no override */ }
-  return rolePrompt(role).replace(/\s+$/, "");
+  return roleOverride(role, workspace).replace(/\s+$/, "");
+}
+
+// A role's override, `.atelier/prompts/ROLE.md`, read from `base`, the
+// directory that holds the checkout. Returns the file's text, or the default
+// `rolePrompt(role)` when there is none, and refuses one over ROLE_PROMPT_MAX.
+function roleOverride(role, base) {
+  let text;
+  try { text = readFileSync(join(base, ".atelier", "prompts", `${role}.md`), "utf8"); }
+  catch { return rolePrompt(role); }
+  return checkedOverride(role, text);
+}
+
+// The length check every override passes through: a blank file is no override,
+// and one over the cap is refused loudly rather than silently degrading the run.
+function checkedOverride(role, text) {
+  if (!text.trim()) return rolePrompt(role);
+  if (text.length > ROLE_PROMPT_MAX) {
+    throw new Error(`.atelier/prompts/${role}.md is ${text.length} characters, over the ${ROLE_PROMPT_MAX} a role prompt may be; shorten it`);
+  }
+  return text;
+}
+
+// The review role's instructions, read from the accepted base — the branch the
+// item merges into, which `reviewBase` fetched and returned as `compare.target`
+// — never from the workspace under review. A change that writes its own
+// `.atelier/prompts/review.md` must not author the instructions its reviewer
+// reads, and it stays unfenced in front of the brief, exactly what the brief's
+// fencing discipline exists to prevent. Falls back to the default when the
+// base has no override or no base could be fetched.
+export async function reviewRoleText(io, workspace, compare) {
+  const base = compare?.target;
+  if (!base) return rolePrompt("review").replace(/\s+$/, "");
+  let text;
+  try { text = await io.show(workspace, `${base}:.atelier/prompts/review.md`); }
+  catch { return rolePrompt("review").replace(/\s+$/, ""); }
+  return checkedOverride("review", text).replace(/\s+$/, "");
 }
 
 // Observations are supplied by the loop; terminal states remain terminal.
@@ -707,7 +744,7 @@ export async function runReview(assignment, config, name, io) {
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
     });
-    brief = await io.brief(workspace, `${roleText("review", workspace)}\n\n${text}`);
+    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -774,8 +811,13 @@ export async function reviewBase(io, workspace, claimed) {
   if (!target?.remote || !target?.branch) return forkPoint("the review claim named no branch the task merges into");
   try {
     await io.fetch(workspace, target.remote, target.token, target.branch);
+    // The fetched branch's head, returned as `target` so the review role's
+    // instructions can be read from it (reviewRoleText), never from the head
+    // under review: FETCH_HEAD after the clone is that head, so only a head
+    // captured here is safe to read.
+    const targetHead = (await io.revParse(workspace, "FETCH_HEAD")).trim();
     const from = (await io.mergeBase(workspace, "FETCH_HEAD", claimed.head)).trim();
-    return from ? { from, branch: target.branch } : forkPoint(`the head shares no history with ${target.branch}`);
+    return from ? { from, branch: target.branch, target: targetHead } : forkPoint(`the head shares no history with ${target.branch}`);
   } catch (error) {
     return forkPoint(`the merge base with ${target.branch} could not be found: ${error.message}`);
   }
@@ -1279,6 +1321,12 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
+    revParse: (dir, spec) => checked(["git", "rev-parse", spec], { cwd: dir, capture: true, signal: controller.signal, step: "rev-parse" }, executeChild),
+    // A review role's override read from the accepted base (reviewRoleText):
+    // the file as the base holds it, or the command fails and the default is
+    // used. The failure is expected (a base with no override), so its stderr
+    // is captured and dropped, not printed as a "fatal" on every review.
+    show: (dir, spec) => checked(["git", "show", spec], { cwd: dir, capture: true, captureError: true, signal: controller.signal, step: "show" }, executeChild),
     // A merge-main review's git reads (mergeReview): the head's parents, the
     // merge's conflict resolution, and the files the merge brought in.
     parents: (dir, head) => checked(["git", "rev-list", "--parents", "-n", "1", head], { cwd: dir, capture: true, signal: controller.signal, step: "parents" }, executeChild),
