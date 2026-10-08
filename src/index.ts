@@ -1,6 +1,6 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
+import { itemDiff, measureWorkspace, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
@@ -10,7 +10,8 @@ import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalTe
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { assertLength, CLAIM_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
+import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
+import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -1099,6 +1100,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
     return json(await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, (await L.project()).repo), item.fork));
   }
+  // A whole check log or review diff kept in R2 (src/large.ts), served by the
+  // sha256 that names it. The key is rebuilt from the project and item the
+  // path already names, so a reference read here can point nowhere but its
+  // own item's payload. Nothing is stored until the owner creates the bucket
+  // (wrangler.jsonc, LARGE), and a payload never stored and one no longer
+  // held answer the same 404.
+  if ((verb === "logs" || verb === "diffs") && parts.length === 6 && m === "GET") {
+    const sha = parts[5];
+    if (!LARGE_SHA.test(sha)) throw new RuleError("bad_ref", "name the stored payload by its sha256, as the reference in the brief or the ledger does", 400);
+    await L.item(id);
+    const stored = await getLarge(env.LARGE, largeKey(verb === "logs" ? "logs" : "diffs", ref.key, id, sha));
+    if (stored === null) throw new RuleError("no_such_payload", `nothing is stored under ${sha.slice(0, 12)} for ${id}`, 404);
+    return new Response(stored, { headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" } });
+  }
   // What atelier plan show reads, for a plan or any of its parts; with the
   // pool, a plan not yet approved also shows the routing an approval would fix.
   // The runner offers come with it, so an open review request is judged
@@ -1351,6 +1366,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "review-claim": {
       const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
+      // The review's diff, kept in R2 by reference when the change is too
+      // large for a brief (t284): the claim hands the reference to the
+      // runner, and the brief carries it instead of the diff's text. The
+      // reviewer reads the whole diff in the clone as ever (.scratch/, t244).
+      const diffRef = await storedReviewDiff(env, L, claim, ref.key, actor, !!c.token);
       // The review job clones the part read-only, so the claim also carries a
       // read token for the fork, as the read-token route mints one. It also
       // carries a read token for the branch the item merges into (the plan's
@@ -1365,11 +1385,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
+          ...(diffRef ? { diffRef } : {}),
           readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
           target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
         });
       }
-      return json(claim);
+      return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
     case "review-release": {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
@@ -1795,6 +1816,35 @@ async function diffFor(env: Env, baselineRepo: string, fork: string | null): Pro
     }
   }
   return diff;
+}
+
+// A review's diff, kept in R2 by reference (t284): when the change, read from
+// Artifacts as the item's own diff, is too large for a review brief to carry
+// — the 888 KB diff that broke a review on 2026-10-07 — it is stored whole
+// and the claim names the reference, so a brief and the ledger hold a key
+// instead of megabytes. Nothing is stored when the diff cannot be read, when
+// it is small enough to carry, or when no bucket sits behind the LARGE
+// binding: the reviewer reads the diff in the clone either way, and the
+// brief falls back to the cut it always carried.
+async function storedReviewDiff(
+  env: Env, L: ReturnType<typeof ledger>, claim: ReviewClaim, projectKey: string, actor: string, proved: boolean,
+) {
+  const item = claim.item;
+  if (!item.fork) return null;
+  try {
+    const p = await L.project();
+    const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+    if (!diff) return null;
+    const text = renderDiffText(item.id, diff);
+    if (text.length <= DIFF_INLINE_MAX) return null;
+    const ref = await putLarge(env.LARGE, "diffs", projectKey, item.id, text);
+    if (!ref) return null;
+    await L.reviewDiffStored(item.id, actor, claim.head, ref, proved);
+    return ref;
+  } catch (err) {
+    console.error("review diff not stored", codeOf(err).trim());
+    return null;
+  }
 }
 
 function runnerOffer(body: Record<string, unknown>): RunnerOffer {

@@ -15,19 +15,25 @@
 // {"data":null,"errors":[{"message":…}]}, so `errors` is checked as well
 // as the status.
 //
-// Calls per task are not read. The dataset has metadataKey and
-// metadataValue dimensions, but how a call carrying several cf-aig-metadata
-// entries (task, role, runner) is grouped by them has not been checked
-// against the live API, and no runner sends a task tag yet (t271), so a
-// per-task figure could not be shown to be right.
+// The same query's second selection reads calls per task: it groups the
+// dataset by metadataKey and metadataValue, and only the rows whose
+// metadataKey is "task" are kept. Runners tag every pay-per-use call with
+// the cf-aig-metadata header (CF_AIG_METADATA in cli/runner.mjs) naming
+// the task, the role and the runner, and a call carries at most one task
+// entry, so the task rows count each call once whatever else its metadata
+// names; a call with no metadata, or none naming a task, counts under no
+// task. The task is the item's id alone, so the same id under two projects
+// is one task in these figures.
 
 import { plain } from "./report.ts";
 
 export const GATEWAY_WINDOW_DAYS = 7;
 export const GATEWAY_WINDOW_MS = GATEWAY_WINDOW_DAYS * 86_400_000;
-// The most model groups one query asks for.
+// The most groups one query asks for, per selection.
 export const GROUP_LIMIT = 1000;
 export const GRAPHQL_URL = "https://api.cloudflare.com/client/v4/graphql";
+// The metadata key runners send a call's task under.
+export const TASK_METADATA_KEY = "task";
 
 export interface GatewayConfig { account: string; gateway: string; token: string }
 
@@ -44,11 +50,21 @@ export interface GatewayModel {
   sample: number;              // the calls the median and p90 are taken over
 }
 
+export interface GatewayTask {
+  task: string;                // the cf-aig-metadata task entry's value
+  calls: number;
+  failures: number;
+  tokensIn: number;            // uncached and cached
+  tokensOut: number;
+  cost: number | null;         // dollars; null when every call cost 0
+}
+
 export interface GatewayView {
   off: string | null;          // why there are no figures, or null when there are
   days: number;
   since: string;
   models: GatewayModel[];
+  tasks: GatewayTask[];        // calls per task, from the metadata runners send
 }
 
 // The configuration, or the sentence saying why the figures are off.
@@ -62,10 +78,15 @@ export function gatewayConfig(env: { CF_ACCOUNT_ID?: string; AI_GATEWAY_ID?: str
 
 // The query for the window from `since`. Account, gateway and time are
 // written as JSON strings, which are valid GraphQL string literals, so no
-// setting can change the query's shape.
+// setting can change the query's shape. Two selections of the same dataset:
+// the models grouped by model and provider, the tasks by metadataKey and
+// metadataValue.
 export function gatewayQuery(cfg: Pick<GatewayConfig, "account" | "gateway">, since: string): string {
   const s = (v: string) => JSON.stringify(v);
-  return `{ viewer { accounts(filter: { accountTag: ${s(cfg.account)} }) { aiGatewayRequestsAdaptiveGroups(limit: ${GROUP_LIMIT}, filter: { datetime_geq: ${s(since)}, gateway: ${s(cfg.gateway)} }) { count dimensions { model provider } sum { cost uncachedTokensIn uncachedTokensOut cachedTokensIn cachedTokensOut erroredRequests } quantiles { durationMsP50 durationMsP90 } } } } }`;
+  const filter = `{ datetime_geq: ${s(since)}, gateway: ${s(cfg.gateway)} }`;
+  const sum = "{ cost uncachedTokensIn uncachedTokensOut cachedTokensIn cachedTokensOut erroredRequests }";
+  const group = (dimensions: string, extra = "") => `aiGatewayRequestsAdaptiveGroups(limit: ${GROUP_LIMIT}, filter: ${filter}) { count dimensions ${dimensions} sum ${sum}${extra} }`;
+  return `{ viewer { accounts(filter: { accountTag: ${s(cfg.account)} }) { models: ${group("{ model provider }", " quantiles { durationMsP50 durationMsP90 }")} tasks: ${group("{ metadataKey metadataValue }")} } } }`;
 }
 
 // The API may give a number as a string.
@@ -93,9 +114,26 @@ export function parseGroup(raw: unknown): GatewayModel {
   };
 }
 
+// One group of the metadata selection as a task's figures, or null when the
+// group names no task: only a metadataKey of "task" does, so the rows a call
+// lands in for its other metadata entries (role, runner) are left out.
+export function parseTaskGroup(raw: unknown): GatewayTask | null {
+  const g = obj(raw), dims = obj(g.dimensions), sum = obj(g.sum);
+  if (name(dims.metadataKey, 64) !== TASK_METADATA_KEY) return null;
+  const cost = num(sum.cost);
+  const calls = count(g.count);
+  return {
+    task: name(dims.metadataValue, 64),
+    calls, failures: Math.min(count(sum.erroredRequests), calls),
+    tokensIn: count(sum.uncachedTokensIn) + count(sum.cachedTokensIn),
+    tokensOut: count(sum.uncachedTokensOut) + count(sum.cachedTokensOut),
+    cost: Number.isFinite(cost) && cost > 0 ? Math.round(cost * 1e6) / 1e6 : null,
+  };
+}
+
 // The groups of the API's answer, or an Error naming why it is not one: an
 // HTTP refusal, a GraphQL error (its first message), or another shape.
-export function parseAnswer(status: number, body: unknown): GatewayModel[] {
+export function parseAnswer(status: number, body: unknown): { models: GatewayModel[]; tasks: GatewayTask[] } {
   const b = obj(body);
   const errors = Array.isArray(b.errors) ? b.errors : [];
   if (errors.length) {
@@ -106,9 +144,9 @@ export function parseAnswer(status: number, body: unknown): GatewayModel[] {
   const accounts = obj(obj(b.data).viewer).accounts;
   if (!Array.isArray(accounts)) throw new Error("the GraphQL Analytics API answered without data");
   if (!accounts.length) throw new Error("the GraphQL Analytics API answered no account; check CF_ACCOUNT_ID and that the token reaches it");
-  const groups = obj(accounts[0]).aiGatewayRequestsAdaptiveGroups;
-  if (!Array.isArray(groups)) throw new Error("the GraphQL Analytics API answered without data");
-  return summarize(groups.map(parseGroup));
+  const account = obj(accounts[0]);
+  if (!Array.isArray(account.models) || !Array.isArray(account.tasks)) throw new Error("the GraphQL Analytics API answered without data");
+  return { models: summarize(account.models.map(parseGroup)), tasks: summarizeTasks(account.tasks.map(parseTaskGroup)) };
 }
 
 // Groups of one provider's model merged (names cut to the same text can
@@ -130,10 +168,26 @@ export function summarize(models: GatewayModel[]): GatewayModel[] {
   return [...by.values()].sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0) || b.calls - a.calls || a.model.localeCompare(b.model));
 }
 
+// Task groups merged by task value (values cut to the same text can meet),
+// most calls first, then by task value. A null is a group that named no task.
+export function summarizeTasks(tasks: (GatewayTask | null)[]): GatewayTask[] {
+  const by = new Map<string, GatewayTask>();
+  for (const t of tasks) {
+    if (!t || t.calls <= 0) continue;
+    const k = by.get(t.task);
+    if (!k) { by.set(t.task, { ...t }); continue; }
+    by.set(t.task, {
+      ...k, calls: k.calls + t.calls, failures: k.failures + t.failures, tokensIn: k.tokensIn + t.tokensIn, tokensOut: k.tokensOut + t.tokensOut,
+      cost: k.cost === null && t.cost === null ? null : (k.cost ?? 0) + (t.cost ?? 0),
+    });
+  }
+  return [...by.values()].sort((a, b) => b.calls - a.calls || a.task.localeCompare(b.task));
+}
+
 // The view of the window ending `now`: the figures, or why there are none.
 export async function readGatewayFigures(env: Parameters<typeof gatewayConfig>[0], now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
   const since = new Date(now - GATEWAY_WINDOW_MS).toISOString();
-  const view = (off: string | null, models: GatewayModel[] = []): GatewayView => ({ off, days: GATEWAY_WINDOW_DAYS, since, models });
+  const view = (off: string | null, models: GatewayModel[] = [], tasks: GatewayTask[] = []): GatewayView => ({ off, days: GATEWAY_WINDOW_DAYS, since, models, tasks });
   const cfg = gatewayConfig(env);
   if (typeof cfg === "string") return view(cfg);
   try {
@@ -143,7 +197,8 @@ export async function readGatewayFigures(env: Parameters<typeof gatewayConfig>[0
       body: JSON.stringify({ query: gatewayQuery(cfg, since) }),
     });
     const body = await res.json().catch(() => null);
-    return view(null, parseAnswer(res.status, body));
+    const parsed = parseAnswer(res.status, body);
+    return view(null, parsed.models, parsed.tasks);
   } catch (err) {
     return view(`AI Gateway figures could not be read: ${plain(err instanceof Error ? err.message : String(err), 300)}`);
   }
