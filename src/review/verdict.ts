@@ -343,8 +343,10 @@ const CRITERION_HEAD = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?\\d`, "i");
 const criterionHead = (line: string) => CRITERION_HEAD.test(line);
 // The met or unmet word ends at anything but a letter or digit, so an
 // underscore closes formatting (**, __, backticks) rather than extending the
-// word, as a \b would read it.
-const CRITERION_LINE = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(unmet|not met|met)(?![a-z0-9])\\]?\\s*(?:[-–—:]\\s*)?(.*?)\\s*$`, "i");
+// word, as a \b would read it. The closing formatting around the word, and
+// the separator after it, are consumed before the proof is taken, so neither
+// markers nor a bare dash can stand in as the proof.
+const CRITERION_LINE = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(unmet|not met|met)(?![a-z0-9])\\]?${E}\\s*(?:[-–—:]\\s*)?${E}\\s*(.*?)\\s*$`, "i");
 
 function lineStatements(reply: string, criteria: number): { verdicts: Statement["verdict"][]; findings: Finding[]; summary: string[]; criteria: Map<number, boolean> } {
   const verdicts: Statement["verdict"][] = [];
@@ -379,15 +381,16 @@ function lineStatements(reply: string, criteria: number): { verdicts: Statement[
 // unmet, then how it was proved — the proof is the point of the line, so a
 // line without one is refused rather than read as a bare met. The pattern
 // takes an empty proof so the refusal can name the missing proof, not the
-// line's shape. Closing formatting around the met or unmet (**, __,
-// backticks) is captured as if it were proof, so markers are not counted:
-// only the proof's words are.
+// line's shape. It consumes the closing formatting around the met or unmet
+// (**, __, backticks) and the separator before the proof, and the check
+// counts none of the markers, separators or whitespace left in what it takes
+// as proof either, so only the proof's words are.
 function criterionLine(line: string, at: string, of: number): { n: number; met: boolean } {
   const m = CRITERION_LINE.exec(line);
   if (!m) refuse(`${at}: a CRITERION line gives the criterion's number, met or unmet, and how it was proved`);
   const n = Number(m[1]);
   if (n < 1 || n > of) refuse(`${at}: CRITERION ${n} is not one of the ${of} acceptance criteria the brief numbers`);
-  if (!plain(m[3]).replace(/[*_`]/g, "")) refuse(`${at}: a CRITERION line ends with how the criterion was proved`);
+  if (!plain(m[3]).replace(/[*_`\s:–—-]/g, "")) refuse(`${at}: a CRITERION line ends with how the criterion was proved`);
   return { n, met: m[2].toLowerCase() === "met" };
 }
 
