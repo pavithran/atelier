@@ -1,0 +1,40 @@
+atelier atelier/t257 "The runner's finish refuses a build whose agent committed its work when the workspace holds an untracked .scratch/ (the harness's own log folder): 'commit your changes before finishing' (t253, 2026-10-07; atelier land adds .scratch/ to .git/info/exclude for the same reason). The runner adds .scratch/ to the workspace's .git/info/exclude when it sets the workspace up, so harness logs never count as uncommitted work"
+accepted head d70bb95bdaad3acfb1628d971b63e9f56c2ef369
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T05:07:03.510Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T05:07:05.998Z
+REVIEW approve by antigravity/gemini-3.1-pro at d70bb95bdaad3acfb1628d971b63e9f56c2ef369, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T15:14:29.205Z pavi item.created
+2026-10-08T01:36:47.464Z claude-code/opus-5.5 item.claimed
+2026-10-08T01:37:01.634Z claude-code/opus-5.5 fork.created
+2026-10-08T03:11:50.106Z pavi land.lease
+2026-10-08T03:11:54.644Z pavi land.merge
+2026-10-08T03:12:04.261Z pavi land.regenerate
+2026-10-08T03:12:09.342Z claude-code/opus-5.5 push.observed
+2026-10-08T03:12:09.724Z pavi land.push
+2026-10-08T03:16:09.413Z claude-code/opus-5.5 evidence.observed
+2026-10-08T03:16:11.810Z claude-code/opus-5.5 evidence.observed
+2026-10-08T03:16:12.287Z pavi land.check
+2026-10-08T03:16:12.678Z claude-code/opus-5.5 item.submitted
+2026-10-08T03:16:12.918Z pavi land.submit
+2026-10-08T03:16:13.058Z pavi review.requested
+2026-10-08T03:16:21.983Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T03:20:44.524Z antigravity/gemini-3.1-pro review.rejected
+2026-10-08T03:20:48.338Z pavi land.review
+2026-10-08T03:23:31.648Z pavi review.finding
+2026-10-08T03:23:31.957Z pavi review.finding
+2026-10-08T05:03:50.800Z pavi land.lease
+2026-10-08T05:03:53.903Z pavi land.merge
+2026-10-08T05:04:01.710Z pavi land.regenerate
+2026-10-08T05:04:04.600Z claude-code/opus-5.5 push.observed
+2026-10-08T05:04:04.703Z pavi land.push
+2026-10-08T05:07:03.921Z claude-code/opus-5.5 evidence.observed
+2026-10-08T05:07:06.137Z claude-code/opus-5.5 evidence.observed
+2026-10-08T05:07:06.546Z pavi land.check
+2026-10-08T05:07:06.890Z claude-code/opus-5.5 item.submitted
+2026-10-08T05:07:07.093Z pavi land.submit
+2026-10-08T05:07:07.194Z pavi review.requested
+2026-10-08T05:07:15.291Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T05:10:18.402Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T05:10:23.076Z pavi land.review
+2026-10-08T05:10:24.043Z pavi item.accepted
+2026-10-08T05:10:24.149Z pavi land.accept
