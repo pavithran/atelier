@@ -1,0 +1,28 @@
+atelier atelier/t307 "Polish after the first end-to-end Workflow landing (t293 merged as 470c7adb on 2026-10-08 via atelier land t293 --workflow): (1) the merge-main step record was refused, 'too_long: a landing step records at most 4000 characters' with 103 commits from main, so cut its lists (first N and a count) to fit; (2) after the merge the CLI said 'the landing Workflow of t293 can no longer be read (instance none); its lease lapses on its own' although the landing finished: read a finished instance as done, say the landing finished, and release the lease at once; (3) README 'Built on Cloudflare' and docs/landing.md: Workflows are live behind atelier land --workflow (local checks by default), proven by t293's landing"
+accepted head e27987b67d230d03fa4a15ebf1afcbb7c20279b0
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T12:00:59.352Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T12:01:02.066Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T12:38:40.519Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T12:38:43.258Z
+REVIEW approve by antigravity/gemini-3.1-pro at e27987b67d230d03fa4a15ebf1afcbb7c20279b0, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T11:42:53.740Z pavi item.created
+2026-10-08T11:42:54.064Z pavi item.dispatched
+2026-10-08T11:43:12.862Z opencode/glm-5.3 item.claimed
+2026-10-08T11:43:26.911Z opencode/glm-5.3 fork.created
+2026-10-08T11:58:16.552Z opencode/glm-5.3 push.observed
+2026-10-08T12:00:59.904Z opencode/glm-5.3 evidence.observed
+2026-10-08T12:01:02.234Z opencode/glm-5.3 evidence.observed
+2026-10-08T12:01:02.685Z opencode/glm-5.3 item.submitted
+2026-10-08T12:35:45.543Z pavi land.lease
+2026-10-08T12:35:50.181Z pavi land.merge
+2026-10-08T12:35:57.506Z pavi land.regenerate
+2026-10-08T12:35:59.199Z pavi land.push
+2026-10-08T12:38:41.163Z opencode/glm-5.3 evidence.observed
+2026-10-08T12:38:43.481Z opencode/glm-5.3 evidence.observed
+2026-10-08T12:38:43.925Z pavi land.check
+2026-10-08T12:38:45.140Z pavi review.requested
+2026-10-08T12:38:58.952Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T12:42:08.015Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T12:42:17.038Z pavi land.review
+2026-10-08T12:42:17.531Z pavi item.accepted
+2026-10-08T12:42:17.564Z pavi land.accept
