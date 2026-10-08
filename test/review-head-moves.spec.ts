@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
-import type { Ledger, LedgerEvent } from "../src/ledger.ts";
+import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { criteriaHash } from "../src/criteria.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
 // A review request follows the task's head (t300). t282's landing asked a
@@ -95,7 +96,7 @@ it("t282: a review asked at A, then the landing pushes B and submits — the A r
   expect(claim.need).not.toBeNull();
   // The landing's own request at B finds the live request rather than making another.
   expect(await L.requestReview(id, "owner", GPT, POOL, true)).toMatchObject({ requested: false, head: B, reviewer: GPT });
-  await L.addReview({ itemId: id, by: GPT, head: B, approve: true, note: "Reviewed the merged head.", at: new Date().toISOString() });
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head: B, approve: true, note: "Reviewed the merged head.", at: new Date().toISOString() });
   await L.accept(id, "owner", B);
   expect(await L.item(id)).toMatchObject({ state: "accepted" });
 });
@@ -110,7 +111,7 @@ it("a picked reviewer's request follows the head too, and a claimed request at t
   await landingMerge(L, id, B);
   expect(await gateRequests(L, id)).toEqual([{ head: A, state: "withdrawn" }, { head: B, state: "open" }]);
   // Its late verdict at A is refused; the release of a request already closed is refused, not reopened.
-  await refusal(L.addReview({ itemId: id, by: GPT, head: A, approve: true, note: "Late.", at: new Date().toISOString() }), "stale_head", /older head/);
+  await refusal(L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head: A, approve: true, note: "Late.", at: new Date().toISOString() }), "stale_head", /older head/);
   await refusal(L.releaseReview(id, GPT, "no verdict"), "no_review", /no review request claimed/);
   expect((await L.claimReview(id, GPT, RUNNER) as unknown as { head: string }).head).toBe(B);
 });
@@ -187,4 +188,43 @@ it("a stale request whose new head the gate does not need reviewed yet is closed
   // Once B's checks pass, the review is carried to B.
   await passes(L, id, B);
   expect((await L.reviewWaiting()).map((i) => i.head)).toEqual([B]);
+});
+
+// t326: a change of the acceptance criteria withdraws the review requests at
+// the head as a move of the head does, but asks again at the same head; the
+// withdrawn ones never reopen, even when the criteria return, and a later
+// move of the head carries only the request that stands.
+it("a change of criteria withdraws the request at the head and asks the same reviewer again there; changing back reopens nothing", async () => {
+  const L = await setup("move-criteria");
+  const ONE = ["The landing asks for the head it waits on"], TWO = [...ONE, "And says so"];
+  const id = (await L.newItem("Landing", [], "owner", { accept: ONE })).id;
+  await submittedAt(L, id, A);
+  await L.requestReview(id, "owner", GPT, POOL);
+  expect(await gateRequests(L, id)).toEqual([{ head: A, state: "open" }]);
+  const evidence = await L.evidenceFor(id);
+
+  const changed = await L.editItem(id, "owner", { accept: TWO });
+  expect(changed.criteriaChange).toMatchObject({ requests: 1, reviews: 0, asked: [GPT] });
+  expect(await gateRequests(L, id)).toEqual([{ head: A, state: "withdrawn" }, { head: A, state: "open" }]);
+  const back = await L.editItem(id, "owner", { accept: ONE });
+  expect(back.criteriaChange).toMatchObject({ requests: 1, asked: [GPT] });
+  expect(await gateRequests(L, id)).toEqual([{ head: A, state: "withdrawn" }, { head: A, state: "withdrawn" }, { head: A, state: "open" }]);
+  expect(await L.item(id)).toMatchObject({ head: A, state: "submitted" });
+  expect(await L.evidenceFor(id)).toEqual(evidence);
+  const asked = (await events(L, id)).filter((e) => e.kind === "review.requested").map((e) => e.data.via);
+  expect(asked).toEqual(["criteria-changed", "criteria-changed", "land"]);
+
+  // A claim at A binds the criteria as they are; the head then moves, and the
+  // request is carried to B with the same reviewer, bound at its claim again.
+  const atA = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(atA.criteria).toBe(criteriaHash(ONE));
+  await landingMerge(L, id, B);
+  expect(await gateRequests(L, id)).toEqual([
+    { head: A, state: "withdrawn" }, { head: A, state: "withdrawn" }, { head: A, state: "withdrawn" }, { head: B, state: "open" },
+  ]);
+  await refusal(L.addReview({ itemId: id, by: GPT, head: A, criteria: atA.criteria, request: atA.request, approve: true, note: "A", at: new Date().toISOString() }, undefined, true), "stale_head", /older head/);
+  const atB = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(atB).toMatchObject({ head: B, criteria: criteriaHash(ONE) });
+  await L.addReview({ itemId: id, by: GPT, head: B, criteria: atB.criteria, request: atB.request, approve: true, note: "B", at: new Date().toISOString() }, undefined, true);
+  expect(((await L.detail(id)) as unknown as { gate: { ready: boolean } }).gate.ready).toBe(true);
 });

@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -73,7 +74,7 @@ it("a review, handoff, release or abandonment note over 2000 characters is refus
   const holder = as(await issue(name, A), null), reviewer = as(await issue(name, B), null), owner = as(TOKEN, "owner");
   const long = "x".repeat(2001);
 
-  await refused(await reviewer("POST", "/items/t1/review", { head: H1, approve: false, note: long }), /the review note is 2001 characters; the limit is 2000\. Shorten it and send it again/);
+  await refused(await reviewer("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: false, note: long }), /the review note is 2001 characters; the limit is 2000\. Shorten it and send it again/);
   expect(await L.reviewsFor("t1")).toEqual([]);
   await refused(await holder("POST", "/items/t1/handoff", { to: "opencode/glm-5.3", note: long }), /the handoff note is 2001 characters; the limit is 2000/);
   await refused(await holder("POST", "/items/t1/handoff", { to: `opencode/${"g".repeat(300)}`, note: "Over to you" }), /the name of the agent it is handed to is 309 characters; the limit is 200/);
@@ -87,7 +88,7 @@ it("a review, handoff, release or abandonment note over 2000 characters is refus
 
   // At the limit, a note is kept whole.
   const exact = "y".repeat(2000);
-  expect((await reviewer("POST", "/items/t1/review", { head: H1, approve: false, note: exact })).status).toBe(200);
+  expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: false, note: exact })).status).toBe(200);
   expect((await L.reviewsFor("t1"))[0].note).toBe(exact);
   expect((await holder("POST", "/items/t1/release", { note: exact })).status).toBe(200);
   expect(revoked).toEqual(["write-token-1"]);

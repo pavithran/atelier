@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ACCEPT_COUNT, BRIEF_MAX, FIELD_MAX, itemFields, itemText, shortTitle, TITLE_MAX } from "../src/rules.ts";
 import { briefFor } from "../cli/runner.mjs";
 import { formatTask } from "../cli/atelier.mjs";
+import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "../src/criteria.ts";
 
 // t315: a task's short title, derived from the text when only one long
 // string is given, its brief and its acceptance criteria as the boundary
@@ -77,4 +78,38 @@ test("the agents' briefs carry the whole text: the runner's job brief and atelie
   assert.ok(job.includes("Title: Short titles\nBrief: Every list shows the short title. The brief stays on the page.\nAcceptance criterion 1 (a change that fails one is rejected in review): Lists show the short title\nAcceptance criterion 2 (a change that fails one is rejected in review): The brief is on the page\nScope path: src/**"), job);
   assert.ok(!briefFor({ ...item, brief: null, accept: [] }, "demo").includes("Brief:"));
   assert.equal(formatTask(item), "Short titles\nBrief: Every list shows the short title. The brief stays on the page.\nScope: src/**\nAcceptance criterion 1: Lists show the short title\nAcceptance criterion 2: The brief is on the page");
+});
+
+// t326: the binding of a task's criteria, which a claim records and a review
+// names: deterministic over the stored, ordered list, with missing and empty
+// alike, and a part's binding covering the plan's acceptance too.
+test("the criteria binding is a deterministic hash of the stored, ordered list; missing and empty hash alike", () => {
+  const list = ["Nested lists parse", "Errors name the line"];
+  assert.match(criteriaHash(list), /^[a-f0-9]{64}$/);
+  assert.equal(criteriaHash(list), criteriaHash([...list]), "the same criteria, the same hash");
+  assert.equal(criteriaOf({ accept: list }), criteriaOf({ accept: [...list], partAccept: null }));
+  // Text, order and where one entry ends and the next begins each change it.
+  const others = [
+    ["Nested lists parse", "Errors name the column"],
+    ["Errors name the line", "Nested lists parse"],
+    ["Nested lists parse Errors name the line"],
+    ["Nested lists", "parse", "Errors name the line"],
+    ["Nested lists parse", "Errors name the line", ""],
+  ];
+  const hashes = new Set([criteriaHash(list), ...others.map((o) => criteriaHash(o))]);
+  assert.equal(hashes.size, others.length + 1);
+  // A task with no criteria field and one with an empty list are the same.
+  assert.equal(criteriaOf({}), criteriaOf({ accept: [] }));
+  assert.equal(criteriaHash(undefined), NO_CRITERIA);
+  assert.equal(criteriaHash(null), NO_CRITERIA);
+  assert.ok(sameCriteria(undefined, []) && sameCriteria(list, [...list]) && !sameCriteria(list, others[1]));
+  // A part's binding names the plan's acceptance too, so it never equals the task's alone.
+  assert.notEqual(criteriaHash(list, ["It works"]), criteriaHash(list));
+  assert.notEqual(criteriaHash([], ["It works"]), criteriaHash(["It works"]));
+  assert.notEqual(criteriaHash(["a"], ["b"]), criteriaHash(["b"], ["a"]));
+  // Clearing goes through the same field cleaning: an empty list clears,
+  // and a blank entry is still refused.
+  assert.deepEqual(itemFields({ accept: [] }), { accept: [] });
+  assert.throws(() => itemFields({ accept: [""] }), /accept must be a list of strings with something in each/);
+  assert.throws(() => itemFields({ accept: ["Nested lists parse", "\t "] }), /accept must be a list of strings with something in each/);
 });

@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFLICTS_ARGS, mergeMainArgs, runTask } from "../cli/runner.mjs";
+import { ROLE_PROMPTS } from "../src/usage.ts";
 
 // A part sent back because its integration conflicted with the plan's
 // branch (docs/orchestrator.md, section 5): its dispatch names the branch's
@@ -104,7 +105,7 @@ test("a part sent back after a conflict merges the plan's branch into the worksp
   // Nothing reset the workspace between the merge and the harness.
   assert.ok(order.indexOf("harness") > order.indexOf("mergeMain") && !order.slice(order.indexOf("mergeMain")).includes("reset"));
   const brief = calls.find((c) => c.brief).brief;
-  assert.equal(brief, `SERVER BRIEF\n\n## Conflicts in this workspace\n\nThe merge of the plan's branch at ${r.planHead.slice(0, 8)} is in progress and left conflicts in this file:\n\`\`\`\na.txt\n\`\`\`\n`);
+  assert.equal(brief, `${ROLE_PROMPTS.build.trimEnd()}\n\nSERVER BRIEF\n\n## Conflicts in this workspace\n\nThe merge of the plan's branch at ${r.planHead.slice(0, 8)} is in progress and left conflicts in this file:\n\`\`\`\na.txt\n\`\`\`\n`);
   // The harness committed the merge unedited: the plan's head is a parent, and the message ends with the Agent line.
   const head = git(r.workspace, "rev-parse", "HEAD");
   assert.deepEqual(git(r.workspace, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1), [r.partHead, r.planHead]);
@@ -148,7 +149,7 @@ test("a workspace that already holds the plan's head is reworked by the harness,
   const { io: io3, calls: calls3 } = fixture(t, { conflict: true, harness: (cwd) => { commit(cwd, "c.txt", "fix\n", "fix"); return { code: 0 }; } });
   assert.equal((await runTask(plain, config, "home:studio", io3)).phase, "submitted");
   assert.ok(!calls3.some((c) => c.argv?.[0] === "base-token" || c.fetch || c.mergeMain));
-  assert.equal(calls3.find((c) => c.brief).brief, "SERVER BRIEF");
+  assert.equal(calls3.find((c) => c.brief).brief, `${ROLE_PROMPTS.build.trimEnd()}\n\nSERVER BRIEF`);
 });
 
 test("a merge-main part sent back after a conflict merges main, then the plan's branch, and lists both in its brief", async (t) => {
@@ -176,7 +177,7 @@ test("a merge-main part sent back after a conflict merges main, then the plan's 
   assert.deepEqual(calls.filter((c) => c.argv?.[0] === "base-token").map((c) => c.argv[1]), ["t1", "t9"]);
   assert.deepEqual(calls.filter((c) => c.mergeMain).map((c) => c.mergeMain[0]), [mainHead, r.planHead]);
   const brief = calls.find((c) => c.brief).brief;
-  assert.equal(brief, `SERVER BRIEF\n\n## Conflicts in this workspace\n\nThe workspace already holds main at ${mainHead.slice(0, 8)}; no merge was left in progress.\n\nThe merge of the plan's branch at ${r.planHead.slice(0, 8)} is in progress and left conflicts in this file:\n\`\`\`\na.txt\n\`\`\`\n`);
+  assert.equal(brief, `${ROLE_PROMPTS.build.trimEnd()}\n\nSERVER BRIEF\n\n## Conflicts in this workspace\n\nThe workspace already holds main at ${mainHead.slice(0, 8)}; no merge was left in progress.\n\nThe merge of the plan's branch at ${r.planHead.slice(0, 8)} is in progress and left conflicts in this file:\n\`\`\`\na.txt\n\`\`\`\n`);
   const head = git(r.workspace, "rev-parse", "HEAD");
   assert.equal(git(r.workspace, "rev-list", "--parents", "-n", "1", head).split(" ")[2], r.planHead);
 });
