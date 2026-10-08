@@ -64,6 +64,8 @@ export interface Block {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
+  // Creation only: the ledger resolves this task's recorded merge itself.
+  revertOf?: string;
   nonGoals?: string[];
   stopWhen?: string[];
   nextGate?: string | null;
@@ -770,6 +772,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
+  if (input.revertOf !== undefined) {
+    if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
+    out.revertOf = input.revertOf;
+  }
   if (input.nonGoals !== undefined) out.nonGoals = list(input.nonGoals, "nonGoals");
   if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
   if (input.accept !== undefined) {

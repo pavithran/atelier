@@ -29,6 +29,7 @@ export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.t
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
 import { runLand } from "./land.mjs";
+import { runRevert } from "./revert.mjs";
 import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLeft, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { pushHistory } from "./push-steps.mjs";
@@ -39,7 +40,7 @@ import { describeStore, promptSecret, readSecret, writeSecret } from "./credenti
 import { checkEnv } from "./check-env.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
+import { COMMAND_USAGE, guideText, helpText } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
@@ -228,6 +229,7 @@ export const FLAGS = {
   login: { server: false, store: true },
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
+  revert: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
   // edit takes the same, and --title; one empty value clears the field, so
@@ -2044,6 +2046,16 @@ const commands = {
     const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
     git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path, token: t.token });
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
+  },
+
+  async revert() {
+    if (args._.length !== 2) die(COMMAND_USAGE.revert);
+    const name = project(), as = await actor(OWNER);
+    await runRevert(args._[1], as, {
+      create: (body) => call("POST", `${P(name)}/items`, body, as),
+      claim: (id, who) => claimWorkspace(name, id, who),
+      git, say: console.log,
+    });
   },
 
   // The title is the words given; with --brief the long text goes apart.
