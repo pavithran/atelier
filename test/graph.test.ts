@@ -111,7 +111,7 @@ test("a merge is counted only when its task is drawn, and a cut record says so",
 test("a rejection and a failed check are moments worth telling", () => {
   const s = buildStory("demo", [item("t1", "merged"), item("t2", "claimed")], night(), OWNER);
   const catches = s.moments.filter((m) => m.tone === "catch").map((m) => m.text);
-  assert.deepEqual(catches, ["glm-5.3 sent t1 back: Rule 2 filters too early", "A check on t2 failed on the agent's machine"]);
+  assert.deepEqual(catches, ["glm-5.3 sent t1 back: Rule 2 filters too early", "A check on t2 failed on a runner, in a clean clone"]);
   assert.ok(s.moments.some((m) => m.tone === "merge" && m.text === "t1 merged into main as cccccccc"));
 });
 

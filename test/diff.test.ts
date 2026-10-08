@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { againstMain, changedPaths, diffLines, itemDiff, measureWorkspace, mergeBase, pairReader, repoReader, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
+import { againstMain, changedPaths, diffLines, itemDiff, landingOf, measureWorkspace, mergeBase, mergedDiff, pairReader, repoReader, splitLines, toHunks, treeDiff, type Entry, type Reader } from "../src/diff.ts";
 
 const replay = (ops: { op: string; text: string }[]) => ({
   a: ops.filter((o) => o.op !== "+").map((o) => o.text),
@@ -315,4 +315,63 @@ test("a workspace behind main lists main's newer changes until it takes them; on
   const same = artifactsOf({ main, fork: { log: [{ hash: "new", treeHash: "new", parents: ["old"] }], trees: { new: fresh } } });
   assert.deepEqual(await itemDiff(same, "main", "fork"), { base: "new", head: "new", files: [], truncated: false, baseTree: "new", headTree: "new" });
   assert.equal(await itemDiff(artifactsOf({ main, fork: { log: [], trees: {} } }), "main", "fork"), null);
+});
+
+// A task merged at MG, after which main moved on to "later", adding files the
+// task never saw (t278 on 2026-10-08, t321).
+function mergedFixture() {
+  const old = { "a.ts": "a\n" }, work = { "a.ts": "a2\n" }, merged = { "a.ts": "a2\n" };
+  const later = { "a.ts": "a2\n", "docs/setup.md": "setup\n", "src/access.ts": "access\n" };
+  return artifactsOf({
+    main: {
+      log: [
+        { hash: "later", treeHash: "later", parents: ["MG"] },
+        { hash: "MG", treeHash: "MG", parents: ["old", "W"] },
+        { hash: "old", treeHash: "old", parents: [] },
+      ],
+      trees: { old, MG: merged, later },
+    },
+    fork: { log: [{ hash: "W", treeHash: "W", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, W: work } },
+  });
+}
+
+test("a merged task's diff is its merge against the first parent, not against today's main", async () => {
+  const A = mergedFixture();
+  // Against today's main the task would list main's later files as deleted.
+  assert.deepEqual((await itemDiff(A, "main", "fork"))?.files.map((f) => [f.path, f.status]), [["docs/setup.md", "deleted"], ["src/access.ts", "deleted"]]);
+  const diff = await mergedDiff(A, "main", "fork", { commit: "MG", head: "W", base: "old", onPlanBranch: false });
+  assert.equal(diff.base, "old");
+  assert.equal(diff.head, "MG");
+  assert.deepEqual(diff.merged, { commit: "MG", from: "first-parent" });
+  assert.equal(diff.main, undefined, "no merge preview is read for a merged task");
+  assert.deepEqual(diff.files.map((f) => [f.path, f.status, f.added, f.removed]), [["a.ts", "modified", 1, 1]]);
+});
+
+test("a fast-forwarded task's diff runs from its fork point, and an unreadable merge throws", async () => {
+  const A = artifactsOf({
+    main: { log: [{ hash: "later", treeHash: "later", parents: ["W2"] }, { hash: "W2", treeHash: "W2", parents: ["W1"] }, { hash: "W1", treeHash: "W1", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }],
+      trees: { old: { "a.ts": "a\n" }, W1: { "a.ts": "a\n", "b.ts": "b\n" }, W2: { "a.ts": "a2\n", "b.ts": "b\n" }, later: { "a.ts": "a2\n", "b.ts": "b\n", "c.ts": "c\n" } } },
+    fork: { log: [], trees: {} },
+  });
+  const diff = await mergedDiff(A, "main", null, { commit: "W2", head: "W2", base: "old", onPlanBranch: false });
+  assert.deepEqual(diff.merged, { commit: "W2", from: "fork-point" });
+  assert.equal(diff.base, "old");
+  assert.deepEqual(diff.files.map((f) => [f.path, f.status]), [["a.ts", "modified"], ["b.ts", "added"]]);
+  await assert.rejects(mergedDiff(A, "main", null, { commit: "gone", head: "W2", base: "old", onPlanBranch: false }));
+});
+
+test("where a merged task landed is read from its record", () => {
+  const item = { id: "t1", state: "merged", base: "old", acceptedHead: "W" };
+  const merged = { itemId: "t1", kind: "item.merged", data: { mergeCommit: "MG", head: "W" } };
+  assert.deepEqual(landingOf(item, [merged]), { commit: "MG", head: "W", base: "old", onPlanBranch: false });
+  // Not merged, or merged with no recorded commit: no landing, so the page compares with main.
+  assert.equal(landingOf({ ...item, state: "accepted" }, [merged]), null);
+  assert.equal(landingOf(item, [{ ...merged, itemId: "t2" }]), null);
+  // A part merged through its plan shows the merge that integrated it into the plan's branch.
+  const part = { id: "t1", state: "merged", base: "P0", acceptedHead: null };
+  const events = [
+    { itemId: "t1", kind: "part.integrated", data: { head: "W", mergeCommit: "PI" } },
+    { itemId: "t1", kind: "item.merged", data: { mergeCommit: "MAIN", head: "W", via: "t0" } },
+  ];
+  assert.deepEqual(landingOf(part, events), { commit: "PI", head: "W", base: "P0", onPlanBranch: true });
 });
