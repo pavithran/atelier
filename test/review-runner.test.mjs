@@ -76,9 +76,11 @@ test("runReview claims the request, clones read-only, writes the brief and diff,
   assert.deepEqual(calls[0].argv.slice(0, 2), ["review-claim", "t21"]);
   assert.ok(calls.some((c) => c.clone), "the fork is cloned read-only");
   assert.ok(calls.some((c) => c.diff), "the diff is computed from the base to the head");
-  // The brief is the review brief, with the diff inlined.
+  // The brief is the role's instructions followed by the review brief, with
+  // the diff inlined.
   const brief = calls.find((c) => c.brief).brief;
-  assert.ok(brief.startsWith("# Review of t21 at aaaaaaaa\n"));
+  assert.ok(brief.startsWith("## Reviewing\n"), brief);
+  assert.ok(brief.includes("# Review of t21 at aaaaaaaa\n"));
   assert.ok(brief.includes("Automatic cross-family review"));
   assert.ok(brief.includes(DIFF));
   // The harness command names the brief, diff and verdict files.

@@ -39,7 +39,7 @@ import { describeStore, promptSecret, readSecret, writeSecret } from "./credenti
 import { checkEnv } from "./check-env.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
+import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "../src/usage.ts";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
@@ -286,7 +286,7 @@ export const FLAGS = {
   inbox: { json: true },
   status: { json: true },
   open: {},
-  guide: {},
+  guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
   help: {},
 };
 const REST = new Set(["check"]);
@@ -454,6 +454,24 @@ function project() {
   const { here, name } = registeredHere();
   if (name) return name;
   die(unregisteredMessage(here, cfg.projects));
+}
+
+// A project's override for one role's instructions, `.atelier/prompts/ROLE.md`,
+// or null when the project has none. Read from the project's checkout on this
+// machine; a role outside one prints its default text. The project is the one
+// `--project` names, else this folder's workspace or registered checkout, else
+// none.
+function roleOverride(role) {
+  const name = args.project ?? wsConfig("project") ?? registeredHere().name;
+  const path = name ? cfg.projects?.[name]?.path : null;
+  if (!path) return null;
+  try {
+    const text = readFileSync(join(path, ".atelier", "prompts", `${role}.md`), "utf8");
+    if (!text.trim()) return null;
+    return text.endsWith("\n") ? text : `${text}\n`;
+  } catch {
+    return null;
+  }
 }
 
 // What a command that needs a project says when this folder is neither a
@@ -3311,7 +3329,10 @@ const commands = {
   },
 
   guide() {
-    process.stdout.write(guideText());
+    if (args.role === undefined) { process.stdout.write(guideText()); return; }
+    const role = args.role;
+    if (!ROLES.includes(role)) die(`--role needs one of ${ROLES.join(", ")}: atelier guide --role build|review|plan|orchestrate`);
+    process.stdout.write(roleOverride(role) ?? rolePrompt(role));
   },
 
   help() {

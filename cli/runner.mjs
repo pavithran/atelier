@@ -12,6 +12,7 @@ import { reviewBrief, BRIEF_LIMITS } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { rolePrompt } from "../src/usage.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -87,6 +88,21 @@ export function briefFor(item, project) {
 export function commandFor(entry, { model, briefFile, workspace, planFile, diffFile, verdictFile }) {
   const values = { model, brief_file: briefFile, workspace, plan_file: planFile, diff_file: diffFile, verdict_file: verdictFile };
   return entry.command.map((arg) => arg.replace(/\{(model|brief_file|workspace|plan_file|diff_file|verdict_file)\}/g, (_, key) => values[key]));
+}
+
+// A role's instructions, as the runner passes them to the harness: the
+// project's `.atelier/prompts/ROLE.md` when the workspace (a clone of the
+// fork) holds one, else the default text `atelier guide --role ROLE` prints.
+// The override travels with the project's code, so the agent reads exactly
+// what the owner's checkout would print for the role. Returned without a
+// trailing newline, so the caller joins it to the brief with a single blank
+// line, however it was written.
+export function roleText(role, workspace) {
+  try {
+    const text = readFileSync(join(workspace, ".atelier", "prompts", `${role}.md`), "utf8");
+    if (text.trim()) return text.replace(/\s+$/, "");
+  } catch { /* no override */ }
+  return rolePrompt(role).replace(/\s+$/, "");
 }
 
 // Observations are supplied by the loop; terminal states remain terminal.
@@ -529,11 +545,12 @@ export async function runTask(assignment, config, name, io) {
       const local = briefFor({ ...item, owner: actor }, project);
       // A merge-main task's brief (t243) is the local one with the job's own
       // instructions (mergeMainSection) and the conflicts after it.
-      brief = await io.brief(workspace, serverBrief
+      const body = serverBrief
         ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text)
         : merging
           ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
-          : reworked?.text ? `${local}\n${reworked.text}\n` : local);
+          : reworked?.text ? `${local}\n${reworked.text}\n` : local;
+      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${body}`);
       const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
       for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
       // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -687,7 +704,7 @@ export async function runReview(assignment, config, name, io) {
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
     });
-    brief = await io.brief(workspace, text);
+    brief = await io.brief(workspace, `${roleText("review", workspace)}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -1119,7 +1136,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (io.stopped()) throw new Error("interrupted");
     const job = await io.jobBrief(project, item.id, actor);
     if (!job || typeof job.text !== "string") throw new Error("the server's job brief has no text");
-    brief = await io.brief(workspace, job.text);
+    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${job.text}`);
     const planFile = planFilePath(workspace);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const each of withheld) io.log(`${each} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
