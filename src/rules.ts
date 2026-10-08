@@ -12,7 +12,10 @@ export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integra
 
 export interface Item {
   id: string;
-  title: string;
+  title: string;            // the short title every list shows, at most TITLE_MAX characters
+  // The long text of the task, shown only on its own page and in briefs to
+  // agents; null when the title says it all. Read with briefText.
+  brief?: string | null;
   scope: string[];          // globs the item intends to touch
   state: ItemState;
   owner: string | null;     // actor, e.g. "claude-code/opus-5.5"; null when unowned
@@ -33,6 +36,9 @@ export interface Item {
   nonGoals?: string[];
   stopWhen?: string[];
   nextGate?: string | null;
+  // What the change must do to be done, numbered in the review brief as a
+  // plan part's acceptance criteria are; a change that fails one blocks.
+  accept?: string[];
   blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
   // A plan, or a part of one (docs/orchestrator.md). An ordinary task
   // carries none of these four fields.
@@ -55,11 +61,15 @@ export interface Block {
 }
 
 // What `atelier new` and `atelier edit` set. A field present replaces the
-// item's value; one absent keeps it. An empty list or a null gate clears.
+// item's value; one absent keeps it. An empty list, a null gate or a null
+// brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
   nonGoals?: string[];
   stopWhen?: string[];
   nextGate?: string | null;
+  accept?: string[];
+  brief?: string | null;
+  title?: string;
 }
 
 // Whether two items belong to one plan: two parts of it, or a part and the
@@ -666,6 +676,72 @@ export function assertBlockable(item: Item): void {
 export const REASON_MAX = 500;
 export const FIELD_MAX = 300;
 export const FIELD_LIST_MAX = 20;
+// A task's short title, its long brief, and its acceptance criteria: at most
+// ACCEPT_COUNT of them, each at most FIELD_MAX characters.
+export const TITLE_MAX = 80;
+export const BRIEF_MAX = 4000;
+export const ACCEPT_COUNT = 12;
+
+// A clause or sentence shorter than this is not taken as the title: "e.g."
+// or "Fix:" would say nothing.
+const CLAUSE_MIN = 12;
+
+// The short title of a text: the text itself when it fits in TITLE_MAX;
+// otherwise its first clause or sentence (up to the first ". ", ": ", ";",
+// " (" or dash), and when that is still too long, its words up to TITLE_MAX
+// with "…" at a word boundary. Whitespace runs read as one space.
+export function shortTitle(text: string): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= TITLE_MAX) return t;
+  let clause = t;
+  for (const m of t.matchAll(/[.!?:](?= )|;| (?=[(\u2014\u2013]|- )/g)) {
+    if (m.index >= CLAUSE_MIN) { clause = t.slice(0, m.index).trim(); break; }
+  }
+  if (clause.length <= TITLE_MAX) return clause;
+  let cut = clause.slice(0, TITLE_MAX - 1);
+  const space = cut.lastIndexOf(" ");
+  if (clause[TITLE_MAX - 1] !== " " && space > 0) cut = cut.slice(0, space);
+  cut = cut.replace(/[\s,;:.\-\u2014\u2013(]+$/, "").replace(/[\ud800-\udbff]$/, "");
+  return `${cut}\u2026`;
+}
+
+// The task's whole text for an agent: the brief when it has one, else the title.
+export const briefText = (item: Pick<Item, "title" | "brief">): string => item.brief || item.title;
+
+// A brief as stored: line breaks kept, every other control character as a
+// space, trimmed; empty means none. Over BRIEF_MAX is refused, not cut.
+export function cleanBrief(v: unknown): string | null {
+  if (v === null) return null;
+  if (typeof v !== "string") throw new RuleError("bad_field", "brief must be text or null", 400);
+  const brief = v.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ").trim();
+  if (brief.length > BRIEF_MAX) throw new RuleError("bad_field", `a brief is at most ${BRIEF_MAX} characters`, 400);
+  return brief || null;
+}
+
+// A title as given, on one line. An edit's title must fit; a new item's
+// may not, and then becomes its brief (itemText).
+export function titleLine(v: unknown): string {
+  if (typeof v !== "string") throw new RuleError("bad_title", "the title must be text", 400);
+  return v.replace(/\s+/g, " ").trim();
+}
+
+// A new item's title and brief from what its creator sent. A title that
+// fits is kept, with the brief if one was sent. A title too long with no
+// brief is what an older CLI sends, the whole text as the title: it becomes
+// the brief, and the title is derived from it (shortTitle). A title too long
+// beside a brief is refused, since one of the two must give way and only the
+// creator can say which. No title but a brief derives the title from it.
+export function itemText(title: unknown, brief: unknown): { title: string; brief: string | null; derived: boolean } {
+  const t = titleLine(title ?? "");
+  const b = brief === undefined ? null : cleanBrief(brief);
+  if (!t && !b) throw new RuleError("bad_title", "an item needs a title", 400);
+  if (t.length > TITLE_MAX && b) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
+  if (t.length > TITLE_MAX || !t) {
+    const whole = b ?? cleanBrief(String(title))!;
+    return { title: shortTitle(whole), brief: whole, derived: true };
+  }
+  return { title: t, brief: b && b !== t ? b : null, derived: false };
+}
 
 // A line of the owner's text as stored: control characters as spaces,
 // trimmed. Empty means absent.
@@ -696,6 +772,11 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
   const out: ItemFields = {};
   if (input.nonGoals !== undefined) out.nonGoals = list(input.nonGoals, "nonGoals");
   if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
+  if (input.accept !== undefined) {
+    out.accept = list(input.accept, "accept");
+    if (out.accept.length > ACCEPT_COUNT) throw new RuleError("bad_field", `accept holds at most ${ACCEPT_COUNT} criteria`, 400);
+  }
+  if (input.brief !== undefined) out.brief = cleanBrief(input.brief);
   if (input.nextGate !== undefined) {
     if (input.nextGate !== null && typeof input.nextGate !== "string") throw new RuleError("bad_field", "nextGate must be text or null", 400);
     const gate = line(input.nextGate);

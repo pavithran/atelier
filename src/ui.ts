@@ -164,7 +164,9 @@ export interface Detail {
   gate: Gate;
   events: LedgerEvent[];
 }
-export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean }
+// `full` is set on the task's own page, the one place that shows the task's
+// brief and acceptance criteria; every other view shows its short title.
+export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean; full?: boolean }
 // `events` is the project's recent record, newest first, when the page reads
 // it (Projects and History); `cut` says it was read up to a limit.
 export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean; events?: LedgerEvent[]; cut?: boolean }
@@ -1390,7 +1392,9 @@ function projectPage(p: ProjectRecord, active: string, body: string, ownerName: 
 
 const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ Create a task</summary>
     <form method="post" action="${href("ui", p.name, "new")}" class="stack">
-      <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
+      <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="A short title for the outcome"></label>
+      <label>Brief<textarea name="brief" rows="4" maxlength="4000" placeholder="The whole task, for the agent that builds it (optional)"></textarea></label>
+      <p class="meta">A title over 80 characters with no brief becomes the brief, and the title is its first clause.</p>
       <label>Files in scope<input name="scope" type="text" placeholder="src/**, test/**"></label>
       <p class="meta">Separate patterns with commas. Leave empty for unrestricted scope.</p>
       <button class="primary">Create task</button>
@@ -1562,13 +1566,25 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 
 // ── a task ─────────────────────────────────────────────────────────────────
 
+// The task's brief at body size under its short title, then its acceptance
+// criteria numbered as the review brief numbers them. Nothing when neither
+// is set.
+function taskText(item: Item): string {
+  const accept = item.accept ?? [];
+  if (!item.brief && !accept.length) return "";
+  return `<div class="task-text">
+  ${item.brief ? `<p class="task-brief">${e(item.brief)}</p>` : ""}
+  ${accept.length ? `<p class="section-title">Acceptance criteria</p><ol class="task-accept">${accept.map((c) => `<li>${e(c)}</li>`).join("")}</ol>` : ""}
+</div>`;
+}
+
 // A task's page sits inside its project's area: the project's tab bar above
 // the review sheet, the area reached from Home.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
   <nav class="breadcrumbs"><a href="/home">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   ${projectTabs(p, "Tasks")}
-  <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
+  <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true, full: true })}</article>
 </div>`, "Home", ownerName, 0, true, live);
 }
 
@@ -1607,7 +1623,7 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
 
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
-function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): string {
+function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
   const { item, gate } = d;
   const view = evidenceAt(d.policy, d.evidence, item.head);
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
@@ -1720,6 +1736,7 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   const header = `<header class="review-header">
   <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
   <h2>${e(item.title)}</h2>
+  ${full ? taskText(item) : ""}
   ${hasBrief ? "" : `<p class="review-description">${e(decision.detail)}</p>`}
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
