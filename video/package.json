@@ -1,0 +1,14 @@
+{
+  "name": "atelier-video",
+  "private": true,
+  "type": "module",
+  "description": "Builds Atelier's submission video from the ledger, the live site and HTML scenes.",
+  "scripts": {
+    "build": "playwright install chromium && node build.mjs",
+    "data": "node scripts/fetch-ledger.mjs && node scripts/derive.mjs && node scripts/terminal.mjs",
+    "capture": "node scripts/capture.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0"
+  }
+}

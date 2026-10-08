@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Atelier film</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=block">
+<link rel="stylesheet" href="film.css">
+</head>
+<body>
+<div id="stage">
+  <div id="bg"></div>
+  <div id="scenes"></div>
+  <div id="chapter"></div>
+  <div id="vignette"></div>
+  <svg id="grain" width="1920" height="1080"><filter id="noise"><feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="1" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter><rect width="1920" height="1080" filter="url(#noise)"/></svg>
+  <div id="caption"><span></span></div>
+  <div id="fade"></div>
+</div>
+<script src="film.js"></script>
+</body>
+</html>
