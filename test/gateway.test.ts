@@ -174,7 +174,7 @@ test("the CLI still reads an older server's view, which has no p90, a pull recor
 
 test("the log pull, its cron and the gateway token are gone", () => {
   const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-  assert.doesNotMatch(wrangler, /"triggers"|crons/);
+  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*\]\s*\}/);
   assert.doesNotMatch(wrangler, /AI_GATEWAY_TOKEN/);
   // The README quotes t278's receipt, the ledger's own record of the task
   // that built the log pull and lost it; the identifiers it names are quoted

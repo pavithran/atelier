@@ -120,7 +120,7 @@ test("rework carries the failing check's output, and says where it ran", async (
   );
   lacks(brief, "## Rework: the review's findings", "kept in R2");
   has(await text({ job: "rework", failure: { claim: "npm test", output } }), "`npm test` failed. Make it pass.");
-  has(await text({ job: "rework", failure: { claim: "npm test", where: "runner", output: "" } }), "`npm test` failed, on the agent's machine. Make it pass.\nThe check printed nothing.");
+  has(await text({ job: "rework", failure: { claim: "npm test", where: "runner", output: "" } }), "`npm test` failed, on a runner, in a clean clone. Make it pass.\nThe check printed nothing.");
   // Both at once.
   const both = await text({ job: "rework", findings: { by: GPT, head: H2, findings: [finding()] }, failure: { claim: "npm test", output } });
   has(both, "sent back: a reviewer rejected it and a required check failed.", "## Rework: the review's findings", "## Rework: the failing check");

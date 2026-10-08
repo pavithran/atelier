@@ -67,7 +67,8 @@ it("an anonymised project's names, titles, paths, commands, notes and addresses 
   // kind of work of each task story, and the card's counts and families.
   expect(body).toContain("<h2>An iOS app</h2>");
   expect(body).toContain("A fix");
-  expect(body).toMatch(/<b>0<\/b>merged/);
+  expect(body).toMatch(/<b>0<\/b>merged, last two weeks/);
+  expect(body).toMatch(/<b>0<\/b>merged, all time/);
   expect(body).toMatch(/<b>1<\/b>sent back/);
   expect(body).toMatch(/<b>1<\/b>in progress/);
   expect(body).toContain('class="pulse-graph"');
@@ -261,6 +262,7 @@ it("an anonymised project's commit hashes never reach the showcase or the sign-i
   await I().setShowcase("hush-hash", "anonymous");
   await I().setShowcase("named-hash", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
+  expect(body.match(/<b>1<\/b>merged, all time/g)?.length).toBeGreaterThanOrEqual(2);
   expect(body).toContain("5eedba5e");    // a named project's revisions stay named
   expect(body).toContain("dec0ded5");
   expect(body).not.toContain("e7a1c0de"); // an anonymised project's hashes are gone
