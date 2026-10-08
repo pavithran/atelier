@@ -1,0 +1,49 @@
+atelier atelier/t283 "After 2026-10-14: render /how and the showcase with Cloudflare Browser Rendering in a check (PAVI, 2026-10-07), so a broken diagram or layout fails a check, where today only the HTML text is tested; check the Browser Rendering docs first"
+accepted head 876eea58249a2d653c1232e7620be90187a3d2b3
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T04:53:53.468Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T04:53:56.091Z
+REVIEW approve by antigravity/gemini-3.1-pro at 876eea58249a2d653c1232e7620be90187a3d2b3, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T20:30:29.343Z pavi item.created
+2026-10-07T22:26:22.100Z pavi item.dispatched
+2026-10-07T23:23:24.678Z pavi item.undispatched
+2026-10-07T23:23:38.380Z pavi item.dispatched
+2026-10-07T23:43:42.858Z opencode/glm-5.3 item.claimed
+2026-10-07T23:43:50.994Z opencode/glm-5.3 fork.created
+2026-10-08T00:29:05.522Z opencode/glm-5.3 item.released
+2026-10-08T00:29:37.290Z opencode/glm-5.3 item.claimed
+2026-10-08T00:29:52.370Z opencode/glm-5.3 item.released
+2026-10-08T00:30:03.981Z pavi item.undispatched
+2026-10-08T00:30:04.443Z opencode/glm-5.3 item.claimed
+2026-10-08T01:15:41.313Z pavi land.lease
+2026-10-08T01:15:44.728Z pavi land.merge
+2026-10-08T01:15:56.643Z pavi land.regenerate
+2026-10-08T01:16:00.393Z opencode/glm-5.3 push.observed
+2026-10-08T01:16:00.549Z pavi land.push
+2026-10-08T01:19:34.077Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:19:39.310Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:19:40.131Z pavi land.check
+2026-10-08T01:19:40.723Z opencode/glm-5.3 item.submitted
+2026-10-08T01:19:41.069Z pavi land.submit
+2026-10-08T01:19:41.236Z pavi review.requested
+2026-10-08T01:19:58.247Z claude-code/opus-5.5 review.claimed
+2026-10-08T01:21:15.779Z claude-code/opus-5.5 review.rejected
+2026-10-08T01:21:16.790Z pavi land.review
+2026-10-08T03:11:31.694Z pavi land.lease
+2026-10-08T03:11:45.932Z pavi land.merge
+2026-10-08T04:51:11.846Z pavi land.lease
+2026-10-08T04:51:15.329Z pavi land.merge
+2026-10-08T04:51:23.208Z pavi land.regenerate
+2026-10-08T04:51:26.110Z opencode/glm-5.3 push.observed
+2026-10-08T04:51:26.269Z pavi land.push
+2026-10-08T04:53:54.057Z opencode/glm-5.3 evidence.observed
+2026-10-08T04:53:56.259Z opencode/glm-5.3 evidence.observed
+2026-10-08T04:53:56.663Z pavi land.check
+2026-10-08T04:53:57.009Z opencode/glm-5.3 item.submitted
+2026-10-08T04:53:57.198Z pavi land.submit
+2026-10-08T04:53:57.291Z pavi review.requested
+2026-10-08T04:53:58.723Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T04:53:59.415Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T04:56:00.206Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T04:56:01.070Z pavi land.review
+2026-10-08T04:56:01.609Z pavi item.accepted
+2026-10-08T04:56:01.711Z pavi land.accept
