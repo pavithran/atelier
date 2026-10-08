@@ -93,6 +93,9 @@ it("baseRepoOf returns the plan's fork for a part and the baseline otherwise", (
   expect(baseRepoOf({ kind: "part" }, "baseline", null)).toBe("baseline");
 });
 
+// This test drives a whole plan through the Durable Object and can take
+// longer than vitest's 5 s default when several suites share the machine
+// (t301); the work is real, so it gets a longer budget.
 it("a submitted, approved part dispatches the plan item's integrate job, which only the integrator's token may claim", async () => {
   const L = await setup("integrate-dispatch");
   const { id, partId, head } = await readyPart(L);
@@ -104,7 +107,7 @@ it("a submitted, approved part dispatches the plan item's integrate job, which o
   await refusal(L.claim(id, INTEGRATOR, RUNNER), "integrator_token", /token bound to it/);
   const claim = await L.claim(id, INTEGRATOR, RUNNER, true);
   expect(claim.item).toMatchObject({ owner: INTEGRATOR, state: "claimed" });
-});
+}, 30_000);
 
 it("an integration is recorded, and the plan submits when every part is integrated", async () => {
   const L = await setup("integrate-record");
