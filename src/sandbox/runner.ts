@@ -28,7 +28,9 @@ import { writeTree } from "./tree";
 const IMAGE = "cloudflare/debian-trixie";
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const WORKDIR = "/workspace";
-const STEP_SECONDS = 600;
+// Each check step's limit: a full suite, Atelier's own among them, must be
+// able to finish on the container this Durable Object starts.
+const STEP_SECONDS = 1800;
 const OUTPUT_TAIL = 4000;
 export const EGRESS_HOSTS = ["registry.npmjs.org"];
 

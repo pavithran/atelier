@@ -74,6 +74,9 @@
   // container offline (src/sandbox/tools.ts; docs/setup.md, "The check
   // container's git"). Declaring an "images" entry here would make every
   // deploy need Docker or Workers Builds.
+  // A Durable Object-managed container takes no instance_type (wrangler
+  // refuses it), so the check step's own limit (STEP_SECONDS in
+  // src/sandbox/runner.ts) is what lets a long suite finish.
   "containers": [{ "class_name": "CheckRunner", "scheduling_policy": "durable_object" }],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Ledger"] },

@@ -110,6 +110,8 @@ test("the container keeps the managed image, npm-only egress and no Internet; gi
   const containers = wrangler.match(/"containers":\s*\[([^\]]*)\]/)?.[1] ?? "";
   assert.match(containers, /"class_name":\s*"CheckRunner"/);
   assert.match(containers, /"scheduling_policy":\s*"durable_object"/);
+  // Wrangler refuses instance_type for a Durable Object-managed container.
+  assert.doesNotMatch(containers, /instance_type/);
   // No Dockerfile or registry image: wrangler deploy needs no Docker.
   assert.doesNotMatch(containers, /"image"|"images"|dockerfile/i);
   const runner = readFileSync(new URL("../src/sandbox/runner.ts", import.meta.url), "utf8");
