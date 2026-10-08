@@ -1,0 +1,36 @@
+atelier atelier/t273 "The integrator counts a refresh that conflicts (refresh-failed, which correctly adds a merge-main part) as its own failure: after two, it logged 'atelier/t197 needs the owner's attention after 2 failures; skipped for this process' and stopped serving the plan, so the approved merge-main part t269 sat unintegrated until the integrator was restarted (2026-10-07). A recorded refresh-failed or integration-failed outcome is the job's result, not a runner failure; only errors that leave the job unreported count toward skipping"
+accepted head a23939b692294fc81c65c2057caaf61f11241e3a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3-flash 2026-10-08T05:26:55.008Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3-flash 2026-10-08T05:26:57.292Z
+REVIEW approve by antigravity/gemini-3.1-pro at a23939b692294fc81c65c2057caaf61f11241e3a, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T17:43:18.846Z pavi item.created
+2026-10-08T01:54:04.881Z pavi item.dispatched
+2026-10-08T02:27:31.738Z opencode/glm-5.3-flash item.claimed
+2026-10-08T02:27:37.006Z opencode/glm-5.3-flash fork.created
+2026-10-08T03:12:46.965Z opencode/glm-5.3-flash item.released
+2026-10-08T03:13:10.993Z opencode/glm-5.3-flash item.claimed
+2026-10-08T03:40:25.494Z opencode/glm-5.3-flash item.released
+2026-10-08T03:40:27.076Z opencode/glm-5.3-flash item.claimed
+2026-10-08T03:54:23.830Z opencode/glm-5.3-flash item.released
+2026-10-08T03:54:34.765Z opencode/glm-5.3-flash item.claimed
+2026-10-08T04:10:24.005Z opencode/glm-5.3-flash item.released
+2026-10-08T04:10:33.917Z opencode/glm-5.3-flash item.claimed
+2026-10-08T04:10:47.846Z opencode/glm-5.3-flash item.released
+2026-10-08T04:10:49.986Z pavi item.undispatched
+2026-10-08T04:10:57.110Z opencode/glm-5.3-flash item.claimed
+2026-10-08T05:24:19.684Z pavi land.lease
+2026-10-08T05:24:22.022Z pavi land.merge
+2026-10-08T05:24:29.968Z pavi land.regenerate
+2026-10-08T05:24:32.573Z opencode/glm-5.3-flash push.observed
+2026-10-08T05:24:32.706Z pavi land.push
+2026-10-08T05:26:55.287Z opencode/glm-5.3-flash evidence.observed
+2026-10-08T05:26:57.412Z opencode/glm-5.3-flash evidence.observed
+2026-10-08T05:26:57.800Z pavi land.check
+2026-10-08T05:26:58.139Z opencode/glm-5.3-flash item.submitted
+2026-10-08T05:26:58.319Z pavi land.submit
+2026-10-08T05:26:58.418Z pavi review.requested
+2026-10-08T05:27:10.978Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T05:30:02.077Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T05:30:04.371Z pavi land.review
+2026-10-08T05:30:04.887Z pavi item.accepted
+2026-10-08T05:30:04.984Z pavi land.accept
