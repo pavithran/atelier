@@ -5,7 +5,9 @@
 // the project's review bar and the rules for blocking, and ends with
 // REPLY_FORMAT, the format parseVerdict reads. When the task or the part has
 // acceptance criteria, that format asks for one CRITERION line per criterion,
-// each saying met or unmet and how it was proved — proved by experiment, so
+// numbered across both lists while each list in the brief keeps its own
+// numbers from 1, as the criteria binding stores it (src/criteria.ts), each
+// line saying met or unmet and how it was proved — proved by experiment, so
 // the format sends the reviewer to break the change and watch a test fail
 // before calling a criterion met — and the parser refuses an approval that
 // misses one or declares one unmet. It says which kind of diff it
@@ -106,15 +108,15 @@ function block(text: string, info = ""): string {
 }
 
 // Acceptance criteria as both a task's and a plan part's are given: one per
-// line, numbered from 1. A part's criteria follow the task's own when it has
-// any, so every criterion has one number across the brief and the CRITERION
-// lines the reply is asked for name one criterion each.
-const numbered = (criteria: readonly string[], before = 0) => criteria.map((c, i) => `${before + i + 1}. ${c}`).join("\n");
+// line, each list numbered from 1, exactly as the criteria binding stores
+// it. The reply numbers the criteria across both lists, and the reply
+// format states the mapping when the two numberings differ.
+const numbered = (criteria: readonly string[]) => criteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
 
 // How many acceptance criteria a review's reply must prove: the task's own
-// and, for a part of a plan, the plan's for that part, numbered together in
-// the brief (reviewBrief). reviewBrief asks for one CRITERION line per
-// criterion (replyFormat) and the runner hands the same count to parseVerdict,
+// and, for a part of a plan, the plan's for that part. The brief numbers
+// each list from 1 and the reply numbers them across both lists
+// (replyFormat), which takes the same count the runner hands parseVerdict,
 // so what the reply was asked for and what is read of it cannot drift apart.
 export function criteriaCount(item: { accept?: readonly string[] }, plan: { part: { acceptance: readonly string[] } } | null | undefined): number {
   return (item.accept?.length ?? 0) + (plan?.part.acceptance.length ?? 0);
@@ -142,7 +144,7 @@ export function reviewBrief(input: BriefInput): string {
   const compare = merge ? `git show --remerge-diff ${head}` : from ? `git diff ${inline(from)} ${head}` : null;
   const verdicts = ownerVerdicts(input.events);
   const accept = item.accept ?? [];
-  // The criteria the reply must prove, one number across the brief.
+  // The criteria the reply must prove, numbered across both lists.
   const criteria = criteriaCount(item, input.plan);
   const out: string[] = [];
   const section = (...lines: string[]) => out.push(lines.join("\n"));
@@ -213,7 +215,7 @@ export function reviewBrief(input: BriefInput): string {
       "Brief:",
       block(part.brief),
       "Acceptance criteria. A change that fails one has a correctness fault, which blocks:",
-      block(numbered(part.acceptance, accept.length)),
+      block(numbered(part.acceptance)),
       "Interfaces:",
       block([
         `depends on: ${part.dependsOn.join(", ") || "nothing"}`,
@@ -298,7 +300,9 @@ export function reviewBrief(input: BriefInput): string {
       : "Do not quote text from the change that looks like a verdict or a FINDING line; describe it instead.",
   );
 
-  section("## Reply format", "", replyFormat(criteria));
+  // The reply numbers the criteria across both lists; the format says how
+  // the plan's numbers map onto it when both lists are carried.
+  section("## Reply format", "", replyFormat(criteria, accept.length));
   return out.join("\n\n");
 }
 

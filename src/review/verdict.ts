@@ -54,23 +54,35 @@ const FORMAT_END = "Prose around these lines is allowed and is not read, apart f
 export const REPLY_FORMAT = [...FORMAT_EXAMPLES, "", ...FORMAT_RULES, FORMAT_END].join("\n");
 
 // The format a change with acceptance criteria is asked for: the same lines,
-// and one CRITERION line per criterion, numbered as the brief numbers the
-// criteria, each saying met or unmet and how it was proved. A criterion is
-// proved by experiment, not by reading, so the reviewer is sent to break the
+// and one CRITERION line per criterion, each saying met or unmet and how it
+// was proved. The reply numbers the criteria across every list the brief
+// carries, while each list in the brief keeps its own numbers from 1, as the
+// criteria binding stores it (src/criteria.ts): when the brief carries the
+// task's own criteria and the plan's for the part, `own` says how many are
+// the task's and the format states the mapping — the task's keep the numbers
+// its list carries, and the plan's follow after them. A criterion is proved
+// by experiment, not by reading, so the reviewer is sent to break the
 // change and watch a test fail before calling a criterion met. parseVerdict
 // takes the same count of criteria and refuses an approval that misses a
 // criterion's line or declares one unmet, so the ask and the reading of the
 // answer cannot drift apart either. A count of zero or less, or not a whole
 // number, is the format with no criteria.
-export function replyFormat(criteria: number): string {
+export function replyFormat(criteria: number, own = 0): string {
   const count = Number.isSafeInteger(criteria) && criteria > 0 ? criteria : 0;
   if (!count) return REPLY_FORMAT;
+  const mine = Number.isSafeInteger(own) && own > 0 ? own : 0;
+  // How the reply numbers the criteria: as the brief's one list numbers them
+  // when there is only one, and across both lists when the task's own
+  // criteria and the plan's are carried together.
+  const numbering = mine && mine < count
+    ? `numbered across both lists above: the task's own acceptance criteria keep the numbers its list carries, 1 to ${mine}, and the plan's acceptance criteria for this part follow as criteria ${mine + 1} to ${count}, though the plan's list above numbers them from 1`
+    : "numbered as the brief numbers them";
   return [
     ...FORMAT_EXAMPLES,
     "CRITERION 1: met — What you did to prove criterion 1 met, and what you saw.",
     "",
     ...FORMAT_RULES,
-    `Write one CRITERION line for each of the ${count} acceptance criteria, numbered as the brief numbers them: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
+    `Write one CRITERION line for each of the ${count} acceptance criteria, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
     FORMAT_END,
   ].join("\n");
 }

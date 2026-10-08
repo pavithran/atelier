@@ -724,26 +724,31 @@ test("reviewBrief: a task's brief and acceptance criteria are carried, the crite
   assert.ok(plain.includes("The plan's acceptance criteria bind as criteria, not as claims."), plain);
 });
 
-// t325: with acceptance criteria, the reply format asks for one CRITERION line
-// per criterion, numbered as the brief numbers them, each saying met or unmet
-// and how it was proved, and the proof it asks for is an experiment: break the
-// change and watch a test fail. parseVerdict takes the same count
-// (criteriaCount), so what was asked and what is read cannot drift apart.
-test("reviewBrief: the reply format asks for one CRITERION line per acceptance criterion, the task's and the plan's numbered together", () => {
+// t325: with acceptance criteria, the reply format asks for one CRITERION
+// line per criterion, each saying met or unmet and how it was proved, and
+// the proof it asks for is an experiment: break the change and watch a
+// test fail. parseVerdict takes the same count (criteriaCount), so what
+// was asked and what is read cannot drift apart. The brief numbers each
+// list from 1, exactly as the criteria binding stores it (t326), and the
+// reply numbers the criteria across both lists: the format states the
+// mapping whenever the two numberings differ.
+test("reviewBrief: the reply format asks for one CRITERION line per acceptance criterion, the task's and the plan's numbered across both lists", () => {
   // A task's criteria alone.
   const alone = brief({ need: required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), plan: null, item: item({ accept: ["The gate reads the override", "The page says why"] }) });
-  assert.ok(alone.endsWith(`## Reply format\n\n${replyFormat(2)}`), alone);
-  // The task's own criteria and the plan's for the part are one numbering:
-  // the part's follow the task's, so a CRITERION line names one criterion.
+  assert.ok(alone.endsWith(`## Reply format\n\n${replyFormat(2, 2)}`), alone);
+  // The task's own criteria and the plan's for the part: each list numbered
+  // from 1 as its binding names it, and one numbering across both lists for
+  // the CRITERION lines, so a line names one criterion.
   const both = brief({ item: item({ accept: ["The gate reads the override"] }) });
   assert.ok(both.includes("Acceptance criteria. A change that fails one has a correctness fault, which blocks:\n```\n1. The gate reads the override\n```"), both);
-  assert.ok(both.includes("Acceptance criteria. A change that fails one has a correctness fault, which blocks:\n```\n2. node --test test/review.test.ts passes\n```"), both);
-  assert.ok(!both.includes("\n1. node --test test/review.test.ts passes\n"), both);
-  assert.ok(both.endsWith(`## Reply format\n\n${replyFormat(2)}`), both);
-  // The format states the count, the numbering and the experiment it prefers.
+  assert.ok(both.includes("Acceptance criteria. A change that fails one has a correctness fault, which blocks:\n```\n1. node --test test/review.test.ts passes\n```"), both);
+  assert.ok(!both.includes("\n2. node --test test/review.test.ts passes\n"), both);
+  assert.ok(both.endsWith(`## Reply format\n\n${replyFormat(2, 1)}`), both);
+  // The format states the count, the mapping between the two numberings
+  // and the experiment it prefers.
   const format = both.slice(both.indexOf("## Reply format"));
   assert.ok(format.includes("CRITERION 1: met — What you did to prove criterion 1 met, and what you saw."), format);
-  assert.ok(format.includes("Write one CRITERION line for each of the 2 acceptance criteria, numbered as the brief numbers them: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw."), format);
+  assert.ok(format.includes("Write one CRITERION line for each of the 2 acceptance criteria, numbered across both lists above: the task's own acceptance criteria keep the numbers its list carries, 1 to 1, and the plan's acceptance criteria for this part follow as criteria 2 to 2, though the plan's list above numbers them from 1: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw."), format);
   assert.ok(format.includes("Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed."), format);
   assert.ok(format.includes("An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks."), format);
   // With criteria, the rule on quoting the change covers CRITERION lines too,
