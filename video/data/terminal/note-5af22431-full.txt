@@ -1,0 +1,56 @@
+atelier atelier/t278 "Pull forward a slice of t271 (PAVI, 2026-10-07, 'do it'): the Worker reads Cloudflare AI Gateway logs for the gateway named by AI_GATEWAY_ID (default 'atelier') in account CF_ACCOUNT_ID, through GET /accounts/ACCOUNT/ai-gateway/gateways/GATEWAY/logs with a Worker secret AI_GATEWAY_TOKEN (AI Gateway Read), on the ledger's alarm or a scheduled handler every few minutes, newest first since the last log seen; it records per call model, provider, tokens in/out, cost, duration and the cf-aig-metadata tags (task, role, runner) in a usage table, and the Models page and atelier runner --usage show per-model cost, tokens and median latency over a stated window with the sample size; with no secret set it does nothing and says so on the Models page. Document in README how the owner creates the token (AI Gateway Read) and sets it with wrangler secret put AI_GATEWAY_TOKEN, and how runners point opencode providers at https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/PROVIDER with a cf-aig-metadata header"
+accepted head de67194354b9895ae3c98ab8c6bbb12565862556
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T21:24:06.253Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T21:24:08.829Z
+REVIEW approve by antigravity/gemini-3.1-pro at de67194354b9895ae3c98ab8c6bbb12565862556, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T20:27:11.752Z pavi item.created
+2026-10-07T20:27:16.169Z claude-code/opus-5.5 item.claimed
+2026-10-07T20:27:28.935Z claude-code/opus-5.5 fork.created
+2026-10-07T20:53:46.694Z pavi land.lease
+2026-10-07T20:53:50.079Z pavi land.merge
+2026-10-07T20:54:00.911Z pavi land.regenerate
+2026-10-07T20:54:04.248Z claude-code/opus-5.5 push.observed
+2026-10-07T20:54:04.444Z pavi land.push
+2026-10-07T20:56:55.225Z claude-code/opus-5.5 evidence.observed
+2026-10-07T20:56:57.601Z claude-code/opus-5.5 evidence.observed
+2026-10-07T20:56:58.090Z pavi land.check
+2026-10-07T20:56:58.510Z claude-code/opus-5.5 item.submitted
+2026-10-07T20:56:58.835Z pavi land.submit
+2026-10-07T20:56:59.027Z pavi review.requested
+2026-10-07T20:57:03.828Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T21:02:06.195Z antigravity/gemini-3.1-pro review.rejected
+2026-10-07T21:02:06.805Z pavi land.review
+2026-10-07T21:10:18.220Z pavi review.finding
+2026-10-07T21:10:18.694Z pavi review.finding
+2026-10-07T21:10:19.110Z pavi review.finding
+2026-10-07T21:13:17.575Z pavi land.lease
+2026-10-07T21:13:20.990Z pavi land.merge
+2026-10-07T21:13:29.293Z pavi land.regenerate
+2026-10-07T21:13:32.289Z claude-code/opus-5.5 push.observed
+2026-10-07T21:13:32.425Z pavi land.push
+2026-10-07T21:16:06.307Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:16:08.849Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:16:09.370Z pavi land.check
+2026-10-07T21:16:09.808Z claude-code/opus-5.5 item.submitted
+2026-10-07T21:16:10.095Z pavi land.submit
+2026-10-07T21:16:10.274Z pavi review.requested
+2026-10-07T21:16:34.983Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T21:20:50.311Z antigravity/gemini-3.1-pro review.rejected
+2026-10-07T21:20:54.784Z pavi land.review
+2026-10-07T21:21:20.607Z pavi review.finding
+2026-10-07T21:21:22.609Z pavi land.lease
+2026-10-07T21:21:23.864Z pavi land.merge
+2026-10-07T21:21:31.456Z pavi land.regenerate
+2026-10-07T21:21:33.463Z claude-code/opus-5.5 push.observed
+2026-10-07T21:21:33.648Z pavi land.push
+2026-10-07T21:24:06.751Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:24:09.167Z claude-code/opus-5.5 evidence.observed
+2026-10-07T21:24:09.645Z pavi land.check
+2026-10-07T21:24:10.045Z claude-code/opus-5.5 item.submitted
+2026-10-07T21:24:10.328Z pavi land.submit
+2026-10-07T21:24:10.486Z pavi review.requested
+2026-10-07T21:24:22.972Z antigravity/gemini-3.1-pro review.claimed
+2026-10-07T21:28:33.290Z antigravity/gemini-3.1-pro review.approved
+2026-10-07T21:28:35.588Z pavi land.review
+2026-10-07T21:28:36.359Z pavi item.accepted
+2026-10-07T21:28:36.488Z pavi land.accept
