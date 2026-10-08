@@ -2,10 +2,10 @@ import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import {
-  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, isOwnCall, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
-  type Evidence, type Item, type ProjectPolicy, type Review, type ReviewOverride,
+  type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
 const H1 = "a".repeat(40);
@@ -157,6 +157,13 @@ test("inbox flags live items whose scopes overlap", () => {
   const out = inboxFor("proj", items, policy, [], [], new Date(T));
   assert.deepEqual(out.map((x) => x.kind), ["overlap"]);
   assert.match(out[0].reason, /t2 \(codex\/gpt-5.5\)/);
+});
+
+test("isOwnCall names the lead developer's own decisions, apart from what the orchestrator handles", () => {
+  const own = ["approve-plan", "plan-blocked", "accept", "assess", "ship", "blocked"];
+  const handled = ["merge", "stale", "scope", "failing", "overlap"];
+  for (const kind of own) assert.equal(isOwnCall(kind as InboxEntry["kind"]), true, kind);
+  for (const kind of handled) assert.equal(isOwnCall(kind as InboxEntry["kind"]), false, kind);
 });
 
 test("repo names are safe and stable", () => {
@@ -797,7 +804,7 @@ test("a merged check never satisfies the head's own check, and is read beside th
   assert.equal(mergedChecksAt(policy, [merged], H1, M0).checks[0].stale, true, "stale once main has moved past the head it merged with");
   assert.equal(mergedChecksAt(policy, [merged], H2, M1).run, false, "a new head retires every merged run");
   assert.deepEqual(mergedChecksAt(policy, [], H1, M1), { checks: [{ claim: "npm test", grade: "pending", passed: null, stale: false }], run: false });
-  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on the agent's machine does not count");
+  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on a runner does not count");
   // The head's own run records main's head too, and is still the head's check.
   const own = pass({ mainHead: M0 });
   assert.deepEqual(evidenceAt(policy, [own], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "runner", mainHead: M0 }]);
@@ -827,7 +834,7 @@ test("a failing merged check blocks only when main moved after the head's own ch
   // While the head's own check is pending or failing, that check is the blocker.
   assert.deepEqual(gate(item(), policy, [failing], []).blockers.filter((b) => b.includes("merge")), []);
   assert.deepEqual(gate(item(), policy, [own, pass({ passed: false, mainHead: M0, at: "2026-10-03T12:30:00.000Z" }), failing], []).blockers.filter((b) => b.includes("merge")), []);
-  // Under sandboxOnly, a merged run on the agent's machine neither blocks nor counts.
+  // Under sandboxOnly, a merged run on a runner neither blocks nor counts.
   const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
   assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), failing], []).ready, true);
   assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), { ...failing, where: "sandbox" }], []).ready, false);
