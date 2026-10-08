@@ -2,10 +2,10 @@ import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import {
-  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, isOwnCall, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
-  type Evidence, type Item, type ProjectPolicy, type Review, type ReviewOverride,
+  type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
 const H1 = "a".repeat(40);
@@ -157,6 +157,13 @@ test("inbox flags live items whose scopes overlap", () => {
   const out = inboxFor("proj", items, policy, [], [], new Date(T));
   assert.deepEqual(out.map((x) => x.kind), ["overlap"]);
   assert.match(out[0].reason, /t2 \(codex\/gpt-5.5\)/);
+});
+
+test("isOwnCall names the lead developer's own decisions, apart from what the orchestrator handles", () => {
+  const own = ["approve-plan", "plan-blocked", "accept", "assess", "ship", "blocked"];
+  const handled = ["merge", "stale", "scope", "failing", "overlap"];
+  for (const kind of own) assert.equal(isOwnCall(kind as InboxEntry["kind"]), true, kind);
+  for (const kind of handled) assert.equal(isOwnCall(kind as InboxEntry["kind"]), false, kind);
 });
 
 test("repo names are safe and stable", () => {
