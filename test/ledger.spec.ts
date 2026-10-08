@@ -1330,3 +1330,68 @@ it("changing criteria takes back an acceptance and an override, the task claimed
   expect(fresh).toMatchObject({ state: "submitted", head: H1 });
   expect(fresh.criteriaChange).toMatchObject({ acceptance: false });
 });
+
+// t326 review finding: a tier request withdrawn by a change of criteria, or
+// one made before requests recorded their criteria, must not count as the
+// tier already asked, or the tier review is never asked again.
+const liveTier = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => (await L.reviewRequests(id)).filter((r) => r.tier && (r.state === "open" || r.state === "claimed"));
+
+it("criteria changed A to B and back to A at one head: the tier is asked again each time, and a live tier request stands", async () => {
+  const L = await setup("criteria-tier-aba", { ...policy, reviewTier: [GLM] });
+  await submittedWith(L, ONE);
+  await L.requestReview("t1", "owner", GPT, [], true);
+  expect((await liveTier(L)).length).toBe(1);
+  await L.editItem("t1", "owner", { accept: TWO });
+  expect((await liveTier(L)).length).toBe(1);
+  await L.editItem("t1", "owner", { accept: ONE });
+  // A's tier request, withdrawn when the criteria first changed, does not stand in for a new one.
+  const tier = await liveTier(L);
+  expect(tier).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
+  expect((await L.reviewRequests("t1")).filter((r) => r.tier).map((r) => r.state)).toEqual(["withdrawn", "withdrawn", "open"]);
+  const claim = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
+  expect(claim).toMatchObject({ tier: true, criteria: criteriaHash(ONE) });
+});
+
+it("requests and reviews made before reviews were bound stop counting as already asked once the criteria change", async () => {
+  const stub = env.LEDGER.get(env.LEDGER.idFromName("project:criteria-tier-legacy"));
+  await runInDurableObject(stub, async (_instance, state) => {
+    const L = new Ledger(state, env);
+    L.initProject({ name: "criteria-tier-legacy", repo: "criteria-tier-legacy", reset: false, checks: ["npm test"], protected: ["AGENTS.md"], reviewTier: [GLM] }, "owner");
+    L.newItem("Legacy", [], "owner", { accept: [...ONE] });
+    L.claim("t1", A);
+    L.setFork("t1", "fork-t1", H0, A);
+    L.recordPush("t1", A, H1, H1);
+    L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+    L.submit("t1", A);
+    L.requestReview("t1", "owner", GPT, [], true);
+    // As a ledger before t326 left them: requests with no criteria, and a
+    // tier review with no binding at the head.
+    state.storage.sql.exec(`UPDATE review_requests SET criteria = NULL`);
+    state.storage.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, "t1", JSON.stringify({ ...unbound(review("t1", "antigravity/gemini-3.1-pro", H1, true)), tier: true, recordedBy: "owner", proved: false, claimed: true }));
+    const after = new Ledger(state, env);
+    expect(after.reviewRequests("t1").filter((r) => r.tier).map((r) => r.state)).toEqual(["open"]);
+    const change = after.editItem("t1", "owner", { accept: [...TWO] });
+    expect(change.criteriaChange).toMatchObject({ requests: 2, asked: [GPT] });
+    // The legacy review stays in the record, unstamped, withdrawn with the change.
+    const legacy = after.reviewsFor("t1")[0];
+    expect(legacy).toMatchObject({ withdrawn: { reason: "the acceptance criteria changed" } });
+    expect("criteria" in legacy).toBe(false);
+    const live = after.reviewRequests("t1").filter((r) => r.state === "open" || r.state === "claimed");
+    expect(live.map((r) => !!r.tier).sort()).toEqual([false, true]);
+  });
+});
+
+it("a gate request the criteria change withdrew is carried at the same head once the gate needs the review", async () => {
+  const L = await setup("criteria-carry");
+  await submittedWith(L, ONE);
+  await L.requestReview("t1", "owner", GPT, []);
+  // The check fails at the head while the criteria change, so no review is needed and none is asked yet.
+  await L.addEvidence({ ...observed("t1", H1, ["AGENTS.md"]), passed: false });
+  const change = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
+  expect(change.criteriaChange).toMatchObject({ requests: 1, asked: [] });
+  expect(await live(L)).toEqual([]);
+  // The check passes again at the same head: the withdrawn request is carried to the same reviewer.
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  expect(await live(L)).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
+  expect(((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "review.requested")!.data).toMatchObject({ reviewer: GPT, via: "head-moved" });
+});
