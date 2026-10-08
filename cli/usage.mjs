@@ -260,6 +260,27 @@ export function describeGateway(view, safe) {
   return lines;
 }
 
+// How fast each model worked, as the server computed it from the ledger
+// (GET /api/reliability, field speed; src/models/speed.ts): per model the
+// median build (claim to submission), review (claim to verdict) and task
+// (first claim to merge) with the n each is taken over, and the stalled
+// share of its build and review runs, over the stated window. Below the
+// server's minimum n only n is printed. A server older than this CLI sends
+// no speed field, and the lines say so. Every name is cleaned with `safe`.
+export function describeSpeed(view, safe) {
+  if (!view || typeof view !== "object" || !Array.isArray(view.models)) return ["Speed: the server reports no speed figures; it runs routes older than this CLI."];
+  const day = (iso) => (typeof iso === "string" ? iso.slice(0, 10) : "?");
+  const lines = [`Speed by model, last ${view.days} days (${day(view.since)} to ${day(view.until)}):`];
+  if (!view.models.length) lines.push("  no runs ended in the window");
+  const time = (s) => (s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`);
+  const measure = (m) => (!m?.n ? "none" : typeof m.median === "number" ? `median ${time(m.median)} (n=${m.n})` : `n=${m.n}, too few for a median`);
+  const stalls = (r) => (!r?.runs ? "no runs" : `${r.stalled} of ${r.runs} stalled (${Math.round((r.stalled / r.runs) * 100)}%)`);
+  for (const m of view.models) {
+    lines.push(`  ${safe(m.model, 128)}: build ${measure(m.build)}, ${stalls(m.build)}; review ${measure(m.review)}, ${stalls(m.review)}; task to merge ${measure(m.task)}`);
+  }
+  return lines;
+}
+
 // ── the command ────────────────────────────────────────────────────────────
 
 export function usageOptions(args, host = hostname()) {
@@ -283,8 +304,9 @@ function defaultIo() {
 }
 
 // io: report(tool, body, runner) comes from the CLI and answers with what the
-// server returned ({ alerts }), and gateway(), when given, answers with the
-// server's AI Gateway view; everything else has a default, so a test
+// server returned ({ alerts }), gateway(), when given, answers with the
+// server's AI Gateway view, and speed(), when given, with its speed record
+// (describeSpeed); everything else has a default, so a test
 // supplies only what it replaces.
 export async function runUsage(args, given = {}) {
   const opts = usageOptions(args);
@@ -316,6 +338,12 @@ export async function runUsage(args, given = {}) {
   if (io.gateway) {
     try { out.push("", ...describeGateway(await io.gateway(), safe)); }
     catch (error) { out.push("", `AI Gateway: could not read: ${safe(error.message, 200)}`); }
+  }
+  // The models' speed is the server's too, from the ledger; a failed read is
+  // said and does not stop the report.
+  if (io.speed) {
+    try { out.push("", ...describeSpeed(await io.speed(), safe)); }
+    catch (error) { out.push("", `Speed: could not read: ${safe(error.message, 200)}`); }
   }
   out.push("", "Not read here: Claude's plan limits (the Claude app shows them) and Gemini's spend (Google serves no balance).");
 

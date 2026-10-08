@@ -217,3 +217,26 @@ metadata yet (see above). Subscription harnesses (Claude Code,
 Codex, the Gemini CLI, ZCode on its plan) stay direct: they bill by plan,
 not by call, and their limits are the windows `atelier runner --usage`
 already reports.
+
+## Speed by model
+
+The Models page's "Speed by model" section and `atelier runner --usage`
+show how fast each model worked over the last 14 days, from the ledger's
+own timestamps (`src/models/speed.ts`; no new storage): a build from the
+model's claim to its submission, a review from its review claim to its
+verdict, and a task from its first claim to the merge, counted under the
+model that claimed it first. Each is a median over the n runs that ended in
+the window, with the window's dates and n beside it; a model with fewer
+than 3 samples shows n and no median. The stalled share is the runs the
+runners reported as stalled or timed out, of every run that ended with a
+result or was reported. `GET /api/reliability` returns the record under
+`speed`; a CLI talking to an older server says the server sends none.
+
+Routing takes the record as an optional input (`speed` in
+`src/plans/route.ts`), off unless a caller passes it. It orders only models
+tied on score and reliability, the faster median first. Medians are put in
+buckets a factor of two wide (log2 of the seconds, rounded) and compared by
+bucket, so close medians count as the same pace and a few runs' noise does
+not reorder models. No caller passes it yet: the plan routing in the Ledger reads one
+project's events, and the speed record needs every project's, as the
+reliability tie-breaker does.

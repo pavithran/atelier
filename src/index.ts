@@ -16,6 +16,7 @@ import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type 
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
+import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -821,8 +822,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     throw new RuleError("not_found", "no such route", 404);
   }
   if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
-    const { reliability, events, unread } = await trackRecords(env);
-    const res = json({ events, models: reliabilityJson(reliability) });
+    // `speed` is each model's pace over the window; `atelier runner --usage`
+    // prints it, and says so when an older server sends none.
+    const { reliability, speed, events, unread } = await trackRecords(env);
+    const res = json({ events, models: reliabilityJson(reliability), speed });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
@@ -1694,7 +1697,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway), error ? 400 : 200);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, track.speed), error ? 400 : 200);
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
@@ -1706,9 +1709,10 @@ export function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = 
 }
 
 // Each model's record is read from every event of every project, and
-// its reliability from those and the runners' reports. The pages and the
-// API say how many events, and which projects could not be read.
-async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; events: number; unread: ProjectRecord[] }> {
+// its reliability and its speed (src/models/speed.ts, over the last
+// SPEED_DAYS) from those and the runners' reports. The pages and the API say
+// how many events, and which projects could not be read.
+async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; speed: SpeedRecord; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
@@ -1716,7 +1720,7 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
     try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
-  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), speed: buildSpeed(sources, runs, ownerActor(env), Date.now()), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
