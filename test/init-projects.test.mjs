@@ -70,9 +70,10 @@ test("CLI init records the ship order's commands and approval kinds with the pol
 }));
 
 test("CLI init lists check input files among the protected paths", () => fixture(({ command }) => {
-  const result = command(["init", "--check", "npm test"]);
+  const result = command(["init", "--protect", "src/rules.ts", "--check", "npm test"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^Protected:.*package\.json/m);
+  assert.match(result.stdout, /^Protected:.*src\/rules\.ts/m);
 }));
 
 test("CLI init sends the core files given with --core, clears them with --core \"\" or --reset, and keeps them otherwise", () => fixture(({ command, calls }) => {
