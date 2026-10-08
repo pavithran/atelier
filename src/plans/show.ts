@@ -367,6 +367,9 @@ export function planBrief(v: PlanView): Brief {
     recommendation = v.proposal?.answered
       ? recommend("decide", `Read the split with ${show}, then approve it by its hash or send it back with a note.`)
       : recommend("wait", `The planner ${v.planner} has not proposed a plan${v.proposal ? " since you asked again" : " yet"}.`);
+  } else if (v.item.state === "submitted") {
+    const parts = v.parts.filter((p) => p.state === "integrated").map((p) => p.key);
+    recommendation = recommend("merge", `The plan is integrated (${parts.length ? list(parts) : "no part"}); accept and land it: atelier merge ${id} --head ${v.item.head}.`);
   } else {
     const ready = v.parts.filter((p) => p.state === "accepted" || (p.state === "submitted" && p.gate?.ready));
     const blocked = v.parts.filter((p) => p.state === "submitted" && p.gate && !p.gate.ready);
