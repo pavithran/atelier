@@ -12,7 +12,7 @@ import { appliesText, checkClasses, classText, type CheckClass } from "./checks.
 import theme from "./theme.css";
 import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent } from "./ledger";
-import type { FileChange, ItemDiff } from "./diff";
+import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
@@ -1897,6 +1897,7 @@ export function renderFile(f: FileChange, open: boolean): string {
 function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null, merged?: MergedCheckView): string {
   if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
   if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
+  if (diff.merged) return renderMergedDiff(diff, diff.merged);
   if (!diff.files.length) return `<p class="empty">No changes: the workspace at <span class="mono">${short(diff.head)}</span> holds the same tree as main at <span class="mono">${short(diff.base)}</span>.</p>`;
   const added = diff.files.reduce((n, f) => n + f.added, 0);
   const removed = diff.files.reduce((n, f) => n + f.removed, 0);
@@ -1912,6 +1913,21 @@ function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string 
     : "";
   return `${moved}<p class="meta">${summary}${behind}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
 ${renderMainPreview(diff.main, merged)}
+${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
+}
+
+// A merged task's change as it landed (mergedDiff in src/diff.ts): main has
+// moved on since, so there is no comparison with today's main, no merge
+// preview and no conflict warning (t321).
+function renderMergedDiff(diff: ItemDiff, m: Landed): string {
+  const against = m.from === "first-parent"
+    ? `its first parent <span class="mono">${short(diff.base)}</span>`
+    : `the task's fork point <span class="mono">${short(diff.base)}</span>`;
+  if (!diff.files.length) return `<p class="empty">Merged at <span class="mono">${short(m.commit)}</span>, which holds the same tree as ${against}.</p>`;
+  const added = diff.files.reduce((n, f) => n + f.added, 0);
+  const removed = diff.files.reduce((n, f) => n + f.removed, 0);
+  const summary = `${tag("Merged", "go")} ${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} changed by the merge <span class="mono">${short(m.commit)}</span> against ${against}, +${added} −${removed}.`;
+  return `<p class="meta">${summary}${diff.truncated ? " Only the first files are listed." : ""}</p>
 ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 }
 

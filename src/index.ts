@@ -1,6 +1,6 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, measureWorkspace, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
@@ -1883,7 +1883,21 @@ async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Pro
   return bytes ? html(renderBlob(w, head, path, viewFile(bytes), ownerName(env), node.type === "symlink")) : notFound("That file");
 }
 
-async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
+async function diffFor(env: Env, L: ReturnType<typeof ledger>, baselineRepo: string, item: Item, events: LedgerEvent[]): Promise<ItemDiff | "unavailable" | null> {
+  // A merged item shows its change as it landed, from the merge commit's
+  // first parent (mergedDiff), with no merge preview: main has moved on since
+  // the merge, and neither a diff against main's head nor a conflict with it
+  // says anything about work already merged (t321).
+  const landing = landingOf(item, events);
+  if (landing) {
+    try {
+      return await mergedDiff(env.ARTIFACTS, landing.onPlanBranch ? await baseRepo(env, L, item, baselineRepo) : baselineRepo, item.fork, landing);
+    } catch (err) {
+      console.error("merged diff unavailable", err);
+      return "unavailable";
+    }
+  }
+  const fork = item.fork;
   if (!fork) return null;
   let diff: ItemDiff | null;
   try {
@@ -2268,9 +2282,9 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   let selected: ReviewContext | undefined;
   if (project && task) {
     const L = ledgerOf(env, project);
-    const detail = await L.detail(task);
+    const detail: Detail = await L.detail(task);
     const selectedItem = await L.item(task);
-    selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
+    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,detail.events)};
   }
   // Each waiting decision is drawn as a card with its brief and its thread, which
   // need the task's own record; a dozen cards is enough for one screen of work.
@@ -2337,7 +2351,8 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   if (parts.length === 3) {
     const p = await L.project();
     const item = await L.item(parts[2]);
-    return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork), live), 200, nonce);
+    const detail: Detail = await L.detail(parts[2]);
+    return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
   }
   return html("Not found.", 404);
 }
