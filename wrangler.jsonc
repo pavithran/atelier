@@ -19,6 +19,11 @@
   // the AI_GATEWAY_TOKEN secret the pull does nothing.
   "triggers": { "crons": ["*/5 * * * *"] },
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
+  // Cloudflare Browser Run (Browser Rendering until 2026): the render check
+  // (src/render-check.ts) opens one session per page the sandbox asks about,
+  // with guardrails that allow the pages' font hosts and nothing else, and
+  // closes it again; the binding holds no credential the sandbox could read.
+  "browser": { "binding": "BROWSER" },
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   "durable_objects": {
     "bindings": [

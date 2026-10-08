@@ -5,7 +5,10 @@
 // the Worker reads the item's exact tree from Artifacts and streams it into
 // `tar -x`. The container starts with the Internet off; the only host it can
 // reach is the npm registry, through a pass-through gateway that allows GET and
-// HEAD. Results are written to the Ledger by this code alone, marked "sandbox",
+// HEAD, and the reserved render host, answered by the Worker itself: the
+// render check (src/render-check.ts) POSTs a page there to be rendered by
+// Browser Run, which the container could never reach or pay for on its own.
+// Results are written to the Ledger by this code alone, marked "sandbox",
 // which nothing posted to the public API can claim.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -13,6 +16,7 @@ import { againstMain, changedPaths, pairReader, repoReader, type Reader } from "
 import { mergePatch, mergeTrees, type Patch } from "../preview/merge";
 import { refusalOf, refusalText } from "../checks.ts";
 import { checkApplies, type CheckPaths } from "../rules.ts";
+import { renderGateway, RENDER_HOST } from "../render-check.ts";
 import { END_OF_ARCHIVE } from "./tar";
 import { writeTree } from "./tree";
 
@@ -71,14 +75,22 @@ export interface RunState {
   error?: string;
 }
 
-// Pass-through egress: the npm registry only, reads only, nothing added.
+// Pass-through egress: the npm registry only, reads only, nothing added. One
+// reserved host is not passed through but answered here: the render gateway,
+// which the sandbox's render check POSTs a rendered page to and which holds
+// the browser, so the container never holds a credential of its own.
+export async function routeEgress(env: Env, request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.hostname === RENDER_HOST) return renderGateway(env, request);
+  if (!EGRESS_HOSTS.includes(url.hostname) || (request.method !== "GET" && request.method !== "HEAD")) {
+    return new Response(`Atelier's check sandbox may not reach ${request.method} ${url.hostname}`, { status: 403 });
+  }
+  return fetch(request);
+}
+
 export class Egress extends WorkerEntrypoint<Env> {
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (!EGRESS_HOSTS.includes(url.hostname) || (request.method !== "GET" && request.method !== "HEAD")) {
-      return new Response(`Atelier's check sandbox may not reach ${request.method} ${url.hostname}`, { status: 403 });
-    }
-    return fetch(request);
+    return routeEgress(this.env, request);
   }
 }
 
@@ -175,7 +187,7 @@ export class CheckRunner extends DurableObject<Env> {
 
     const container = this.ctx.container;
     if (!container) throw new Error("no container is configured for CheckRunner");
-    for (const host of EGRESS_HOSTS) await container.interceptOutboundHttps(host, this.ctx.exports.Egress({ props: {} }));
+    for (const host of [...EGRESS_HOSTS, RENDER_HOST]) await container.interceptOutboundHttps(host, this.ctx.exports.Egress({ props: {} }));
     container.start({
       image: IMAGE,
       entrypoint: ["sleep", "infinity"],
