@@ -198,6 +198,14 @@ function storeWorkspaceToken(dir, remote, token) {
   if (!includes.includes(CREDENTIALS)) git(["config", "--local", "--add", "include.path", CREDENTIALS], { cwd: dir });
 }
 
+// The write token's expiry, recorded beside the workspace at every claim, so
+// atelier land can refresh the token before it lapses mid-landing (t275).
+// The server keeps no expiry it can answer later: the claim's answer is the
+// only place it is given. A server that sends none records nothing.
+function recordTokenExpiry(dir, expiresAt) {
+  if (typeof expiresAt === "string" && expiresAt) git(["config", "--local", "atelier.write-token-expires-at", expiresAt], { cwd: dir });
+}
+
 // Every flag each command takes, and what it takes. `true` marks a switch:
 // it never takes the word after it, so `review --approve t2` reviews t2 and
 // `merge --cancel t1` cancels t1; the only values a switch accepts are the
@@ -674,6 +682,7 @@ async function claimWorkspace(name, id, as, runner) {
   // storeWorkspaceToken). It is replaced before any fetch: git sends every
   // configured header, and a revoked one alongside the fresh one is refused.
   storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
+  recordTokenExpiry(dir, r.workspace.expiresAt);
   if (!fresh) git(["fetch", "--quiet", "origin"], { cwd: dir });
   // Each claim writes the branch the server gives, the project's branch,
   // which is the one Atelier reads, and says so when that changes what the
@@ -2858,13 +2867,15 @@ const commands = {
     if (!p.path || !existsSync(p.path)) die(`land needs ${name}'s registered checkout; this machine records ${p.path ?? "no folder"}. Run atelier init in that checkout first`);
     const workspace = workspacePath(name, id);
     // A request that throws rather than dies, so a landing that already holds
-    // the lease can release it before the command ends.
-    const request = async (method, path, body) => {
+    // the lease can release it before the command ends. Requests are made as
+    // the owner, except the re-claim that refreshes the workspace's write
+    // token, which names the task's holder (and its runner) instead (t275).
+    const request = async (method, path, body, as = OWNER, extra = {}) => {
       let res, text;
       try {
         res = await fetch(server() + "/api" + path, {
           method,
-          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "content-type": "application/json" },
+          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         text = await res.text();
@@ -2890,6 +2901,13 @@ const commands = {
         print: (line) => console.log(line),
         workspacePath, atelier: fileURLToPath(import.meta.url), env: process.env,
         redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
+        // The token a landing's re-claim minted, kept as claimWorkspace keeps
+        // one: the old header replaced before the fetch, the expiry recorded.
+        adoptWorkspaceToken: (dir, w) => {
+          storeWorkspaceToken(dir, w.remote, w.token);
+          recordTokenExpiry(dir, w.expiresAt);
+          gitOrThrow(["fetch", "--quiet", "origin"], { cwd: dir });
+        },
       });
     } catch (error) { die(error.message); }
   },
@@ -3289,7 +3307,7 @@ const commands = {
   },
 
   async open() {
-    spawnSync("open", [server()]);
+    spawnSync("open", [`${server()}/home`]);
   },
 
   guide() {
