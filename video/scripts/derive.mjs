@@ -4,7 +4,7 @@
 // left out: only ids, states, times, actor names and review verdicts.
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 
-const CUTOFF = process.env.LEDGER_CUTOFF ?? "2026-10-07T23:00:00.000Z";
+const CUTOFF = process.env.LEDGER_CUTOFF ?? "2026-10-08T14:50:00.000Z";
 const dir = new URL("../.cache/items/", import.meta.url).pathname;
 const items = readdirSync(dir).map((f) => JSON.parse(readFileSync(dir + f, "utf8")))
   .filter((d) => d.item.createdAt < CUTOFF)
@@ -18,6 +18,8 @@ const FAMILIES = [
   ["google", /^(gemini|gemma)|google/i],
   ["deepseek", /deepseek/i],
   ["xiaomi", /^mimo\b|xiaomi/i],
+  ["qwen", /^qwen|qwq/i],
+  ["minimax", /minimax/i],
 ];
 const familyOf = (actor) => { const n = actor.split("/").pop(); return FAMILIES.find(([, re]) => re.test(n) || re.test(actor))?.[0] ?? "other"; };
 const isModel = (a) => a.includes("/") && !a.startsWith("atelier/");
@@ -142,5 +144,17 @@ const plan = {
   mergedAt: byId.t197.events.find((e) => e.kind === "item.merged")?.at ?? null,
 };
 
-writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, moment, plan, selfTasks, fleet, localPool, localDispatches, localMerged, tasks }, null, 1) + "\n");
+// The Models page's figures, from GET /api/reliability (saved by
+// fetch-ledger): each agent's speed and stalls over the speed window, and
+// each reviewer's judged findings. Across all projects; only model names.
+const relRaw = JSON.parse(readFileSync(new URL("../.cache/api-reliability.json", import.meta.url), "utf8"));
+const gwRaw = JSON.parse(readFileSync(new URL("../.cache/api-usage.json", import.meta.url), "utf8")).gateway ?? {};
+const api = {
+  readAt: relRaw.speed.until,
+  speed: { days: relRaw.speed.days, since: relRaw.speed.since, until: relRaw.speed.until, minSamples: relRaw.speed.minSamples, models: relRaw.speed.models.map((m) => ({ model: m.model, build: m.build, review: m.review })) },
+  findings: relRaw.models.filter((m) => m.findingsConfirmed || m.findingsRefuted).map((m) => ({ model: m.model, upheld: m.findingsConfirmed, refuted: m.findingsRefuted })),
+  gateway: { readable: !gwRaw.off, models: (gwRaw.models ?? []).length, days: gwRaw.days ?? null },
+};
+
+writeFileSync(new URL("../data/ledger.json", import.meta.url), JSON.stringify({ facts, stories, moment, plan, selfTasks, fleet, localPool, localDispatches, localMerged, api, tasks }, null, 1) + "\n");
 console.log(JSON.stringify(facts, null, 1));
