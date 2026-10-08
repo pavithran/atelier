@@ -50,6 +50,30 @@ a rule the server enforces, not a convention.
 The web inbox answers one question, *what needs the project owner now?*, and
 ranks the things a person must decide above the things an agent must fix.
 
+## Git alone, and with Atelier
+
+Atelier sits on Git: every baseline and workspace is a Git repository, and a
+merge is a Git merge. What Git and a forge leave open is everything around
+the commit when many agents work at once, and that is what Atelier adds.
+
+| The question | With Git and a forge alone | With Atelier |
+| --- | --- | --- |
+| Who owns this work? | Commits record authors, not ownership; two agents can take the same task, and a crashed one leaves its branch half done. | One exact owner per task, holding the only write token for its workspace; a handoff is recorded and revokes the old token; a restarted runner takes back the jobs a dead run left. |
+| Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | Atelier runs the required checks itself, in a clean clone of the exact head; a merge is refused until every required check is observed passing there. |
+| Who checked it independently? | A model can review, and approve, its own work. | A change to a protected path needs approval from a model of another family than every contributor. |
+| Is main still sound after the merge? | Branches drift from main, and what merges may not be what was reviewed. | One landing at a time under a lease: main is merged in, checks run again, and the exact head that was reviewed is the one merged. A plan's parts are integrated on the plan's own branch first. |
+| What needs the owner now? | A stream of pull requests and notifications. | A decision inbox, ranked, each entry with a recommendation; `atelier land` takes a task from review to merge in one command. |
+| Which model is worth it? | Nothing records it. | Each model's track record and reliability from the ledger, and its calls, cost and latency from AI Gateway. |
+| Who did what? | Commit metadata, which an agent writes itself. | Every claim, push, check, review, decision and merge is an event in the ledger, and each merge's builder, reviewer and head go into Git as provenance notes. |
+
+The record shows what this catches. In Atelier's own project, as of
+2026-10-07 23:00 UTC, models recorded 303 reviews; 91 sent the work back,
+with 57 findings marked blocking, each found before the change merged. Of the
+205 merged tasks, 157 carry an approval from another model family at the
+revision that merged, and every task merged since 22:11 UTC on 2026-10-06
+does (68 in a row), since the project owner extended the rule to every
+path in the project that day.
+
 ## Built on Cloudflare
 
 | Product | What it does in Atelier | State |
