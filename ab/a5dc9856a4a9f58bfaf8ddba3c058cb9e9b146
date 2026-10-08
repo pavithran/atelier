@@ -1,0 +1,53 @@
+atelier atelier/t270 "Put Cloudflare Access in front of the owner's pages (PAVI, 2026-10-07, after studying cloudflare/cloudflare-os): the Worker checks the cf-access-jwt-assertion header on every owner (non-/api) route with jose against https://TEAM.cloudflareaccess.com/cdn-cgi/access/certs, matching issuer (CF_ACCESS_ISS) and audience (CF_ACCESS_AUD), and keys the owner by the email claim matched to a configured owner email (as cloudflare-os wb/access.ts and wb/server.ts do); /login and its token form are refused when Access is configured (closing the unthrottled /login the 2026-10-06 audit found); /api/*, /showcase and /live.js stay outside Access (a Bypass policy), where agent and runner tokens are already enforced (src/index.ts); without CF_ACCESS_* set, today's token sign-in is unchanged so tests and other deployments keep working. Document the dashboard steps (create the Access application and its Bypass policy, set the two vars) in README for the owner; the session does not change account settings"
+accepted head c7feae5ab4cbaa5d268b1229b3f59d2fb9aef937
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T01:14:17.799Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T01:14:20.952Z
+REVIEW approve by claude-code/opus-5.5 at c7feae5ab4cbaa5d268b1229b3f59d2fb9aef937, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T17:36:36.534Z pavi item.created
+2026-10-07T17:36:49.523Z pavi item.dispatched
+2026-10-07T18:04:16.857Z opencode/glm-5.3 item.claimed
+2026-10-07T18:04:31.634Z opencode/glm-5.3 fork.created
+2026-10-07T18:20:47.843Z opencode/glm-5.3 push.observed
+2026-10-07T18:23:52.764Z opencode/glm-5.3 evidence.observed
+2026-10-07T18:23:56.784Z opencode/glm-5.3 evidence.observed
+2026-10-07T18:23:57.957Z opencode/glm-5.3 item.submitted
+2026-10-07T18:54:21.470Z pavi land.lease
+2026-10-07T18:54:24.856Z pavi land.merge
+2026-10-07T18:54:32.392Z pavi land.regenerate
+2026-10-07T18:54:39.137Z opencode/glm-5.3 push.observed
+2026-10-07T18:54:40.461Z pavi land.push
+2026-10-07T18:57:12.562Z opencode/glm-5.3 evidence.observed
+2026-10-07T18:57:16.108Z opencode/glm-5.3 evidence.observed
+2026-10-07T18:57:16.792Z pavi land.check
+2026-10-07T18:57:17.545Z opencode/glm-5.3 item.submitted
+2026-10-07T18:57:18.174Z pavi land.submit
+2026-10-07T18:57:18.375Z pavi review.requested
+2026-10-07T19:10:09.181Z claude-code/opus-5.5 review.claimed
+2026-10-07T19:11:01.945Z claude-code/opus-5.5 review.rejected
+2026-10-07T19:11:07.292Z pavi land.review
+2026-10-07T19:11:21.961Z pavi item.released
+2026-10-07T19:11:21.961Z pavi item.dispatched
+2026-10-07T23:23:29.739Z pavi item.undispatched
+2026-10-07T23:23:30.212Z pavi item.dispatched
+2026-10-07T23:23:55.933Z opencode/glm-5.3 item.claimed
+2026-10-07T23:40:36.804Z opencode/glm-5.3 push.observed
+2026-10-07T23:43:08.152Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:43:11.210Z opencode/glm-5.3 evidence.observed
+2026-10-07T23:43:11.803Z opencode/glm-5.3 item.submitted
+2026-10-08T00:01:42.321Z pavi land.lease
+2026-10-08T01:10:51.682Z pavi land.lease
+2026-10-08T01:10:53.642Z pavi land.merge
+2026-10-08T01:11:02.838Z pavi land.regenerate
+2026-10-08T01:11:06.359Z opencode/glm-5.3 push.observed
+2026-10-08T01:11:06.490Z pavi land.push
+2026-10-08T01:14:18.731Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:14:21.308Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:14:21.901Z pavi land.check
+2026-10-08T01:14:22.355Z opencode/glm-5.3 item.submitted
+2026-10-08T01:14:22.634Z pavi land.submit
+2026-10-08T01:14:22.780Z pavi review.requested
+2026-10-08T01:14:30.607Z claude-code/opus-5.5 review.claimed
+2026-10-08T01:15:24.523Z claude-code/opus-5.5 review.approved
+2026-10-08T01:15:27.145Z pavi land.review
+2026-10-08T01:15:28.247Z pavi item.accepted
+2026-10-08T01:15:28.450Z pavi land.accept
