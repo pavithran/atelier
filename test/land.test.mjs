@@ -75,8 +75,8 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
-    requests: [], regen: "echo generated > gen-fixtures.txt", items: [], queue: [], runners: null, renewFails: false, kinds: {},
-    wf: { instance: null, stage: null, round: 0, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
+    requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
+    wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
   };
   // The tasks fork from the baseline before main moves, so a landing has
   // main's commits to merge; each has a workspace in the cache's layout.
@@ -106,7 +106,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const events = id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : [];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { checks: ["exit 0"], protected: ["work.txt"], regenerate: box.regen },
+      policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
   };
@@ -125,11 +125,14 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       // remembers, its stage and round, and its status. A test moves it on
       // through `wf.tick` (after each read) and `wf.onEvent` (each event).
       const wf = box.wf;
-      const view = () => ({ instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.files ? { files: wf.files } : {}), status: { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
+      const view = () => ({ instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
       if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
       else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
       else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status)) answer = { ...view(), created: false };
-      else { Object.assign(wf, { instance: `land-${item}-${wf.started.length + 1}`, stage: "lease", round: 0, status: "running", files: null, error: null }); wf.started.push(body); answer = { ...view(), created: true }; }
+      // The checks mode is recorded as the server records it (t305):
+      // container where the start names none; `wf.noChecksMode` stands in
+      // for a server older than the modes, which records none.
+      else { Object.assign(wf, { instance: `land-${item}-${wf.started.length + 1}`, stage: "lease", round: 0, checks: wf.noChecksMode ? null : body.checks ?? "container", status: "running", files: null, error: null }); wf.started.push(body); answer = { ...view(), created: true }; }
       res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
       if (req.method === "GET") wf.tick?.(box);
       return;
@@ -1348,9 +1351,11 @@ test("land --workflow starts the Workflow, merges main and pushes only once the 
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   const before = git(f.checkout, "rev-parse", "HEAD");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Landing t1 as a Cloudflare Workflow \(instance land-t1-1\)/);
+  assert.equal(wf.started[0].checks, "container");
+  assert.match(r.output, /runs the checks \(in a Cloudflare container\)/);
   assert.match(r.output, /The landing Workflow queues for the landing lease\./);
   assert.match(r.output, /The landing Workflow holds the lease and waits for this machine to merge main and push\./);
   assert.match(r.output, /t1 landed through the landing Workflow/);
@@ -1426,4 +1431,70 @@ test("land without --workflow never reaches the landing Workflow, and --dry-run 
   const both = await f.run(f.checkout, "land", "t2", "--workflow", "--dry-run");
   assert.equal(both.status, 1, both.output);
   assert.match(both.output, /--dry-run and --workflow together say two things/);
+});
+
+// ── the local checks mode (t305) ────────────────────────────────────────────
+
+test("land --workflow runs the required checks here in a clean clone after the push, by default, and reports the head only once they pass", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const wf = scriptWorkflow(f);
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 0, r.output);
+  // The mode is local without --checks, sent to the server and said.
+  assert.equal(wf.started[0].checks, "local");
+  assert.match(r.output, /runs the required checks in a clean clone \(checks mode local\)/);
+  assert.match(r.output, /Pushed \w+ to t1's fork; running the required checks in a clean clone\./);
+  assert.match(r.output, /The required checks pass at \w+; reporting the head to the landing Workflow\./);
+  // The check ran through atelier check (its observed result posted to the
+  // server at the pushed head) after the push and before the report.
+  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
+  const at = (pred) => f.box.requests.findIndex(pred);
+  const pushed = at((x) => x.method === "POST" && x.path.endsWith("/t1/push"));
+  const checked = at((x) => x.method === "POST" && x.path.endsWith("/t1/evidence") && x.body.kind === "check");
+  const reported = at((x) => x.method === "POST" && x.path.endsWith("/landing-workflow") && x.body.event?.type === "workspace");
+  assert.ok(pushed >= 0 && checked > pushed && reported > checked, `push ${pushed}, check ${checked}, report ${reported}`);
+  const evidence = f.box.requests[checked].body;
+  assert.equal(evidence.claim, "exit 0"); assert.equal(evidence.passed, true); assert.equal(evidence.head, head);
+  assert.deepEqual(wf.events, [{ type: "workspace", payload: { round: 0, head, mainHead: f.mainCommit, mergedIn: true } }]);
+  // The executor records the check step it ran, as the plain landing does;
+  // the submission, the review and the acceptance stay the Workflow's.
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "merged"]);
+  for (const route of ["/submit", "/review-request", "/accept", "/sandbox"]) assert.deepEqual(f.posts(route), [], route);
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("land --workflow with a failing local check reports the workspace failed, never the head, and ends with the check's failure", async (t) => {
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  f.box.checks = ["exit 3"];
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /atelier check failed/);
+  assert.equal(wf.events.length, 1);
+  assert.equal(wf.events[0].payload.failed, true);
+  assert.equal(wf.events[0].payload.head, undefined);
+  assert.match(wf.events[0].payload.reason, /atelier check failed/);
+  const check = f.posts("/land").find((x) => x.body.step === "check");
+  assert.equal(check?.body.failed, true);
+  assert.deepEqual(f.posts("/merged"), []);
+});
+
+test("land --workflow --checks container runs no check here; --checks is refused without --workflow or with another mode; a server with no modes is warned of", async (t) => {
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  const alone = await f.run(f.checkout, "land", "t1", "--checks", "local");
+  assert.equal(alone.status, 1, alone.output);
+  assert.match(alone.output, /--checks says where a Workflow landing runs the required checks; give it with --workflow/);
+  const bogus = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "laptop");
+  assert.equal(bogus.status, 1, bogus.output);
+  assert.match(bogus.output, /--checks takes local or container: atelier land t1 --workflow --checks local\|container/);
+  assert.deepEqual(f.posts("/landing-workflow"), []);
+  // A server older than the modes records none and runs the checks in the
+  // container: this machine runs none and says so.
+  wf.noChecksMode = true;
+  const old = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(old.status, 0, old.output);
+  assert.match(old.output, /Warning: the server recorded no checks mode for this landing/);
+  assert.deepEqual(f.posts("/evidence"), []);
+  assert.ok(!f.posts("/land").some((x) => x.body.step === "check"));
 });
