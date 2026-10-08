@@ -149,37 +149,51 @@ clearing is recorded as an event on the index Ledger.
 
 ## AI Gateway costs
 
-Calls that runners send through Cloudflare AI Gateway are counted from the
-gateway's own logs, not from a tool's record on a machine. Every five
-minutes a cron trigger reads the logs newer than the last one it wrote,
-newest first, from `GET /accounts/{CF_ACCOUNT_ID}/ai-gateway/gateways/{AI_GATEWAY_ID}/logs`,
-and writes one Workers Analytics Engine data point per log to the
-`atelier_metrics` dataset (binding `METRICS`): provider, model, tokens in
-and out, cost, duration, success, and the task, role and runner the call's
-`cf-aig-metadata` header named. The index Ledger keeps the newest log
-written, so a log is written once however many pulls see it. Logs are
-written oldest first and the mark moves only past logs written, so a missing
-binding or a failed write leaves the rest for the next pull. One pull reads
-at most 1,000 logs; when more arrived since the last pull, the stretch
-between the last log written and the oldest one read is not read, and is
-recorded as a gap that the Models page and `atelier runner --usage` show
-while it is in the window, so the totals never look complete when they are
-not. The Models page shows each model's calls, failures, tokens and cost for
-the last 7 days, summed by Analytics Engine over every call (weighted by its
-sample interval), and its median duration over the newest 10,000 durations,
-with the number it is taken over. `GET /api/usage` returns the same under
-`gateway`, and `atelier runner --usage` prints it after the tools' own
-figures.
+Calls that runners send through Cloudflare AI Gateway are counted by
+Cloudflare, not by a tool's record on a machine. Each time the Models page
+or `GET /api/usage` is asked for, the Worker sends one query to the GraphQL
+Analytics API (`POST https://api.cloudflare.com/client/v4/graphql`, with
+`ANALYTICS_TOKEN` as a Bearer token), over the dataset
+`aiGatewayRequestsAdaptiveGroups` for the gateway `AI_GATEWAY_ID` in the
+account `CF_ACCOUNT_ID`, from 7 days ago, grouped by model and provider:
 
-The three settings that turn the pull on (`CF_ACCOUNT_ID`, `AI_GATEWAY_TOKEN`
-and `ANALYTICS_TOKEN`) are in the README, under "AI Gateway costs".
+```graphql
+{ viewer { accounts(filter: { accountTag: "ACCOUNT" }) {
+  aiGatewayRequestsAdaptiveGroups(limit: 1000, filter: { datetime_geq: "SINCE", gateway: "atelier" }) {
+    count dimensions { model provider }
+    sum { cost uncachedTokensIn uncachedTokensOut cachedTokensIn cachedTokensOut erroredRequests }
+    quantiles { durationMsP50 durationMsP90 }
+} } } }
+```
+
+The Models page shows each model's calls and failed calls, tokens in and out
+(uncached and cached together), cost, and the median and 90th percentile
+duration with the number of calls they are taken over. A model whose calls
+all cost $0 shows "not priced": the gateway records a call it could not
+price as $0, so the two cannot be told apart. `GET /api/usage` returns the
+same under `gateway`, and `atelier runner --usage` prints it after the
+tools' own figures. Each says so when the figures are off (no
+`ANALYTICS_TOKEN` or `CF_ACCOUNT_ID`), when the API refuses the query (with
+its message; it answers a refusal with HTTP 200 and an `errors` list), and
+when the gateway had no calls in the window.
+
+Calls per task are not shown. The dataset has `metadataKey` and
+`metadataValue` dimensions, but how a call carrying several
+`cf-aig-metadata` entries is grouped by them has not been checked against
+the live API, and runners do not send a task tag yet (t271).
+
+The two settings that turn the figures on (`CF_ACCOUNT_ID` and
+`ANALYTICS_TOKEN`) are in the README, under "AI Gateway costs".
 
 Runners point opencode's pay-per-use providers at the gateway, each keeping
 its own key: the provider's base URL becomes
 `https://gateway.ai.cloudflare.com/v1/{ACCOUNT}/atelier/{provider}`, with
 `deepseek` or `openrouter` (or another provider the gateway knows) as the
-last segment, and a `cf-aig-metadata` header, a JSON object of at most five
-entries, says whose call it is:
+last segment. The gateway is authenticated, so each call also carries a
+`cf-aig-authorization` header with a gateway token (a Cloudflare API token
+with AI Gateway · Run on the account), which opencode reads from the
+runner's environment. A `cf-aig-metadata` header, a JSON object of at most
+five entries, can say whose call it is:
 
 ```json
 {
@@ -187,7 +201,10 @@ entries, says whose call it is:
     "deepseek": {
       "options": {
         "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
-        "headers": { "cf-aig-metadata": "{\"task\":\"t278\",\"role\":\"build\",\"runner\":\"home:studio\"}" }
+        "headers": {
+          "cf-aig-authorization": "Bearer {env:CF_AIG_TOKEN}",
+          "cf-aig-metadata": "{\"task\":\"t278\",\"role\":\"build\",\"runner\":\"home:studio\"}"
+        }
       }
     }
   }
@@ -195,8 +212,8 @@ entries, says whose call it is:
 ```
 
 The provider's key still goes in the provider's own header as before; the
-gateway passes it through and logs the call. Atelier keeps only `task`,
-`role` and `runner` of the metadata. Subscription harnesses (Claude Code,
+gateway passes it through and logs the call. Atelier does not read the
+metadata yet (see above). Subscription harnesses (Claude Code,
 Codex, the Gemini CLI, ZCode on its plan) stay direct: they bill by plan,
 not by call, and their limits are the windows `atelier runner --usage`
 already reports.

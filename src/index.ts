@@ -4,6 +4,7 @@ import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
@@ -25,8 +26,7 @@ import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
-import { durationsSql, fetchNewLogs, gatewayConfig, gatewayView, parseDurations, parseTotals, totalsSql, writeLog, type GatewayGap, type GatewayMark, type GatewayPull, type GatewayView } from "./usage/gateway.ts";
-import { query, queryConfig, neverWritten } from "./metrics.ts";
+import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
 import { BUILDER_INTEGRATION_FAILURES, chargesBuilder } from "./plans/phase.ts";
 import { planBrief } from "./plans/show.ts";
 import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh, type LogCommit } from "./plans/integrate.ts";
@@ -65,6 +65,11 @@ type Settings = {
   // and read by GET /api/version beside the route level, so a CLI can
   // refuse a server older than the routes it calls (atelier land).
   DEPLOYED_MAIN?: string;
+  // Cloudflare Access in front of the owner's pages (src/access.ts): the
+  // team's URL, the Access application's audience tag, and the owner's email
+  // as the token's email claim must name it. All three set, and every owner
+  // route — /login among them — must carry an assertion Access signed.
+  CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
 };
 
 function thresholds(env: Env): Thresholds {
@@ -828,9 +833,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
-    // Every runner polls here, so a signed-in poll also starts a due AI
-    // Gateway pull in the background; its failure never touches this answer.
-    if (m === "POST") c.waitUntil?.(pullGatewayIfDue(env).catch((err) => console.error("AI Gateway pull failed", err instanceof Error ? err.message : String(err))));
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -1696,82 +1698,11 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
-// The scheduled pull of the AI Gateway's logs into Analytics Engine
-// (src/usage/gateway.ts) and what the Models page and GET /api/usage show of
-// them, read back through the SQL API (src/metrics.ts). With no gateway
-// token the pull does nothing and the view says the gateway is off.
+// What the Models page and GET /api/usage show of the AI Gateway's calls,
+// read from the GraphQL Analytics API each time (src/usage/gateway.ts).
 
-// Writes the logs newer than the last one written, oldest first, and moves
-// the mark to the newest log written: a missing binding or a failed write
-// stops the writing there, so the mark never passes a log that was not
-// written and the next pull reads it again. A pull capped short of the
-// mark records the stretch it did not read. Null when the gateway is off or
-// the logs could not be read.
-export async function pullGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
-  const cfg = gatewayConfig(env);
-  if (typeof cfg === "string") return null;
-  const I = index(env);
-  const at = new Date(now).toISOString();
-  let read;
-  try {
-    read = await fetchNewLogs(cfg, await I.gatewayMark(), now, fetcher);
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    await I.recordGatewayPull({ at, added: 0, error }, null);
-    console.error("AI Gateway pull failed", error);
-    return null;
-  }
-  let added = 0, mark: GatewayMark | null = null, error: string | null = null;
-  if (read.logs.length && !env.METRICS) error = "the METRICS binding is missing, so no log was written";
-  else {
-    for (const log of [...read.logs].reverse()) {
-      try {
-        if (!writeLog(env.METRICS, log)) throw new Error("no dataset");
-      } catch (err) {
-        error = `writing log ${log.id} failed: ${err instanceof Error ? err.message : String(err)}`;
-        break;
-      }
-      added++;
-      mark = { id: log.id, at: log.at };
-    }
-  }
-  // The gap lies below the oldest log read, the first written; it is lost
-  // only once the mark has moved past it.
-  const gap = read.gap && added ? { ...read.gap, pulledAt: at } : null;
-  await I.recordGatewayPull({ at, added, error, answered: read.answered, unreadable: read.unreadable, ...(read.unreadableFields ? { unreadableFields: read.unreadableFields } : {}) }, mark, gap);
-  if (error) console.error("AI Gateway pull failed", error);
-  return { added, error };
-}
-
-// How often a pull may start. The cron asks every five minutes; requests
-// ask too (the queue route every runner polls), because on 2026-10-07 the
-// cron was listed but never ran. A little under five minutes, so the cron's
-// own tick is never refused for a request's pull a moment before it.
-export const GATEWAY_PULL_EVERY_MS = 4.5 * 60_000;
-
-// Pulls when no pull was started in the last GATEWAY_PULL_EVERY_MS, and
-// otherwise does nothing; the index grants one attempt per interval. Nothing
-// is asked of the index when the gateway is off.
-export async function pullGatewayIfDue(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<{ added: number; error: string | null } | null> {
-  if (typeof gatewayConfig(env) === "string") return null;
-  if (!(await index(env).claimGatewayPull(now, GATEWAY_PULL_EVERY_MS))) return null;
-  return pullGateway(env, now, fetcher);
-}
-
-export async function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
-  const cfg = gatewayConfig(env);
-  if (typeof cfg === "string") return gatewayView(cfg, [], [], null, [], now);
-  const read = queryConfig(env);
-  if (typeof read === "string") return gatewayView(`AI Gateway costs cannot be read: ${read}`, [], [], null, [], now);
-  const I = index(env);
-  const [pull, gaps] = await Promise.all([I.gatewayPull() as Promise<GatewayPull | null>, I.gatewayGaps() as Promise<GatewayGap[]>]);
-  try {
-    const [totals, durations] = await Promise.all([query(read, totalsSql(), fetcher), query(read, durationsSql(), fetcher)]);
-    return gatewayView(null, parseTotals(totals), parseDurations(durations), pull, gaps, now);
-  } catch (err) {
-    if (neverWritten(err)) return gatewayView(null, [], [], pull, gaps, now);
-    return gatewayView(`AI Gateway costs could not be read just now: ${err instanceof Error ? err.message : String(err)}`, [], [], pull, gaps, now);
-  }
+export function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = fetch): Promise<GatewayView> {
+  return readGatewayFigures(env, now, fetcher);
 }
 
 // Each model's record is read from every event of every project, and
@@ -2278,10 +2209,6 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
-  // The cron in wrangler.jsonc pulls the AI Gateway's new logs.
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(pullGatewayIfDue(env));
-  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
@@ -2324,6 +2251,19 @@ export default {
       }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
       if (pathname === "/how" && (req.method === "GET" || req.method === "HEAD")) { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
+      // Cloudflare Access in front of the owner's pages (src/access.ts). When
+      // the server names its Access team, application and owner, every route
+      // that needs a sign-in must carry an Access assertion the Worker verifies
+      // against the team's published keys and the owner's email — /login and its
+      // token form too, so the server token can no longer be tried, let alone
+      // guessed, without Access's sign-in first (the open form the 2026-10-06
+      // audit noted). Never the /api routes, which take bearer tokens the CLI
+      // sends without passing Access; the sign-out form stays open.
+      const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const access = accessSettings(env as unknown as Record<string, string | undefined>);
+      if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
+        return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
+      }
       if (pathname === "/login") {
         if (req.method === "POST") {
           // A cross-site form post carries another origin and is refused. A
@@ -2345,7 +2285,6 @@ export default {
         return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
       const how = await authorised(req, env);
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       if (parts[0] === "api") {
         // The server's version: the deployed main commit and its route
         // level (src/route-level.ts). It answers without a token: the
