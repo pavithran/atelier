@@ -152,6 +152,7 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
         project: record, mode,
         story: buildStory(p.name, items, events, owner, events.length >= STORY_EVENTS, title, { redact: true, ownerLabel: ownerName(env) || "The owner", anon }),
         pulse: buildPulse(events, owner, new Date(), events.length >= STORY_EVENTS),
+        allTimeMerged: items.filter((i) => i.state === "merged").length,
       };
     } catch { return null; /* left out; the page says a project could not be read */ }
   }));
