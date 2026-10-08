@@ -589,7 +589,7 @@ async function gone(pid, ms = 2000) {
 
 const GRACE_MS = 4000, PROMPT_MS = 3000;
 
-test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 30_000 }, async (t) => {
+test("a child's background processes end with it, whether it succeeded, failed or ran out of time", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-group-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const pids = [];
@@ -605,20 +605,48 @@ test("a child's background processes end with it, whether it succeeded, failed o
       const written = () => { try { return fs.readFileSync(${JSON.stringify(file)}, 'utf8'); } catch { return ''; } };
       while (!written()) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       ${ending === "deadline" ? UNTIL_TEST_EXITS : `process.exit(${ending.slice(5)})`}`;
+    // A deadline a loaded machine could reach before the two node processes
+    // are up would kill the group ahead of the pid file, so its budget is
+    // the four seconds two busy starts take (as the test below times it)
+    // with room to spare; the other endings leave the leader to end itself.
+    const timeoutMs = ending === "deadline" ? 5000 : 20_000;
     const start = Date.now();
-    const result = await execute([process.execPath, "-e", leader], { capture: true, timeoutMs: ending === "deadline" ? 1000 : 20_000, graceMs: GRACE_MS });
+    let settled = false;
+    const run = execute([process.execPath, "-e", leader], { capture: true, timeoutMs, graceMs: GRACE_MS })
+      .finally(() => { settled = true; });
+    // The pid file appears once both processes are up, moments before the
+    // leader ends; the moment it is seen is where the timings below start,
+    // so the machine's startup stretch stays out of them (t298: measured
+    // from the spawn instead, a machine running several suites at once
+    // pushed the two starts past the prompt bound and failed this test).
+    let readyAt = 0;
+    while (!settled && !readyAt) {
+      if (existsSync(file)) readyAt = Date.now();
+      else await new Promise((ok) => setTimeout(ok, 10));
+    }
+    const result = await run;
+    // The leader can write the pid file and exit inside one 10 ms wait, which
+    // ends the loop with the file unseen; look once more after the run.
+    if (!readyAt && existsSync(file)) readyAt = Date.now();
     const took = Date.now() - start;
+    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
+    // The run can settle without the pid file only when the deadline caught
+    // the group before both processes were up — a machine too loaded for the
+    // budget above. Name that, rather than letting the read below fail as a
+    // bare ENOENT with no cause.
+    assert.ok(readyAt, `${label}: the run ended after ${took} ms with the group's processes never up; the machine outran the ${timeoutMs} ms budget`);
     const pid = Number(readFileSync(file, "utf8"));
     pids.push(pid);
-    const label = `${ending}${ignore ? ", child ignores SIGTERM" : ""}`;
     assert.equal(result.timedOut, ending === "deadline", label);
     if (ending !== "deadline") assert.equal(result.code, Number(ending.slice(5)), label);
     assert.ok(await gone(pid), `the background child is gone once execute returns: ${label}`);
     // A group that ends at SIGTERM ends the wait at once; one that ignores it
     // waits out the grace period. The grace is long and the bound for a
-    // prompt end sits well below it, so a busy machine, where starting the two
-    // node processes alone can take a second, cannot blur the two.
-    assert.ok(ignore ? took >= GRACE_MS : took < (ending === "deadline" ? 1000 : 0) + PROMPT_MS, `${label}: ${took} ms`);
+    // prompt end sits well below it, so the two cannot blur. Only a deadline
+    // is measured from the spawn, its timer being anchored there.
+    if (ignore) assert.ok(took >= GRACE_MS, `${label}: ${took} ms`);
+    else if (ending === "deadline") assert.ok(took < timeoutMs + PROMPT_MS, `${label}: ${took} ms`);
+    else assert.ok(took - (readyAt - start) < PROMPT_MS, `${label}: ${took - (readyAt - start)} ms once the child was up`);
   }
 });
 
@@ -789,6 +817,9 @@ test("failure counts use task identity and exclude refusals and skipped tasks", 
   for (const state of [{ phase: "failed" }, { phase: "submitted" }, { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(failureCount(1, state), 1);
   }
+  // t273: a failure the job recorded on the item (refresh-failed) is the
+  // server's to handle, so it is no task failure for the cap.
+  assert.equal(failureCount(1, { phase: "failed", recorded: true }), 1);
 });
 
 test("runner remembers unsupported project names and claims the task behind them", async (t) => {
@@ -1021,6 +1052,55 @@ test("the reset before a harness saves uncommitted work under refs/atelier/rescu
   assert.equal(existsSync(join(workspace, "draft")), false);
 });
 
+// t296: a harness killed at its time limit can leave a file git cannot index
+// (a nested repository with no commit, say). `git add --all` fails whole on
+// such a file, so the reclaiming run's rescue staged nothing: the stash held
+// only the tracked edits, and the clean deleted every untracked file, none of
+// them in the rescue — GLM's t283 lost a timed-out run's 524 lines this way
+// when home:mbp-2 reclaimed it (2026-10-07). The staging now ignores errors,
+// so a file git cannot index costs only itself.
+test("the rescue stages around a file git cannot index, so every other untracked file is saved", async (t) => {
+  const { workspace, git, args } = gitWorkspace(t);
+  const logs = [];
+  let polls = 0, attempts = 0;
+  await runRunner(args, {
+    workspacePath: () => workspace, wait: async () => {},
+    queue: async () => {
+      if (++polls === 3) { process.emit("SIGINT"); return []; }
+      // The second poll offers the claim back, as the queue does a runner that
+      // already holds it (t235); the timed-out run committed nothing, so the
+      // workspace is at the recorded head and the model builds again.
+      return polls === 1 ? [assignment] : [{ ...assignment, item: heldItem({ head: git("rev-parse", "HEAD") }) }];
+    },
+    taskIO: {
+      log: (s) => logs.push(s),
+      harness: async () => {
+        if (++attempts === 1) {
+          // The timed-out run's uncommitted work, beside the file git cannot
+          // index: a nested repository with no commit.
+          writeFileSync(join(workspace, "tracked"), "draft edit");
+          writeFileSync(join(workspace, "draft.test.mjs"), "the new work");
+          git("init", "--quiet", join(workspace, "vendor", "dep"));
+          return { timedOut: true };
+        }
+        writeFileSync(join(workspace, "rebuilt"), "by the reclaiming run");
+        git("add", "rebuilt");
+        git("commit", "--quiet", "-m", "rebuilt");
+        return { code: 0 };
+      },
+    },
+    executeChild: async (argv, options) => execute(argv[0] === "git" ? argv : [process.execPath, "-e", ""], options),
+  });
+  assert.equal(attempts, 2);
+  const refs = git("for-each-ref", "--format=%(refname)", "refs/atelier/rescue/").split("\n").filter(Boolean);
+  assert.equal(refs.length, 1, "only the reclaiming run's reset had anything to save");
+  assert.match(refs[0], /^refs\/atelier\/rescue\/t13-\d{8}T\d{6}Z$/);
+  assert.equal(git("show", `${refs[0]}:tracked`), "draft edit");
+  assert.equal(git("show", `${refs[0]}:draft.test.mjs`), "the new work");
+  assert.ok(logs.some((l) => l.includes("could not be staged for the rescue")), logs.join("\n"));
+  assert.equal(readFileSync(join(workspace, "tracked"), "utf8"), "original");
+});
+
 // t213: a runner that offers reviews needs a command that can write a verdict.
 test("parseConfig refuses review jobs for an agent whose command has no {verdict_file}", () => {
   const errors = parseConfig({ ...config, jobs: ["review"] }).errors.join(" ");
@@ -1157,6 +1237,9 @@ test("infrastructure failures are consecutive and separate from task failures", 
     { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(infrastructureFailureCount(2, state), 0);
   }
+  // Nor an infrastructure failure (t273): a recorded refresh-failed is the
+  // server's to handle, so it neither advances nor keeps the streak.
+  assert.equal(infrastructureFailureCount(2, { phase: "failed", recorded: true }), 0);
 });
 
 test("real runner caps reset, claim and finish failures while serving the next task each poll", async (t) => {
