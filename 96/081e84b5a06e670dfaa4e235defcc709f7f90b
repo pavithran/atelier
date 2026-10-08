@@ -1,0 +1,31 @@
+atelier atelier/t280 "After 2026-10-14: run atelier land's pipeline as a Cloudflare Workflow (PAVI, 2026-10-07): merge main, push, check, submit, review wait, accept, merge as durable steps with retries, so a landing survives a lost lease, an expired token, an Artifacts 503 or a closed laptop, and the overlapped pipeline (t264) and token refresh (t275) fall out of it; check the Workflows docs first and keep the CLI as the trigger and progress view"
+accepted head 8f5b395b8a703a4a2444182a51bb52ce4e1bacce
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T07:44:25.058Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T07:44:28.056Z
+REVIEW approve by antigravity/gemini-3.1-pro at 8f5b395b8a703a4a2444182a51bb52ce4e1bacce, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T20:30:27.683Z pavi item.created
+2026-10-07T22:26:23.406Z pavi item.dispatched
+2026-10-08T06:33:39.238Z opencode/glm-5.3 item.claimed
+2026-10-08T06:33:50.172Z opencode/glm-5.3 fork.created
+2026-10-08T07:18:58.857Z opencode/glm-5.3 item.released
+2026-10-08T07:19:01.540Z opencode/glm-5.3 item.claimed
+2026-10-08T07:20:18.495Z opencode/glm-5.3 item.released
+2026-10-08T07:20:20.537Z pavi item.undispatched
+2026-10-08T07:20:28.256Z claude-code/opus-5.5 item.claimed
+2026-10-08T07:41:20.210Z pavi land.lease
+2026-10-08T07:41:20.974Z pavi land.merge
+2026-10-08T07:41:34.543Z pavi land.regenerate
+2026-10-08T07:41:37.494Z claude-code/opus-5.5 push.observed
+2026-10-08T07:41:37.594Z pavi land.push
+2026-10-08T07:44:26.062Z claude-code/opus-5.5 evidence.observed
+2026-10-08T07:44:28.399Z claude-code/opus-5.5 evidence.observed
+2026-10-08T07:44:28.802Z pavi land.check
+2026-10-08T07:44:29.138Z claude-code/opus-5.5 item.submitted
+2026-10-08T07:44:29.323Z pavi land.submit
+2026-10-08T07:44:29.411Z pavi review.requested
+2026-10-08T07:44:46.242Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T07:44:46.959Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T07:49:32.899Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T07:49:33.698Z pavi land.review
+2026-10-08T07:49:34.289Z pavi item.accepted
+2026-10-08T07:49:34.403Z pavi land.accept
