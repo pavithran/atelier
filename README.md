@@ -11,8 +11,8 @@ shell command can use.
 
 It is live at [atelier.zone](https://atelier.zone). Two pages there are
 public: [How it works](https://atelier.zone/how) states the rules the code
-enforces and lists every command, and the
-[showcase](https://atelier.zone/showcase) draws Atelier's own work as it was
+enforces and lists every command, and the showcase, at the domain's root
+[atelier.zone](https://atelier.zone), draws Atelier's own work as it was
 built by agents of several model families: each task, who held it, its
 checks, reviews and decisions.
 
@@ -392,6 +392,56 @@ SHA --index N --verdict confirmed|refuted|fixed`. A later review of the task
 shows the reviewer each earlier finding with the owner's verdict, and the
 record counts each reviewer's precision.
 
+### The receipt of a task
+
+`atelier receipt ID` prints one task's whole story from the ledger, in the
+order it was recorded: created, claimed, each handoff and release, each pushed
+head as Artifacts answered it, each observed check at each head, each review
+with its verdict and every finding, each finding judged by the owner
+(confirmed, refuted or fixed), then the submission, acceptance and merge or
+abandonment that ended it. `--json` carries the task's events as the ledger
+holds them, in order. This is t278's receipt:
+
+```text
+atelier/t278  Pull forward a slice of t271 (PAVI, 2026-10-07, 'do it'): the Worker reads Cloudflare AI Gateway logs for the gateway named by AI_GATEWAY_ID (default 'atelier') in account CF_ACCOUNT_ID, through GET /accounts/ACCOUNT/ai-gateway/gateways/GATEWAY/logs with a Worker secret AI_GATEWAY_TOKEN (AI Gateway Read), on the ledger's alarm or a scheduled handler every few minutes, newest first since the last log seen; it records per call model, provider, tokens in/out, cost, duration and the cf-aig-metadata tags (task, role, runner) in a usage table, and the Models page and atelier runner --usage show per-model cost, tokens and median latency over a stated window with the sample size; with no secret set it does nothing and says so on the Models page. Document in README how the owner creates the token (AI Gateway Read) and sets it with wrangler secret put AI_GATEWAY_TOKEN, and how runners point opencode providers at https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/PROVIDER with a cf-aig-metadata header
+The whole story from the ledger, in order.
+2026-10-07 20:27 UTC  created by pavi
+2026-10-07 20:27 UTC  claimed by claude-code/opus-5.5
+2026-10-07 20:54 UTC  head 2d7ac626 pushed by claude-code/opus-5.5, observed in Artifacts
+2026-10-07 20:56 UTC  check passed, observed in a clean clone: npm ci --prefer-offline --no-audit --no-fund && npm test at 2d7ac626
+2026-10-07 20:56 UTC  check passed, observed in a clean clone: npm run types && npm run typecheck at 2d7ac626
+2026-10-07 20:56 UTC  submitted by claude-code/opus-5.5 at 2d7ac626: Merged with main at 51c0dd47; the required checks pass.
+2026-10-07 21:02 UTC  rejected by antigravity/gemini-3.1-pro at 2d7ac626: I found two blocking defects: the scheduled pull silently drops logs if the backlog exceeds the 1,000-log page limit, and the analytics query silently underreports the 7-day totals if there are more than 10,000 calls.
+                      1. blocking src/index.ts:1694 If a pull hits `MAX_PAGES` before reaching the last mark (e.g. after a spike of >1,000 calls), `fetchNewLogs` returns the newest 1,000 logs and `pullGateway` unconditionally advances the mark to the newest of them, permanently dropping all older unread logs.
+                      owner's verdict: fixed. Fixed in 5342723: a capped pull records the gap in the index DO and the Models page and runner --usage say the totals undercount it; tests in test/gateway.spec.ts and test/gateway.test.ts.
+                      2. blocking src/usage/gateway.ts:201 `windowSql` selects individual rows with a hard limit of 10,000; if there are more than 10,000 calls in the 7-day window, older calls are silently omitted from the query result, causing the Models page and CLI to underreport the window's true total cost, tokens, and calls.
+                      owner's verdict: fixed. Fixed in 5342723: totals are summed per model in SQL weighted by _sample_interval with no row limit; only the median reads a capped sample, shown with n.
+                      3. follow-up src/index.ts:1694 If the `METRICS` binding is somehow missing or misconfigured, `writeLog` returns false and writes nothing, but the mark is still advanced, meaning those logs will be skipped forever once the binding is fixed.
+                      owner's verdict: fixed. Fixed in 5342723: logs are written oldest first and the mark moves only past logs written; a missing binding or failed write keeps the mark.
+2026-10-07 21:13 UTC  head 04cafbf6 pushed by claude-code/opus-5.5, observed in Artifacts
+2026-10-07 21:16 UTC  check passed, observed in a clean clone: npm ci --prefer-offline --no-audit --no-fund && npm test at 04cafbf6
+2026-10-07 21:16 UTC  check passed, observed in a clean clone: npm run types && npm run typecheck at 04cafbf6
+2026-10-07 21:16 UTC  submitted by claude-code/opus-5.5 at 04cafbf6: Merged with main at c7b73504; the required checks pass.
+2026-10-07 21:20 UTC  rejected by antigravity/gemini-3.1-pro at 04cafbf6: The earlier blocking findings are resolved (a capped pull records its gap, totals are summed in SQL without a row limit, and writing oldest-first prevents advancing the mark on failure), but a new data-loss defect was found where pagination stops prematurely and drops older logs if the API returns invalid logs on a full page.
+                      1. blocking src/usage/gateway.ts:190 `fetchNewLogs` uses the filtered `found.length < PAGE_SIZE` to stop paging; if the API returns a full page of 50 logs but one fails to parse (e.g., missing ID), `found.length` is less than 50, causing the pull to stop prematurely, return `gap: null`, and silently drop all older valid logs without recording a gap.
+                      owner's verdict: fixed. Fixed: fetchNewLogs judges a short page by the raw result length, not the parsed logs; test in test/gateway.test.ts fails without it.
+2026-10-07 21:21 UTC  head de671943 pushed by claude-code/opus-5.5, observed in Artifacts
+2026-10-07 21:24 UTC  check passed, observed in a clean clone: npm ci --prefer-offline --no-audit --no-fund && npm test at de671943
+2026-10-07 21:24 UTC  check passed, observed in a clean clone: npm run types && npm run typecheck at de671943
+2026-10-07 21:24 UTC  submitted by claude-code/opus-5.5 at de671943: The required checks pass.
+2026-10-07 21:28 UTC  approved by antigravity/gemini-3.1-pro at de671943: I verified that all earlier blocking findings are resolved (capped pulls correctly record the gap, SQL queries sum totals without row limits, failed writes leave the mark unchanged, and short pages are accurately judged by raw result length), and I found no new correctness, security, or data-loss defects in this change.
+2026-10-07 21:28 UTC  accepted by pavi at de671943
+2026-10-07 21:28 UTC  merged by pavi: de671943 accepted, merge commit 5af22431 on the baseline
+https://atelier.zone/p/atelier/t278
+```
+
+Every line is an event the ledger recorded. Opus 5.5 built the change, so no
+Claude agent could approve it: Gemini 3.1 Pro, of another family, reviewed it
+and rejected it twice, each time for a real data-loss defect, and the owner
+judged every finding fixed. The third head was approved at 21:28:33 and
+merged at 21:28:44, eleven seconds later: strict where it matters, no wait
+once the proof is in.
+
 ### Runners
 
 A runner asks Atelier for work; it is never sent any. `atelier runner --name
@@ -470,10 +520,10 @@ label from its kind, never its name, a task title, a path, a commit message
 or an address. The `SHOWCASE` variable (names separated by commas, each
 optionally followed by `:named` or `:anonymous`; a bare name is shown named)
 seeds the same setting and overrides it for the names it lists. Nothing is
-public until a project is named, and the page is cached for a minute. With a
-showcased project registered, a visitor who is not signed in opens
-atelier.zone on it; signed in, `/` opens Decisions while something is
-waiting and Flow when nothing is, and `/decisions` is always Decisions.
+public until a project is named, and the page is cached for a minute. The
+showcase is the front door: `/` serves it to everyone, signed in or not
+(`/showcase` serves the same page), and its header's Sign in leads to
+`/login`, which opens the owner's Home at `/home`.
 
 **Protected actions.** An action whose effect reaches beyond the repository
 and cannot be taken back by a revert (a deploy, a device install, a push of

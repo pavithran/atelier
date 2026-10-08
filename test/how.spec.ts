@@ -196,7 +196,7 @@ it("answers GET only, and only at /how", async () => {
 
 it("is linked from the sign-in page and the public showcase, which stay free of signed-in links", async () => {
   expect(renderLogin()).toContain('<a href="/how">how Atelier works</a>');
-  expect(renderLogin(undefined, true)).toContain('<a href="/showcase">See the public showcase</a>, or read <a href="/how">');
+  expect(renderLogin(undefined, true)).toContain('<a href="/">See the public showcase</a>, or read <a href="/how">');
   const showcase = renderShowcase([], { planned: 0 } as never, "owner", null);
   expect(showcase).toContain('<a href="/how">How it works</a>');
   expect(showcase).not.toContain('href="/p/');

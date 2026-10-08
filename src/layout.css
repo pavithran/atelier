@@ -154,7 +154,15 @@ ul { padding-left: var(--space-xl); }
 @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } html { scroll-behavior: auto; } }
 
 .review-sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: var(--radius-medium); padding: 34px; min-width: 0; align-self: start; }
+/* The back link from a selected decision to the list; drawn only on a phone,
+   where the selected decision is its own view. */
+.review-back { display: none; align-items: center; gap: 8px; margin: 0 0 var(--space-lg); font-weight: 600; color: var(--text); text-decoration: none; }
+.review-back svg { width: 16px; height: 16px; }
 .review-header h2 { font: 38px/1.12 var(--font-display); letter-spacing: -.025em; color: var(--text-bright); overflow-wrap: anywhere; margin: 0 0 18px; }
+/* A task's brief and criteria on its own page: body text under the short title. */
+.task-text { max-width: 70ch; margin: 0 0 var(--space-lg); }
+.task-brief { font-size: 16px; line-height: 1.55; color: var(--text); white-space: pre-line; overflow-wrap: anywhere; margin: 0 0 var(--space-md); }
+.task-accept { margin: var(--space-sm) 0 0; padding-left: 1.4em; overflow-wrap: anywhere; }
 .context { font-size: 13px; color: var(--text-muted); margin: 0 0 var(--space-md); }
 .review-description { color: var(--text-muted); font-size: 17px; max-width: 65ch; }
 .decision-status { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; font-size: 15px; margin: var(--space-xl) 0; }
@@ -181,7 +189,7 @@ button.primary:hover { background: var(--signal-hot); border-color: var(--signal
 }
 .new-task > summary:hover { color: var(--signal); text-decoration-thickness: 2px; background: none; }
 .revision { margin-bottom: var(--space-xl); }
-.review-nav { display: flex; gap: 28px; border-block: 1px solid var(--line); padding: var(--space-lg) 4px; margin: 30px 0 var(--space-xxl); }
+.review-nav { display: flex; flex-wrap: wrap; gap: 12px 28px; border-block: 1px solid var(--line); padding: var(--space-lg) 4px; margin: 30px 0 var(--space-xxl); }
 .review-nav a { color: var(--text); font-size: 14px; text-decoration: none; }
 .review-nav a:hover { text-decoration: underline; color: var(--signal-hot); }
 .review-section { margin: var(--space-xxl) 0 30px; }
@@ -386,6 +394,16 @@ main:has(.login-backdrop) { overflow-x: clip; }
   dl { grid-template-columns: 1fr; gap: 4px; }
   dt { margin-top: 10px; }
   .actions > form, .actions button { width: 100%; }
+}
+/* Below ~700px the Decisions desk is two views, never both at once: the
+   list when no decision is selected, and the selected decision with its back
+   link otherwise. Neither the list nor the review sits below the other, and
+   the page stays within the viewport. */
+@media (max-width: 700px) {
+  .desk { display: block; }
+  .desk.has-selection .queue { display: none; }
+  .desk:not(.has-selection) .review-sheet { display: none; }
+  .desk.has-selection .review-back { display: inline-flex; }
 }
 
 /* ── display type and stage ─────────────────────────────────────────────────── */

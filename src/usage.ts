@@ -40,18 +40,19 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "notes-remote [REMOTE | --off]", about: "Names a git remote that receives `refs/notes/atelier`, the merge provenance, and only that ref, on every merge. `--off` stops it; with no argument it says what is set. The setting is kept on this machine." },
   ]] },
   { name: "Items", lines: [[
-    { form: 'new "title" [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates a task with a title and, optionally, the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. The brief, `atelier start` and the task's page show them." },
-    { form: "edit ID [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it." },
+    { form: 'new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates a task with a short title (at most 80 characters, what every list shows), and optionally its brief (the whole task, shown on its page and given to the agents that build and review it), its acceptance criteria (a change that fails one is rejected in review), the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. One long text with no --brief is kept as the brief, and the title is derived from its first clause. The brief, `atelier start` and the task's page show them." },
+    { form: "edit ID [--title TEXT] [--brief TEXT] [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's title, brief, acceptance criteria, non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared." },
   ], [
     { form: "ls [--all] [--json]", about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them." },
     { form: "show ID [--reviews] [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--reviews` also prints each review at each head with its whole note and findings; `--json` prints the brief, carrying the reviews, for scripts." },
+    { form: "receipt ID [--json]", about: "Prints one task's whole story from the ledger, in the order it was recorded: created, claimed, each handoff and release, each pushed head as Artifacts answered it, each observed check at each head, each review with its verdict and every finding with the owner's verdict on it (confirmed, refuted or fixed), then the submission, acceptance and merge or abandonment that ended it. `--json` prints the task's events as the ledger holds them, in order." },
     { form: "owners [--json]", about: "Prints one line per live task: its state, its owner and since when." },
     { form: "inbox [--json]", about: "Prints the decision brief of each task that needs the project owner, most urgent first. `--json` prints the entries for scripts." },
     { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, which pairs of live tasks name overlapping scopes (each pair once, nothing waiting on the owner), what is in progress and what waits for a runner, with the live item each dispatch the project's core files hold waits on, each open review request among it with its reviewer named, and, for any queued job no live runner offers, that it can never be claimed until a runner that offers it is started, which is a mismatch between the dispatch and the runners rather than a wait. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, the overlapping pairs under `overlaps` and the same local facts under `local`." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
-    { form: "start ID [--as H/M] [--runner home:NAME]", about: "Claims the task, prepares its workspace as `claim` does, and prints its title, scope and any dispatch note. `--runner` names the runner when a runner claims a dispatched task." },
+    { form: "start ID [--as H/M] [--runner home:NAME]", about: "Claims the task, prepares its workspace as `claim` does, and prints its title, brief, acceptance criteria, scope and any dispatch note. `--runner` names the runner when a runner claims a dispatched task." },
     { form: 'done "summary" [--sandbox]', about: "Pushes, runs the required checks and submits, in that order, and stops at the first step that fails, naming it. `--sandbox` runs the checks in a Cloudflare container. Its last line says `Ready for the owner` or what still blocks the task." },
   ], [
     { form: "claim ID --as H/M [--runner home:NAME]", about: "Takes ownership of a task, forks the baseline into the task's workspace, mints a write token for the claimant alone, clones the workspace and records the project's branch as the one it pushes to. Claiming again refreshes the token and that branch, saying when the branch changed. `--runner` names the runner when a runner claims a dispatched task." },
@@ -233,15 +234,20 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   new: {
     flags: {
+      "--brief TEXT": "the whole task, shown on its page and given to the agents that build and review it",
+      "--accept TEXT": "an acceptance criterion, at most 300 characters; once per criterion, at most 12",
       "--scope GLOB": "a path pattern the task intends to touch; once per pattern",
       "--non-goal TEXT": "something the task is not to do; once per entry",
       "--stop-when TEXT": "what tells the holder to stop and ask; once per entry",
       "--next-gate TEXT": "the gate the task goes to next",
     },
-    example: 'atelier new "Fix the parser" --scope "src/parser/**" --non-goal "No change to the lexer" --project demo',
+    example: 'atelier new "Fix the parser" --brief "Nested lists fail to parse; make them parse" --accept "A nested list parses" --scope "src/parser/**" --project demo',
   },
   edit: {
     flags: {
+      "--title TEXT": "replaces the task's short title, at most 80 characters",
+      "--brief TEXT": 'replaces the task\'s brief; --brief "" clears it',
+      "--accept TEXT": 'replaces the task\'s acceptance criteria; once per criterion, or --accept "" alone to clear them',
       "--non-goal TEXT": 'replaces the task\'s non-goals; once per entry, or --non-goal "" alone to clear them',
       "--stop-when TEXT": 'replaces what tells the holder to stop and ask; once per entry, or --stop-when "" alone to clear it',
       "--next-gate TEXT": 'replaces the gate the task goes to next; --next-gate "" clears it',
@@ -261,6 +267,12 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--json": "prints the brief as JSON, with every review and its findings",
     },
     example: "atelier show t3 --project demo",
+  },
+  receipt: {
+    flags: {
+      "--json": "prints the receipt as JSON: the task's own fields and its whole event stream in the ledger's order",
+    },
+    example: "atelier receipt t3 --project demo",
   },
   owners: { flags: { "--json": "prints the list as JSON" }, example: "atelier owners --project demo" },
   inbox: { flags: { "--json": "prints the entries as JSON" }, example: "atelier inbox" },
@@ -587,7 +599,8 @@ Several agents may work on this project at once. Each piece of work is a
 task with exactly one owner. Never edit the project checkout directly.
 
 1. \`atelier start ID --project NAME --as HARNESS/MODEL\` claims the task
-   and prints its workspace, title, scope and note. Work only there.
+   and prints its workspace, title, brief, acceptance criteria, scope and
+   note. Work only there; a change that fails a criterion is rejected.
 2. Commit your changes, then run \`atelier done "summary"\` in that workspace.
    It pushes, runs required checks and submits only after they pass. Relay
    its final line to the owner. The project owner accepts and merges.

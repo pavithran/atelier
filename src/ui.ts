@@ -76,6 +76,7 @@ const ICONS: Record<string, string> = {
   usage: '<path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 17 4-6"/><circle cx="12" cy="17" r="1.2"/>',
   flow: '<path d="M3 6h18"/><path d="M6 6c3 0 2 6 5 6h7c3 0 2-6 5-6M6 6c3 0 2 12 5 12h4"/>',
   arrow: '<path d="m9 6 6 6-6 6"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 11.5 3.3 3.3 0 0 0 7 18Z"/>',
   laptop: '<path d="M4 6h16v10H4zM2 19h20"/>',
@@ -88,7 +89,7 @@ const icon = (name: string) =>
 // lives inside a project's own area at /p/NAME. The pages about the owner's
 // own setup sit under the account menu, out of the work navigation.
 const NAV: [string, string, string][] = [
-  ["Home", "/", "projects"],
+  ["Home", "/home", "projects"],
   ["Decisions", "/decisions", "decisions"],
   ["Studio", "/studio", "studio"],
 ];
@@ -128,7 +129,7 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 <title>${e(title)} · Atelier</title><style>${theme}\n${layout}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <aside class="rail">
-  <a class="brand" href="/">Atelier</a>
+  <a class="brand" href="/home">Atelier</a>
   <nav aria-label="Main navigation">${nav}</nav>
   ${account}
   <div class="rail-foot"><span class="avatar">${e((ownerName || "P").slice(0, 1))}</span><strong>${e(ownerName || "Project owner")}</strong>
@@ -163,7 +164,9 @@ export interface Detail {
   gate: Gate;
   events: LedgerEvent[];
 }
-export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean }
+// `full` is set on the task's own page, the one place that shows the task's
+// brief and acceptance criteria; every other view shows its short title.
+export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean; full?: boolean }
 // `events` is the project's recent record, newest first, when the page reads
 // it (Projects and History); `cut` says it was read up to a limit.
 export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean; events?: LedgerEvent[]; cut?: boolean }
@@ -238,7 +241,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     <p class="meta">Use the token stored in your Keychain as <code>atelier.API_TOKEN</code>.</p>
     <button class="primary">Sign in</button>
   </form>
-  <p class="meta">${showcase ? 'Not the owner? <a href="/showcase">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
+  <p class="meta">${showcase ? 'Not the owner? <a href="/">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
 </section>`,
   });
 }
@@ -337,12 +340,18 @@ export function renderInbox(
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
   ${!projects.length ? '<div class="empty"><h3>Bring your first project.</h3><p>In its checkout, run <code>atelier init</code> to register it.</p></div>' : ""}
 </section>`;
+  // On a phone the desk is two views: the list, or the selected decision with
+  // a back link to the list. The back link is drawn only there (layout.css
+  // hides it on wider screens), so the desktop's side-by-side desk keeps both.
+  const back = selected
+    ? `<a class="review-back" href="/decisions">${icon("back")}<span>All decisions</span></a>`
+    : "";
   const sheet = selected
-    ? `<section class="review-sheet" id="review" aria-label="Selected task">${reviewBody(selected)}</section>`
+    ? `<section class="review-sheet" id="review" aria-label="Selected task">${back}${reviewBody(selected)}</section>`
     : latest?.story.threads.length
       ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
-  return page("Decisions", `<div class="desk">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
+  return page("Decisions", `<div class="desk${selected ? " has-selection" : ""}">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
 
 // ── flow ───────────────────────────────────────────────────────────────────
@@ -662,7 +671,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   return publicPage({
     title: "Atelier · public showcase",
     description: "Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.",
-    brand: "/showcase",
+    brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
     mainClass: "page-width flow",
     main: `
@@ -1383,7 +1392,9 @@ function projectPage(p: ProjectRecord, active: string, body: string, ownerName: 
 
 const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ Create a task</summary>
     <form method="post" action="${href("ui", p.name, "new")}" class="stack">
-      <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="Describe the outcome"></label>
+      <label>What should change?<input name="title" type="text" required maxlength="300" placeholder="A short title for the outcome"></label>
+      <label>Brief<textarea name="brief" rows="4" maxlength="4000" placeholder="The whole task, for the agent that builds it (optional)"></textarea></label>
+      <p class="meta">A title over 80 characters with no brief becomes the brief, and the title is its first clause.</p>
       <label>Files in scope<input name="scope" type="text" placeholder="src/**, test/**"></label>
       <p class="meta">Separate patterns with commas. Leave empty for unrestricted scope.</p>
       <button class="primary">Create task</button>
@@ -1555,13 +1566,25 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 
 // ── a task ─────────────────────────────────────────────────────────────────
 
+// The task's brief at body size under its short title, then its acceptance
+// criteria numbered as the review brief numbers them. Nothing when neither
+// is set.
+function taskText(item: Item): string {
+  const accept = item.accept ?? [];
+  if (!item.brief && !accept.length) return "";
+  return `<div class="task-text">
+  ${item.brief ? `<p class="task-brief">${e(item.brief)}</p>` : ""}
+  ${accept.length ? `<p class="section-title">Acceptance criteria</p><ol class="task-accept">${accept.map((c) => `<li>${e(c)}</li>`).join("")}</ol>` : ""}
+</div>`;
+}
+
 // A task's page sits inside its project's area: the project's tab bar above
 // the review sheet, the area reached from Home.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
+  <nav class="breadcrumbs"><a href="/home">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   ${projectTabs(p, "Tasks")}
-  <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
+  <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true, full: true })}</article>
 </div>`, "Home", ownerName, 0, true, live);
 }
 
@@ -1600,7 +1623,7 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
 
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
-function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): string {
+function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
   const { item, gate } = d;
   const view = evidenceAt(d.policy, d.evidence, item.head);
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
@@ -1624,8 +1647,13 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
       <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${href("p", p.name, item.id)}">Reload this task</a>. If the revision changed, the task owner should run <code>atelier push</code> and rerun checks.</p></div>`
     : "";
   const reviewWanted = decision.action === "review" || latestReviews(d.reviews, item.head).some((r) => !r.approve);
+  // While the gate needs the independent review, the owner's approval cannot
+  // satisfy it — the decision line and the protected note below both say so —
+  // so Approve records the owner's own opinion as a secondary action, never
+  // the primary one. Where the owner's approval counts, on a revision a review
+  // at this head sent back, it stays primary.
   const approve = evidenceVisible && live && item.head && reviewWanted
-    ? `<form method="post" action="${action("approve")}">${revision}<button class="primary">Approve revision</button></form>`
+    ? `<form method="post" action="${action("approve")}">${revision}<button${gate.needsAssessor ? "" : ' class="primary"'}>Approve revision</button></form>`
     : "";
   const accept = evidenceVisible && decision.action === "accept"
     ? `<form method="post" action="${action("accept")}">${revision}<button class="primary">Accept revision</button></form>`
@@ -1641,6 +1669,16 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
         <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review.</p>
         <button>Override the review and accept</button>
       </form></details>`
+    : "";
+  // The primary action while the gate waits for the independent review is the
+  // move that settles it: asking a qualifying reviewer, which a landing does
+  // (it requests the review and waits for its verdict), or waiting for one.
+  // The owner's Approve cannot satisfy the gate, so it is not that action,
+  // and the override above stays the way on when no reviewer qualifies.
+  const askReview = decision.action === "review"
+    ? `<div class="merge-command"><p>To move this task, ask a model of another family to review the revision. In the registered checkout, run:</p>
+      <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
+      <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one of another family than every contributor — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
     : "";
   const merge = decision.action === "merge"
     ? `<div class="merge-command"><p>In the registered checkout, run:</p>
@@ -1698,11 +1736,12 @@ function reviewBody({ project: p, detail: d, diff, thread }: ReviewContext): str
   const header = `<header class="review-header">
   <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
   <h2>${e(item.title)}</h2>
+  ${full ? taskText(item) : ""}
   ${hasBrief ? "" : `<p class="review-description">${e(decision.detail)}</p>`}
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
-  ${merge}${reaccept}
+  ${askReview}${merge}${reaccept}
   <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
 
@@ -1818,7 +1857,7 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 // returns to; an empty `back` leaves the advice and the button out, for a
 // refusal that has no page to go back to (the Access 401). The public error
 // paths pass no ownerName, so the name never reaches a page anyone can read.
-export function renderError(message: string, back = "/", ownerName: string | null = null, active = ""): string {
+export function renderError(message: string, back = "/home", ownerName: string | null = null, active = ""): string {
   return page("Action needs attention", `<section class="page-width error-page">
   <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
   ${back ? `<p>Go back, refresh the evidence, and try the available action again.</p>
