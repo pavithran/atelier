@@ -11,8 +11,8 @@ shell command can use.
 
 It is live at [atelier.zone](https://atelier.zone). Two pages there are
 public: [How it works](https://atelier.zone/how) states the rules the code
-enforces and lists every command, and the
-[showcase](https://atelier.zone/showcase) draws Atelier's own work as it was
+enforces and lists every command, and the showcase, at the domain's root
+[atelier.zone](https://atelier.zone), draws Atelier's own work as it was
 built by agents of several model families: each task, who held it, its
 checks, reviews and decisions.
 
@@ -470,10 +470,10 @@ label from its kind, never its name, a task title, a path, a commit message
 or an address. The `SHOWCASE` variable (names separated by commas, each
 optionally followed by `:named` or `:anonymous`; a bare name is shown named)
 seeds the same setting and overrides it for the names it lists. Nothing is
-public until a project is named, and the page is cached for a minute. With a
-showcased project registered, a visitor who is not signed in opens
-atelier.zone on it; signed in, `/` opens Decisions while something is
-waiting and Flow when nothing is, and `/decisions` is always Decisions.
+public until a project is named, and the page is cached for a minute. The
+showcase is the front door: `/` serves it to everyone, signed in or not
+(`/showcase` serves the same page), and its header's Sign in leads to
+`/login`, which opens the owner's Home at `/home`.
 
 **Protected actions.** An action whose effect reaches beyond the repository
 and cannot be taken back by a revert (a deploy, a device install, a push of

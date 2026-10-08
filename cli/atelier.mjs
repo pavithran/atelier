@@ -3289,7 +3289,7 @@ const commands = {
   },
 
   async open() {
-    spawnSync("open", [server()]);
+    spawnSync("open", [`${server()}/home`]);
   },
 
   guide() {

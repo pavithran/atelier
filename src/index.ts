@@ -2033,7 +2033,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const form = Object.fromEntries((await req.formData()).entries());
     const asked = String(form.project ?? "");
     const ref = await resolveProject(env, asked);
-    if (!ref.registered) return html(renderError(`no project ${asked} is registered, so it cannot be shown publicly.`, "/", ownerName(env)), 404);
+    if (!ref.registered) return html(renderError(`no project ${asked} is registered, so it cannot be shown publicly.`, "/home", ownerName(env)), 404);
     const mode = String(form.mode ?? "");
     if (mode === "") {
       // The row may hold any of the project's names; take it under both.
@@ -2042,9 +2042,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     } else if (mode === "anonymous" || mode === "named") {
       await index(env).setShowcase(ref.name, mode);
     } else {
-      return html(renderError("The public showcase mode must be anonymous or named.", "/", ownerName(env)), 400);
+      return html(renderError("The public showcase mode must be anonymous or named.", "/home", ownerName(env)), 400);
     }
-    return Response.redirect(new URL("/", c.url).toString(), 303);
+    return Response.redirect(new URL("/home", c.url).toString(), 303);
   }
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
@@ -2104,7 +2104,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
       await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
-    } else return html(renderError("Unknown action.", "/", ownerName(env)), 400);
+    } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
@@ -2112,12 +2112,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   // 2026-10-06), permanently, so links already written in the ledger, the
   // notifications and the README keep working: /projects is Home now, and a
   // single project's flow is its own tab in the project's area.
-  if (parts[0] === "projects" && parts.length === 1) return movedTo(c.url, []);
+  if (parts[0] === "projects" && parts.length === 1) return movedTo(c.url, ["home"]);
   if (parts[0] === "flow" && c.url.searchParams.has("project")) {
     const name = c.url.searchParams.get("project") ?? "";
     return new Response(null, { status: 301, headers: { location: `/p/${encodeURIComponent(name)}/flow` } });
   }
-  if (parts.length === 0) return await homePage(c);
+  if (parts[0] === "home" && parts.length === 1) return await homePage(c);
   if (parts[0] === "history") return await historyPage(c);
   if (parts[0] === "studio") return await studioPage(c);
   if (parts[0] === "flow") return await flowPage(c, live);
@@ -2380,7 +2380,12 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      if (pathname === "/showcase" && (req.method === "GET" || req.method === "HEAD")) return await showcase(env, url);
+      // The front door: atelier.zone itself is the public showcase, for a
+      // visitor or a judge who types the domain, answered before the sign-in
+      // check as every public page is. /showcase serves the same page, so the
+      // links already written to it keep working; / is the canonical address.
+      // The owner's Home is at /home.
+      if ((pathname === "/" || pathname === "/showcase") && (req.method === "GET" || req.method === "HEAD")) return await showcase(env, url);
       // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
       if (pathname === "/live.js" && (req.method === "GET" || req.method === "HEAD")) {
         return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });
@@ -2410,7 +2415,7 @@ export default {
           const token = String((await req.formData()).get("token") ?? "");
           const want = serverToken(env);
           if (!want || !sameString(token, want)) return await loginPage(env, "That token is not this server's.", 401);
-          return new Response(null, { status: 303, headers: { location: "/", "set-cookie": await startSession(env, Date.now()) } });
+          return new Response(null, { status: 303, headers: { location: "/home", "set-cookie": await startSession(env, Date.now()) } });
         }
         return await loginPage(env);
       }
@@ -2418,7 +2423,7 @@ export default {
       // the one every owner form makes, so another site cannot end a session.
       if (pathname === "/logout" && req.method === "POST") {
         if (req.headers.get("origin") !== url.origin) return html("Cross-origin form refused.", 403);
-        return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
+        return new Response(null, { status: 303, headers: { location: "/", "set-cookie": await endSession(req, env) } });
       }
       const how = await authorised(req, env);
       if (parts[0] === "api") {
@@ -2463,9 +2468,8 @@ export default {
         if (ref?.former) res.headers.set("x-atelier-project", ref.name);
         return res;
       }
-      // The front door: a visitor who is not signed in sees the public showcase
-      // when there is one, and is otherwise asked to sign in — but only on a
-      // path the app itself serves. A path no page lives at answers 404,
+      // A visitor who is not signed in is asked to sign in — but only on a
+      // path the app itself serves (the front door at / is answered above). A path no page lives at answers 404,
       // never a redirect that funnels stray traffic to the sign-in page.
       // /how serves one public page at exactly that path (above); anything
       // else asked under the name is sent to sign in like the app's own
@@ -2476,10 +2480,9 @@ export default {
         // either way, so a guessed name learns nothing — a 404 for the rest
         // would say which names, anonymised or private, are real.
         const projectArea = parts[0] === "p" && parts.length >= 2;
-        const knownUI = parts.length === 0 || projectArea || ["models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
+        const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
-        const open = parts.length === 0 && (await liveShowcase(env).catch(() => [])).length > 0;
-        return Response.redirect(new URL(open ? "/showcase" : "/login", url).toString(), 303);
+        return Response.redirect(new URL("/login", url).toString(), 303);
       }
       if (typeof how === "object") return html("Agent tokens cannot use browser routes.", 403);
       return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
@@ -2487,14 +2490,16 @@ export default {
       const rule = parseRuleError(err);
       // The error page keeps the owner's name on the pages only the owner
       // reads; the public pages keep it to themselves (finding 18).
-      const who = ["/how", "/showcase", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
+      const who = ["/", "/how", "/showcase", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
+      // Go back leads the owner to Home and anyone else to the public front.
+      const back = who === null ? "/" : "/home";
       if (rule) {
         return url.pathname.startsWith("/api/")
           ? json({ error: rule.code, detail: rule.detail }, rule.status)
-          : html(renderError(rule.detail, "/", who), rule.status);
+          : html(renderError(rule.detail, back, who), rule.status);
       }
       console.error(err);
-      return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", "/", who),500);
+      return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", back, who),500);
     }
   },
 } satisfies ExportedHandler<Env>;

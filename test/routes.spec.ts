@@ -774,13 +774,13 @@ it("the project's area serves each tab, and the URLs that moved redirect permane
   // /projects is Home now, and a project's flow is its own tab: both permanent.
   const projects = await get("/projects");
   expect(projects.status).toBe(301);
-  expect(projects.headers.get("location")).toBe("/");
+  expect(projects.headers.get("location")).toBe("/home");
   const oldFlow = await get(`/flow?project=${name}&since=7d`);
   expect(oldFlow.status).toBe(301);
   expect(oldFlow.headers.get("location")).toBe(`/p/${name}/flow`);
 
   // Home: the portfolio, one card per project, its links to Flow and History.
-  const home = await get("/");
+  const home = await get("/home");
   expect(home.status).toBe(200);
   const homeHtml = await home.text();
   expect(homeHtml).toContain("<h1>Home</h1>");
