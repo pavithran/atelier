@@ -1,0 +1,24 @@
+atelier atelier/t295 "Read AI Gateway figures from Cloudflare's GraphQL Analytics API instead of pulling logs: gateways created on or after 2026-09-24 keep logs in Workers Logs, so GET .../ai-gateway/gateways/atelier/logs answers none (2026-10-07: the dashboard showed four calls, every pull added 0), while viewer.accounts.aiGatewayRequestsAdaptiveGroups (filter gateway, datetime_geq) gives per model and provider: count, sum cost, tokens, erroredRequests, quantiles durationMsP50/P90, and metadataKey/metadataValue dimensions for per-task calls; ANALYTICS_TOKEN (Account Analytics Read) reads it. Show those on the Models page and atelier runner --usage over 7 days; remove the log pull, its cron, the queue-poll trigger, the index's mark, gaps and pull claim, and the gateway's Analytics Engine writes (src/metrics.ts stays for later metrics); AI_GATEWAY_TOKEN is no longer needed; update README and docs"
+accepted head aa1239c6598b11586a276c8d8f92ab76da003b9e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-07T23:57:19.270Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-07T23:57:24.794Z
+REVIEW approve by antigravity/gemini-3.1-pro at aa1239c6598b11586a276c8d8f92ab76da003b9e, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T23:29:42.299Z pavi item.created
+2026-10-07T23:29:43.689Z claude-code/opus-5.5 item.claimed
+2026-10-07T23:29:58.058Z claude-code/opus-5.5 fork.created
+2026-10-07T23:54:30.725Z pavi land.lease
+2026-10-07T23:54:34.002Z pavi land.merge
+2026-10-07T23:54:41.886Z pavi land.regenerate
+2026-10-07T23:54:44.426Z claude-code/opus-5.5 push.observed
+2026-10-07T23:54:44.594Z pavi land.push
+2026-10-07T23:57:22.622Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:57:28.187Z claude-code/opus-5.5 evidence.observed
+2026-10-07T23:57:28.663Z pavi land.check
+2026-10-07T23:57:29.100Z claude-code/opus-5.5 item.submitted
+2026-10-07T23:57:29.382Z pavi land.submit
+2026-10-07T23:57:29.542Z pavi review.requested
+2026-10-07T23:57:51.443Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T00:01:32.024Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T00:01:32.440Z pavi land.review
+2026-10-08T00:01:33.511Z pavi item.accepted
+2026-10-08T00:01:33.693Z pavi land.accept
