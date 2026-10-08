@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
+import { LAND_JSON_MAX } from "../src/ledger.ts";
 import type { Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
@@ -358,6 +359,27 @@ it("the landing's steps are recorded as land.* events with their duration, and a
   await refusal(L.landEvent(id, "owner", "merge", -5, {}), "bad_ms", /duration in milliseconds/);
   await refusal(L.landEvent(id, "owner", "merge", 5, { nonsense: true }), "bad_field", /nonsense is not a field/);
   await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the project owner records/);
+});
+
+it("a merge step with more commits from main than its record has room for is cut to the first hashes with the count, not refused", async () => {
+  const L = await setup("land-cut");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  // t293's landing (2026-10-08) merged 103 commits from main and the merge
+  // step's record was refused whole as too long, so the step went
+  // unrecorded. The record now keeps the first hashes and the count of the
+  // whole list beside it, within the limit the ledger sets.
+  const fromMain = Array.from({ length: 103 }, (_, i) => `${String(i).padStart(3, "0")}${"c".repeat(37)}`);
+  await L.landEvent(id, "owner", "merge", 1200, { fromMain });
+  const cut = ((await events(L, id)).find((e) => e.kind === "land.merge")?.data ?? {}) as { fromMain?: string[]; fromMainCount?: number };
+  expect(cut.fromMainCount).toBe(103);
+  expect(cut.fromMain?.length ?? 0).toBeLessThan(103);
+  expect(cut.fromMain).toEqual(fromMain.slice(0, cut.fromMain?.length ?? 0));
+  expect(JSON.stringify({ ...cut, ms: 0 }).length).toBeLessThanOrEqual(LAND_JSON_MAX);
+  // A list that fits the limit is recorded whole, with no count beside it.
+  await L.landEvent(id, "owner", "merge", 5, { fromMain: ["a".repeat(40), "b".repeat(40)] });
+  const whole = ((await events(L, id)).filter((e) => e.kind === "land.merge")[0]?.data ?? {}) as { fromMain?: string[]; fromMainCount?: number };
+  expect(whole.fromMain).toEqual(["a".repeat(40), "b".repeat(40)]);
+  expect("fromMainCount" in whole).toBe(false);
 });
 
 it("GET /api/version answers without a token, and every other /api route still needs one", async () => {
