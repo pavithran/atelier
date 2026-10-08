@@ -597,6 +597,22 @@ it('a selected decision marks the desk and carries a back link; without one, the
  expect(rest).not.toContain('class="desk has-selection"');
  expect(rest).not.toContain('class="review-back"');
 });
+it('Decisions lists the lead developer\'s own calls under Needs your attention and the orchestrator\'s apart',()=>{
+  const entries=[
+    {project:'example',itemId:'t1',title:'Accept me',kind:'accept' as const,reason:'r',weight:100},
+    {project:'example',itemId:'t2',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+    {project:'example',itemId:'t3',title:'Stale me',kind:'stale' as const,reason:'r',weight:50},
+  ];
+  const html=renderInbox(entries,[project],'PAVI');
+  const needs=html.indexOf('Needs your attention');
+  const handled=html.indexOf('Handled by the orchestrator');
+  expect(needs).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(needs).toBeLessThan(handled);
+  expect(html.indexOf('Accept me')).toBeLessThan(handled);
+  expect(html.indexOf('Merge me')).toBeGreaterThan(handled);
+  expect(html.indexOf('Stale me')).toBeGreaterThan(handled);
+  expect(html).toContain('1 decision needs your attention.');
+});
 it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
  const {renderMainPreview}=await import('../src/ui');
  expect(renderMainPreview(undefined)).toBe('');
@@ -1027,6 +1043,23 @@ it('Home draws a card per project with what waits, what runs, its two-week graph
  expect(quiet).toContain('No moves in the last two weeks.');expect(quiet).toContain('aria-label="No moves in the last two weeks"');
  expect(quiet).toContain('Nothing merged yet.');
  expect(renderHome([],'PAVI',now,'pavi')).toContain('Start with one project');
+});
+it('Home lists what the orchestrator handles apart from what waits on the lead developer',async()=>{
+  const {renderHome}=await import('../src/ui');
+  const titled={...project,name:'cloudflare-git',title:'Atelier'};
+  const items=[{...detail().item,id:'t1',state:'submitted' as const},{...detail().item,id:'t2',state:'accepted' as const}];
+  const waiting=[
+    {project:'cloudflare-git',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:80},
+    {project:'cloudflare-git',itemId:'t2',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+  ];
+  const html=renderHome([{project:titled,items,waiting}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
+  const yours=html.indexOf('<h3>Waiting on you</h3>');
+  const handled=html.indexOf('<h3>Handled by the orchestrator</h3>');
+  expect(yours).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(yours).toBeLessThan(handled);
+  expect(html.indexOf('Assess me')).toBeLessThan(handled);
+  expect(html.indexOf('Merge me')).toBeGreaterThan(handled);
+  expect(html).toContain('<b>1</b>waiting on you');
 });
 it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
  const {renderHistory}=await import('../src/ui');
