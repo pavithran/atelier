@@ -6,18 +6,30 @@
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
+  // Cloudflare Access in front of the owner's pages (src/access.ts): set all
+  // three, as vars or secrets, and the Worker verifies the Access assertion
+  // on every owner route — /login and its token form among them — against the
+  // keys the team publishes, matching the issuer, the audience and the
+  // owner's email claim. The issuer is the team's URL; the audience is the
+  // Access application's AUD tag; the email is the one person the pages are
+  // for. The application itself needs Bypass policies on /api/*, /showcase,
+  // /how and /live.js, whose bearer tokens and visitors never pass Access
+  // (docs/setup.md says how).
+  //   "vars": {
+  //     "CF_ACCESS_ISS": "https://TEAM.cloudflareaccess.com",
+  //     "CF_ACCESS_AUD": "<the application's AUD tag>",
+  //     "CF_ACCESS_OWNER_EMAIL": "owner@example.com"
+  //   }
   "vars": {
     // The Cloudflare account that holds the AI Gateway and the metrics
     // dataset is the secret CF_ACCOUNT_ID (README, "AI Gateway costs"), so
     // the public source names no account; unset, neither is read.
-    // The gateway runners send their calls through.
+    // The gateway runners send their calls through, whose figures the
+    // Models page reads from the GraphQL Analytics API.
     "AI_GATEWAY_ID": "atelier"
   },
-  // Atelier's metrics (src/metrics.ts), among them each AI Gateway call.
+  // Atelier's own metrics (src/metrics.ts).
   "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "atelier_metrics" }],
-  // Every five minutes the Worker pulls the AI Gateway's new logs; without
-  // the AI_GATEWAY_TOKEN secret the pull does nothing.
-  "triggers": { "crons": ["*/5 * * * *"] },
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   // Large payloads by reference (t284): whole check logs and review diffs are
