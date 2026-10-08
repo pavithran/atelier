@@ -63,11 +63,11 @@ quality on screen, the source tag, then the key words of the moment in
 44 px and footnotes at least 30 px. Each chapter opens on a card with its
 name and one line of what came before; the card at chapter 4, the midpoint,
 repeats the three things to remember and the line "Git keeps the code.
-Atelier keeps the record.", which also opens and closes the film. The four
+Atelier brings the receipts.", which also opens and closes the film. The four
 biggest numbers (15 tasks held at once, 99 send-backs, 30 of 52 findings,
 240 merged) each get a beat of their own with one plain line of meaning.
 
-The eighth cut's build of 2026-10-08 runs 6:36. The competition's rules ask for five to
+The eighth cut's build of 2026-10-08 runs 6:36. The ninth cut, `atelier-v9-dark.mp4`, changes only the recurring line, now "Git keeps the code. Atelier brings the receipts." (the lead developer's choice, 2026-10-08); it also runs 6:36. The competition's rules ask for five to
 ten minutes; this cut aims at six to six and a half.
 
 ## 1. Opening {#cold}
@@ -232,12 +232,12 @@ yet).
 ## 10. Close {#close}
 
 On screen, dark: the field of light returns. Four lines, then "Git keeps
-the code. Atelier keeps the record.", 321 tasks and 240 merged counting up,
+the code. Atelier brings the receipts.", 321 tasks and 240 merged counting up,
 with the rest beneath; then atelier.zone and the repository's address.
 
 > Tests Atelier runs itself, not the agent's claim. Approval by a model from a different company. A record of every agent, kept on Cloudflare.
 >
-> Git keeps the code. Atelier keeps the record. It built itself this way: 321 tasks, 240 merged.
+> Git keeps the code. Atelier brings the receipts. It built itself this way: 321 tasks, 240 merged.
 >
 > It's live at atelier.zone, and it's open source.
 
