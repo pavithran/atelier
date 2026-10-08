@@ -733,10 +733,16 @@ Node process on this machine, included because the brief asks for measured
 numbers rather than claims — they are not the live server's latency:
 
 ```
-N=1000: claim spread 1000/1000 ok with 1000 distinct forks, median 81.4ms,
-p90 83.0ms; claim race 1 winner, 999 refused each naming the holder, median
-46.5ms, p90 58.7ms; cleanup 1001/1001; ~6800 req/s over 0.44s, 3001 requests.
+N=1000: claim spread 1000/1000 ok with 1000 distinct forks, median 77.3ms,
+p90 78.1ms; claim race 1 winner, 999 refused each naming the holder, median
+47.8ms, p90 48.6ms; cleanup 1001/1001; ~9172 req/s over 0.436s, 4002 requests.
 ```
+
+The request count is every request the run sent — the 1001 that created the
+tasks and the race, the 2000 claims, and the 1001 abandons. With `--push`, the
+proof also reports how many of the git pushes ran at once (its peak live git
+subprocesses): the pushes are concurrent, so all N overlap, and that figure is
+asserted in the tests.
 
 A run against the live server prints the live numbers; this README reports
 only what a run measured.

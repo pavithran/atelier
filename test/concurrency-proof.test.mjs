@@ -150,6 +150,21 @@ test("--push makes a tiny commit and push per agent, and each push is observed a
   }
 });
 
+test("--push runs the N git pushes concurrently, not one after another", async (t) => {
+  const bareRoot = mkdtempSync(join(tmpdir(), "atelier-concurrency-proof-bare-"));
+  t.after(() => rmSync(bareRoot, { recursive: true, force: true }));
+  const server = await fakeServer(t, { bareRoot });
+  const r = await run(t, server, ["--agents", "5", "--push", "--json"]);
+  assert.equal(r.code, 0, r.output);
+  const report = JSON.parse(r.output);
+  assert.equal(report.phases.pushes.ok, 5);
+  // The script counts its live git subprocesses while it pushes, and reports
+  // the peak. Blocking on spawnSync would mean at most one git process is ever
+  // alive (or none at all, since the counting lives in the async spawn path),
+  // so this reading of 5 is the proof the pushes really ran together.
+  assert.equal(report.phases.pushes.maxConcurrent, 5, `expected all 5 git pushes to overlap, measured at most ${report.phases.pushes.maxConcurrent} in flight`);
+});
+
 test("the report is machine-readable with --json, and its figures match the measured requests", async (t) => {
   const server = await fakeServer(t);
   const r = await run(t, server, ["--agents", "4", "--json"]);
@@ -167,6 +182,11 @@ test("the report is machine-readable with --json, and its figures match the meas
   assert.ok(report.cost.wallSeconds >= 0);
   assert.ok(typeof report.phases.claimSpread.median === "number");
   assert.ok(typeof report.phases.claimSpread.p90 === "number");
+  // The request totals count the N+1 task creations too, not just claims.
+  assert.equal(report.created, 5);
+  assert.equal(report.phases.claimSpread.created, 4);
+  assert.equal(report.phases.claimRace.created, 1);
+  assert.equal(report.requests, 18);
 });
 
 test("--agents above the limit, a missing project, or an insecure server is refused before any request", async (t) => {
