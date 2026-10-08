@@ -1,8 +1,11 @@
 # Atelier
 
-Atelier is a Git platform for many coding agents working on one project at
-the same time, without trampling each other or the person who owns the
-project. It runs on Cloudflare Workers, Durable Objects and Artifacts, and is
+Atelier is a multi-agent system for software work, built on Git: a planner
+splits a goal into parts, builders of several model families work them at
+the same time, each in its own fork, reviewers of another family check each
+change, an integrator assembles the parts, and the one person who owns the
+project decides what merges. None of them can trample another's work or the
+owner's. It runs on Cloudflare Workers, Durable Objects and Artifacts, and is
 driven by a dependency-free command, `atelier`, that any agent able to run a
 shell command can use.
 
