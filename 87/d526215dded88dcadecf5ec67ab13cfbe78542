@@ -1,0 +1,48 @@
+atelier atelier/t260 "Track how fast each model works (PAVI, 2026-10-07): from the ledger's own timestamps, compute per model and role the time from claim to submission for builds, from claim to verdict for reviews, and from first claim to merge per task, with medians over a stated window and the sample size, plus the share of runs that stalled; show them on the Models page and in atelier runner --usage, and give routing an optional speed term so a plan can prefer faster models for the same work"
+accepted head 31935f79f87e66adaa7cd406002cc047d62d2517
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T06:26:42.407Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T06:26:44.973Z
+REVIEW approve by antigravity/gemini-3.1-pro at 31935f79f87e66adaa7cd406002cc047d62d2517, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T15:48:45.834Z pavi item.created
+2026-10-07T21:36:41.968Z pavi item.dispatched
+2026-10-07T22:25:43.428Z pavi item.undispatched
+2026-10-07T22:25:44.247Z pavi item.blocked
+2026-10-08T01:30:50.864Z pavi item.unblocked
+2026-10-08T01:30:51.340Z claude-code/opus-5.5 item.claimed
+2026-10-08T01:30:57.629Z claude-code/opus-5.5 fork.created
+2026-10-08T03:28:18.685Z pavi land.lease
+2026-10-08T03:28:30.135Z pavi land.merge
+2026-10-08T05:10:34.216Z pavi land.lease
+2026-10-08T05:10:36.971Z pavi land.merge
+2026-10-08T05:10:44.960Z pavi land.regenerate
+2026-10-08T05:10:47.940Z claude-code/opus-5.5 push.observed
+2026-10-08T05:10:48.056Z pavi land.push
+2026-10-08T05:13:14.687Z claude-code/opus-5.5 evidence.observed
+2026-10-08T05:13:17.069Z claude-code/opus-5.5 evidence.observed
+2026-10-08T05:13:17.464Z pavi land.check
+2026-10-08T05:13:17.786Z claude-code/opus-5.5 item.submitted
+2026-10-08T05:13:17.974Z pavi land.submit
+2026-10-08T05:13:18.087Z pavi review.requested
+2026-10-08T05:13:25.481Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T05:13:26.162Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T05:18:13.549Z antigravity/gemini-3.1-pro review.rejected
+2026-10-08T05:18:17.964Z pavi land.review
+2026-10-08T05:22:14.332Z pavi review.finding
+2026-10-08T05:22:14.655Z pavi review.finding
+2026-10-08T06:24:03.555Z pavi land.lease
+2026-10-08T06:24:06.094Z pavi land.merge
+2026-10-08T06:24:14.030Z pavi land.regenerate
+2026-10-08T06:24:17.127Z claude-code/opus-5.5 push.observed
+2026-10-08T06:24:17.211Z pavi land.push
+2026-10-08T06:26:42.924Z claude-code/opus-5.5 evidence.observed
+2026-10-08T06:26:45.176Z claude-code/opus-5.5 evidence.observed
+2026-10-08T06:26:45.579Z pavi land.check
+2026-10-08T06:26:45.909Z claude-code/opus-5.5 item.submitted
+2026-10-08T06:26:46.071Z pavi land.submit
+2026-10-08T06:26:46.159Z pavi review.requested
+2026-10-08T06:26:53.338Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T06:26:54.074Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T06:33:03.285Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T06:33:07.293Z pavi land.review
+2026-10-08T06:33:07.832Z pavi item.accepted
+2026-10-08T06:33:08.241Z pavi land.accept
