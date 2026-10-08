@@ -1,0 +1,55 @@
+atelier atelier/t326 "Bind reviews to the acceptance criteria"
+accepted head eca4efdaf7340429446c43105875e927db2b2ddc
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T19:41:54.705Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T19:41:58.054Z
+REVIEW approve by codex/gpt-6-astra at eca4efdaf7340429446c43105875e927db2b2ddc, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T15:54:43.687Z pavi item.created
+2026-10-08T18:08:50.300Z pavi item.edited
+2026-10-08T18:08:59.299Z claude-code/opus-5.5 item.claimed
+2026-10-08T18:09:16.735Z claude-code/opus-5.5 fork.created
+2026-10-08T18:53:57.457Z claude-code/opus-5.5 push.observed
+2026-10-08T18:59:37.215Z claude-code/opus-5.5 evidence.observed
+2026-10-08T18:59:44.831Z claude-code/opus-5.5 evidence.observed
+2026-10-08T18:59:53.047Z claude-code/opus-5.5 item.submitted
+2026-10-08T19:00:25.341Z claude-code/opus-5.5 evidence.reported
+2026-10-08T19:00:30.439Z pavi land.lease
+2026-10-08T19:00:37.012Z pavi land.merge
+2026-10-08T19:01:05.638Z pavi land.regenerate
+2026-10-08T19:01:09.026Z claude-code/opus-5.5 push.observed
+2026-10-08T19:01:09.193Z pavi land.push
+2026-10-08T19:09:09.134Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:09:19.298Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:09:20.806Z pavi land.check
+2026-10-08T19:09:24.432Z pavi review.requested
+2026-10-08T19:09:24.432Z pavi review.requested
+2026-10-08T19:09:54.154Z codex/gpt-6-astra review.claimed
+2026-10-08T19:09:55.992Z codex/gpt-6-astra review.diff
+2026-10-08T19:09:56.788Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T19:09:59.164Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T19:12:37.177Z codex/gpt-6-astra review.rejected
+2026-10-08T19:12:42.044Z pavi land.review
+2026-10-08T19:13:07.531Z pavi review.finding
+2026-10-08T19:13:07.891Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T19:19:10.191Z claude-code/opus-5.5 push.observed
+2026-10-08T19:26:43.556Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:26:50.983Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:26:52.788Z claude-code/opus-5.5 item.submitted
+2026-10-08T19:37:06.835Z pavi land.lease
+2026-10-08T19:37:12.094Z pavi land.merge
+2026-10-08T19:37:21.980Z pavi land.regenerate
+2026-10-08T19:37:25.345Z claude-code/opus-5.5 push.observed
+2026-10-08T19:37:25.503Z pavi land.push
+2026-10-08T19:41:55.588Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:41:58.570Z claude-code/opus-5.5 evidence.observed
+2026-10-08T19:41:59.177Z pavi land.check
+2026-10-08T19:42:00.046Z pavi review.requested
+2026-10-08T19:42:00.046Z pavi review.requested
+2026-10-08T19:42:16.270Z codex/gpt-6-astra review.claimed
+2026-10-08T19:42:17.808Z codex/gpt-6-astra review.diff
+2026-10-08T19:42:20.534Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T19:42:27.377Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T19:44:44.356Z codex/gpt-6-astra review.approved
+2026-10-08T19:44:48.582Z pavi land.review
+2026-10-08T19:44:49.337Z atelier/orchestrator review.withdrawn
+2026-10-08T19:44:49.337Z pavi item.accepted
+2026-10-08T19:44:49.434Z pavi land.accept
