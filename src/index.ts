@@ -36,6 +36,7 @@ import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
+import { errorLine, RETRY_AFTER, retryableByRuntime, withRetry } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
@@ -316,8 +317,9 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentT
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+// A 503 is a failure a retry can cure, and says when to retry (t349).
 const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...(status === 503 ? { "retry-after": String(RETRY_AFTER) } : {}) } });
 
 // A page that carries the live script was rendered with the request's nonce;
 // the policy names the same nonce, and no other script runs (src/live.ts).
@@ -417,6 +419,23 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
     }
   }
   throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
+}
+
+// One step of a request against Artifacts, retried with backoff when it
+// fails for a reason a retry may cure (t349): a hundred claims at once each
+// fork and mint, and Artifacts can refuse some of them for a moment. A
+// RuleError, or a failure `permanent` names, is thrown at once. A step that
+// still fails is logged with its code and message and answered as a 503,
+// which tells the caller to retry after RETRY_AFTER seconds.
+async function artifactsStep<T>(step: string, fn: () => Promise<T>, permanent: (err: unknown) => boolean = () => false): Promise<T> {
+  const settled = (err: unknown) => !!parseRuleError(err) || permanent(err);
+  try {
+    return await withRetry(fn, { permanent: settled, onRetry: (err, attempt) => console.warn(errorLine(`${step} (attempt ${attempt}, retrying)`, err)) });
+  } catch (err) {
+    if (settled(err)) throw err;
+    console.error(errorLine(step, err));
+    throw new RuleError("artifacts_unavailable", `Artifacts could not ${step} just now; nothing was given out, so try again`, 503);
+  }
 }
 
 // Whether the commit `from` holds `target` in its history. Artifacts lists
@@ -571,12 +590,18 @@ function parseReviewTier(value: unknown): string[] {
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
+// A transient failure is retried (artifactsStep). A token whose answer was
+// lost stays unrecorded and unreturned, so its plaintext reaches no one,
+// as a caller's own retry would leave it.
 async function mint(env: Env, repo: string, scope: "read" | "write", branch: string) {
-  using r = await env.ARTIFACTS.get(repo);
-  const info = await r.info();
-  const t = await r.createToken(scope, scope === "write" ? WRITE_TTL : READ_TTL);
-  return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
+  return artifactsStep(`make a ${scope} token for ${repo}`, async () => {
+    using r = await env.ARTIFACTS.get(repo);
+    const info = await r.info();
+    const t = await r.createToken(scope, scope === "write" ? WRITE_TTL : READ_TTL);
+    return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
+  }, (err) => NOT_FOUND.test(codeOf(err)));
 }
+const NOT_FOUND = /NOT_FOUND|not found/i;
 
 // The repository an item forks from and is measured against (docs/orchestrator.md,
 // section 5): a part's is its plan's fork, the integration branch, and any
@@ -1162,13 +1187,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       let fork = item.fork, moved = false;
       if (needsFork) {
         // Forks are named after the key, like the baseline, whatever the project is called now.
-        fork = repoName(ref.key, id);
+        const name = fork = repoName(ref.key, id);
         try {
           // A part forks from its plan's fork at its current head, not from the
           // baseline (docs/orchestrator.md, section 5).
-          using base = await env.ARTIFACTS.get(await baseRepo(env, L, item, p.repo));
-          await base.fork(fork, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
-          await L.setFork(id, fork, await headOf(env, fork), actor, !!c.token);
+          const from = await baseRepo(env, L, item, p.repo);
+          // A fork already there under the item's name is one an earlier
+          // attempt made, in this call or in a claim that failed after it
+          // (t349): no fork is recorded for the item, so no token was ever
+          // made for it, and it is taken as this claim's fork.
+          await artifactsStep(`fork ${from} as ${name}`, async () => {
+            using base = await env.ARTIFACTS.get(from);
+            await base.fork(name, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
+          }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+            if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+          });
+          const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
+          await L.setFork(id, name, head, actor, !!c.token);
         } catch (err) {
           await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
           throw err;
@@ -2503,7 +2538,14 @@ export default {
           ? json({ error: rule.code, detail: rule.detail }, rule.status)
           : html(renderError(rule.detail, back, who), rule.status);
       }
-      console.error(err);
+      // An Error logged as an object reaches Workers Logs as a stack with no
+      // message, so the line names the request, the code and the message.
+      console.error(errorLine(`${req.method} ${pathname}`, err));
+      // A Durable Object reset or overloaded says a retry may cure it.
+      if (retryableByRuntime(err)) {
+        const detail = "Atelier was briefly unable to reach its records; try again";
+        return url.pathname.startsWith("/api/") ? json({ error: "unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
+      }
       return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", back, who),500);
     }
   },
