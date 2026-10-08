@@ -422,6 +422,14 @@ export class Ledger extends DurableObject<Env> {
     // Set on a gate's request asked of a tier model of another family than
     // every contributor, whose review serves as the tier review too.
     if (!requestColumns.includes("topTier")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN topTier INTEGER`);
+    // Set on a request withdrawn because the item's head moved past it
+    // (withdrawStaleRequests); reaskReview carries such a request to the new
+    // head, so a review asked for is never stranded on an old one (t300).
+    if (!requestColumns.includes("moved")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN moved INTEGER`);
+    // Set on a request reaskReview made by carrying a moved one to the new
+    // head, not one the owner or a plan asked for; requestReview lets the
+    // owner name another reviewer in its place while it is unclaimed.
+    if (!requestColumns.includes("carried")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN carried INTEGER`);
     this.backfillReviewProvenance();
     // A deploy can change the tick's logic, and a plan waiting on nothing
     // the new logic would read sits idle until something else changes; the
@@ -1231,6 +1239,9 @@ export class Ledger extends DurableObject<Env> {
     // A check whose whole log is kept in R2 (t284) names it by reference in the event.
     this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
+    // Passing checks at a head the item moved to may be what the gate waited
+    // on to need its review again: a request the move withdrew is carried.
+    this.reaskReview(e.itemId, new Date().toISOString());
     this.afterPlanChange(e.itemId);
   }
 
@@ -1323,6 +1334,9 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
     this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
+    // A request the head's move withdrew is carried to this head, where the
+    // gate still needs it reviewed (reaskReview).
+    this.reaskReview(id, at);
     this.notify(id, origin);
     this.afterPlanChange(id);
     return this.item(id);
@@ -2843,8 +2857,11 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Binds an open review request to one reviewer, atomically, as the claim
-  // route binds an item. Refused for a stale head, a reviewer that wrote the
-  // item, or a runner or actor the dispatch did not ask for. Returns what the
+  // route binds an item. A request at a head the item has left is closed
+  // first and carried to the current head where the gate needs it (t300), so
+  // the claim binds the current head's or is refused once, never in a loop.
+  // Refused for a reviewer that wrote the item, or a runner or actor the
+  // dispatch did not ask for. Returns what the
   // review job needs to build the brief and clone the part.
   //
   // A refusal also runs the plan's tick: a review the claiming agent cannot
@@ -2875,6 +2892,13 @@ export class Ledger extends DurableObject<Env> {
 
   private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
     const item = this.item(itemId);
+    // A request at a head the item has left is closed before anything else,
+    // whoever claims, and carried to the current head where the gate needs
+    // it, so a stale request is never offered again and the claim below
+    // binds the current head's. Requests made before t300 could be left
+    // open at an old head; this closes them on the first claim.
+    const closed = item.head ? this.withdrawStaleRequests(itemId, item.head, new Date().toISOString()) : [];
+    if (item.head) this.reaskReview(itemId, new Date().toISOString());
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (contributorsOf(item).some((c) => sameActor(c, actor))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
     // The gate's request and a tier request may both be open: the one asked
@@ -2886,6 +2910,9 @@ export class Ledger extends DurableObject<Env> {
       return (!d.agent || d.agent === h) && (!d.model || d.model === m);
     };
     const row = rows.find(askedOf) ?? rows[0];
+    if (!row && closed.length) {
+      throw new RuleError("stale_head", `the review request for ${closed.map((h) => h.slice(0, 8)).join(", ")} was closed: ${itemId} is at ${item.head!.slice(0, 8)}, and no review of that head is asked yet`, 409);
+    }
     if (!row) throw new RuleError("no_review", `${itemId} has no open review request`, 404);
     const tier = row.tier === 1;
     const head = row.head as string;
@@ -2975,6 +3002,20 @@ export class Ledger extends DurableObject<Env> {
     }
     const policy = this.project().policy;
     const at = new Date().toISOString();
+    // A request carried to this head when the head moved (reaskReview) asks
+    // the reviewer of the earlier request. While no runner has claimed it,
+    // the owner naming another reviewer replaces it rather than being told a
+    // review is already requested: the owner did not ask for that one here.
+    if (reviewer !== null && item.head) {
+      const carried = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL AND carried = 1`, id, item.head).toArray();
+      for (const r of carried) {
+        const d = JSON.parse(r.dispatch as string) as Dispatch;
+        const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+        if (asked && sameActor(asked, reviewer)) continue;
+        this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
+      }
+    }
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -3081,6 +3122,69 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
       this.log(itemId, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null, reason, tier: true }, at);
     }
+  }
+
+  // Closes every live review request, the gate's and the tier's, open or
+  // claimed, at a head other than `head`, the item's head now: a review of a
+  // head the item has left can never be counted (addReview refuses it as
+  // stale), and a request left open for it is offered to runners whose claim
+  // can only fail. Each is withdrawn and marked moved, so reaskReview carries
+  // it to the new head once the gate needs that head reviewed. t282's
+  // request for 92b71b65 stayed open after its landing pushed 6ac333e8, and
+  // every runner that took it failed on the stale head and let it go again.
+  private withdrawStaleRequests(itemId: string, head: string, at: string): string[] {
+    const stale = this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND head != ?`, itemId, head).toArray();
+    for (const r of stale) {
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      this.sql.exec(`UPDATE review_requests SET state = 'withdrawn', moved = 1 WHERE id = ?`, r.id);
+      this.log(itemId, ORCHESTRATOR, "review.withdrawn", {
+        head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null,
+        reason: `the head moved to ${head.slice(0, 8)}`, ...(r.tier === 1 ? { tier: true } : {}),
+      }, at);
+    }
+    return [...new Set(stale.map((r) => r.head as string))];
+  }
+
+  // Carries a review request withdrawn because the head moved to the item's
+  // head now, for an item outside a plan, once the gate needs that head
+  // reviewed: the same reviewer, so a reviewer the owner named (atelier land
+  // --reviewer) stays named, with the same `wanted`, and the tier's request
+  // beside it as askTierReview asks one. A plan's part is left to its tick,
+  // which asks the routed reviewer. Nothing is asked while the need is not
+  // there yet (checks pending at the new head, say); submit, each piece of
+  // evidence and a review claim ask again. Nothing is carried when the
+  // newest gate request is not one the head moved past, so it is carried
+  // once per move, or when its reviewer may no longer review: a contributor
+  // never, and for a review the gate must count (not `wanted`), only a model
+  // of another family than every contributor.
+  private reaskReview(itemId: string, at: string): void {
+    const item = this.item(itemId);
+    if (item.kind === "part" || item.state !== "submitted" || !item.head) return;
+    const last = this.sql.exec(`SELECT head, dispatch, state, wanted, moved FROM review_requests WHERE item = ? AND tier IS NULL ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
+    if (!last || last.state !== "withdrawn" || last.moved !== 1 || last.head === item.head) return;
+    const d = JSON.parse(last.dispatch as string) as Dispatch;
+    if (!d.agent || !d.model) return;
+    const reviewer = `${d.agent}/${d.model}`;
+    const wanted = last.wanted === 1;
+    const contributors = contributorsOf(item);
+    if (contributors.some((c) => sameActor(c, reviewer))) return;
+    if (!wanted && independenceRefusal(reviewer, contributors)) return;
+    const policy = this.project().policy;
+    const need = reviewNeeded({
+      item, part: false, policy,
+      evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
+      requests: this.reviewRequests(itemId), verdicts: this.findingVerdicts(itemId), wanted, now: new Date(at), owner: this.owner,
+    });
+    if (!need.needed) return;
+    const dispatch = { ...makeDispatch({ to: "home", agent: d.agent, model: d.model }, ORCHESTRATOR, at), job: "review" as const };
+    const topTier = this.gateIsTier(item, need, reviewer);
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried) VALUES (?, ?, ?, ?, 'open', ?, ?, 1)`,
+      itemId, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null);
+    this.log(itemId, ORCHESTRATOR, "review.requested", {
+      head: need.head, reviewer, round: need.round, via: "head-moved", from: last.head as string,
+      ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
+    }, at);
+    this.askTierReview(item, need, reviewer, ORCHESTRATOR, at);
   }
 
   // A reviewer whose harness wrote no valid verdict lets the request go, so
@@ -3504,7 +3608,13 @@ export class Ledger extends DurableObject<Env> {
     if (owning && !("runner" in fields)) fields = { ...fields, runner: null };
     const keys = Object.keys(fields);
     const set = [...keys.map((k) => `${k} = ?`), ...(owning ? ["claim_gen = claim_gen + 1"] : [])].join(", ");
+    // Every change of an item's head is written here (a push, a push seen on
+    // the fork, a landing's merge of main pushed, a fork made or moved), so
+    // the review requests at the head it leaves are closed here, once, for
+    // every path (t300).
+    const from = "head" in fields ? (this.sql.exec(`SELECT head FROM items WHERE id = ?`, id).toArray()[0]?.head as string | null | undefined) ?? null : null;
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), at, id);
+    if ("head" in fields && fields.head && fields.head !== from) this.withdrawStaleRequests(id, fields.head, at);
   }
 
   private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
