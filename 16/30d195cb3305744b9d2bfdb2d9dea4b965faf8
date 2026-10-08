@@ -1,0 +1,36 @@
+atelier atelier/t289 "t252 changed what a runner config's jobs list means (now exact), so a config written before it with jobs: ["plan"] silently stopped taking builds and merge-main jobs: on 2026-10-07 both build runners claimed nothing for about an hour while seven dispatches waited. At start, the runner says which jobs it offers, and warns when a config lists jobs without build; atelier status names a dispatch that only runners lacking its job could take"
+accepted head e5420bde1574d1a9c2f6c80547accdc31ab71a31
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T05:32:48.898Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T05:32:51.475Z
+REVIEW approve by antigravity/gemini-3.1-pro at e5420bde1574d1a9c2f6c80547accdc31ab71a31, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T22:20:27.846Z pavi item.created
+2026-10-07T23:23:13.788Z pavi item.dispatched
+2026-10-07T23:23:28.462Z pavi item.undispatched
+2026-10-07T23:23:39.742Z pavi item.dispatched
+2026-10-08T00:39:02.785Z opencode/glm-5.3 item.claimed
+2026-10-08T00:39:18.506Z opencode/glm-5.3 fork.created
+2026-10-08T00:51:19.744Z opencode/glm-5.3 push.observed
+2026-10-08T01:11:34.091Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:11:39.635Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:54:00.897Z opencode/glm-5.3 push.observed
+2026-10-08T01:57:03.663Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:57:07.153Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:57:08.045Z opencode/glm-5.3 item.submitted
+2026-10-08T02:55:40.769Z pavi land.lease
+2026-10-08T02:55:52.884Z pavi land.merge
+2026-10-08T05:30:11.762Z pavi land.lease
+2026-10-08T05:30:14.858Z pavi land.merge
+2026-10-08T05:30:22.670Z pavi land.regenerate
+2026-10-08T05:30:26.407Z opencode/glm-5.3 push.observed
+2026-10-08T05:30:26.509Z pavi land.push
+2026-10-08T05:32:49.410Z opencode/glm-5.3 evidence.observed
+2026-10-08T05:32:51.668Z opencode/glm-5.3 evidence.observed
+2026-10-08T05:32:52.047Z pavi land.check
+2026-10-08T05:32:52.384Z opencode/glm-5.3 item.submitted
+2026-10-08T05:32:52.562Z pavi land.submit
+2026-10-08T05:32:52.668Z pavi review.requested
+2026-10-08T05:32:53.268Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T05:36:32.499Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T05:36:34.545Z pavi land.review
+2026-10-08T05:36:35.136Z pavi item.accepted
+2026-10-08T05:36:35.237Z pavi land.accept
