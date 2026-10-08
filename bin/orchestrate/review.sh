@@ -58,7 +58,10 @@ HEAD
   echo "## The diff against the fork point"; echo
   echo '````diff'; git diff "$base" HEAD; echo '````'
 } > "$out.prompt.md"
-( cd "$clone/repo" && agy -p "$(cat "$out.prompt.md")" --model "$model" --dangerously-skip-permissions --sandbox --output-format json --print-timeout 2400s > "$out.json" 2>"$out.err" ) || true
+# The prompt goes to agy on standard input, as cli/agy-review.mjs gives it:
+# a command-line argument is capped by the operating system near 1 MB, and a
+# large diff passes that cap.
+( cd "$clone/repo" && agy --model "$model" --dangerously-skip-permissions --sandbox --output-format json --print-timeout 2400s < "$out.prompt.md" > "$out.json" 2>"$out.err" ) || true
 python3 - "$out.json" "$out.md" <<'PY'
 import json, sys
 try:
