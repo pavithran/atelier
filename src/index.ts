@@ -1221,7 +1221,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
           await L.setFork(id, name, head, actor, !!c.token);
         } catch (err) {
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          // A give-up that fails is logged, and the claim's own failure is
+          // answered: the claimer still holds an item with no fork, which its
+          // retry forks (t349).
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
           throw err;
         }
       } else {
