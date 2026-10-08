@@ -88,7 +88,7 @@ const icon = (name: string) =>
 // lives inside a project's own area at /p/NAME. The pages about the owner's
 // own setup sit under the account menu, out of the work navigation.
 const NAV: [string, string, string][] = [
-  ["Home", "/", "projects"],
+  ["Home", "/home", "projects"],
   ["Decisions", "/decisions", "decisions"],
   ["Studio", "/studio", "studio"],
 ];
@@ -128,7 +128,7 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 <title>${e(title)} · Atelier</title><style>${theme}\n${layout}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <aside class="rail">
-  <a class="brand" href="/">Atelier</a>
+  <a class="brand" href="/home">Atelier</a>
   <nav aria-label="Main navigation">${nav}</nav>
   ${account}
   <div class="rail-foot"><span class="avatar">${e((ownerName || "P").slice(0, 1))}</span><strong>${e(ownerName || "Project owner")}</strong>
@@ -238,7 +238,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     <p class="meta">Use the token stored in your Keychain as <code>atelier.API_TOKEN</code>.</p>
     <button class="primary">Sign in</button>
   </form>
-  <p class="meta">${showcase ? 'Not the owner? <a href="/showcase">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
+  <p class="meta">${showcase ? 'Not the owner? <a href="/">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
 </section>`,
   });
 }
@@ -662,7 +662,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   return publicPage({
     title: "Atelier · public showcase",
     description: "Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.",
-    brand: "/showcase",
+    brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
     mainClass: "page-width flow",
     main: `
@@ -1559,7 +1559,7 @@ function eventTable(events: LedgerEvent[], withItem = false): string {
 // the review sheet, the area reached from Home.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
+  <nav class="breadcrumbs"><a href="/home">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   ${projectTabs(p, "Tasks")}
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true })}</article>
 </div>`, "Home", ownerName, 0, true, live);
@@ -1818,7 +1818,7 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 // returns to; an empty `back` leaves the advice and the button out, for a
 // refusal that has no page to go back to (the Access 401). The public error
 // paths pass no ownerName, so the name never reaches a page anyone can read.
-export function renderError(message: string, back = "/", ownerName: string | null = null, active = ""): string {
+export function renderError(message: string, back = "/home", ownerName: string | null = null, active = ""): string {
   return page("Action needs attention", `<section class="page-width error-page">
   <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
   ${back ? `<p>Go back, refresh the evidence, and try the available action again.</p>
