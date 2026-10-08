@@ -35,6 +35,7 @@ import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { provenanceNote } from "./provenance.mjs";
@@ -237,6 +238,7 @@ export const FLAGS = {
   unblock: {},
   ls: { all: true, json: true },
   show: { reviews: true, json: true },
+  receipt: { json: true },
   start: { runner: false },
   claim: { runner: false },
   push: { force: true, rollback: true },
@@ -2095,6 +2097,16 @@ const commands = {
     if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
     const text = formatBrief(name, id, brief, server());
     console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
+  },
+
+  // The task's whole story from the ledger, in order (cli/receipt.mjs): one
+  // line per event that says what became of it, the same detail route `show
+  // --reviews` reads, printed from created to merged or abandoned.
+  async receipt() {
+    const name = project(), id = itemArg(), as = await actor(OWNER);
+    const d = await call("GET", I(name, id), undefined, as);
+    if (args.json) return console.log(JSON.stringify(receiptJson(name, id, d), null, 2));
+    console.log(receiptText(name, id, d, server()));
   },
 
   async start() {
