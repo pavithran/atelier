@@ -13,6 +13,21 @@ it('review puts revision-bound actions before the diff and escapes untrusted tas
  expect(html.indexOf('Approve revision')).toBeLessThan(html.indexOf('id="changes"'));
  expect(html).toContain('name="note" required');
 });
+it('a check Atelier ran reads as a runner in a clean clone or a Cloudflare container, never as the agent\'s machine',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();
+ // The decision brief's wording comes from src/brief.ts, not the page's own check rows.
+ const outsideBrief=(h:string)=>h.slice(0,h.indexOf('id="brief"'))+h.slice(h.indexOf('id="changes"'));
+ const local=renderItem(project,d,'PAVI',diff);
+ expect(local).toContain('Runner, clean clone');
+ expect(local).toContain('on a runner, in a clean clone');
+ expect(outsideBrief(local)).not.toMatch(/agent(&#39;|')s machine/i);
+ d.evidence[0].where='sandbox';
+ const cloud=renderItem(project,d,'PAVI',diff);
+ expect(cloud).toContain('Cloudflare container');
+ expect(cloud).not.toContain('Runner, clean clone');
+ expect(outsideBrief(cloud)).not.toMatch(/agent(&#39;|')s machine/i);
+});
 it('merged tasks show completion without actionable approval or a misleading closed gate',()=>{
  const d=detail();d.item.state='merged';d.item.acceptedHead=head;
  const html=renderItem(project,d,'PAVI',null);

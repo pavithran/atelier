@@ -53,7 +53,7 @@ export function submission(events: LedgerEvent[], itemId: string, head: string |
   return last && summary ? { summary, by: last.actor } : null;
 }
 
-const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on the agent's machine" } as const;
+const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 // The project owner is not a model; the gate keeps them apart, and so do these lines.
 const reviewer = (d: Detail, by: string) => (by === (d.ownerActor ?? DEFAULT_OWNER) ? "the project owner" : modelOf(by));

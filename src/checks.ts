@@ -1,7 +1,7 @@
 import { matchesFolded, RuleError, type CheckPaths, type ProjectPolicy } from "./rules.ts";
 
 // What a registered check may do. Atelier runs a check in a clean clone of an
-// item's head, on an agent's machine or in a Cloudflare container, whenever
+// item's head, on a runner or in a Cloudflare container, whenever
 // anyone asks, so a check must be read-only: it reads the project and writes
 // only in its clone, the caller's caches and temporary files. It builds,
 // tests and inspects, and changes nothing anyone else sees. A command that
