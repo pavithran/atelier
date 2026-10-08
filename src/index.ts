@@ -531,11 +531,15 @@ async function pushedAuthors(env: Env, fork: string, observed: string, item: { h
 // fork's own repository info is never asked: Artifacts can report a branch
 // there that HEAD does not name, and a fork of a master baseline reports
 // main. A record without a branch falls back to the baseline's info, which
-// init set when it created the baseline.
+// init set when it created the baseline. Reading it is a step against
+// Artifacts like any other on a claim (artifactsStep, t349): a transient
+// failure is retried, then answered as a 503.
 async function projectBranch(env: Env, p: ProjectRecord): Promise<string> {
   if (p.branch) return p.branch;
-  using base = await env.ARTIFACTS.get(p.repo);
-  return (await base.info()).defaultBranch;
+  return artifactsStep(`read the branch of ${p.repo}`, async () => {
+    using base = await env.ARTIFACTS.get(p.repo);
+    return (await base.info()).defaultBranch;
+  }, (err) => NOT_FOUND.test(codeOf(err)));
 }
 
 // A branch name as init sends it: one Git would accept for a branch (the
@@ -636,31 +640,39 @@ async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, 
   if (item.head && item.head !== item.base) return false;
   const planFork = (await L.item(item.plan)).fork;
   if (!planFork) return false;
-  const planHead = await headOf(env, planFork);
+  const fork = item.fork;
+  // Every read and change against Artifacts here is a step a transient
+  // failure retries, then answers as a 503 (artifactsStep, t349).
+  const planHead = await artifactsStep(`read the head of ${planFork}`, () => headOf(env, planFork), (err) => NOT_FOUND.test(codeOf(err)));
   if (!planHead || planHead === item.base) return false;
-  const forkHead = async () => {
-    try {
-      return await headOf(env, item.fork!);
-    } catch (err) {
-      if (!/NOT_FOUND|not found/i.test(codeOf(err))) throw err;
-      return null;
-    }
-  };
+  const forkHead = () => artifactsStep(`read the head of ${fork}`, () => headOf(env, fork), (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+    if (!NOT_FOUND.test(codeOf(err))) throw err;
+    return null;
+  });
+  const holds = (from: string, target: string) => artifactsStep(`read the history of ${planFork}`, () => holdsCommit(env, planFork, from, target, MOVE_BUDGET));
   const observed = await forkHead();
   if (observed && observed !== item.base) {
-    const onBranch = (await holdsCommit(env, planFork, planHead, observed, MOVE_BUDGET)).holds === true
-      && (!item.base || (await holdsCommit(env, planFork, observed, item.base, MOVE_BUDGET)).holds === true);
+    const onBranch = (await holds(planHead, observed)).holds === true
+      && (!item.base || (await holds(observed, item.base)).holds === true);
     if (!onBranch) return false;
     if (observed === planHead) {
-      await L.moveFork(item.id, actor, item.fork, item.base, observed, proved);
+      await L.moveFork(item.id, actor, fork, item.base, observed, proved);
       return false;
     }
   }
   if ((await forkHead()) !== observed) return false;
-  await env.ARTIFACTS.delete(item.fork);
-  using plan = await env.ARTIFACTS.get(planFork);
-  await plan.fork(item.fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
-  const base = await headOf(env, item.fork);
+  // A delete or a fork whose answer was lost is found done by its retry:
+  // the fork already gone, or already made again under its name.
+  await artifactsStep(`delete ${fork}`, () => env.ARTIFACTS.delete(fork), (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+    if (!NOT_FOUND.test(codeOf(err))) throw err;
+  });
+  await artifactsStep(`fork ${planFork} as ${fork}`, async () => {
+    using plan = await env.ARTIFACTS.get(planFork);
+    await plan.fork(fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
+  }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+    if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+  });
+  const base = await artifactsStep(`read the head of ${fork}`, () => headOf(env, fork));
   if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
   await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
   return true;
@@ -720,12 +732,16 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
   if (!repo || !tokenId) return;
+  const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
-    using r = await env.ARTIFACTS.get(repo);
-    await r.revokeToken(tokenId);
+    // A transient failure is retried first (t349); revoking twice is harmless.
+    await withRetry(async () => {
+      using r = await env.ARTIFACTS.get(repo);
+      await r.revokeToken(tokenId);
+    }, { permanent: gone, onRetry: (err, attempt) => console.warn(errorLine(`revoke a write token for ${repo} (attempt ${attempt}, retrying)`, err)) });
   } catch (err) {
-    if (TOKEN_GONE.test(codeOf(err))) return;
-    console.error("Artifacts could not revoke a write token", codeOf(err).trim());
+    if (gone(err)) return;
+    console.error(errorLine(`revoke a write token for ${repo}`, err));
     throw new RuleError("revoke_failed", "the workspace's write token could not be revoked, so nothing was changed; try again", 503);
   }
 }

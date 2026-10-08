@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -228,6 +228,59 @@ it("a move that forked again but failed to record the new base is finished by th
   expect(art.calls).toEqual({ forks: [], deletes: [] });
   expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: next, state: "claimed" });
   expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: H0, base: MA }]);
+});
+
+// The stand-in Artifacts with the first call of each of `ops` failing as a
+// busy Artifacts may (t349); a delete or fork may fail after it is done,
+// its answer lost.
+function flaky(inner: Artifacts, ops: string[], after = false) {
+  const failed = new Set<string>();
+  const unavailable = () => Object.assign(new Error("service unavailable"), { code: "UNAVAILABLE" });
+  const once = async <T>(op: string, run: () => Promise<T>) => {
+    if (!ops.includes(op) || failed.has(op)) return run();
+    failed.add(op);
+    if (after) await run();
+    throw unavailable();
+  };
+  return {
+    get: async (name: string) => {
+      const r = await inner.get(name);
+      return new Proxy(r, {
+        get(target, key) {
+          const v = Reflect.get(target, key);
+          return typeof key === "string" && ops.includes(key) ? (...args: unknown[]) => once(key, () => v.apply(target, args)) : v;
+        },
+      });
+    },
+    delete: (name: string) => once("delete", () => inner.delete(name)),
+  } as unknown as Artifacts;
+}
+
+it("a part's move through transient Artifacts failures, each failing once, still starts from the branch's head", async () => {
+  const name = "pf-flaky";
+  const { L, b, bFork, heads, art, builder } = await setup(name, false);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect((await claim(name, b, builder, flaky(art.ARTIFACTS, ["log", "delete", "fork", "info"]))).status).toBe(200);
+  } finally {
+    warn.mockRestore();
+  }
+  expect(heads.get(bFork)).toBe(MA);
+  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: builder, state: "claimed" });
+});
+
+it("a part's move whose delete and fork answers were lost finds them done on retry", async () => {
+  const name = "pf-flaky-lost";
+  const { L, b, bFork, heads, art, builder } = await setup(name, false);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect((await claim(name, b, builder, flaky(art.ARTIFACTS, ["delete", "fork"], true))).status).toBe(200);
+  } finally {
+    warn.mockRestore();
+  }
+  expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork, bFork] });
+  expect(heads.get(bFork)).toBe(MA);
+  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA });
 });
 
 it("a fork left at an earlier head of the plan's branch is forked again at its head", async () => {
