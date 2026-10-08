@@ -1,0 +1,31 @@
+atelier atelier/t320 "Video v6 (PAVI approved the plan, 2026-10-08)"
+accepted head 653643bfa10969d4c09f1a8bbc83cd07f6d984c6
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T18:12:07.303Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T18:12:11.371Z
+REVIEW approve by antigravity/gemini-3.1-pro at 653643bfa10969d4c09f1a8bbc83cd07f6d984c6, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T15:38:02.408Z pavi item.created
+2026-10-08T15:38:03.793Z claude-code/opus-5.5 item.claimed
+2026-10-08T15:38:22.902Z claude-code/opus-5.5 fork.created
+2026-10-08T16:33:05.698Z claude-code/opus-5.5 push.observed
+2026-10-08T16:37:42.357Z claude-code/opus-5.5 evidence.observed
+2026-10-08T16:37:46.218Z claude-code/opus-5.5 evidence.observed
+2026-10-08T16:37:47.092Z claude-code/opus-5.5 item.submitted
+2026-10-08T17:44:33.007Z claude-code/opus-5.5 push.observed
+2026-10-08T17:48:16.638Z claude-code/opus-5.5 evidence.observed
+2026-10-08T17:48:19.877Z claude-code/opus-5.5 evidence.observed
+2026-10-08T17:48:20.601Z claude-code/opus-5.5 item.submitted
+2026-10-08T18:08:39.111Z pavi land.lease
+2026-10-08T18:08:44.605Z pavi land.merge
+2026-10-08T18:08:53.339Z pavi land.regenerate
+2026-10-08T18:08:57.084Z claude-code/opus-5.5 push.observed
+2026-10-08T18:08:57.239Z pavi land.push
+2026-10-08T18:12:07.817Z claude-code/opus-5.5 evidence.observed
+2026-10-08T18:12:11.842Z claude-code/opus-5.5 evidence.observed
+2026-10-08T18:12:12.552Z pavi land.check
+2026-10-08T18:12:13.483Z pavi review.requested
+2026-10-08T18:12:14.578Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T18:12:18.278Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T18:16:33.638Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T18:16:46.205Z pavi land.review
+2026-10-08T18:16:47.067Z pavi item.accepted
+2026-10-08T18:16:47.109Z pavi land.accept
