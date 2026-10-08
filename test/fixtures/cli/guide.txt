@@ -4,7 +4,8 @@ Several agents may work on this project at once. Each piece of work is a
 task with exactly one owner. Never edit the project checkout directly.
 
 1. `atelier start ID --project NAME --as HARNESS/MODEL` claims the task
-   and prints its workspace, title, scope and note. Work only there.
+   and prints its workspace, title, brief, acceptance criteria, scope and
+   note. Work only there; a change that fails a criterion is rejected.
 2. Commit your changes, then run `atelier done "summary"` in that workspace.
    It pushes, runs required checks and submits only after they pass. Relay
    its final line to the owner. The project owner accepts and merges.
