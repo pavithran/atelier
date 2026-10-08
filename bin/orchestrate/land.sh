@@ -13,7 +13,9 @@
 # that did not give it. The review is recorded with the reviewer's own
 # summary as its note and NOTE goes on the acceptance; both name the head
 # that was reviewed, read before review.sh runs, so a later push is never
-# taken as reviewed.
+# taken as reviewed. The task's acceptance criteria are read then too, given
+# to the reviewer with the context, and the review names their binding, so a
+# change of the criteria while it runs has the verdict refused.
 # `atelier land` (task t187) does this inside Atelier; prefer it once the
 # server's version check allows (t190).
 set -u
@@ -41,7 +43,19 @@ head=$(git rev-parse HEAD) || exit 7
 # A previous run's answer must never stand in for this one.
 answer="$W/.scratch/review-$t.md"
 rm -f "$answer"
-"${0:A:h}/review.sh" "$W" "$W/.scratch/review-$t" "$ctx" "$model" || { echo "$t: the review did not run"; exit 7; }
+shown=$(atelier show "$t" --json) || { echo "$t: atelier show failed"; exit 7; }
+criteria=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).criteria ?? ""))' "$shown")
+[ -n "$criteria" ] || { echo "$t: the server gave no criteria binding; deploy route level 16 or newer"; exit 7; }
+mkdir -p "$W/.scratch"
+reviewctx="$W/.scratch/review-$t.context"
+{ cat "$ctx"; echo; node -e '
+const b = JSON.parse(process.argv[1]), t = process.argv[2];
+const list = (xs) => xs.map((c, i) => `${i + 1}. ${c}`).join("\n");
+const out = [];
+out.push(b.accept?.length ? `Acceptance criteria of ${t}. A change that fails one has a correctness fault, which blocks:\n${list(b.accept)}` : `${t} has no acceptance criteria of its own.`);
+if (b.partAccept?.length) out.push(`The approved plan'"'"'s acceptance criteria for this part, which bind the same way:\n${list(b.partAccept)}`);
+process.stdout.write(out.join("\n\n") + "\n");' "$shown" "$t"; } > "$reviewctx"
+"${0:A:h}/review.sh" "$W" "$W/.scratch/review-$t" "$reviewctx" "$model" || { echo "$t: the review did not run"; exit 7; }
 # The answer is read with Atelier's parser, and the verdict is recorded with
 # its findings whichever way it goes, so a rejection reaches the reliability
 # record and atelier finding can judge each finding later.
@@ -50,10 +64,10 @@ field() { node -e 'const p = JSON.parse(process.argv[1]); const v = p[process.ar
 if [ "$(field ok)" != "true" ]; then echo "$t: $reviewer's answer could not be read: $(field error)"; grep -v '^$' "$answer" | head -14; exit 3; fi
 cd "$M"
 if [ "$(field verdict)" != "approve" ]; then
-  step atelier review "$t" --as "$reviewer" --head "$head" --reject --note "$(field summary)" --findings "$(field findings)"
+  step atelier review "$t" --as "$reviewer" --head "$head" --criteria "$criteria" --reject --note "$(field summary)" --findings "$(field findings)"
   echo "$t: $reviewer DID NOT APPROVE"; grep -v '^$' "$answer" | head -14; exit 3
 fi
-step atelier review "$t" --as "$reviewer" --head "$head" --approve --note "$(field summary)" --findings "$(field findings)"
+step atelier review "$t" --as "$reviewer" --head "$head" --criteria "$criteria" --approve --note "$(field summary)" --findings "$(field findings)"
 step atelier accept "$t" --head "$head" --note "$note"
 step atelier merge "$t"
 git log --oneline -1 | cut -c1-70
