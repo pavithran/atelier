@@ -160,6 +160,31 @@ export function splitLines(text: string): string[] {
   return lines;
 }
 
+// An item's diff as text, in git's shape so a reader greps it as any diff: a
+// file header, the status git would note, then the hunks with their @@ lines.
+// Files Artifacts could not diff (binary, too large, a submodule) keep their
+// place as notes, so the text still lists every changed file. This is what a
+// review too large for its brief leaves in R2 by reference (t284): the ledger
+// names the key and anything may read the whole diff back as text.
+export function renderDiffText(item: string, diff: ItemDiff): string {
+  const out: string[] = [`# diff of ${item} from ${diff.base} (base) to ${diff.head} (head), as Atelier read it from Artifacts`];
+  for (const f of diff.files) {
+    out.push(`diff --git a/${f.path} b/${f.path}`);
+    if (f.status === "added") out.push("new file");
+    if (f.status === "deleted") out.push("deleted file");
+    if (f.status === "mode") out.push("mode changed");
+    if (f.status === "binary") out.push("Binary files differ");
+    if (f.status === "too-large") out.push(`File too large to diff here (over ${LIMITS.diffLines} lines or ${LIMITS.blobBytes} bytes)`);
+    if (f.status === "submodule") out.push("Submodule");
+    for (const h of f.hunks) {
+      out.push(`@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`);
+      for (const line of h.lines) out.push(`${line.op}${line.text}`);
+    }
+  }
+  if (diff.truncated) out.push(`# only the first ${LIMITS.files} changed files are listed; more are not`);
+  return out.join("\n");
+}
+
 function isBinary(bytes: Uint8Array): boolean {
   const n = Math.min(bytes.length, 8000);
   for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
