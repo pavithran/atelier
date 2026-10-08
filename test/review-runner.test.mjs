@@ -38,9 +38,14 @@ const DIFF = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n+export 
 
 function fixture(options = {}) {
   const calls = [], logs = [];
-  // The claim's part carries one acceptance criterion, so an approving verdict
-  // proves it with a CRITERION line or is refused.
-  const verdict = options.verdict ?? "VERDICT: APPROVE\nSUMMARY: Checked the diff.\nCRITERION 1: met — Ran the part's tests in the clone; they pass.";
+  // The stand-in harness answers the brief it was given: the claim's task or
+  // part carries acceptance criteria — one by default, more when the claim
+  // adds the task's own — so an approving verdict proves each with a
+  // CRITERION line or is refused.
+  const claim = options.claim ?? claimed;
+  const criteria = (claim.item.accept?.length ?? 0) + (claim.plan?.part?.acceptance?.length ?? 0);
+  const proofs = Array.from({ length: criteria }, (_, i) => `CRITERION ${i + 1}: met — Ran the clone's tests; test ${i + 1} fails without the change.`);
+  const verdict = options.verdict ?? ["VERDICT: APPROVE", "SUMMARY: Checked the diff.", ...proofs].join("\n");
   const io = {
     log: (s) => logs.push(s), stopped: () => false,
     env: {}, ownerTokens: () => [],
