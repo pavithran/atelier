@@ -16,6 +16,7 @@ import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type 
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
+import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -1694,7 +1695,9 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway), error ? 400 : 200);
+  // Review precision over the last PRECISION_WINDOW_DAYS, from the same events.
+  const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision), error ? 400 : 200);
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
