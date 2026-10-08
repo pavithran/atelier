@@ -39,6 +39,7 @@ import { pickReviewer } from "./review/reviewer.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
+import type { LargeRef } from "./large.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -69,6 +70,12 @@ export interface ReviewClaim {
   owner: string;
   reviewBar: string | null;
   tier: boolean;          // the claimed request is a tier review (src/review/tier.ts)
+  // The review's diff, kept in R2 by reference when the change is too large
+  // for a brief to carry (t284): the claim route stores it and names it here,
+  // and the brief says where the whole diff is instead of holding it. Null
+  // when nothing was stored — the diff was small, or Artifacts could not be
+  // read, or the bucket behind the LARGE binding does not exist yet.
+  diffRef?: LargeRef | null;
 }
 
 export interface ProjectRecord {
@@ -1222,7 +1229,8 @@ export class Ledger extends DurableObject<Env> {
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
+    // A check whose whole log is kept in R2 (t284) names it by reference in the event.
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     this.afterPlanChange(e.itemId);
   }
@@ -2068,7 +2076,7 @@ export class Ledger extends DurableObject<Env> {
         attempt: attempts.length + 1,
         reason,
         findings: rejection ? reviewFindings(rejection) : null,
-        failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "" } : null,
+        failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "", log: failed.log ?? null } : null,
         mergeMain: added ? { head: added.mainHead } : null,
         mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
       }),
@@ -2854,6 +2862,17 @@ export class Ledger extends DurableObject<Env> {
       if (err instanceof RuleError) this.afterPlanChange(itemId);
       throw err;
     }
+  }
+
+  // The diff a claimed review is of, kept in R2 by reference (t284): the
+  // claim route computes the change from Artifacts and stores it when it is
+  // too large for a brief, and this records the reference in the event log,
+  // beside the claim it answers, so the ledger names what the reviewer was
+  // given without carrying it.
+  reviewDiffStored(itemId: string, actor: string, head: string, ref: LargeRef, proved = false): void {
+    const item = this.item(itemId);
+    if (head !== item.head) throw new RuleError("stale_head", `the stored diff is for ${head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}`);
+    this.log(itemId, actor, "review.diff", { head, ...ref }, new Date().toISOString(), proved);
   }
 
   private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {

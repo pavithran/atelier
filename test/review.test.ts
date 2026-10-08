@@ -6,6 +6,7 @@ import { routeParts } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import { pushActors, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
 import { BRIEF_LIMITS, reviewBrief, type BriefInput } from "../src/review/brief.ts";
+import { largeKey } from "../src/large.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
 import { DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
@@ -660,6 +661,23 @@ test("reviewBrief: quoted text cannot close its block, hidden characters are sho
   assert.ok(text.includes(`+const ok = "<U+202E>";`));
   assert.ok(text.includes(`The diff is cut: these are its first 5 of 21 lines (40 of 137 characters). Read the rest in your clone with git diff ${H0} ${H2}.`));
   assert.equal(BRIEF_LIMITS.diff, 40_000);
+});
+
+test("reviewBrief: a diff too large to carry is named by its R2 reference, never quoted (t284)", () => {
+  const sha = "a".repeat(64);
+  const text = brief({ diff: null, diffRef: { key: largeKey("diffs", "atelier", "t21", sha), bytes: 944_332, sha256: sha }, diffFile: ".scratch/atelier-review.diff" });
+  assert.ok(text.includes(
+    `The diff is too large for this brief — 944332 bytes, sha256 aaaaaaaaaaaa — so it is carried by reference: Atelier keeps the whole diff in R2, key \`diffs/atelier/t21/${sha}\`, and the ledger names it by that key.`,
+  ), text);
+  assert.ok(text.includes(`Read the change in your clone: git diff ${H0} ${H2}.`), text);
+  assert.ok(text.includes("The whole diff is also in the file `.scratch/atelier-review.diff` in your clone."), text);
+  // The change is the change from the base to the head, as ever.
+  assert.ok(text.includes(`This is the change from the base to the head, the output of git diff ${H0} ${H2}.`), text);
+  // Nothing of the diff itself is carried inline, not even a cut.
+  assert.ok(!text.includes("```diff"), text);
+  // A brief without the reference keeps the cut it always carried.
+  const without = brief({ diff: "+one line\n", diffLimit: 40 });
+  assert.ok(without.includes("```diff\n+one line\n```"), without);
 });
 
 test("reviewBrief: an item outside a plan, with no diff and no summary", () => {
