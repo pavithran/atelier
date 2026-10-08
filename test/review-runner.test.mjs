@@ -38,7 +38,14 @@ const DIFF = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n+export 
 
 function fixture(options = {}) {
   const calls = [], logs = [];
-  const verdict = options.verdict ?? "VERDICT: APPROVE\nSUMMARY: Checked the diff.";
+  // The stand-in harness answers the brief it was given: the claim's task or
+  // part carries acceptance criteria — one by default, more when the claim
+  // adds the task's own — so an approving verdict proves each with a
+  // CRITERION line or is refused.
+  const claim = options.claim ?? claimed;
+  const criteria = (claim.item.accept?.length ?? 0) + (claim.plan?.part?.acceptance?.length ?? 0);
+  const proofs = Array.from({ length: criteria }, (_, i) => `CRITERION ${i + 1}: met — Ran the clone's tests; test ${i + 1} fails without the change.`);
+  const verdict = options.verdict ?? ["VERDICT: APPROVE", "SUMMARY: Checked the diff.", ...proofs].join("\n");
   const io = {
     log: (s) => logs.push(s), stopped: () => false,
     env: {}, ownerTokens: () => [],
@@ -112,6 +119,25 @@ test("runReview posts a rejection with its findings, and releases the request wh
   const blankState = await runReview(assignment, config, "home:studio", blank.io);
   assert.equal(blankState.phase, "failed");
   assert.ok(blank.calls.some((c) => c.argv && c.argv[0] === "review-release"));
+});
+
+// t325: the claim's part carries acceptance criteria, so the reply must prove
+// each with a CRITERION line; an approval without the proofs is not a verdict,
+// and the request is released with the reason for another reviewer to take.
+test("runReview releases the request when an approval proves no acceptance criterion, and posts one that does", async () => {
+  const bare = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Read the diff; it looks right." });
+  const state = await runReview(assignment, config, "home:studio", bare.io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /an approval needs a CRITERION line for each of the 1 acceptance criteria: criterion 1 has none/);
+  const release = bare.calls.find((c) => c.argv && c.argv[0] === "review-release").argv;
+  assert.ok(release.some((a) => a.includes("criterion 1 has none")), release.join(" "));
+  assert.ok(!bare.calls.some((c) => c.argv && c.argv[0] === "review"), "no review is posted");
+
+  // A task with no criteria and no plan is approved without CRITERION lines,
+  // and stray ones change nothing.
+  const plain = fixture({ claim: { ...claimed, plan: null } });
+  const plainState = await runReview(assignment, config, "home:studio", plain.io);
+  assert.equal(plainState.phase, "reviewed");
 });
 
 test("runReview releases the request when the harness fails or times out", async () => {
@@ -373,7 +399,7 @@ async function serveReview(t, dir, claim) {
         seen.diffPath = argv[2];
         seen.cwd = options.cwd;
         seen.status = execFileSync("git", ["status", "--porcelain", "--ignored=no"], { cwd: options.cwd, encoding: "utf8" });
-        writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.");
+        writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.\nCRITERION 1: met — Ran the tests in the clone; they pass.");
         return { code: 0 };
       }
       posted.push(argv[2]);
