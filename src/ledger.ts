@@ -36,6 +36,7 @@ import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRu
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
+import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
@@ -2113,7 +2114,7 @@ export class Ledger extends DurableObject<Env> {
     // which is undefined when no runner is live and routing then falls back
     // to the whole pool.
     const routing = offers !== null ? offers : await this.routingOffers();
-    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing });
+    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing, precision: this.reviewPrecision(new Date().toISOString()) });
     const unrouted = routes.filter((r) => r.unrouted !== null);
     if (unrouted.length) {
       const why = unrouted.map((r) => `part ${r.key} has no ${r.builder ? "reviewer" : "builder"}: ${r.unrouted}`).join("; ");
@@ -2356,7 +2357,7 @@ export class Ledger extends DurableObject<Env> {
       // the Worker read them, so the reviewers are judged against the review
       // job's offer and warned of when none is live; the ledger reads them
       // itself (routingOffers) when the caller read none.
-      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: offers !== null ? offers : await this.routingOffers() }) : null,
+      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: offers !== null ? offers : await this.routingOffers(), precision: this.reviewPrecision(new Date().toISOString()) }) : null,
       // The runner offers this view was read with, for the same judgement.
       ...(offers !== null ? { offers } : {}),
       // The plan branch's integration head (docs/orchestrator.md, section 5).
@@ -2753,6 +2754,7 @@ export class Ledger extends DurableObject<Env> {
         tier: need.changeClass === "protected" ? policy.reviewTier : undefined,
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
+        precision: this.reviewPrecision(at),
       });
       if (pick && !pick.reviewer) {
         this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name one of another family than every contributor, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
@@ -2951,6 +2953,17 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' ORDER BY seq`, id).toArray().map(eventOf);
   }
 
+  // Each reviewer model's precision on the blocking findings the owner judged
+  // in this project over the PRECISION_WINDOW_DAYS before `at`
+  // (src/models/precision.ts), for routing to order qualifying reviewers by.
+  // A Ledger holds one project's events, so routing reads this project's
+  // verdicts; the Models page reads every project's.
+  private reviewPrecision(at: string): PrecisionRecord {
+    const window = precisionWindow(new Date(at));
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind = 'review.finding' ORDER BY seq`).toArray().map(eventOf);
+    return buildPrecision([{ project: "this", events }], window, this.owner);
+  }
+
   // A review request for a submitted item the gate needs reviewed, asked for
   // by atelier land (t187) rather than a plan's tick: the reviewer is the one
   // the owner names with --reviewer or is picked from the pool as the plan
@@ -3007,6 +3020,7 @@ export class Ledger extends DurableObject<Env> {
         tier: need.changeClass === "protected" ? policy.reviewTier : undefined,
         avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
         owner: this.owner,
+        precision: this.reviewPrecision(at),
       });
       if (!pick.reviewer) {
         throw new RuleError("no_reviewer", `no reviewer of another family than every contributor is in the pool: ${pick.unpicked}. Name one with atelier land ID --reviewer H/M, or add a model with atelier models add`, 409);
@@ -3063,7 +3077,7 @@ export class Ledger extends DurableObject<Env> {
     const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
       .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));
-    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner));
+    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner), this.reviewPrecision(at));
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
@@ -3393,6 +3407,7 @@ export class Ledger extends DurableObject<Env> {
     const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the project owner with plan refresh --resolve" } } : spec;
     const [route] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
       pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers: offers !== null ? offers : await this.routingOffers(),
+      precision: this.reviewPrecision(at),
     });
     const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [] },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });

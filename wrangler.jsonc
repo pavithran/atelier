@@ -12,9 +12,9 @@
   // keys the team publishes, matching the issuer, the audience and the
   // owner's email claim. The issuer is the team's URL; the audience is the
   // Access application's AUD tag; the email is the one person the pages are
-  // for. The application itself needs Bypass policies on /api/*, /showcase,
-  // /how and /live.js, whose bearer tokens and visitors never pass Access
-  // (docs/setup.md says how).
+  // for. Each public path (/api/*, /showcase, /how, /live.js) needs its own
+  // Access application with a Bypass policy, since bearer tokens and visitors
+  // never pass Access (docs/setup.md says how).
   //   "vars": {
   //     "CF_ACCESS_ISS": "https://TEAM.cloudflareaccess.com",
   //     "CF_ACCESS_AUD": "<the application's AUD tag>",
