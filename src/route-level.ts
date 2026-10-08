@@ -12,5 +12,7 @@
 // by hand — compares this file at the task's fork point, its head and
 // main's head, and raises the merged level to main's plus the task's own
 // raise, so each number keeps meaning one set of routes. 14: the
-// landing-workflow routes, behind atelier land --workflow (t280).
-export const ROUTE_LEVEL = 14;
+// landing-workflow routes, behind atelier land --workflow (t280). 15: items
+// take a brief and acceptance criteria apart from the short title, and edit
+// takes a title (t315).
+export const ROUTE_LEVEL = 15;

@@ -82,7 +82,7 @@ it("POST /login with a matching or missing Origin still reaches the token check"
     expect((await post(origin, "wrong-token")).status).toBe(401);
     const in_ = await post(origin, "public-robustness-token");
     expect(in_.status).toBe(303);
-    expect(in_.headers.get("location")).toBe("/");
+    expect(in_.headers.get("location")).toBe("/home");
     expect(in_.headers.get("set-cookie")).toMatch(/^atelier=[a-f0-9]{64};/);
   }
 });

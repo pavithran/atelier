@@ -91,7 +91,8 @@ globalThis.fetch = async (url, options = {}) => {
     const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false } };
     if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
     else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
-    else if (rest === "items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope };
+    // As the server answers an older CLI's long title: kept as the brief, the title derived.
+    else if (rest === "items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope, ...(body.accept ? { accept: body.accept } : {}), ...(body.title.length > 80 && !body.brief ? { title: "Derived title", brief: body.title, derived: true } : {}) };
     else {
       const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(rest) ?? [];
       if (verb === "handoff") data = { item: { ...item(id), owner: body.to }, next: "next" };
@@ -375,7 +376,7 @@ test("new and edit send the framing as lists and a line, block sends its reason,
     [["new", "Title", "--stop-when", "  ", "--project", "demo"], /--stop-when needs text: atelier new --stop-when "TEXT", once per entry/],
     [["new", "Title", "--next-gate", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
     [["new", "Title", "--next-gate", "  ", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
-    [["edit", "t1", "--project", "demo"], /usage: atelier edit ID \[--non-goal TEXT\]/],
+    [["edit", "t1", "--project", "demo"], /usage: atelier edit ID \[--title TEXT\] \[--brief TEXT\] \[--accept TEXT\]\.\.\. \[--non-goal TEXT\]/],
     [["edit", "t1", "--non-goal", "", "--non-goal", "x", "--project", "demo"], /--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear/],
     [["edit", "t1", "--scope", "src/**", "--project", "demo"], /edit does not take --scope/],
     [["block", "t1", "--project", "demo"], /usage: atelier block \[ID\] "what it is waiting on"/],
@@ -406,4 +407,42 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   assert.equal(unblocked.status, 0, unblocked.stderr);
   assert.deepEqual(f.requests().map((q) => [q.path, q.body, q.actor]), [["/api/projects/demo/items/t1/unblock", {}, "codex/test"]]);
   assert.match(unblocked.stdout, /^t1 is unblocked and claimed again\.\n$/);
+});
+
+// t315: a short title, a brief and acceptance criteria. One long string is
+// sent as the title, as an older CLI sends it, and the answer says the
+// server kept it as the brief.
+test("new sends a title, a brief and repeatable criteria; one long string alone is said to become the brief; edit takes --title, --brief and --accept", (t) => {
+  const f = fixture(t);
+  const made = f.run(f.checkout, ["new", "Short titles", "--brief", "The whole task.", "--accept", "Lists show it", "--accept", "The page shows the brief", "--project", "demo"]);
+  assert.equal(made.status, 0, made.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
+  assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n");
+  f.clear();
+  const long = "word ".repeat(30).trim();
+  const derived = f.run(f.checkout, ["new", long, "--project", "demo"]);
+  assert.equal(derived.status, 0, derived.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ title: long, scope: [] }]);
+  assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n');
+  f.clear();
+  for (const [argv, message] of [
+    [["new", "Title", "--brief", "", "--project", "demo"], /--brief needs text: atelier new "short title" --brief "TEXT"/],
+    [["new", "Title", "--accept", " ", "--project", "demo"], /--accept needs text: atelier new --accept "TEXT", once per criterion/],
+    [["new", "Title", "--title", "x", "--project", "demo"], /new does not take --title/],
+    [["edit", "t1", "--title", "", "--project", "demo"], /--title needs text: atelier edit ID --title "TEXT", at most 80 characters/],
+    [["edit", "t1", "--accept", "", "--accept", "x", "--project", "demo"], /--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear/],
+  ]) {
+    const r = f.run(f.checkout, argv);
+    assert.equal(r.status, 1, argv.join(" "));
+    assert.match(r.stderr, message, argv.join(" "));
+  }
+  assert.deepEqual(f.requests(), []);
+  const edited = f.run(f.checkout, ["edit", "t1", "--title", "Shorter", "--brief", "", "--accept", "One", "--project", "demo"]);
+  assert.equal(edited.status, 0, edited.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/edit", { title: "Shorter", brief: null, accept: ["One"] }]]);
+  assert.equal(edited.stdout, "t1 edited.\nTitle: Shorter\nBrief: cleared.\nAcceptance criterion 1: One\n");
+  f.clear();
+  const cleared = f.run(f.checkout, ["edit", "t1", "--accept", "", "--project", "demo"]);
+  assert.equal(cleared.status, 0, cleared.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ accept: [] }]);
 });

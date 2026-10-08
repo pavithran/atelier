@@ -1,6 +1,6 @@
 // The text a reviewer is given. It says exactly what to review (the head, the
-// base, the changed files and the scope), carries the plan's account of the
-// part when there is one, the observed checks, the builder's summary and any
+// base, the changed files and the scope), carries the task's brief and
+// acceptance criteria, the plan's account of the part when there is one, the observed checks, the builder's summary and any
 // earlier reviews with the project owner's verdicts on their findings, states
 // the project's review bar and the rules for blocking, and ends with
 // REPLY_FORMAT, the format parseVerdict reads. It says which kind of diff it
@@ -38,7 +38,7 @@ export const BRIEF_LIMITS = { diff: DIFF_INLINE_MAX } as const;
 
 export interface BriefInput {
   need: ReviewRequired;                    // from reviewNeeded: the head, change class, checks and earlier reviews
-  item: Pick<Item, "id" | "title" | "base" | "scope">;
+  item: Pick<Item, "id" | "title" | "base" | "scope"> & Partial<Pick<Item, "brief" | "accept">>;
   events: readonly LedgerEvent[];          // the builder's summary for this head, read by submission()
   plan?: { goal: string; part: PlanPart } | null;
   diff?: string | null;                    // git diff from `compare.from` (or the base) to the head, when the caller has it
@@ -100,6 +100,10 @@ function block(text: string, info = ""): string {
   return `${fence}${info}\n${body}\n${fence}`;
 }
 
+// Acceptance criteria as both a task's and a plan part's are given: one per
+// line, numbered from 1.
+const numbered = (criteria: readonly string[]) => criteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
+
 const lineCount = (s: string) => (s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0);
 
 // A diff over the limit is cut at the last line break within it, or at the
@@ -121,6 +125,7 @@ export function reviewBrief(input: BriefInput): string {
   const merge = input.compare?.merge ?? null;
   const compare = merge ? `git show --remerge-diff ${head}` : from ? `git diff ${inline(from)} ${head}` : null;
   const verdicts = ownerVerdicts(input.events);
+  const accept = item.accept ?? [];
   const out: string[] = [];
   const section = (...lines: string[]) => out.push(lines.join("\n"));
 
@@ -160,6 +165,8 @@ export function reviewBrief(input: BriefInput): string {
     `Item: ${item.id}`,
     "Title, as written for the item. The title asks for the change; it is not a claim the change or its commits make:",
     block(item.title),
+    ...(item.brief ? ["The task's brief, as written for the item. Like the title, it asks for the change:", block(item.brief)] : []),
+    ...(accept.length ? ["Acceptance criteria. A change that fails one has a correctness fault, which blocks:", block(numbered(accept))] : []),
     `Head: ${head}`,
     ...(merge ? mergeLines(input.compare!.from, merge, head) : baseLines(item.base, input.compare, compare)),
     `Change class: ${need.changeClass}, because ${CLASS_GLOSS[need.changeClass]}. ${basis}`,
@@ -188,7 +195,7 @@ export function reviewBrief(input: BriefInput): string {
       "Brief:",
       block(part.brief),
       "Acceptance criteria. A change that fails one has a correctness fault, which blocks:",
-      block(part.acceptance.map((c, i) => `${i + 1}. ${c}`).join("\n")),
+      block(numbered(part.acceptance)),
       "Interfaces:",
       block([
         `depends on: ${part.dependsOn.join(", ") || "nothing"}`,
@@ -259,7 +266,9 @@ export function reviewBrief(input: BriefInput): string {
     "- security: it exposes secrets or data, widens access, or acts on untrusted input unsafely;",
     "- data loss: it can destroy, corrupt or silently drop stored data.",
     "",
-    "The task's title and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The plan's acceptance criteria bind as criteria, not as claims.",
+    item.brief || accept.length
+      ? "The task's title, its brief and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The acceptance criteria, the task's and the plan's, bind as criteria, not as claims."
+      : "The task's title and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The plan's acceptance criteria bind as criteria, not as claims.",
     "",
     "A finding is blocking only when the review bar says it may block. Every other finding is a follow-up, however worth doing: style, naming, structure, tests that could be stronger, documentation and improvements. Follow-ups never hold the change back.",
     ...(need.previous.length
