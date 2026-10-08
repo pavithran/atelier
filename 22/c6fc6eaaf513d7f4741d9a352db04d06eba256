@@ -1,0 +1,26 @@
+atelier atelier/t312 "Video v5 (PAVI's notes on v4, 2026-10-08): open by saying every detail comes from Atelier building itself, from its own ledger, and caption each example 'from the ledger'; for every number say what it means and why it matters (93 send-backs as changes Git alone would have merged, given as a share of reviews; reviewer precision 21 confirmed or fixed vs 15 refuted as 'right about six times in ten, so Atelier keeps score'; t278's two real rejections and the 11-second merge; the self-build totals; the plan's parts, reconciling 'seven parts' with 'ten parts integrated'); add live speed and stall figures from the Models page; call the human 'the lead developer' (not owner) and the models 'agents', an agent 'holds' a task; bring the Cloudflare lines to what is live (Access, R2, Workflows live with four landings; Browser Rendering built); refresh every figure from the ledger on render day. Voice and tone as v4. Script reviewed by another family before the render is final"
+accepted head 930e75e2374a57ffc8451ec3ce2e5e788b26aa3a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-08T15:21:21.120Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-08T15:21:24.106Z
+REVIEW approve by antigravity/gemini-3.1-pro at 930e75e2374a57ffc8451ec3ce2e5e788b26aa3a, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T14:43:53.904Z pavi item.created
+2026-10-08T14:43:58.446Z claude-code/opus-5.5 item.claimed
+2026-10-08T14:44:05.982Z claude-code/opus-5.5 fork.created
+2026-10-08T15:16:43.400Z claude-code/opus-5.5 evidence.reported
+2026-10-08T15:16:50.252Z pavi land.lease
+2026-10-08T15:16:58.331Z pavi land.merge
+2026-10-08T15:17:20.022Z pavi land.regenerate
+2026-10-08T15:17:24.768Z claude-code/opus-5.5 push.observed
+2026-10-08T15:17:25.049Z pavi land.push
+2026-10-08T15:21:21.720Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:21:24.487Z claude-code/opus-5.5 evidence.observed
+2026-10-08T15:21:25.103Z pavi land.check
+2026-10-08T15:21:26.107Z claude-code/opus-5.5 item.submitted
+2026-10-08T15:21:26.148Z pavi land.submit
+2026-10-08T15:21:26.351Z pavi review.requested
+2026-10-08T15:21:27.960Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T15:21:28.757Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T15:25:49.310Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T15:25:58.896Z pavi land.review
+2026-10-08T15:25:59.599Z pavi item.accepted
+2026-10-08T15:25:59.639Z pavi land.accept
