@@ -1,0 +1,31 @@
+atelier atelier/t271 "After 2026-10-14: route pay-per-use model calls through Cloudflare AI Gateway (PAVI, 2026-10-07, after studying cloudflare/cloudflare-os wb/ai-gateway.ts and wb/ai-models.ts): one gateway for Atelier; the runner's harness wrappers set each provider's base URL to https://gateway.ai.cloudflare.com/v1/ACCOUNT/GATEWAY/PROVIDER (native paths, not /compat) for DeepSeek, OpenRouter and the API-key providers, keeping their own keys (subscription logins stay direct, since the gateway would price them at API rates); tag calls with cf-aig-metadata (task, role, runner); read cost, tokens and duration back from the Logs API into the ledger, feeding the Models page, speed tracking (t260) and the daily spend limit, replacing hand tracking for routed providers. Verify GLM via a custom provider before relying on it"
+accepted head fe98bc3748b83ab118171d5df582cf4ac64f450f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T01:42:32.687Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T01:42:43.705Z
+REVIEW approve by antigravity/gemini-3.1-pro at fe98bc3748b83ab118171d5df582cf4ac64f450f, recorded by pavi with the owner token, answering a claimed review request
+2026-10-07T17:36:37.228Z pavi item.created
+2026-10-07T22:26:22.963Z pavi item.dispatched
+2026-10-07T23:23:27.203Z pavi item.undispatched
+2026-10-07T23:23:39.274Z pavi item.dispatched
+2026-10-08T00:33:38.395Z opencode/glm-5.3 item.claimed
+2026-10-08T00:33:51.835Z opencode/glm-5.3 fork.created
+2026-10-08T01:00:17.935Z opencode/glm-5.3 item.released
+2026-10-08T01:00:36.400Z pavi item.undispatched
+2026-10-08T01:00:47.052Z opencode/glm-5.3 item.claimed
+2026-10-08T01:37:07.155Z pavi land.lease
+2026-10-08T01:37:10.411Z pavi land.merge
+2026-10-08T01:37:18.734Z pavi land.regenerate
+2026-10-08T01:37:22.155Z opencode/glm-5.3 push.observed
+2026-10-08T01:37:22.317Z pavi land.push
+2026-10-08T01:42:34.485Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:42:44.780Z opencode/glm-5.3 evidence.observed
+2026-10-08T01:42:46.673Z pavi land.check
+2026-10-08T01:42:47.623Z opencode/glm-5.3 item.submitted
+2026-10-08T01:42:47.930Z pavi land.submit
+2026-10-08T01:42:48.095Z pavi review.requested
+2026-10-08T01:42:59.010Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T01:42:59.998Z antigravity/gemini-3.1-pro review.diff
+2026-10-08T01:45:49.298Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T01:45:51.650Z pavi land.review
+2026-10-08T01:45:54.593Z pavi item.accepted
+2026-10-08T01:45:54.793Z pavi land.accept
