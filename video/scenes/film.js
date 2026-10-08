@@ -356,7 +356,7 @@
     hud.append(date, legend, counter);
     // The title, the motif and the three things to remember.
     const title = pos(h("div", { class: "abs display", text: "Atelier", style: { fontSize: "180px", width: "1920px", textAlign: "center" } }), 0, 110);
-    const motif = pos(h("div", { class: "abs display", text: "Git keeps the code. Atelier keeps the record.", style: { fontSize: "62px", width: "1920px", textAlign: "center", color: "var(--signal)" } }), 0, 330);
+    const motif = pos(h("div", { class: "abs display", text: "Git keeps the code. Atelier brings the receipts.", style: { fontSize: "62px", width: "1920px", textAlign: "center", color: "var(--signal)" } }), 0, 330);
     const three = THREE.map((x, i) => pos(h("div", { class: "abs", style: { display: "flex", gap: "28px", alignItems: "baseline", width: "1500px" } }, h("span", { class: "display", text: String(i + 1), style: { fontSize: "64px", color: "var(--signal)", width: "50px" } }), h("span", { class: "display", text: x, style: { fontSize: "60px" } })), 300, 540 + i * 100));
     const head3 = pos(h("div", { class: "abs", text: "Three things to remember", style: { font: `600 ${FOOT + 4}px/1 var(--font-mono)`, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--text-muted)" } }), 300, 480);
     hud.append(title, motif, head3, ...three);
@@ -842,7 +842,7 @@
     const at3 = [c.when("Tests Atelier runs"), c.when("Approval by a model"), c.when("A record of every")];
     const three = THREE.map((x, i) => pos(h("div", { class: "abs", style: { display: "flex", gap: "28px", alignItems: "baseline", width: "1600px" } }, h("span", { class: "display", text: "✓", style: { fontSize: "64px", color: "var(--observed)", width: "60px" } }), h("span", { class: "display", text: x, style: { fontSize: "66px" } })), 260, 300 + i * 120));
     hud.append(...three);
-    const motif = pos(h("div", { class: "abs display", text: "Git keeps the code. Atelier keeps the record.", style: { fontSize: "84px", width: "1920px", textAlign: "center" } }), 0, 200);
+    const motif = pos(h("div", { class: "abs display", text: "Git keeps the code. Atelier brings the receipts.", style: { fontSize: "84px", width: "1920px", textAlign: "center" } }), 0, 200);
     hud.append(motif);
     const big = bigNumber(f.states.merged, `merged, of ${f.tasks} tasks`, "Atelier built itself this way.", "var(--observed)");
     big.el.style.left = "120px"; big.el.style.top = "330px";
@@ -990,7 +990,7 @@
     if (cd && t < cd + 0.4) {
       const i = chN - 1;
       cardEl.innerHTML = `<div class="num">Chapter ${chN} of 7</div><div class="name">${esc(CHAPTERS[i])}</div><div class="sofar"><b>So far:</b> ${esc(SO_FAR[i])}</div>` +
-        (cur.sc.id === "plan" ? `<div class="three">${THREE.map((x) => `<div><span>✓</span>${esc(x)}</div>`).join("")}</div><div class="motif">Git keeps the code. Atelier keeps the record.</div>` : "");
+        (cur.sc.id === "plan" ? `<div class="three">${THREE.map((x) => `<div><span>✓</span>${esc(x)}</div>`).join("")}</div><div class="motif">Git keeps the code. Atelier brings the receipts.</div>` : "");
       cardEl.style.display = "flex";
       cardEl.style.opacity = (1 - P(t, cd - 0.15, 0.4));
     } else cardEl.style.display = "none";
