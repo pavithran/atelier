@@ -17,7 +17,7 @@
 // the run, and abandons every task it created. Every figure is measured on
 // the run; nothing is claimed that was not observed.
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -151,24 +151,46 @@ function stats(msList) {
   return { n: sorted.length, median: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), min: sorted[0] ?? null, max: sorted[sorted.length - 1] ?? null };
 }
 
-// A tiny git push: one commit of one file pushed to the fork. The token is
-// passed to git through its environment, never on the command line.
-function tinyPush(remote, token, dir, i) {
+// One git invocation as a promise over child_process.spawn, so a batch of tiny
+// pushes runs the git subprocesses concurrently instead of blocking the event
+// loop the way spawnSync would. The token goes through git's environment
+// (http.extraHeader), never on the command line. gitActive and gitPeak count
+// the live subprocesses so the proof can report how many pushes really ran
+// together: serial pushes would never exceed 1, N concurrent pushes peak at N.
+let gitActive = 0;
+let gitPeak = 0;
+
+function runGit(args, { cwd, env }) {
+  return new Promise((resolve, reject) => {
+    gitActive += 1;
+    if (gitActive > gitPeak) gitPeak = gitActive;
+    const child = spawn("git", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    const settle = (fn) => (...rest) => { gitActive -= 1; fn(...rest); };
+    child.on("error", settle(reject));
+    child.on("close", settle((status) => {
+      if (status !== 0) reject(new Error(`git ${args.join(" ")}: ${(stderr || stdout || "").trim()}`));
+      else resolve(stdout.trim());
+    }));
+  });
+}
+
+// A tiny git push: one commit of one file pushed to the fork, awaited so its
+// caller can run several of them concurrently under Promise.all.
+async function tinyPush(remote, token, dir, i) {
   mkdirSync(dir, { recursive: true });
   const identity = { GIT_AUTHOR_NAME: `sim agent ${i}`, GIT_AUTHOR_EMAIL: "sim@concurrency.proof", GIT_COMMITTER_NAME: `sim agent ${i}`, GIT_COMMITTER_EMAIL: "sim@concurrency.proof" };
-  const run = (args) => {
-    const r = spawnSync("git", args, { cwd: dir, env: { ...process.env, ...identity }, encoding: "utf8" });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${(r.stderr || r.stdout || "").trim()}`);
-    return r.stdout.trim();
-  };
-  run(["init", "-q", "-b", "main"]);
+  const env = { ...process.env, ...identity };
+  await runGit(["init", "-q", "-b", "main"], { cwd: dir, env });
   writeFileSync(join(dir, "proof.txt"), `concurrency proof: agent ${i}\n`);
-  run(["add", "proof.txt"]);
-  run(["commit", "-q", "-m", `concurrency proof push ${i}`]);
-  const head = run(["rev-parse", "HEAD"]);
+  await runGit(["add", "proof.txt"], { cwd: dir, env });
+  await runGit(["commit", "-q", "-m", `concurrency proof push ${i}`], { cwd: dir, env });
+  const head = await runGit(["rev-parse", "HEAD"], { cwd: dir, env });
   const extra = token ? { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}` } : {};
-  const push = spawnSync("git", ["push", "-q", remote, "HEAD:main"], { cwd: dir, env: { ...process.env, ...identity, ...extra }, encoding: "utf8" });
-  if (push.status !== 0) throw new Error(`git push: ${(push.stderr || push.stdout || "").trim()}`);
+  await runGit(["push", "-q", remote, "HEAD:main"], { cwd: dir, env: { ...env, ...extra } });
   return head;
 }
 
@@ -207,15 +229,17 @@ async function claimRace() {
 // Each agent pushes a tiny commit to its own fork and the push is observed.
 // Without --push, no push is made: the phase is skipped and reported as none.
 async function pushes(spread) {
-  if (!cfg.push) return { ran: false, ok: 0, failed: 0, ms: [], errors: [] };
+  if (!cfg.push) return { ran: false, ok: 0, failed: 0, ms: [], errors: [], maxConcurrent: 0 };
   const holder = spread.claims.map((c, i) => (c.ok ? { i, workspace: c.value.workspace } : null)).filter(Boolean);
+  gitActive = 0;
+  gitPeak = 0;
   const results = await Promise.all(holder.map(({ i, workspace }) => timed(async () => {
     const dir = join(cfg.scratch, `agent-${i}`);
-    const head = tinyPush(workspace.remote, workspace.token, dir, i);
+    const head = await tinyPush(workspace.remote, workspace.token, dir, i);
     return request("POST", `${I(cfg.project, spread.items[i].id)}/push`, { head }, actorOf(i));
   })));
   const ok = results.filter((r) => r.ok);
-  return { ran: true, ok: ok.length, failed: results.length - ok.length, ms: results.map((r) => r.ms), errors: results.filter((r) => !r.ok).map((r) => r.error.message) };
+  return { ran: true, ok: ok.length, failed: results.length - ok.length, ms: results.map((r) => r.ms), errors: results.filter((r) => !r.ok).map((r) => r.error.message), maxConcurrent: gitPeak };
 }
 
 // ── cleanup ─────────────────────────────────────────────────────────────────
@@ -232,7 +256,10 @@ const pushesResult = await pushes(spread);
 const abandoned = cfg.cleanup ? await cleanup([...spread.items, race.item]) : { ok: 0, failed: 0, ms: [], errors: [], skipped: true };
 
 const wallMs = performance.now() - overallStart;
-const totalRequests = spread.claims.length + race.claims.length + (pushesResult.ran ? spread.ok : 0) + (cfg.cleanup ? spread.items.length + 1 : 0);
+// Every request the proof sent, including the N+1 that created the tasks and
+// the one that created the race item, so the reported cost counts the whole run.
+const createdTasks = spread.items.length + 1;
+const totalRequests = createdTasks + spread.claims.length + race.claims.length + (pushesResult.ran ? spread.ok : 0) + (cfg.cleanup ? spread.items.length + 1 : 0);
 
 function phaseLine(name, requests, ok, refused, failed, s, errors) {
   const thru = s.n ? (requests / (s.max / 1000)).toFixed(0) : 0;
@@ -247,11 +274,11 @@ function phaseLine(name, requests, ok, refused, failed, s, errors) {
 if (cfg.json) {
   const report = {
     server: base, project: cfg.project, agents: cfg.agents, push: cfg.push,
-    wallMs: Math.round(wallMs * 1000) / 1000, requests: totalRequests,
+    wallMs: Math.round(wallMs * 1000) / 1000, requests: totalRequests, created: createdTasks,
     phases: {
-      claimSpread: { requests: spread.claims.length, ok: spread.ok, distinctForks: spread.distinctForks, failed: spread.failed, ...stats(spread.ms), errors: spread.errors },
-      claimRace: { requests: race.claims.length, winner: race.winner, winners: race.winners, refused: race.refusals, namingHolder: race.namingHolder, errors: race.errors, ...stats(race.ms), errorList: race.errorList },
-      pushes: pushesResult.ran ? { requests: spread.ok, ok: pushesResult.ok, failed: pushesResult.failed, ...stats(pushesResult.ms), errors: pushesResult.errors } : { requests: 0, ok: 0, failed: 0, skipped: true },
+      claimSpread: { created: spread.items.length, requests: spread.claims.length, ok: spread.ok, distinctForks: spread.distinctForks, failed: spread.failed, ...stats(spread.ms), errors: spread.errors },
+      claimRace: { created: 1, requests: race.claims.length, winner: race.winner, winners: race.winners, refused: race.refusals, namingHolder: race.namingHolder, errors: race.errors, ...stats(race.ms), errorList: race.errorList },
+      pushes: pushesResult.ran ? { requests: spread.ok, ok: pushesResult.ok, failed: pushesResult.failed, maxConcurrent: pushesResult.maxConcurrent, ...stats(pushesResult.ms), errors: pushesResult.errors } : { requests: 0, ok: 0, failed: 0, skipped: true },
       cleanup: cfg.cleanup ? { requests: spread.items.length + 1, ok: abandoned.ok, failed: abandoned.failed, ...stats(abandoned.ms), errors: abandoned.errors } : { skipped: true },
     },
     cost: { wallSeconds: Math.round(wallMs / 1000 * 1000) / 1000, requests: totalRequests, pushes: pushesResult.ran ? pushesResult.ok : 0, modelCalls: 0, modelCostUsd: 0 },
@@ -264,7 +291,7 @@ if (cfg.json) {
     phaseLine("claim spread", spread.claims.length, spread.ok, 0, spread.failed, stats(spread.ms), spread.errors) + `, ${spread.distinctForks} distinct forks`,
     phaseLine("claim race", race.claims.length, race.winners, race.refusals, race.errors, stats(race.ms), race.errorList) + `, winner ${race.winner ?? "none"}, ${race.namingHolder}/${race.refusals} refusals name the holder`,
     pushesResult.ran
-      ? phaseLine("pushes", spread.ok, pushesResult.ok, 0, pushesResult.failed, stats(pushesResult.ms), pushesResult.errors)
+      ? phaseLine("pushes", spread.ok, pushesResult.ok, 0, pushesResult.failed, stats(pushesResult.ms), pushesResult.errors) + `, ${pushesResult.maxConcurrent} concurrent`
       : `pushes: none (run with --push for tiny pushes)`,
     cfg.cleanup ? phaseLine("cleanup", spread.items.length + 1, abandoned.ok, 0, abandoned.failed, stats(abandoned.ms), abandoned.errors) : `cleanup: skipped (--no-cleanup)`,
     ``,
