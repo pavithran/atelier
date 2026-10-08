@@ -4,6 +4,7 @@ import { itemDiff, measureWorkspace, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
@@ -64,6 +65,11 @@ type Settings = {
   // and read by GET /api/version beside the route level, so a CLI can
   // refuse a server older than the routes it calls (atelier land).
   DEPLOYED_MAIN?: string;
+  // Cloudflare Access in front of the owner's pages (src/access.ts): the
+  // team's URL, the Access application's audience tag, and the owner's email
+  // as the token's email claim must name it. All three set, and every owner
+  // route — /login among them — must carry an assertion Access signed.
+  CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
 };
 
 function thresholds(env: Env): Thresholds {
@@ -2245,6 +2251,19 @@ export default {
       }
       // The explainer is public and static: it reads no project, so it is answered before the sign-in check.
       if (pathname === "/how" && (req.method === "GET" || req.method === "HEAD")) { const res = html(renderHow()); res.headers.set("cache-control", "public, max-age=300"); return res; }
+      // Cloudflare Access in front of the owner's pages (src/access.ts). When
+      // the server names its Access team, application and owner, every route
+      // that needs a sign-in must carry an Access assertion the Worker verifies
+      // against the team's published keys and the owner's email — /login and its
+      // token form too, so the server token can no longer be tried, let alone
+      // guessed, without Access's sign-in first (the open form the 2026-10-06
+      // audit noted). Never the /api routes, which take bearer tokens the CLI
+      // sends without passing Access; the sign-out form stays open.
+      const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const access = accessSettings(env as unknown as Record<string, string | undefined>);
+      if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
+        return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
+      }
       if (pathname === "/login") {
         if (req.method === "POST") {
           // A cross-site form post carries another origin and is refused. A
@@ -2266,7 +2285,6 @@ export default {
         return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": await endSession(req, env) } });
       }
       const how = await authorised(req, env);
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       if (parts[0] === "api") {
         // The server's version: the deployed main commit and its route
         // level (src/route-level.ts). It answers without a token: the
