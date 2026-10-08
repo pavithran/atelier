@@ -9,8 +9,12 @@
 // files hold (coreHold there) says which live item it waits on, as the
 // queue's entry for it carries that. The offers (GET /runners) are each
 // { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
-// the runner last asked, and a Runners section lists them after the projects.
+// the runner last asked, and a Runners section lists them after the projects,
+// each named runner's jobs said as the runner's own first line says them
+// (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
+// jobs it does not.
 import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
+import { jobsLine } from "./runner.mjs";
 
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
@@ -134,13 +138,18 @@ const ago = (ms) => {
 };
 
 // One runner's line: whether it is live, when it last asked, and the actors
-// it offers, so the owner sees what plan routing could pick from.
+// it offers, so the owner sees what plan routing could pick from. The jobs
+// are said as the runner's own first line says them (jobsLine): a config
+// narrowed by t252's exact jobs reads as the narrowing it is here too, not a
+// bare list the queue's silence has to explain (the 2026-10-07 incident,
+// t289). An offer naming no job is an older runner's, which took builds, so
+// the line keeps silent about jobs.
 export function runnerLine(offer, now = Date.now()) {
   const asked = Date.parse(offer.at);
   const when = Number.isFinite(asked) ? ago(now - asked) : "at an unknown time";
   const live = isLive(offer, now);
   const actors = offer.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`));
-  return `${offer.runner}  ${live ? `live, asked ${when}` : `not live, last asked ${when}`}  ${actors.length ? `offers ${actors.join(", ")}` : "offers no model"}${offer.jobs?.length ? `  jobs: ${offer.jobs.join(", ")}` : ""}`;
+  return `${offer.runner}  ${live ? `live, asked ${when}` : `not live, last asked ${when}`}  ${actors.length ? `offers ${actors.join(", ")}` : "offers no model"}${offer.jobs?.length ? `  ${jobsLine(offer.jobs)}` : ""}`;
 }
 
 // The runners section of `atelier status`: one line per recorded offer, live
