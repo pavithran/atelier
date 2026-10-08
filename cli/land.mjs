@@ -894,6 +894,14 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
     try { read = await request("GET", wfPath); }
     catch (error) { print(`Warning: the landing Workflow could not be read (${error.message}); trying again.`); await sleep(); continue; }
     const { instance, status, stage, round = 0, detail, files } = read ?? {};
+    // A merged task reports no landing instance any more; when this CLI did
+    // the merge itself, the landing is over, not lost (t308): say so and free
+    // the lease now rather than leaving it to lapse.
+    if ((!instance || !status) && mergedHere) {
+      try { await request("POST", leasePath, { cancel: true, item: id }); } catch { /* a merged task's lease is already free on the server */ }
+      print(`${id} landed through the landing Workflow; the lease is released.`);
+      return;
+    }
     if (!instance || !status) die(`the landing Workflow of ${id} can no longer be read (instance ${instance ?? "none"}); its lease lapses on its own. Run atelier land ${id} --workflow again to start or attach the landing`);
     if (status.status === "complete") {
       if (noReview || status.output?.review === "skipped") print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id}.`);

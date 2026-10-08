@@ -1498,3 +1498,17 @@ test("land --workflow --checks container runs no check here; --checks is refused
   assert.deepEqual(f.posts("/evidence"), []);
   assert.ok(!f.posts("/land").some((x) => x.body.step === "check"));
 });
+
+test("land --workflow reports a finished landing, not a lost one, when the merged task no longer names its Workflow (t308)", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const wf = scriptWorkflow(f);
+  // As in production on 2026-10-08: once the task is merged, the route
+  // answers with no instance instead of a completed one.
+  const tick = wf.tick;
+  wf.tick = (box) => { tick(box); if (box.states.t1 === "merged") wf.instance = null; };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /t1 landed through the landing Workflow; the lease is released\./);
+  assert.doesNotMatch(r.output, /can no longer be read/);
+  assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true && x.body.item === "t1"));
+});
