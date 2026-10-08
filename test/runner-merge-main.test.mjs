@@ -31,11 +31,29 @@ const run = (cwd, argv) => {
 };
 const commit = (cwd, file, text, message) => { writeFileSync(join(cwd, file), text); git(cwd, "add", file); git(cwd, "commit", "-q", "-m", message); return git(cwd, "rev-parse", "HEAD"); };
 
+// The removal every test's `after` runs. On a machine running several suites
+// at once (2026-10-08, t308's full suite and main after t305) the recursive
+// rmSync died on ENOTEMPTY under the .git trees these tests leave, its walk
+// racing the filesystem's settle, so the test named in t309 failed under load
+// and passed alone. As t298 waited on the event instead of a fixed time, the
+// removal tries again until the folder is really gone; `rm` and the wait are
+// injected so the test below can drive the mechanics.
+const RM_AGAIN = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"]);
+async function remove(root, rm = rmSync, wait = () => new Promise((ok) => setTimeout(ok, 25))) {
+  for (let attempt = 0; existsSync(root);) {
+    try { rm(root, { recursive: true, force: true }); return; }
+    catch (error) {
+      if (!RM_AGAIN.has(error.code) || ++attempt >= 100) throw error;
+      await wait();
+    }
+  }
+}
+
 // The baseline with a shared file; the plan's branch (the workspace) and
 // main each change it, in the same line when `conflict`, else apart.
 function repos(t, conflict) {
   const root = mkdtempSync(join(tmpdir(), "atelier-merge-main-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => remove(root));
   const baseline = join(root, "baseline"), workspace = join(root, "t9");
   git(root, "init", "-q", "-b", "main", baseline);
   commit(baseline, "a.txt", "one\ntwo\nthree\n", "base");
@@ -290,4 +308,28 @@ test("the merge-main section for a task states the job beside the rules", () => 
   assert.ok(text.startsWith("## Resolve the merge of main\n\nMain at 11111111 conflicts with this task's work."));
   assert.ok(text.includes("- Resolve each conflict keeping both sides' behaviour"));
   assert.ok(text.includes("- Commit the merge with git commit, keeping the merge message as it stands"));
+});
+
+// t309: the cleanup above, driven where the load was met — the first passes
+// answer ENOTEMPTY as the loaded machine's walk did in t308's suite, and the
+// removal waits on the folder being gone instead of dying on the error, the
+// event rather than a fixed time as t298 put it.
+test("the cleanup's removal waits the filesystem out instead of dying on ENOTEMPTY", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-merge-main-remove-"));
+  t.after(() => remove(root));
+  writeFileSync(join(root, "a.txt"), "one\n");
+  let passes = 0, waits = 0;
+  const rm = (path, options) => { if (++passes < 3) { const error = new Error("directory not empty"); error.code = "ENOTEMPTY"; throw error; } return rmSync(path, options); };
+  const wait = () => new Promise((ok) => { waits++; ok(); });
+  await remove(root, rm, wait);
+  assert.equal(passes, 3, "the third pass is the first allowed to work");
+  assert.equal(waits, 2, "each refusal was waited out");
+  assert.ok(!existsSync(root), "the folder is really gone");
+  // A refusal that is not the filesystem settling ends the removal at once:
+  // nothing waits on a cause it cannot outwait.
+  const other = mkdtempSync(join(tmpdir(), "atelier-merge-main-remove-"));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
+  writeFileSync(join(other, "a.txt"), "one\n");
+  await assert.rejects(remove(other, () => { const error = new Error("permission denied"); error.code = "EACCES"; throw error; }, wait), (error) => error.code === "EACCES");
+  assert.equal(waits, 2, "a cause outside the filesystem's settle is not waited on");
 });
