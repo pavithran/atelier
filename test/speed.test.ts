@@ -82,6 +82,24 @@ test("reviews are timed from the reviewer's claim to its verdict; a released cla
   assert.equal(s.models.find((m) => m.model === OWNER), undefined);
 });
 
+test("two harnesses serving one model review the same item at once, each timed from its own claim", () => {
+  const events = history(
+    ["t1", "zcode/glm-5.3", "review.claimed", 0, { head: H }], ["t1", GLM, "review.claimed", 10, { head: H }],
+    ["t1", "zcode/glm-5.3", "review.approved", 20, { head: H }], ["t1", GLM, "review.rejected", 40, { head: H }],
+    ["t2", "zcode/glm-5.3", "review.claimed", 0, { head: H }], ["t2", "zcode/glm-5.3", "review.approved", 25, { head: H }],
+  );
+  // 20, 30 and 25 minutes: both reviewers of t1 are timed, so n=3 and the median is 25m.
+  assert.deepEqual(model(buildSpeed([{ project: "a", events }], [], OWNER, NOW), "glm-5.3").review, { n: 3, median: 25 * 60, runs: 3, stalled: 0 });
+});
+
+test("a merge or an abandonment ends the review claims open on the item", () => {
+  const events = history(
+    ["t1", GPT, "review.claimed", 0, { head: H }], ["t1", OWNER, "item.merged", 5, { head: H }], ["t1", GPT, "review.approved", 100, { head: H }],
+    ["t2", GPT, "review.claimed", 0, { head: H }], ["t2", OWNER, "item.abandoned", 5], ["t2", GPT, "review.approved", 100, { head: H }],
+  );
+  assert.deepEqual(model(buildSpeed([{ project: "a", events }], [], OWNER, NOW), "gpt-6-astra").review, { n: 0, median: null, runs: 2, stalled: 0 });
+});
+
 test("a task is timed from its first claim to its merge, under the model that claimed it first", () => {
   const events = history(
     ["t1", OPUS, "item.claimed", 0], ["t1", OPUS, "item.handoff", 5, { from: OPUS, to: GLM }], ["t1", OWNER, "item.merged", 120, { head: H }],

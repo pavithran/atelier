@@ -101,12 +101,19 @@ export function buildSpeed(projects: readonly ProjectEvents[], runs: readonly Ru
 // claim ends it untimed. A verdict recorded without a claim (before t215)
 // is a review that ended with a result but has no time. A task is timed
 // from its first agent claim to its merge, under the model that claimed it.
+// The reviewer a review claim belongs to, as the ledger matches a verdict to
+// its claim (sameActor in src/rules.ts): the harness and the model. Two
+// harnesses serving one model (zcode/glm-5.3 and opencode/glm-5.3) are two
+// reviewers, each with its own claim, though their samples count under the
+// one model.
+const reviewerKey = (actor: string) => `${actor.includes("/") ? actor.slice(0, actor.indexOf("/")).toLowerCase() : ""}/${modelKey(actor)}`;
+
 function replay(events: readonly LedgerEvent[], owner: string, inWindow: (at: string) => boolean, bin: (actor: string) => Bin, seconds: (a: string, b: string) => number): void {
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
   const served = servedBy(sorted);
   const building = new Map<string, { at: string; model: string }>();        // item: the open claim
   const firstClaim = new Map<string, { at: string; model: string }>();      // item: its first agent claim
-  const reviewing = new Map<string, Map<string, string>>();                 // item: reviewer modelKey -> claimed at
+  const reviewing = new Map<string, Map<string, string>>();                 // item: reviewerKey -> claimed at
   for (const event of sorted) {
     const { itemId: item, kind } = event;
     if (item === null || kind === SERVED) continue;
@@ -115,8 +122,12 @@ function replay(events: readonly LedgerEvent[], owner: string, inWindow: (at: st
       if (!isAgent(actor, owner)) { building.delete(item); continue; }
       building.set(item, { at: event.at, model: actor });
       if (!firstClaim.has(item)) firstClaim.set(item, { at: event.at, model: actor });
-    } else if (kind === "item.handoff" || kind === "item.released" || kind === "item.abandoned") {
+    } else if (kind === "item.handoff" || kind === "item.released") {
       building.delete(item);
+    } else if (kind === "item.abandoned") {
+      // An abandoned item ends its build and every open review claim untimed.
+      building.delete(item);
+      reviewing.delete(item);
     } else if (kind === "item.submitted") {
       const claim = building.get(item);
       building.delete(item);
@@ -126,19 +137,21 @@ function replay(events: readonly LedgerEvent[], owner: string, inWindow: (at: st
         b.buildRuns++;
       }
     } else if (kind === "item.merged") {
+      // A merge ends any review still claimed on the item; none can follow.
       building.delete(item);
+      reviewing.delete(item);
       const first = firstClaim.get(item);
       if (first && inWindow(event.at)) bin(first.model).task.push(seconds(first.at, event.at));
     } else if (kind === "review.claimed") {
       if (!isAgent(actor, owner)) continue;
-      reviewing.set(item, (reviewing.get(item) ?? new Map()).set(modelKey(event.actor), event.at));
+      reviewing.set(item, (reviewing.get(item) ?? new Map()).set(reviewerKey(event.actor), event.at));
     } else if (kind === "review.released") {
-      reviewing.get(item)?.delete(modelKey(event.actor));
+      reviewing.get(item)?.delete(reviewerKey(event.actor));
     } else if (kind === "review.approved" || kind === "review.rejected") {
       if (!isAgent(actor, owner)) continue;
       const claims = reviewing.get(item);
-      const at = claims?.get(modelKey(event.actor));
-      claims?.delete(modelKey(event.actor));
+      const at = claims?.get(reviewerKey(event.actor));
+      claims?.delete(reviewerKey(event.actor));
       if (!inWindow(event.at)) continue;
       const b = bin(actor);
       b.reviewRuns++;
