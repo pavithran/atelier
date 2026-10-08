@@ -729,6 +729,34 @@ it('the front door and the login link follow a showcase only while its project i
  expect((await go('/showcase')).status).toBe(404);
 });
 
+function mergedShowcaseStory(){
+ return buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
+  ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','pavi','item.accepted'),ev(3,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
+}
+it('the showcase labels its two-week figures and sets the all-time merges beside them',async()=>{
+ const {renderShowcase}=await import('../src/ui');
+ const s=mergedShowcaseStory();
+ const card={project:{name:'example',repo:'example',policy:{checks:[],protected:[]},createdAt:''},mode:'named' as const,story:s};
+ const html=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[{...card,allTimeMerged:215}]);
+ expect(html).toContain(`<b>${s.tally.merges}</b>merged, last two weeks`);
+ expect(html).toContain('<b>215</b>merged, all time');
+ expect(html).toContain('all time, 215 merged across 1 project.');
+ const unset=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[card]);
+ expect(unset).not.toContain('merged, all time');
+ expect(unset).not.toContain('all time, ');
+});
+it('the showcase names the owner\'s zone in its legend, and UTC when none is set',async()=>{
+ const {renderShowcase}=await import('../src/ui');
+ const {setTimeZone}=await import('../src/time');
+ const s=mergedShowcaseStory();
+ try{
+  setTimeZone('America/New_York');
+  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in New York time');
+  setTimeZone(undefined);
+  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in UTC');
+ }finally{setTimeZone(undefined);}
+});
+
 // ── the comparison of one project with itself ──
 async function sameParts(){
  const {renderShowcase}=await import('../src/ui');
