@@ -1,0 +1,46 @@
+atelier atelier/t298 "Two tests fail under load and pass alone (2026-10-07, this Mac running several suites at once): test/lists.spec.ts 'a project's checks, protected paths and eligible agents must each be a list of non-empty strings' hit vitest's 5 s timeout, and test/runner.test.mjs 'a child's background processes end with it…' failed at 8.9 s. A landing's required check can fail at random the same way. Make both independent of machine load (wait on the event, not a fixed time; raise a per-test timeout where the work is genuinely long)"
+accepted head adbd264d4b96714707810a0342a973594d7c7f8e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-08T05:21:43.600Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-08T05:21:46.172Z
+REVIEW approve by antigravity/gemini-3.1-pro at adbd264d4b96714707810a0342a973594d7c7f8e, recorded by pavi with the owner token, answering a claimed review request
+2026-10-08T01:08:58.413Z pavi item.created
+2026-10-08T01:09:09.153Z pavi item.dispatched
+2026-10-08T01:26:17.550Z opencode/glm-5.3 item.claimed
+2026-10-08T01:26:22.811Z opencode/glm-5.3 fork.created
+2026-10-08T01:58:43.918Z opencode/glm-5.3 item.released
+2026-10-08T01:58:55.280Z opencode/glm-5.3 item.claimed
+2026-10-08T02:31:53.034Z opencode/glm-5.3 push.observed
+2026-10-08T02:35:55.956Z opencode/glm-5.3 evidence.observed
+2026-10-08T02:35:58.872Z opencode/glm-5.3 evidence.observed
+2026-10-08T02:35:59.415Z opencode/glm-5.3 item.submitted
+2026-10-08T03:28:32.545Z pavi land.lease
+2026-10-08T03:28:36.171Z pavi land.merge
+2026-10-08T03:28:50.429Z pavi land.regenerate
+2026-10-08T03:28:53.331Z opencode/glm-5.3 push.observed
+2026-10-08T03:28:53.490Z pavi land.push
+2026-10-08T03:33:12.035Z opencode/glm-5.3 evidence.observed
+2026-10-08T03:33:14.439Z opencode/glm-5.3 evidence.observed
+2026-10-08T03:33:14.951Z pavi land.check
+2026-10-08T03:33:15.326Z opencode/glm-5.3 item.submitted
+2026-10-08T03:33:15.519Z pavi land.submit
+2026-10-08T03:33:15.649Z pavi review.requested
+2026-10-08T03:33:23.652Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T03:36:25.296Z antigravity/gemini-3.1-pro review.rejected
+2026-10-08T03:36:29.395Z pavi land.review
+2026-10-08T03:38:38.939Z pavi review.finding
+2026-10-08T05:18:20.109Z pavi land.lease
+2026-10-08T05:18:22.621Z pavi land.merge
+2026-10-08T05:18:30.686Z pavi land.regenerate
+2026-10-08T05:18:33.055Z opencode/glm-5.3 push.observed
+2026-10-08T05:18:33.159Z pavi land.push
+2026-10-08T05:21:44.087Z opencode/glm-5.3 evidence.observed
+2026-10-08T05:21:46.262Z opencode/glm-5.3 evidence.observed
+2026-10-08T05:21:46.864Z pavi land.check
+2026-10-08T05:21:47.194Z opencode/glm-5.3 item.submitted
+2026-10-08T05:21:47.366Z pavi land.submit
+2026-10-08T05:21:47.456Z pavi review.requested
+2026-10-08T05:22:01.860Z antigravity/gemini-3.1-pro review.claimed
+2026-10-08T05:24:08.850Z antigravity/gemini-3.1-pro review.approved
+2026-10-08T05:24:12.580Z pavi land.review
+2026-10-08T05:24:13.114Z pavi item.accepted
+2026-10-08T05:24:13.218Z pavi land.accept
