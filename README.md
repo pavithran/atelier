@@ -683,6 +683,45 @@ files inside the Workers runtime against the Ledger Durable Object; `npx tsc
 read-only preview of the pages with illustrative content.
 [docs/setup.md](docs/setup.md#local-development) has the details.
 
+### Concurrency proof
+
+`bin/concurrency-proof.mjs` drives N simulated agents (N up to 1,000,
+configurable) against a throwaway project over the CLI's own request protocol
+(the owner token as a bearer header, `x-atelier-actor` naming the agent) and
+reports what the run measured. It proves three things, and asserts each before
+exiting cleanly:
+
+- **claim spread** — N agents claim N tasks at once; all N succeed and each
+  gets its own fork;
+- **claim race** — N agents race for one task; exactly one wins and the other
+  N-1 are refused, each refusal naming the holder;
+- **pushes** — with `--push`, each agent makes a tiny commit and pushes it to
+  its own fork, and the push is observed at that fork's head (without
+  `--push` no push is made and the phase is skipped, so the run stays cheap).
+
+It then abandons every task it created and prints per-phase throughput and
+median and p90 latency, every error, and the cost of the run (wall time and
+request count; the agents are simulated, so the model cost is $0):
+
+```sh
+bin/concurrency-proof.mjs --project throwaway --agents 1000 --push
+```
+
+The tests run it against a stand-in server on localhost
+(`test/concurrency-proof.test.mjs`); the proof is never run against the live
+server. The figures below are one measured run against that stand-in, a single
+Node process on this machine, included because the brief asks for measured
+numbers rather than claims — they are not the live server's latency:
+
+```
+N=1000: claim spread 1000/1000 ok with 1000 distinct forks, median 81.4ms,
+p90 83.0ms; claim race 1 winner, 999 refused each naming the holder, median
+46.5ms, p90 58.7ms; cleanup 1001/1001; ~6800 req/s over 0.44s, 3001 requests.
+```
+
+A run against the live server prints the live numbers; this README reports
+only what a run measured.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
