@@ -1,0 +1,27 @@
+atelier atelier/t400 "atelier done checks its summary before running the checks"
+accepted head dfb082bc5cb4e1b64197973fb60bfb0761711b8d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/haiku-5.5 2026-10-09T20:13:28.637Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/haiku-5.5 2026-10-09T20:13:37.334Z
+REVIEW approve by antigravity/gemini-3.1-pro at dfb082bc5cb4e1b64197973fb60bfb0761711b8d, recorded by antigravity/gemini-3.1-pro
+2026-10-09T19:42:19.957Z pavi item.created
+2026-10-09T19:45:50.466Z pavi item.dispatched
+2026-10-09T19:45:55.764Z claude-code/haiku-5.5 item.claimed
+2026-10-09T19:46:10.374Z claude-code/haiku-5.5 fork.created
+2026-10-09T19:57:12.420Z claude-code/haiku-5.5 push.observed
+2026-10-09T20:04:24.514Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T20:04:28.245Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T20:04:28.930Z claude-code/haiku-5.5 item.submitted
+2026-10-09T20:06:52.869Z pavi land.lease
+2026-10-09T20:07:00.091Z pavi land.merge
+2026-10-09T20:07:16.376Z pavi land.regenerate
+2026-10-09T20:07:19.427Z claude-code/haiku-5.5 push.observed
+2026-10-09T20:07:19.575Z pavi land.push
+2026-10-09T20:13:29.193Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T20:13:37.601Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T20:13:38.955Z pavi land.check
+2026-10-09T20:13:41.952Z pavi review.requested
+2026-10-09T20:14:06.530Z antigravity/gemini-3.1-pro review.claimed
+2026-10-09T20:18:01.466Z antigravity/gemini-3.1-pro review.approved
+2026-10-09T20:18:14.463Z pavi land.review
+2026-10-09T20:18:15.395Z pavi item.accepted
+2026-10-09T20:18:15.446Z pavi land.accept
