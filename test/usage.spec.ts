@@ -18,6 +18,9 @@ const AT = "2026-10-05T21:00:00.000Z";
 const NOW = Date.parse(AT);
 const LATER = new Date(NOW + 4 * 86_400_000).toISOString();
 const at = (ms: number) => new Date(ms).toISOString();
+// A reset still ahead of the real clock, for reports that go through the route,
+// which judges a window by the time it arrives: LATER passed on 2026-10-09.
+const UPCOMING = at(Date.now() + 4 * 86_400_000);
 // An RFC 2047 title, decoded.
 const decodeTitle = (header: string) => new TextDecoder().decode(Uint8Array.from(atob(header.slice(10, -2)), (c) => c.charCodeAt(0)));
 
@@ -29,7 +32,7 @@ function call(method: string, path: string, actor: string, body?: unknown, heade
   }), { ...testEnv, ...over } as typeof env);
 }
 
-const codexBody = (weekly: number) => ({ windows: [{ name: "weekly", usedPercent: weekly, resetsAt: LATER, at: AT }, { name: "5-hour", usedPercent: 12, resetsAt: at(NOW + 3_600_000), at: AT }], models: [], balances: [], notes: [] });
+const codexBody = (weekly: number) => ({ windows: [{ name: "weekly", usedPercent: weekly, resetsAt: UPCOMING, at: AT }, { name: "5-hour", usedPercent: 12, resetsAt: at(NOW + 3_600_000), at: AT }], models: [], balances: [], notes: [] });
 const report = (over: Partial<UsageReport> = {}): UsageReport => ({ tool: "codex", runner: "home:studio", at: AT, windows: [], models: [], balances: [], notes: [], ...over });
 const span = (requests: number, tokens: number, cost: number | null = null) => ({ requests, tokens, cost });
 
@@ -49,7 +52,7 @@ it("a runner reports a tool under its name, as it reports a model's status, and 
   const posted = await call("POST", "/usage/Codex", "owner", codexBody(10), { "x-atelier-runner": "home:routes" });
   expect(posted.status).toBe(200);
   const answer = (await posted.json()) as { report: UsageReport; alerts: string[] };
-  expect(answer.report).toMatchObject({ tool: "codex", runner: "home:routes", windows: [{ name: "weekly", usedPercent: 10, resetsAt: LATER }, { name: "5-hour", usedPercent: 12 }] });
+  expect(answer.report).toMatchObject({ tool: "codex", runner: "home:routes", windows: [{ name: "weekly", usedPercent: 10, resetsAt: UPCOMING }, { name: "5-hour", usedPercent: 12 }] });
   expect(answer.alerts).toEqual([]);
   // A second report from the same runner replaces the first; another runner's stands beside it.
   await call("POST", "/usage/codex", "owner", codexBody(20), { "x-atelier-runner": "home:routes" });

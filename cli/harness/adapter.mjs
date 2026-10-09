@@ -3,7 +3,7 @@
 // runner runs when an entry gives no command (defaultCommand in
 // runner-config.mjs). Each takes the runner's six arguments,
 //
-//   ADAPTER [--providers DIR] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT
+//   ADAPTER [--providers DIR] [--secret-store NAME] [--secrets-dir DIR] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT
 //
 // (docs/runners.md, "The wrapper contract"), puts the agent rules in front of
 // the brief, and gives the prompt to the harness on standard input, never as
@@ -32,7 +32,7 @@ export function parseArgs(argv) {
     if (!rest.length) throw new Error(`--${name} needs a value`);
     options[name] = rest.shift();
   }
-  if (rest.length !== 6) throw new Error("usage: ADAPTER [--providers DIR] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT");
+  if (rest.length !== 6) throw new Error("usage: ADAPTER [--providers DIR] [--secret-store NAME] [--secrets-dir DIR] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT");
   const [model, brief, workspace, plan, diff, verdict] = rest.map((v) => (v === UNSET || v === "" ? null : v));
   if (!model || !brief || !workspace) throw new Error("MODEL, BRIEF and WORKSPACE are required");
   return { options, model, brief, workspace: resolve(workspace), plan, diff, verdict };
@@ -191,6 +191,18 @@ export function opencodeEnv(env, setup, secret = (name) => readSecret(name, { en
   return out;
 }
 
+// The environment the credential store is read with: the adapter's, with the
+// store the runner reads (--secret-store, --secrets-dir; defaultCommand in
+// runner-config.mjs) named again, since the runner gives a harness no
+// ATELIER_ variable. These reach the store alone, never opencode.
+export function storeEnv(env, options = {}) {
+  return {
+    ...env,
+    ...(options["secret-store"] ? { ATELIER_SECRET_STORE: options["secret-store"] } : {}),
+    ...(options["secrets-dir"] ? { ATELIER_CONFIG_DIR: options["secrets-dir"] } : {}),
+  };
+}
+
 // Runs one job; returns the exit status. `io` replaces the process's own
 // spawn, environment, output and secret reads in tests.
 export function runAdapter(harness, argv, io = {}) {
@@ -205,7 +217,7 @@ export function runAdapter(harness, argv, io = {}) {
   try {
     if (harness === "opencode") {
       setup = opencodeSetup(args.model, args.options.providers ?? defaultProvidersDir(env));
-      childEnv = opencodeEnv(env, setup, io.secret ?? ((name) => readSecret(name, { env })));
+      childEnv = opencodeEnv(env, setup, io.secret ?? ((name) => readSecret(name, { env: storeEnv(env, args.options) })));
     }
   } catch (error) { return fail(error.message); }
   const { argv: harnessArgv, verdictFrom } = HARNESSES[harness].command(args, kind, setup);

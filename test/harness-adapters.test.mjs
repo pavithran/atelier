@@ -27,7 +27,7 @@ function standIn(path, record) {
 const fs = require("node:fs");
 const input = fs.readFileSync(0, "utf8");
 const argv = process.argv.slice(2);
-const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}"];
+const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR"];
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: process.cwd(), env: Object.fromEntries(pick.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) }));
 const answer = "VERDICT: APPROVE\\nSUMMARY: fine";
 const at = argv.indexOf("--output-last-message");
@@ -63,8 +63,10 @@ function setup(t) {
 function run(harness, s, { model, review = false, plan = false }) {
   const verdict = join(s.dir, "verdict.md");
   const args = [model, s.brief, s.ws, plan ? join(s.ws, "plan.json") : "undefined", review ? s.diff : "undefined", review ? verdict : "undefined"];
-  const extra = harness === "opencode" ? ["--providers", s.providers] : [];
-  const env = { PATH: process.env.PATH, HOME: s.dir, [OVERRIDE[harness]]: s.fake, ATELIER_SECRET_STORE: "file", ATELIER_CONFIG_DIR: s.store,
+  // The store is named as the runner's default command names it: the runner
+  // gives a harness no ATELIER_ variable.
+  const extra = harness === "opencode" ? ["--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store] : [];
+  const env = { PATH: process.env.PATH, HOME: s.dir, [OVERRIDE[harness]]: s.fake,
     CF_AIG_METADATA: gatewayMetadata("t9", review ? "review" : "build", "home:mbp") };
   const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS[harness]), ...extra, ...args], { encoding: "utf8", env });
   return { r, seen: JSON.parse(readFileSync(s.record, "utf8")), verdict };
@@ -132,6 +134,9 @@ test("the opencode adapter reads its key and the gateway token from the credenti
   assert.equal(seen.env.OPENCODE_CONFIG, join(s.providers, "deepseek-api.json"));
   assert.equal(seen.env.DEEPSEEK_API_KEY, "DUMMY-deepseek");
   assert.equal(seen.env.CF_AIG_TOKEN, "DUMMY-gateway");
+  // The store's names reach the store alone, never opencode.
+  assert.equal(seen.env.ATELIER_SECRET_STORE, undefined);
+  assert.equal(seen.env.ATELIER_CONFIG_DIR, undefined);
   // What opencode does: substitute into the raw text, then parse.
   const config = JSON.parse(substituteEnv(readFileSync(seen.env.OPENCODE_CONFIG, "utf8"), seen.env));
   const options = config.provider["deepseek-api"].options;
@@ -180,6 +185,10 @@ test("an entry with no command runs the adapter Atelier ships, with every placeh
   assert.equal(agents[0].command[0], process.execPath);
   assert.equal(agents[0].command[1], join(repo, "bin", "harness", "atelier-codex.mjs"));
   assert.deepEqual(agents[1].command.slice(2, 4), ["--providers", "/cfg/opencode"]);
+  // The runner's credential store goes to the opencode adapter as arguments.
+  const named = parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configDir: "/cfg", env: { ATELIER_SECRET_STORE: "file", ATELIER_CONFIG_DIR: "/secrets" } });
+  assert.deepEqual(named.agents[0].command.slice(2, 8), ["--providers", "/cfg/opencode", "--secret-store", "file", "--secrets-dir", "/secrets"]);
+  assert.deepEqual(parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configDir: "/cfg", env: {} }).agents[0].command.slice(4, 5), ["{model}"]);
   const argv = commandFor(agents[0], { model: "gpt-6-astra", briefFile: "/b", workspace: "/w", planFile: undefined, diffFile: undefined, verdictFile: undefined });
   assert.deepEqual(argv.slice(2), ["gpt-6-astra", "/b", "/w", "undefined", "undefined", "undefined"]);
   assert.deepEqual(parseArgs(argv.slice(2)).plan, null);

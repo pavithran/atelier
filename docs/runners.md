@@ -81,6 +81,9 @@ harnesses themselves and the credentials, which live in the credential store
    Cloudflare API token with AI Gateway · Run) when an AI Gateway is named.
    On Linux the adapter runs without the session bus the Secret Service
    needs, so store them in the file store (`ATELIER_SECRET_STORE=file`).
+   The runner gives a harness no `ATELIER_` variable, so it names its own
+   `ATELIER_SECRET_STORE` and `ATELIER_CONFIG_DIR` to the opencode adapter
+   as `--secret-store` and `--secrets-dir`, which reach the store alone.
    On macOS each is an item `atelier.NAME`, typed without echo:
 
    ```sh

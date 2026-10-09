@@ -41,20 +41,30 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 // which an entry runs when it gives no command of its own. Each is started by
 // this Node with every placeholder, so the one command builds, plans and
 // reviews; opencode's also names the folder of the provider configs `atelier
-// runner setup` wrote beside the runner config.
+// runner setup` wrote beside the runner config, and the credential store the
+// runner itself reads (ATELIER_SECRET_STORE, ATELIER_CONFIG_DIR): the runner
+// passes a harness no ATELIER_ variable (check-env.mjs), so without these the
+// adapter would look for its keys in another store than the one they were
+// put in.
 const ADAPTERS = { "claude-code": "atelier-claude.mjs", codex: "atelier-codex.mjs", opencode: "atelier-opencode.mjs", antigravity: "atelier-agy.mjs" };
 const BIN = fileURLToPath(new URL("../bin/harness/", import.meta.url));
-export function defaultCommand(agent, configDir = defaultConfigDir()) {
+export function defaultCommand(agent, configDir = defaultConfigDir(), env = process.env) {
   const adapter = ADAPTERS[agent];
   if (!adapter) return null;
-  return [process.execPath, join(BIN, adapter), ...(agent === "opencode" ? ["--providers", join(configDir, "opencode")] : []),
+  const store = agent !== "opencode" ? [] : [
+    "--providers", join(configDir, "opencode"),
+    ...(env.ATELIER_SECRET_STORE ? ["--secret-store", env.ATELIER_SECRET_STORE] : []),
+    ...(env.ATELIER_CONFIG_DIR ? ["--secrets-dir", env.ATELIER_CONFIG_DIR] : []),
+  ];
+  return [process.execPath, join(BIN, adapter), ...store,
     "{model}", "{brief_file}", "{workspace}", "{plan_file}", "{diff_file}", "{verdict_file}"];
 }
 export const defaultConfigDir = () => process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier");
 
 // `configDir` is the folder the config was read from, where `runner setup`
-// keeps the opencode provider configs a default command names.
-export function parseConfig(json, { configDir } = {}) {
+// keeps the opencode provider configs a default command names; `env` the
+// runner's environment, which names its credential store.
+export function parseConfig(json, { configDir, env } = {}) {
   const agents = [], errors = [];
   let value;
   try { value = typeof json === "string" ? JSON.parse(json) : json; }
@@ -152,7 +162,7 @@ export function parseConfig(json, { configDir } = {}) {
         new Set(entry.models).size !== entry.models.length) bad("models must be distinct claimable model ids");
     // No command: the adapter Atelier ships for the harness, where it ships one.
     if (entry.command === undefined && HARNESSES.includes(entry.agent)) {
-      const command = defaultCommand(entry.agent, configDir);
+      const command = defaultCommand(entry.agent, configDir, env);
       if (command) entry = { ...entry, command };
       else bad(`Atelier ships no adapter for ${entry.agent}; give its command`);
     }
