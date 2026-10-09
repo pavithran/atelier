@@ -801,3 +801,30 @@ it("a part's review claim binds the task's criteria and the plan's acceptance it
   expect((await L.reviewRequests(partId)).at(-1)).toMatchObject({ state: "answered" });
   expect((await L.reviewsFor(partId)).at(-1)).toMatchObject({ criteria: claim.criteria, request: claim.request, claimed: true });
 });
+
+// t353: a runner's skip of a review is recorded by runner name and read back
+// by head and since, so the landing waiting on the verdict can say when every
+// runner that offers the reviewer has skipped. The queue's review carries the
+// request's own number, so a runner can tell one request from the next at the
+// same head.
+it("a review skip is recorded by runner, read by head and since, and the queue's review carries its request number", async () => {
+  const L = await setup("review-skip");
+  const { partId } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  // The queue's review task carries the request's own number beside its head.
+  const [waiting] = await L.reviewWaiting();
+  expect(waiting.request).toBe(1);
+  expect(waiting.head).toBe(head);
+
+  const since = new Date(Date.now() - 60_000).toISOString();
+  await L.recordReviewSkip(partId, head, "home:studio", "owner", "no agent token");
+  await L.recordReviewSkip(partId, head, "home:desk", "owner", "wrong agent");
+  expect(await L.reviewSkips(partId, head, since)).toEqual([
+    { runner: "home:studio", at: expect.any(String), note: "no agent token" },
+    { runner: "home:desk", at: expect.any(String), note: "wrong agent" },
+  ]);
+  // A skip at another head, or one before the request, does not count.
+  expect(await L.reviewSkips(partId, "b".repeat(40), since)).toEqual([]);
+  expect(await L.reviewSkips(partId, head, new Date(Date.now() + 60_000).toISOString())).toEqual([]);
+});

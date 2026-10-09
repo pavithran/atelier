@@ -204,6 +204,7 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
+  runners: "strings",
 };
 export const LAND_JSON_MAX = 4000;
 
@@ -1274,7 +1275,7 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: Item[] } {
+  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: (Item & { request: number })[] } {
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
   }
 
@@ -3148,10 +3149,13 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Open review requests, as the queue offers them: the part item with its
-  // dispatch overlaid by the review dispatch, whose job names "review".
-  // Each part is read once, however many requests name it.
-  reviewWaiting(): Item[] {
-    const requests = this.sql.exec(`SELECT item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
+  // dispatch overlaid by the review dispatch, whose job names "review", and
+  // the request's own number in `request`, so a runner can tell one review
+  // request from the next at the same head and end its skip of the earlier
+  // one when a new request is made (t353). Each part is read once, however
+  // many requests name it.
+  reviewWaiting(): (Item & { request: number })[] {
+    const requests = this.sql.exec(`SELECT id, item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
     if (!requests.length) return [];
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
@@ -3159,7 +3163,30 @@ export class Ledger extends DurableObject<Env> {
     return requests.map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
-      return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+    });
+  }
+
+  // A runner's word that it will not serve the review of `head`, recorded as
+  // a `review.skipped` event under the runner's name (t353). The landing
+  // waiting on the review reads these to say, by runner, when every runner
+  // that offers the reviewer has skipped, instead of waiting out the hour.
+  recordReviewSkip(itemId: string, head: string, runner: string, actor: string, note: string, proved = false): void {
+    this.item(itemId);
+    const at = new Date().toISOString();
+    this.log(itemId, actor, "review.skipped", { head, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
+  }
+
+  // The runners that have skipped the review of `head` since `since`, as the
+  // landing's wait reads them; a skip from before the request (an earlier
+  // landing's) does not count.
+  reviewSkips(itemId: string, head: string, since: string): { runner: string; at: string; note?: string }[] {
+    const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
+    return rows.flatMap((r) => {
+      const data = JSON.parse(r.data as string) as { head?: unknown; runner?: unknown; note?: unknown };
+      if (data.head !== head) return [];
+      if (Date.parse(r.at as string) < Date.parse(since)) return [];
+      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(typeof data.note === "string" && data.note ? { note: data.note } : {}) }];
     });
   }
 

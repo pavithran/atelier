@@ -1488,6 +1488,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
       return json({ released: true });
     }
+    // A runner's word that it will not serve the review of this head (t353):
+    // the owner token the runner holds authorises it, as the run reports are,
+    // and the runner's name names it, so the landing waiting on the review can
+    // say, by runner, when every runner that offers the reviewer has skipped.
+    case "review-skip": {
+      requireOwner(env, actor);
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a review skip names its runner in X-Atelier-Runner", 400);
+      const head = String(body.head ?? "");
+      if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "a review skip names the head it refused as a full commit hash", 400);
+      L.recordReviewSkip(id, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
+      return json({ skipped: true });
+    }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or
     // letting the pool pick one, and the landing waits for the verdict. With
