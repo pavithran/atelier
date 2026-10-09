@@ -774,6 +774,9 @@ it('Flow offers time and family filters that keep each other, and the showcase h
  expect(html).toContain('href="?since=1d&amp;family=openai"');
  expect(html).toContain('href="?since=7d"');
  expect(html).toMatch(/<a href="\?since=7d&amp;family=openai" aria-current="page"/);
+ // Company colours stay inside charts: the filters carry none.
+ const filters=html.split('aria-label="Filters"')[1].split('</nav>')[0];
+ expect(filters).not.toContain('--m-');
  // Replay is the scrubber the live script adds, not a second control beside it (finding 6).
  expect(html).not.toContain('class="replay"');
  expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).not.toContain('class="replay"');

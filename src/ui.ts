@@ -589,8 +589,10 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
   const sinceLinks = [["1d", "last day"], ["7d", "last week"], ["all", "all time"]]
     .map(([val, label]) => `<a href="${link(val, familyParam)}"${sinceParam === val ? ' aria-current="page"' : ''}>${e(label)}</a>`).join('');
 
+  // Company colours live only inside charts; the family filter is a plain
+  // tab like the time filter beside it.
   const fams = VENDOR_NAMES.filter(([v]) => familiesPresent.includes(v));
-  const familyLinks = fams.map(([v, label]) => `<a href="${link(sinceParam, v)}"${familyParam === v ? ' aria-current="page"' : ''} style="color:var(--m-${v})">${e(label)}</a>`).join('');
+  const familyLinks = fams.map(([v, label]) => `<a href="${link(sinceParam, v)}"${familyParam === v ? ' aria-current="page"' : ''}>${e(label)}</a>`).join('');
   const allFamiliesLink = `<a href="${link(sinceParam, undefined)}"${!familyParam ? ' aria-current="page"' : ''}>all families</a>`;
 
   // The filter labels carry their own class: the row wraps at any width, and
