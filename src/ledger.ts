@@ -1,7 +1,7 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
+import { modelState, OBSERVED_UNDER, type ModelEntry, type ModelSet, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -768,6 +768,25 @@ export class Ledger extends DurableObject<Env> {
     const entry = JSON.parse(row.json as string) as ModelEntry;
     if (entry.where !== kind) throw new RuleError("wrong_runner", `${id} runs ${entry.where === "home" ? "at home" : "in the cloud"}; a ${kind} runner cannot report it`, 403);
     const record = { ...entry, status };
+    this.sql.exec(`UPDATE models SET json = ? WHERE id = ?`, JSON.stringify(record), id);
+    return record;
+  }
+
+  // The owner's standing for a model (state, note, roles, tier), changed a
+  // field at a time. A state that moves records when, so the Models page can
+  // show it with its date; changing any other field leaves the state's date.
+  setModel(id: string, change: ModelSet, at: string): ModelEntry {
+    const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, id).toArray()[0];
+    if (!row) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    const entry = JSON.parse(row.json as string) as ModelEntry;
+    const record: ModelEntry = { ...entry };
+    if (change.state !== undefined) {
+      record.state = change.state;
+      if (change.state !== modelState(entry)) record.stateAt = at;
+    }
+    if (change.note !== undefined) record.note = change.note;
+    if (change.roles !== undefined) record.roles = change.roles;
+    if (change.tier !== undefined) record.tier = change.tier;
     this.sql.exec(`UPDATE models SET json = ? WHERE id = ?`, JSON.stringify(record), id);
     return record;
   }

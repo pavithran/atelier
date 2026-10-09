@@ -111,8 +111,9 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "plan post ID FILE", about: "The holder of the plan task's claim, its planner, posts the plan document in FILE. An invalid one is refused with every error, and the planner gets one more attempt before the plan blocks." },
   ]] },
   { name: "Models", lines: [[
-    { form: "models", about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found." },
-    { form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT]", about: "Adds or replaces a pool entry. Atelier never stores a key: `--keychain` names the Keychain entry that holds it, and a request that carries a key is refused. `--note` keeps a note with the entry." },
+    { form: "models [--json]", about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found, and, with `--json`, the whole pool as JSON carrying each entry's state, roles and tier." },
+    { form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] [--state paused|reserved|available] [--roles build,review,plan] [--tier frontier|execution|budget]", about: "Adds or replaces a pool entry. Atelier never stores a key: `--keychain` names the Keychain entry that holds it, and a request that carries a key is refused. `--note` keeps a note with the entry." },
+    { form: "models set ID --state paused|reserved|available [--note TEXT] [--roles build,review,plan] [--tier frontier|execution|budget]", about: "Changes an entry's standing, note, roles and tier. A state of paused or reserved keeps the model out of routing, dispatch suggestions and review requests, and the Models page shows it with its date." },
     { form: "models remove ID", about: "Removes a model from the pool." },
   ], [
     { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] [--overlap-ok]", about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it; a held task is released and queued in the same step, keeping its workspace and commits. While the task's scope overlaps, within one of the project's core files (`init --core`), the scope of a live item, the queue holds it and offers it to no runner until that item merges or is abandoned; `atelier status` and `atelier queue` say which item it waits on, and `--overlap-ok` lets this dispatch through at once. `--job merge-main` sends a task whose landing conflicted with main back to its builder: the runner merges main at the named head into its workspace (main's head as the baseline holds it, unless `--head` names one) and leaves the conflicts for the builder to resolve and commit; then `atelier land ID` again. Project owner only." },
@@ -507,6 +508,10 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--keychain NAME": "the Keychain entry that holds the key; the key itself is never sent",
       "--alias A": "another name the harness reports the model under; once per alias",
       "--note TEXT": "a note kept with the entry",
+      "--state paused|reserved|available": "with set, the owner's standing; paused and reserved keep the model out of routing, dispatch suggestions and review requests",
+      "--roles build,review,plan": "with set or add, the jobs the model may take; a review-only model is never a builder",
+      "--tier frontier|execution|budget": "with set or add, the model's tier, stored and returned in JSON",
+      "--json": "prints the pool as JSON, carrying each entry's state, roles and tier",
     },
     example: "atelier models add gpt-6-astra --harness codex --where cloud",
   },

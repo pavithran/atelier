@@ -288,7 +288,7 @@ export const FLAGS = {
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
   plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false, resolve: true },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
-  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
+  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false, json: true, state: false, roles: false, tier: false },
   showcase: { named: true, anonymous: true },
   projects: { force: true },
   owners: { json: true },
@@ -3303,8 +3303,11 @@ const commands = {
 
   // The model pool. With no subcommand, lists it. `models add ID --harness H
   // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
-  // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
-  // removes one. Keys stay in the Keychain; only the entry's name is sent.
+  // [--alias A]... [--note TEXT]` adds or replaces an entry; `models set ID
+  // --state paused|reserved|available [--note TEXT] [--roles build,review,plan]
+  // [--tier frontier|execution|budget]` changes an entry's standing, note,
+  // roles and tier; `models remove ID` removes one. Keys stay in the Keychain;
+  // only the entry's name is sent.
   async models() {
     const [sub, id] = args._.slice(1);
     if (sub === "add") {
@@ -3313,20 +3316,38 @@ const commands = {
       const entry = await call("PUT", `/models/${encodeURIComponent(id)}`, {
         harness: args.harness, where: args.where, provider: args.provider, endpoint: args.endpoint,
         keychain: args.keychain, aliases: args.multi.alias ?? [], note: args.note,
+        state: args.state, roles: args.roles, tier: args.tier,
       }, OWNER);
       return console.log(`${entry.id} is in the pool: ${entry.harness}, ${entry.where}, ${entry.provider}${entry.keychain ? `, key in Keychain ${entry.keychain}` : ""}; family ${entry.family}.`);
+    }
+    if (sub === "set") {
+      if (!id) die("atelier models set ID --state paused|reserved|available [--note TEXT] [--roles build,review,plan] [--tier frontier|execution|budget]");
+      if (args.state === undefined && args.note === undefined && args.roles === undefined && args.tier === undefined) {
+        die("atelier models set ID changes one of --state, --note, --roles or --tier; name at least one");
+      }
+      const entry = await call("POST", `/models/${encodeURIComponent(id)}/set`, {
+        state: args.state, note: args.note, roles: args.roles, tier: args.tier,
+      }, OWNER);
+      const state = entry.state && entry.state !== "available" ? ` ${entry.state}${entry.stateAt ? ` since ${entry.stateAt.slice(0, 16)}Z` : ""}` : "";
+      const roles = entry.roles?.length ? ` roles ${entry.roles.join(",")}` : "";
+      const tier = entry.tier ? ` tier ${entry.tier}` : "";
+      return console.log(`${entry.id}:${state}${roles}${tier}${entry.note ? ` (${entry.note})` : ""}.`);
     }
     if (sub === "remove") {
       if (!id) die("atelier models remove ID");
       const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
       return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
     }
-    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, or nothing to list`);
+    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, set, remove, or nothing to list`);
     const pool = await call("GET", "/models", undefined, OWNER);
+    if (args.json) return console.log(JSON.stringify(pool, null, 2));
     if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
     for (const m of pool) {
       const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
-      console.log(`${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`);
+      const held = m.state && m.state !== "available" ? `  ${m.state} since ${(m.stateAt ?? m.addedAt).slice(0, 16)}Z` : "";
+      const roles = m.roles?.length ? `  roles: ${m.roles.join(",")}` : "";
+      const tier = m.tier ? `  tier: ${m.tier}` : "";
+      console.log(`${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}${held}${roles}${tier}`);
     }
   },
 
