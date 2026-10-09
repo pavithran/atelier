@@ -331,15 +331,13 @@ export function readAgentToken(where, deps = {}) {
 // model's own agent token, so the ledger shows the reviewer itself as the
 // recorder and the gate counts the review as proved, never the owner token
 // the runner holds for its builds. `tokens` in the runner config says where
-// each model's is; a model it leaves out is refused, naming the entry to add,
-// unless the config opts into the owner-recorded path (ownerRecordsReviews),
-// the migration until every reviewer's token is issued. Returns {token}, or
-// {owner: true} for the opted-in fallback, or {refused: reason}.
+// each model's is; a model it leaves out is refused, naming the entry to add.
+// There is no owner-recorded fallback: every reviewer has its own token.
+// Returns {token} or {refused: reason}.
 export function reviewToken(config, model, actor, deps = {}) {
   const where = config.tokens?.[model];
   if (where === undefined) {
-    if (config.ownerRecordsReviews === true) return { owner: true };
-    return { refused: `no agent token for ${actor}: the runner config names none under tokens["${model}"] (atelier token issue --as ${actor}, then name the Keychain entry or token file there), so its reviews would be recorded by the owner token; set ownerRecordsReviews to allow that meanwhile` };
+    return { refused: `no agent token for ${actor}: the runner config names none under tokens["${model}"] (atelier token issue --as ${actor}, then name the Keychain entry or token file there); a review is recorded only by the reviewer's own token, never the owner's` };
   }
   let token;
   try { token = readAgentToken(where, deps); }
@@ -741,11 +739,11 @@ export async function runReview(assignment, config, name, runnerIO) {
     // this job — the claim, the read tokens, the verdict and a release — and
     // nowhere else: not into the harness's environment, not into a log. A
     // model without one is refused for this process (skipped), not retried
-    // every poll, and the reason names the token to store.
+    // every poll, and the reason names the token to store; the owner token
+    // never records a review.
     const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}) });
     if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
-    if (credential.token) io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
-    else io.log(`reviewing as ${actor} with the owner token (ownerRecordsReviews): the ledger will say the owner recorded this review`);
+    io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
     // Claim the request; the server returns the part, the brief's inputs and a
     // read token for the fork, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
