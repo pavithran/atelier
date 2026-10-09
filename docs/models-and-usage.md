@@ -23,7 +23,9 @@ atelier models
 A model's family (Claude, GPT, GLM, Gemini, DeepSeek, Qwen and others) is
 recognised from its name, so a new release is coloured correctly on the
 graph the day it appears; a name no family claims is shown as not
-recognised. A runner reports what it finds for each model through
+recognised. The family is also what the gate's review rule reads, and what
+`atelier init --single-family COMPANY` names when a project is to run on one
+company's models alone (see [Single-family mode](gate.md#single-family-mode)). A runner reports what it finds for each model through
 `POST /api/models/ID/status`, naming itself in `X-Atelier-Runner`: a home
 model is reported only by a home runner and a cloud model only by a cloud
 runner, and the Models page shows each report with the runner that made it.

@@ -12,15 +12,17 @@
 // in src/rules.ts), and a landing never waits for it: an open tier request is
 // withdrawn when the change is accepted, integrated or closed.
 
+import type { PoolFamily } from "../models/pool.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
 import { sameActor } from "../rules.ts";
 import { independenceRefusal } from "./independence.ts";
 
 // Whether the gate's reviewer gives the tier review too: it is a tier model
 // and could give the gate's independent review, of another family than every
-// contributor. Then no separate tier request is asked.
-export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[]): boolean {
-  return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors) === null;
+// contributor (under single-family mode, `single`, a different model of the
+// company). Then no separate tier request is asked.
+export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): boolean {
+  return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors, single) === null;
 }
 
 // The tier model asked for a change's separate tier review: the first, in

@@ -16,7 +16,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, matchesAny,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, independentReviewerText, matchesAny, singleFamily,
   type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
@@ -182,16 +182,17 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts));
   if (rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);
+  const single = singleFamily(policy);
   if (input.tier) {
     // A tier review is asked beside the gate's; the gate's approval leaves it standing.
   } else if (basis === "part") {
-    const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner));
-    if (independent) return no(`${independent.by}, of another family than every contributor, approved ${short(head)}`);
+    const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner, single));
+    if (independent) return no(`${independent.by}, ${single ? `a different ${single} model from every contributor` : "of another family than every contributor"}, approved ${short(head)}`);
   } else if (!input.wanted) {
     const g = gate(item, policy, [...input.evidence], reviews, owner);
     if (g.overridden) return no(`the project owner overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
     if (!g.needsAssessor) {
-      const approvers = atHead.filter((r) => independentApproval(r, kind === "protected" ? "protected" : "coordinated", contributors, owner)).map((r) => r.by);
+      const approvers = atHead.filter((r) => independentApproval(r, kind === "protected" ? "protected" : "coordinated", contributors, owner, single)).map((r) => r.by);
       return no(`the gate already counts an independent approval of ${short(head)} (${approvers.join(", ")})`);
     }
   }
@@ -234,7 +235,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const last = modelRejections.at(-1);
 
   const why = basis === "part"
-    ? `every part is reviewed by another model family, and this ${kind} change has no such approval at ${short(head)}`
+    ? `every part is reviewed by ${single ? independentReviewerText(single) : "another model family"}, and this ${kind} change has no such approval at ${short(head)}`
     : basis === "protected"
       ? `a protected change needs an independent review, and none is recorded at ${short(head)}`
       : basis === "coordinated"

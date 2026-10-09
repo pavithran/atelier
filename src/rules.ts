@@ -264,7 +264,31 @@ export interface ProjectPolicy {
   coreFiles?: string[];
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
+  // Which companies' models build and review (t394). Absent, or `single`
+  // null, the default holds: a protected change needs approval from a model
+  // of another family than every contributor. With `single` set the project
+  // runs in single-family mode: building and reviewing use that company's
+  // models alone, routing and the reviewer picker take no other, and a
+  // review counts when the reviewer is a different model from every
+  // contributor. The switch records who made it and when, either way, so a
+  // return to the default is as visible as the opt-in.
+  familyMode?: FamilyMode;
 }
+
+export interface FamilyMode {
+  single: PoolFamily | null;  // the one company, or null when the owner returned to cross-family review
+  by: string;
+  at: string;
+}
+
+// The company a project runs on alone, or null under the default.
+export const singleFamily = (policy: Pick<ProjectPolicy, "familyMode"> | null | undefined): PoolFamily | null => policy?.familyMode?.single ?? null;
+
+// What a protected change needs of its reviewer, in words: the default's
+// model of another family, or single-family mode's different model of the
+// one company.
+export const independentReviewerText = (single: PoolFamily | null): string =>
+  single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor";
 
 // Reject malformed policy at the boundary instead of silently widening access.
 export function parseAgents(value: unknown): Record<string, AgentPolicy> {
@@ -413,8 +437,16 @@ export const actorFamily = (actor: string): PoolFamily => familyOf(modelKey(acto
 // Null when `reviewer` is of a recognised family that no contributor shares;
 // otherwise the rule it fails. A contributor of unrecognised family fails
 // every reviewer, because no family can be shown to differ from one that is
-// not recognised.
-export function familyRefusal(reviewer: string, contributors: readonly string[]): string | null {
+// not recognised. Under single-family mode (`single`, the company named by
+// singleFamily) the rule is instead that the reviewer is that company's and
+// a different model, by modelKey, from every contributor: the same model in
+// another harness is still the same model reviewing its own work.
+export function familyRefusal(reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): string | null {
+  if (single) {
+    if (actorFamily(reviewer) !== single) return `not one of ${single}'s models, and this project runs in single-family mode (${single})`;
+    const same = contributors.find((c) => modelKey(c) === modelKey(reviewer));
+    return same ? `the same model as contributor ${same}, and no model reviews its own work` : null;
+  }
   const unknown = contributors.find((c) => actorFamily(c) === "other");
   if (unknown) return `contributor ${unknown}'s family is not recognised from its name`;
   const family = actorFamily(reviewer);
@@ -628,8 +660,8 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
   return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
 }
 
-export function classRequirement(kind: ChangeClass): string {
-  if (kind === "protected") return "Protected change: needs one review from another model family";
+export function classRequirement(kind: ChangeClass, single: PoolFamily | null = null): string {
+  if (kind === "protected") return single ? `Protected change: needs one review from a different ${single} model (single-family mode)` : "Protected change: needs one review from another model family";
   if (kind === "coordinated") return "Coordinated change: needs one review from another agent";
   return "Direct change: needs no review";
 }
@@ -638,6 +670,7 @@ export function classRequirement(kind: ChangeClass): string {
 // execution policy lacks its independent review. Such a project has no
 // change classes to name, so the blocker names the protected path instead.
 export const PROTECTED_NEED = "touches a protected path; needs approval from a model of another family than every contributor";
+export const protectedNeed = (single: PoolFamily | null): string => (single ? `touches a protected path; needs approval from ${independentReviewerText(single)}` : PROTECTED_NEED);
 
 // Whether one review is the independent review a change needs. The project
 // owner's approval never is: the owner decides by accepting, and the
@@ -649,11 +682,14 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // the owner token recorded in a model's name counts only when it answers a
 // review request that model claimed for that head (unprovedReview). A tier
 // review's approval never is: the tier reviews beside the gate, not for it.
-export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
+// Under single-family mode (`single`) a protected change needs instead a
+// different model of that company (familyRefusal); a contributor never
+// counts in either mode.
+export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER, single: PoolFamily | null = null): boolean {
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
   if (contributors.some((actor) => sameActor(r.by, actor))) return false;
-  return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
+  return kind === "coordinated" || familyRefusal(r.by, contributors, single) === null;
 }
 
 // A review the owner token recorded in a model's name that answers no review
@@ -854,7 +890,7 @@ export function reviewOverrideFor(
     const where = item.head ? ` at ${item.head.slice(0, 8)}` : "";
     throw new RuleError("override_unneeded", `${item.id}${where} is not missing an independent review, so there is nothing to override${g.ready ? "; accept it without an override" : `: ${g.blockers.join("; ")}`}`);
   }
-  return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
+  return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? protectedNeed(singleFamily(policy)), contributors: contributorsOf(item) };
 }
 
 // Live items held by someone else whose scope overlaps this one. Items of
@@ -1187,7 +1223,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   const kind = view.changedPaths === null ? null : changeClass(changed, policy);
   const governed = policy.execution !== undefined;
   if (governed && view.changedPaths?.length === 0) blockers.push("nothing to merge");
-  const requirement = kind ? classRequirement(kind) : view.changedPaths === null ? "Change class pending: changed paths not yet observed" : "Nothing to merge";
+  const requirement = kind ? classRequirement(kind, singleFamily(policy)) : view.changedPaths === null ? "Change class pending: changed paths not yet observed" : "Nothing to merge";
   let needsAssessor = false;
   let overridden: ReviewOverride | null = null;
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
@@ -1200,15 +1236,16 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   // stands in for it; the owner's approval does not.
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
-    if (!reviews.some((r) => independentApproval(r, kind, contributors, owner))) {
+    const single = singleFamily(policy);
+    if (!reviews.some((r) => independentApproval(r, kind, contributors, owner, single))) {
       overridden = overrideAt(item, owner);
       if (!overridden) {
         needsAssessor = true;
-        blockers.push(governed ? requirement : PROTECTED_NEED);
+        blockers.push(governed ? requirement : protectedNeed(single));
         // An approval that would count had the model's own token or a claimed
         // request shown it is named, so the owner sees why it does not.
         if (kind === "protected") {
-          for (const r of reviews) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, kind, contributors, owner)) blockers.push(unprovedBlocker(r));
+          for (const r of reviews) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, kind, contributors, owner, single)) blockers.push(unprovedBlocker(r));
         }
       }
     }
@@ -1301,7 +1338,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`, weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? protectedNeed(singleFamily(policy))}; ask a reviewer who qualifies, or accept with an override and its reason`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }

@@ -15,7 +15,7 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, R
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { cleanEntry, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
@@ -592,6 +592,18 @@ function parseReviewTier(value: unknown): string[] {
   return out;
 }
 
+// The company a project runs on alone (`atelier init --single-family`,
+// ProjectPolicy.familyMode): one of the families a model's name is
+// recognised as, in any letter case. Null or "" returns the project to
+// cross-family review (`--cross-family`).
+function singleFamilyArg(value: unknown): PoolFamily | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") throw new RuleError("bad_single_family", `single-family mode names one company, one of ${POOL_FAMILIES.join(", ")}, or "" to return to cross-family review`, 400);
+  const family = value.trim().toLowerCase() as PoolFamily;
+  if (!POOL_FAMILIES.includes(family)) throw new RuleError("bad_single_family", `"${value}" is not a company Atelier recognises models by; single-family mode takes one of ${POOL_FAMILIES.join(", ")}`, 400);
+  return family;
+}
+
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
@@ -1011,6 +1023,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
+      // The model policy (t394): a company to run on alone, or null or ""
+      // to return to cross-family review; the switch records who made it.
+      ...(has("singleFamily") ? { familyMode: { single: singleFamilyArg(body.singleFamily), by: actor } } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.

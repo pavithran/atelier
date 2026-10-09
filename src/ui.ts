@@ -38,8 +38,8 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
+  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
+  type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -1253,6 +1253,10 @@ export interface Standing {
   merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
+  // The project's model policy (t394): single-family mode naming the
+  // company, or a recorded return to cross-family review; null when never
+  // switched. `atelier status --project` says so under the project's name.
+  familyMode: FamilyMode | null;
   // Each registered check, its class, that class in words (src/checks.ts),
   // and the paths it applies to, or null when it applies to every change.
   checks: { command: string; class: CheckClass; text: string; paths: string[] | null }[];
@@ -1343,6 +1347,7 @@ export function buildStanding(
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
       : null,
+    familyMode: p.policy.familyMode ?? null,
     checks: checkClasses(p.policy).map((v) => ({ command: v.command, class: v.class, text: classText(v), paths: p.policy.checkPaths?.find((c) => c.command === v.command)?.paths ?? null })),
     partial,
   };
@@ -1409,9 +1414,25 @@ export function projectTabs(p: ProjectRecord, active: string): string {
 // its tab bar. `active` is the tab the page is, "Log" for a commit or a
 // path's history (finding 24), and Tasks for a task's own page. `live` adds
 // the live script without a refresh, as the Flow tab's replay needs.
+// The model policy in words, for the project's pages (t394): single-family
+// mode names the company, so nobody takes the project's reviews for
+// cross-company ones; the default says so only where a switch back is
+// recorded, with who made it and when.
+export function familyModeText(policy: ProjectPolicy): string {
+  const mode = policy.familyMode ?? null;
+  const when = mode ? ` (set by ${mode.by} ${when_(mode.at)})` : "";
+  if (mode?.single) return `Single-family mode, ${mode.single}: building and reviewing use ${mode.single} models only, and a review counts from a different ${mode.single} model than every contributor, not from another company${when}`;
+  return `Cross-family, the default: a protected change needs approval from a model of another company than every contributor${when}`;
+}
+const when_ = (at: string) => (Number.isFinite(Date.parse(at)) ? `on ${at.slice(0, 10)}` : `at ${at}`);
+
+// The line every tab of a single-family project's page carries under its
+// title, so the mode is seen wherever the project is read.
+const familyModeBanner = (p: ProjectRecord) => (singleFamily(p.policy) ? `<p class="meta family-mode" role="note">${e(familyModeText(p.policy))}.</p>` : "");
+
 function projectPage(p: ProjectRecord, active: string, body: string, ownerName: string | null = null, title?: string, live?: Live): string {
   return page(title ?? titleOf(p), `<div class="page-width">
-  <header class="proj-head"><h1>${e(titleOf(p))}</h1>${projectTabs(p, active)}</header>
+  <header class="proj-head"><h1>${e(titleOf(p))}</h1>${familyModeBanner(p)}${projectTabs(p, active)}</header>
   ${body}</div>`, "Home", ownerName, 0, true, live);
 }
 
@@ -1541,6 +1562,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
     <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
+    <dt>Models</dt><dd>${e(familyModeText(p.policy))}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
@@ -1650,6 +1672,9 @@ const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
 function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
   const { item, gate } = d;
+  // The company the project runs on alone (t394), named wherever the page
+  // says what review the change needs, so the ask is never a cross-company one.
+  const single = singleFamily(d.policy);
   const view = evidenceAt(d.policy, d.evidence, item.head);
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
   const live = item.state === "claimed" || item.state === "submitted";
@@ -1702,9 +1727,9 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // The owner's Approve cannot satisfy the gate, so it is not that action,
   // and the override above stays the way on when no reviewer qualifies.
   const askReview = decision.action === "review"
-    ? `<div class="merge-command"><p>To move this task, ask a model of another family to review the revision. In the registered checkout, run:</p>
+    ? `<div class="merge-command"><p>To move this task, ask ${single ? `a different ${single} model (single-family mode)` : "a model of another family"} to review the revision. In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
-      <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one of another family than every contributor — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
+      <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one ${single ? `that is a different ${single} model from every contributor` : "of another family than every contributor"} — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
     : "";
   const merge = decision.action === "merge"
     ? `<div class="merge-command"><p>In the registered checkout, run:</p>
@@ -1821,7 +1846,7 @@ ${framing}${openScope}
       <ul>${gate.outOfScope.map((f) => `<li><code>${e(f)}</code></li>`).join("")}</ul></details>`
     : "";
   const protectedNote = gate.needsAssessor
-    ? `<div class="notice"><h3>${gate.changeClass === "coordinated" ? "Coordinated change" : "Protected change"}</h3><p>${e(gate.requirement ? `${gate.requirement}.` : "These files affect protected behavior and need an approval from a model of another family than every contributor.")} Your own approval does not count as that review.</p></div>`
+    ? `<div class="notice"><h3>${gate.changeClass === "coordinated" ? "Coordinated change" : "Protected change"}</h3><p>${e(gate.requirement ? `${gate.requirement}.` : `These files affect protected behavior and need an approval from ${single ? `a different ${single} model than every contributor (single-family mode)` : "a model of another family than every contributor"}.`)} Your own approval does not count as that review.</p></div>`
     : "";
 
   // The head's own runs: a merged check ran on another tree and is shown

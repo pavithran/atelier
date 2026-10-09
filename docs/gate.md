@@ -138,6 +138,37 @@ who made it but not its reason; it names each review's reviewer, verdict, head
 and recorder in the same way, without the review's note. Both stay in the
 ledger.
 
+### Single-family mode
+
+A project may run on one company's models alone, for a client who allows
+one provider or a project where only one company's models are licensed:
+
+```text
+atelier init --single-family anthropic
+```
+
+The company is one of the families a model's name is recognised by
+([`src/models/pool.ts`](../src/models/pool.ts): anthropic, openai, google,
+zai, deepseek, qwen, minimax, mistral, meta, moonshot, xai, xiaomi,
+bytedance, cohere). The policy records the mode as `familyMode`, with who set
+it and when. Under it, plan routing, a hand dispatch, the reviewer picker and
+the landing take only that company's models, and the gate counts an approval
+when the reviewer is a different model of the company from every recorded
+contributor, compared by model name without letter case, a `:profile` suffix
+or the harness: the same model in another harness is still the same model.
+A model never counts as reviewer of a change it contributed to, in either
+mode. The mode is shown under the project's title on every tab of its page
+and on its Settings tab, by `atelier status` and `atelier status --project`,
+at the top of every review brief, and in each merge's provenance note, so
+nobody takes such a review for a cross-company one.
+
+```text
+atelier init --cross-family
+```
+
+returns to the default, and that switch too is recorded with who made it
+and when. `--reset` drops the mode with the rest of the policy.
+
 ## Check classes
 
 Atelier runs a check in a clean clone of an item's head whenever anyone asks,

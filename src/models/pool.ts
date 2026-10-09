@@ -55,6 +55,10 @@ const FAMILIES: [PoolFamily, RegExp][] = [
   ["cohere", /^command\b|cohere|^north\b/i],
 ];
 
+// Every family a name can be recognised as, in the order above: the
+// companies a project may run on alone (`atelier init --single-family`).
+export const POOL_FAMILIES: readonly PoolFamily[] = FAMILIES.map(([family]) => family);
+
 export function familyOf(model: string): PoolFamily {
   const name = model.split("/").pop() ?? model;
   return FAMILIES.find(([, re]) => re.test(name) || re.test(model))?.[0] ?? "other";

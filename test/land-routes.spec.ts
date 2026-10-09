@@ -436,6 +436,40 @@ it("a tier approval alone does not let the task be accepted", async () => {
   expect((await L.reviewRequests(id)).find((r) => !r.tier)).toMatchObject({ state: "open" });
 });
 
+// t394: under single-family mode a landing picks a different model of the
+// company, refuses a named reviewer of another company, and the review
+// claim carries the mode so the brief can say so; the company's approval
+// then clears the gate, which the owner's acceptance confirms.
+it("under single-family mode a landing's review goes to a different model of the company, and no other company's model is named", async () => {
+  const SONNET = "claude-code/sonnet-5.5";
+  const pool = [...POOL, entry("sonnet-5.5", "claude-code")];
+  const L = await setup("land-single-family", { ...policy, familyMode: { single: "anthropic", by: "owner", at: AT } });
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "c".repeat(40);
+  await submittedTask(L, id, head);
+  // GPT, first in the pool's order, is passed over for being another company's; OPUS built it.
+  await refusal(L.requestReview(id, "owner", GPT, pool), "single_family", /codex\/gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode \(anthropic\)/);
+  expect(await L.requestReview(id, "owner", null, pool)).toMatchObject({ requested: true, reviewer: SONNET });
+  expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { reviewer: SONNET, via: "land" } });
+  const claim = await L.claimReview(id, SONNET, RUNNER) as unknown as { singleFamily: string | null; need: { reason: string } | null };
+  expect(claim.singleFamily).toBe("anthropic");
+  expect(claim.need?.reason).toMatch(/needs an independent review/);
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: true, note: "Fine.", at: new Date().toISOString() });
+  await L.accept(id, "owner", head);
+  expect(await L.item(id)).toMatchObject({ state: "accepted" });
+  // With only the builder's company's one model, no reviewer can be shown independent, and the refusal says what to name.
+  const alone = await setup("land-single-family-alone", { ...policy, familyMode: { single: "anthropic", by: "owner", at: AT } });
+  const t = (await alone.newItem("Alone", [], "owner")).id;
+  await submittedTask(alone, t, head);
+  await refusal(alone.requestReview(t, "owner", null, POOL), "no_reviewer", /^no reviewer that is a different anthropic model from every contributor \(single-family mode\) is in the pool: /);
+  // The claim under the default carries no mode.
+  const plain = await setup("land-single-family-none");
+  const p = (await plain.newItem("Plain", [], "owner")).id;
+  await submittedTask(plain, p, head);
+  expect(await plain.requestReview(p, "owner", null, pool)).toMatchObject({ reviewer: GPT });
+  expect((await plain.claimReview(p, GPT, RUNNER) as unknown as { singleFamily: string | null }).singleFamily).toBeNull();
+});
+
 it("a landing's review goes to a tier model of another family first, and its one review serves the gate and the tier", async () => {
   const GEMINI = "antigravity/gemini-3.1-pro";
   // Without the tier, the pool's order would pick GEMINI for the gate.

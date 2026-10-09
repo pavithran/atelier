@@ -255,7 +255,8 @@ export async function runLand(io) {
   // only a protected change refuses them, and the class is not known yet.
   if (reviewer !== undefined) {
     const contributed = contributorsOf(d0.item).find((c) => sameActor(c, reviewer));
-    if (contributed) die(`${reviewer} contributed to ${id} (as ${contributed}) and cannot review it; name another reviewer with --reviewer H/M, of another family than every contributor.`);
+    const single = d0.policy?.familyMode?.single ?? null;
+    if (contributed) die(`${reviewer} contributed to ${id} (as ${contributed}) and cannot review it; name another reviewer with --reviewer H/M, ${single ? `a different ${single} model from every contributor (single-family mode)` : "of another family than every contributor"}.`);
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
