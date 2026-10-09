@@ -80,7 +80,17 @@ export interface BriefInput {
   bar?: string | null;                     // the project's review bar; absent or null, DEFAULT_REVIEW_BAR
 }
 
-const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
+// The rules every review brief carries, whatever runs the reviewer (t376).
+// They lived only in the local wrappers (atelier-claude, atelier-codex,
+// atelier-opencode, atelier-agy), so a runner with a generic wrapper gave its
+// reviewers none of them. test/fixtures/briefs/review-rules.txt pins the text.
+export const REVIEW_RULES = [
+  "- Verify each blocking finding before you report it, by reading the code it names or by running a test, and say in the finding how you verified it: the lines you read, or the test you ran and what it printed.",
+  "- Give at most 12 findings, the most serious first.",
+  "- Edit nothing: change, create and delete no file, and do not commit or push.",
+].join("\n");
+
+const WHERE_LABEL ={ sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const CLASS_GLOSS: Record<ChangeClass, string> = {
   protected: "it touches a protected path",
   coordinated: "it touches no protected path, and not only paths the project lets agents change directly",
@@ -171,6 +181,8 @@ export function reviewBrief(input: BriefInput): string {
       ? ["", `This is review round ${need.round}. ${again}. Start with the earlier blocking findings under "Earlier reviews": say in your summary which are resolved, and repeat as blocking any that still holds.`]
       : []),
   );
+
+  section("## Rules for reviewing", "", REVIEW_RULES);
 
   const basis = need.basis === "part"
     ? "Every part of a plan is reviewed by a model of another family, whatever its change class."
