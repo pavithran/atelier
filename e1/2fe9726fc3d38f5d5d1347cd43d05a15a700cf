@@ -1,0 +1,28 @@
+atelier atelier/t377 "Standing owner decisions are recorded per project and reach every agent"
+accepted head a3478b08136fee0f4f71f9a73c24e8afb000ed6b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-09T18:37:45.877Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-09T18:37:50.353Z
+REVIEW approve by codex/gpt-6-astra at a3478b08136fee0f4f71f9a73c24e8afb000ed6b, recorded by codex/gpt-6-astra
+2026-10-09T16:50:50.903Z pavi item.created
+2026-10-09T16:52:12.026Z pavi item.dispatched
+2026-10-09T16:57:42.566Z claude-code/fable-5.1 item.claimed
+2026-10-09T16:57:57.946Z claude-code/fable-5.1 fork.created
+2026-10-09T17:21:17.118Z claude-code/fable-5.1 push.observed
+2026-10-09T17:25:36.554Z claude-code/fable-5.1 evidence.observed
+2026-10-09T17:25:39.424Z claude-code/fable-5.1 evidence.observed
+2026-10-09T17:25:40.121Z claude-code/fable-5.1 item.submitted
+2026-10-09T18:31:14.463Z pavi land.lease
+2026-10-09T18:31:21.128Z pavi land.merge
+2026-10-09T18:31:32.730Z pavi land.regenerate
+2026-10-09T18:31:35.725Z claude-code/fable-5.1 push.observed
+2026-10-09T18:31:35.859Z pavi land.push
+2026-10-09T18:37:46.756Z claude-code/fable-5.1 evidence.observed
+2026-10-09T18:37:51.126Z claude-code/fable-5.1 evidence.observed
+2026-10-09T18:37:51.893Z pavi land.check
+2026-10-09T18:38:02.749Z pavi review.requested
+2026-10-09T18:38:26.260Z codex/gpt-6-astra review.claimed
+2026-10-09T18:38:27.315Z codex/gpt-6-astra review.diff
+2026-10-09T18:40:23.640Z codex/gpt-6-astra review.approved
+2026-10-09T18:40:35.265Z pavi land.review
+2026-10-09T18:40:35.874Z pavi item.accepted
+2026-10-09T18:40:35.929Z pavi land.accept
