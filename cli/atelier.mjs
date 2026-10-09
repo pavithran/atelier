@@ -45,6 +45,7 @@ export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
+import { decisionLines, decisionsSection } from "../src/decisions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
 
 const HOME = homedir();
@@ -281,6 +282,8 @@ export const FLAGS = {
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
+  decide: { quote: '--quote needs the owner\'s words: atelier decide "text" --quote "what the owner said"' },
+  decisions: { all: true, note: '--note needs text: atelier decisions withdraw ID --note "why"' },
   ship: { "dry-run": true, push: true },
   dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false, "overlap-ok": true },
   undispatch: {},
@@ -516,6 +519,15 @@ export function unregisteredMessage(here, projects) {
   const like = names.find((n) => n.toLowerCase() === basename(here).toLowerCase());
   if (like) lines.push(`${like}, named like this folder, is registered at ${projects[like].path}; run the command there, or pass --project ${like}.`);
   return lines.join("\n");
+}
+
+// The decisions as `atelier decisions` lists them: each as the briefs and
+// the guide say it (decisionLines), and a withdrawn one with when and why.
+export function formatDecisions(decisions) {
+  return decisions.map((d) => {
+    const [line] = decisionLines([d]);
+    return d.withdrawn ? `${line} Withdrawn ${d.withdrawn.at.slice(0, 10)}: ${d.withdrawn.note}` : line;
+  }).join("\n");
 }
 
 // Edit distance between two names: how many characters to insert, drop or
@@ -3093,6 +3105,38 @@ const commands = {
     console.log(formatApprovals(shown));
   },
 
+  // The project owner records a standing decision for the project
+  // (src/decisions.ts), with the owner's own words it rests on. The server
+  // takes it from the owner's token alone.
+  async decide() {
+    const text = args._[1];
+    if (args._.length !== 2 || !text?.trim()) die(COMMAND_USAGE.decide);
+    if (typeof args.quote !== "string" || !args.quote.trim()) die(`a decision needs the owner's words: atelier decide "text" --quote "what the owner said"`);
+    const name = project();
+    const d = await call("POST", `${P(name)}/decisions`, { text, quote: args.quote }, OWNER);
+    console.log(`${d.id}: recorded ${d.at.slice(0, 10)} for ${name}. Every review brief of ${name} and atelier guide --role orchestrate --project ${name} carry it. To withdraw it: atelier decisions withdraw ${d.id} --note "why"`);
+  },
+
+  async decisions() {
+    const [, sub, id] = args._;
+    const name = project();
+    if (sub === "withdraw") {
+      if (!id || args._.length !== 3) die(COMMAND_USAGE.decisions);
+      if (typeof args.note !== "string" || !args.note.trim()) die(`withdrawing a decision needs a note saying why: atelier decisions withdraw ${id} --note "why"`);
+      const d = await call("POST", `${P(name)}/decisions/${encodeURIComponent(id)}/withdraw`, { note: args.note }, OWNER);
+      return console.log(`${d.id}: withdrawn ${d.withdrawn.at.slice(0, 10)}; it no longer appears in ${name}'s review briefs or its orchestrator's guide. atelier decisions --all still lists it.`);
+    }
+    if (sub !== undefined || args.note !== undefined) die(COMMAND_USAGE.decisions);
+    const { decisions } = await call("GET", `${P(name)}/decisions`, undefined, OWNER);
+    const shown = args.all ? decisions : decisions.filter((d) => d.status === "standing");
+    if (!shown.length) {
+      return console.log(args.all || !decisions.length
+        ? `No standing decision is recorded for ${name}. The owner records one with: atelier decide "text" --quote "the owner's words"`
+        : `No decision stands for ${name}; atelier decisions --all lists the withdrawn ones.`);
+    }
+    console.log(formatDecisions(shown));
+  },
+
   // The project owner runs the project's ship order in its registered
   // checkout (cli/ship.mjs): each protected step only with an approval at the
   // revision shipped, each step recorded on the ledger.
@@ -3454,11 +3498,20 @@ const commands = {
     spawnSync("open", [`${server()}/home`]);
   },
 
-  guide() {
+  async guide() {
     if (args.role === undefined) { process.stdout.write(guideText()); return; }
     const role = args.role;
     if (!ROLES.includes(role)) die(`--role needs one of ${ROLES.join(", ")}: atelier guide --role build|review|plan|orchestrate`);
-    process.stdout.write(roleOverride(role) ?? rolePrompt(role));
+    const text = roleOverride(role) ?? rolePrompt(role);
+    // The orchestrator's guide for a project ends with the owner's standing
+    // decisions (src/decisions.ts), read from the server: the project is the
+    // one --project names, else this workspace's or registered checkout's.
+    // Outside any project, or for another role, the text stands alone and no
+    // server is contacted.
+    const name = role === "orchestrate" ? args.project ?? wsConfig("project") ?? registeredHere().name : null;
+    if (!name) { process.stdout.write(text); return; }
+    const { decisions } = await call("GET", `${P(name)}/decisions`, undefined, OWNER);
+    process.stdout.write(`${text}\n${decisionsSection(decisions.filter((d) => d.status === "standing"))}\n`);
   },
 
   help() {
