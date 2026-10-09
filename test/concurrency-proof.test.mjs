@@ -44,7 +44,7 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
     }
     const item = items.get(id);
     if (!item) return send(404, { error: "not_found", detail: `no item ${id}` });
-    if (!verb && method === "GET") return send(200, item);
+    if (!verb && method === "GET") return send(200, { item, criteria: [], evidence: [] });
     // fault(req) may answer 503 before the request is handled ("before"), or
     // handle it and then lose the reply as a 503 ("after").
     const f = fault ? fault({ method, verb, actor, item }) : null;
@@ -172,6 +172,16 @@ test("--push runs the N git pushes concurrently, not one after another", async (
   // alive (or none at all, since the counting lives in the async spawn path),
   // so this reading of 5 is the proof the pushes really ran together.
   assert.equal(report.phases.pushes.maxConcurrent, 5, `expected all 5 git pushes to overlap, measured at most ${report.phases.pushes.maxConcurrent} in flight`);
+});
+
+test("the race holder is read from item.owner in the server's item shape", async (t) => {
+  const server = await fakeServer(t);
+  const r = await run(t, server, ["--agents", "3", "--json"]);
+  assert.equal(r.code, 0, r.output);
+  const report = JSON.parse(r.output);
+  const race = server.items().find((i) => i.title === "concurrency proof race");
+  assert.equal(report.phases.claimRace.holder, race.firstOwner, "the holder is the agent that won the race");
+  assert.equal(report.phases.claimRace.holderError, null);
 });
 
 test("the report is machine-readable with --json, and its figures match the measured requests", async (t) => {
