@@ -372,7 +372,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   land: {
     flags: {
-      "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise the server picks a model of another family than every contributor, when the gate needs a review",
+      "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise, when the gate needs a review, the server suggests a model of another company than every contributor from the pool and the models' records, and the landing prints which and why",
       "--no-review": "skips waiting: the task is left submitted for the owner to settle the review by hand",
       "--wait": "queues for the landing lease while another task's landing holds it, saying whose landing it waits behind and which landings are queued ahead; the server hands the lease to the waiting landings in the order they queued, so it starts when its turn comes (three hours at most)",
       "--dry-run": "prints the steps and the refusals without changing anything",
@@ -513,7 +513,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   dispatch: {
     flags: {
       "--to home|cloud|any": "the kind of runner; any unless given",
-      "--agent A": "the agent the runner must run",
+      "--agent A": "the agent the runner must run; unless given, the server suggests a builder from the model pool and the models' records and prints which and why",
       "--model M": "the model the runner must use",
       "--note TEXT": "a note the agent reads with the task",
       "--job merge-main": "sends the task to its builder to merge main into its workspace and resolve the conflicts of a landing that stopped on them",
