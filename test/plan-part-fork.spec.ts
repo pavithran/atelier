@@ -1,10 +1,16 @@
 import { env } from "cloudflare:workers";
-import { expect, it, vi } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import type { Evidence, Item, ProjectPolicy } from "../src/rules.ts";
+import { setRetryBaseMs } from "../src/transient.ts";
+
+// These tests inject transient Artifacts failures; the retry backoff would
+// otherwise spend seconds waiting (and time out under load). Milliseconds do.
+beforeAll(() => setRetryBaseMs(1));
+afterAll(() => setRetryBaseMs());
 
 // A part claimed again whose fork holds nothing beyond the commit it forked
 // from starts from the plan branch's head when the branch has moved since
