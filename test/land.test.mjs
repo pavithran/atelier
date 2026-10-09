@@ -205,7 +205,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
       if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
-      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: "a protected change needs an independent review", at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
+      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
@@ -269,6 +269,17 @@ test("a clean landing takes the lease, merges main, regenerates, checks, waits f
   assert.deepEqual(events.find((e) => e.body.step === "regenerate").body, { step: "regenerate", ms: events.find((e) => e.body.step === "regenerate").body.ms, command: f.box.regen, changed: true });
   assert.equal(events.find((e) => e.body.step === "review").body.verdict, "approve");
   assert.equal(events.find((e) => e.body.step === "merged").body.mergeCommit, merged);
+});
+
+// With no --reviewer the server suggests the reviewer (t370): the landing
+// prints the reviewer it chose and the reasons the server gave.
+test("a landing with no --reviewer prints the reviewer the server chose and why", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.why = "Frontier reviewer required for security, concurrency or gate work. From the pool, which goes by review precision, then outcome record, then actor name.";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(f.posts("/review-request").at(-1).body, {});
+  assert.match(r.output, /Review requested for codex\/gpt-6-astra: a protected change needs an independent review Frontier reviewer required for security, concurrency or gate work\. From the pool, which goes by review precision, then outcome record, then actor name\. Waiting for the verdict/);
 });
 
 test("--reviewer waits for that review and lands on approval even where the gate needs none", async (t) => {
