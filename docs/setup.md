@@ -219,9 +219,13 @@ defaults, as a first init does; the project's title and creation date are kept.
 Every review brief a runner serves, for a task or a plan's part, states it
 before the reply format. Unset, or after `--review-bar ""`, the brief states
 the default bar: block only for a correctness, security or data-loss defect
-that the change introduces, or fails to fix while claiming to; a claim in a
-commit message that the code does not support is a correctness defect;
-decisions the project owner made are not defects; everything else is a
+that the change introduces, or fails to fix while claiming to; a behaviour
+change without a test that covers it; docs or help that now contradict the
+code; a breaking change to a command, route or API field without a migration;
+or a visible regression on a user-facing page. A claim in a commit message
+that the code does not support is a correctness defect; a blocking finding
+names the file and line and what breaks, and is never style or naming;
+decisions the project owner made are not defects; anything else is a
 follow-up.
 
 When the checkout is already registered locally, `init` reuses its registered
