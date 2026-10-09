@@ -138,6 +138,24 @@ who made it but not its reason; it names each review's reviewer, verdict, head
 and recorder in the same way, without the review's note. Both stay in the
 ledger.
 
+## The review bar
+
+Every review brief states the review bar, which says what a finding may block
+for. When the project sets none, the brief states the default bar, which blocks
+only for a correctness, security or data-loss defect that the change
+introduces, or fails to fix while claiming to; a behaviour change without a
+test that covers it; docs or help that now contradict the code; a breaking
+change to a command, route or API field without a migration; or a visible
+regression on a user-facing page. A blocking finding names the file and line
+and what breaks, and is never style or naming; anything else is a follow-up
+and never holds the change back.
+
+A project sets its own bar with `atelier init --review-bar TEXT`, which records
+it in the project's policy (`policy.reviewBar` in `src/rules.ts`); every review
+brief then states that bar in place of the default. `atelier init --review-bar
+""` clears it and restores the default, and an init that does not name the bar
+leaves the recorded one as it is.
+
 ## Check classes
 
 Atelier runs a check in a clean clone of an item's head whenever anyone asks,
