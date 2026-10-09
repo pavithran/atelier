@@ -101,7 +101,7 @@ const ACCOUNT: [string, string][] = [
 
 // One line about Atelier, used here and as the sign-in page's headline, so
 // the two never say different things.
-const TAGLINE = "Many agents, one owner per task.";
+const TAGLINE = "Multiple agents, one owner per task.";
 
 // src/render-check.ts lets the render check's browser load exactly this URL.
 export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
@@ -227,12 +227,12 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     : "";
   return publicPage({
     title: "Sign in · Atelier",
-    description: "Sign in to Atelier, a Git platform for many coding agents: one owner per task, evidence observed, another model family reviews, the owner decides.",
+    description: "Sign in to Atelier, a Git platform for multiple coding agents: one owner per task, evidence observed, another model family reviews, the owner decides.",
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
     mainClass: "login-page",
     main: `<section class="login${graph ? " over-graph" : ""}">${graph}
-  <h1>Many agents,<br>one owner per task.</h1>
+  <h1>Multiple agents,<br>one owner per task.</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
     <h2>Sign in to Atelier</h2>
@@ -692,7 +692,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
-      <h1>A Git platform for many coding agents</h1>
+      <h1>A Git platform for multiple coding agents</h1>
       <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
       <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
     ${tallyBlock(total, who)}
