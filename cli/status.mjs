@@ -20,6 +20,22 @@ import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { isOwnCall } from "../src/rules.ts";
 import { jobsLine } from "./runner.mjs";
 
+// A project's model policy in words (ProjectPolicy.familyMode, t394): the
+// default, cross-family review, or single-family mode naming the company,
+// with who switched and when where a switch is recorded. `atelier init`
+// prints it after the policy it sent.
+export function familyModeText(policy) {
+  const mode = policy?.familyMode ?? null;
+  const when = mode ? ` (set by ${mode.by} at ${mode.at})` : "";
+  if (mode?.single) return `single-family, ${mode.single}: building and reviewing use ${mode.single} models only, and a review counts from a different ${mode.single} model than every contributor${when}`;
+  return `cross-family, the default: a protected change needs approval from a model of another company than every contributor${when}`;
+}
+
+// The line a status listing prints under a project in single-family mode,
+// so no one mistakes its reviews for cross-company ones.
+export const singleFamilyLine = (family) =>
+  `Single-family mode (${family}): building and reviewing use ${family} models only; a review counts from a different ${family} model than every contributor, not from another company.`;
+
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
 export function itemJson(i) {
@@ -37,6 +53,7 @@ export function statusJson(views) {
     return {
       name: v.name,
       ...(v.title ? { title: v.title } : {}),
+      ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
       inbox: mine,
       items: v.items.map(itemJson),
       overlaps: overlapPairs(mine),
@@ -239,6 +256,7 @@ export function formatStatus(views, waiting = {}) {
       .map((i) => [i.id, unoffered(i.dispatch, offers, waiting.now)])
       .filter(([, dead]) => dead !== null));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
+    if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     if (!decisions.length && !working.length && !queued.length && !reviews.length) {
       // Only overlaps follow, so the idle line is worded for the owner: it
       // would otherwise read against the heading printed under it.

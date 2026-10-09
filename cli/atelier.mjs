@@ -36,7 +36,7 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { familyModeText, formatLocal, formatStatus, itemJson, singleFamilyLine, statusJson } from "./status.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
@@ -233,7 +233,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it', "single-family": "--single-family needs a company: atelier init --single-family anthropic, naming the family Atelier recognises its models by; atelier init --cross-family returns to the default", "cross-family": true },
   adopt: {},
   revert: {},
   publish: {},
@@ -1144,6 +1144,9 @@ const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
 export function formatStanding(s, ownerName = "the project owner") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
+  // A project on one company's models says so at the top (t394), so its
+  // reviews are not read as cross-company ones.
+  if (s.familyMode?.single) lines.push(singleFamilyLine(s.familyMode.single));
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
   group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
@@ -1978,6 +1981,13 @@ const commands = {
     // ones; --core "" alone clears them, and --reset without it does too.
     const core = coreArg();
     if (core || reset) policy.coreFiles = core ?? [];
+    // --single-family COMPANY has the project build and review with one
+    // company's models alone; --cross-family returns to the default, where
+    // a protected change needs a model of another company than every
+    // contributor. Omitted, the recorded mode stays; the server records
+    // either switch with who made it and when.
+    if (args["single-family"] !== undefined && args["cross-family"] === true) die("--single-family and --cross-family contradict each other; give one of them");
+    const singleFamily = args["single-family"] !== undefined ? args["single-family"] : args["cross-family"] === true ? null : undefined;
     const r = await call("PUT", P(name), {
       ...policy,
       ...(reset ? { reset: true } : {}),
@@ -1991,6 +2001,7 @@ const commands = {
       // reviewing every protected change beside the gate's review; omitted
       // keeps it, "" clears it.
       ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
+      ...(singleFamily !== undefined ? { singleFamily } : {}),
       approval: args.approval,
       // Omitted keeps the current title; --title "" clears it.
       ...(args.title === undefined ? {} : { title: args.title }),
@@ -2051,6 +2062,9 @@ const commands = {
     if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
     console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
     if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
+    console.log(`Models:     ${familyModeText(pol)}`);
+    // A server older than single-family mode ignores it and answers without one.
+    if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
     const checkInputs = checkFiles(pol.checks ?? []);
     console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
@@ -2967,7 +2981,7 @@ const commands = {
       // merge commit is kept for reconciliation.
       await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
       // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
-      const note=provenanceNote({name,id,item,view,reviews,events:d.events});
+      const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy});
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
       if(remoteNotes){
@@ -3444,7 +3458,9 @@ const commands = {
     ]);
     const views = await Promise.all(chosen.map(async (p) => {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
-      return { name: p.name, title: p.title, items, inbox };
+      // The policy comes along so the listing can say a project runs in
+      // single-family mode (formatStatus).
+      return { name: p.name, title: p.title, items, inbox, policy: p.policy ?? null };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
     console.log(formatStatus(views, { queue, offers }));

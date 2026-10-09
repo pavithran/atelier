@@ -154,6 +154,8 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 
 This applies to every part, even where `gate()` would ask for no review.
 
+**Single-family mode (t394).** A project set up with `atelier init --single-family COMPANY` (`policy.familyMode`, with who set it and when; `--cross-family` returns to the default and is recorded the same way) builds and reviews with that company's models alone: `routeParts`, `pickReviewer`, a hand dispatch and `atelier land` take no other, and `independentApproval` counts a review when the reviewer is a different model of the company from every contributor, by `modelKey`, whatever its harness. A contributor never counts in either mode. The mode is named on the project page, by `atelier status`, at the top of every review brief and in each merge's provenance note, so a review under it is never read as a cross-company one. See [Single-family mode](gate.md#single-family-mode).
+
 **Storage.** A new table, `review_requests(item, head, dispatch, claimedBy, runner, briefHash, state)`. Reviews cannot use `items.dispatch`, because the part is owned and `assertDispatchable` refuses an owned item.
 - The queue route returns review requests as `job:"review"`, matched through the same `assign()`.
 - `POST items/tN/review-claim` binds a request to one reviewer atomically.

@@ -1,14 +1,15 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
+import { OBSERVED_UNDER, type ModelEntry, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
-  type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
+  actorFamily, independentReviewerText, singleFamily,
+  type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
@@ -70,6 +71,10 @@ export interface ReviewClaim {
   events: LedgerEvent[];
   owner: string;
   reviewBar: string | null;
+  // The company the project runs on alone (single-family mode, t394), so the
+  // brief says the review is by a different model of that company, not a
+  // cross-company one; null under the default.
+  singleFamily: PoolFamily | null;
   tier: boolean;          // the claimed request is a tier review (src/review/tier.ts)
   // The review's diff, kept in R2 by reference when the change is too large
   // for a brief to carry (t284): the claim route stores it and names it here,
@@ -164,6 +169,10 @@ export interface ProjectInit {
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
   approval?: string | null;
+  // The switch of model policy this init makes (see ProjectPolicy.familyMode):
+  // the company to run on alone, or null to return to cross-family review,
+  // and who made it; the ledger stamps when.
+  familyMode?: { single: PoolFamily | null; by: string };
 }
 
 // A project's role prompts (`atelier guide --role`, docs in the README) live
@@ -328,6 +337,9 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
+  // A switch of model policy is stamped with this init's time; an init that
+  // names none keeps the recorded one, and reset drops it with the rest.
+  const familyMode: FamilyMode | undefined = i.familyMode ? { single: i.familyMode.single, by: i.familyMode.by, at } : p?.familyMode;
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -351,6 +363,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       ...(approval ? { approval } : {}),
+      ...(familyMode ? { familyMode } : {}),
     },
     createdAt: current?.createdAt ?? at,
   };
@@ -1045,7 +1058,7 @@ export class Ledger extends DurableObject<Env> {
       const wanted = r.wanted === 1;
       const contributors = contributorsOf(item);
       if (asked.some((a) => sameActor(a, reviewer)) || contributors.some((c) => sameActor(c, reviewer))) continue;
-      if (!wanted && independenceRefusal(reviewer, contributors)) continue;
+      if (!wanted && independenceRefusal(reviewer, contributors, singleFamily(this.project().policy))) continue;
       const need = reviewNeeded({
         item, part: false, policy: this.project().policy,
         evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -1189,6 +1202,13 @@ export class Ledger extends DurableObject<Env> {
   dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
     const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
+    // Under single-family mode a dispatch names only the company's models:
+    // one for another company's model would hand the work to a builder no
+    // reviewer of the company could then be shown independent of (t394).
+    const single = singleFamily(this.project().policy);
+    if (single && d.model && actorFamily(`${d.agent ?? "agent"}/${d.model}`) !== single) {
+      throw new RuleError("single_family", `${d.model} is not one of ${single}'s models, and this project runs in single-family mode (${single}): dispatch to one of ${single}'s models, or return to cross-family review with atelier init --cross-family`, 409);
+    }
     this.assertMergeMainWorkspace(item, d);
     const held = this.holds(item);
     if (held) {
@@ -2545,8 +2565,9 @@ export class Ledger extends DurableObject<Env> {
     const plan = this.item(item.plan!);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
     const reviewer = namedActor(to, this.project().policy, "assessor", this.owner);
-    const refusal = independenceRefusal(reviewer, contributorsOf(item));
-    if (refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${item.id}: ${refusal}; name a model of another family than every contributor`, 409);
+    const single = singleFamily(this.project().policy);
+    const refusal = independenceRefusal(reviewer, contributorsOf(item), single);
+    if (refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${item.id}: ${refusal}; name ${single ? independentReviewerText(single) : "a model of another family than every contributor"}`, 409);
     const claimed = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND state = 'claimed' AND tier IS NULL`, item.id).toArray()
       .map((r) => r.claimedBy as string).find((by) => !sameActor(by, reviewer));
     if (claimed) throw new RuleError("review_claimed", `${claimed} is reviewing ${item.id} now; wait for its verdict, or let its claim lapse, before naming ${reviewer}`, 409);
@@ -3048,6 +3069,7 @@ export class Ledger extends DurableObject<Env> {
       // refused at its claim or not counted by the gate; it is withdrawn so
       // the review is asked again below of one who can give it.
       const contributors = contributorsOf(p);
+      const single = singleFamily(policy);
       // A tier request needs no other family, only a reviewer who has not
       // contributed.
       const live = this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
@@ -3056,7 +3078,7 @@ export class Ledger extends DurableObject<Env> {
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         const refusal = !asked ? null
           : r.tier === 1 ? (contributors.some((c) => sameActor(c, asked)) ? `${asked} contributed to it, and nobody reviews their own work` : null)
-            : independenceRefusal(asked, contributors);
+            : independenceRefusal(asked, contributors, single);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal, ...(r.tier === 1 ? { tier: true } : {}) }, at);
@@ -3078,7 +3100,7 @@ export class Ledger extends DurableObject<Env> {
       // while it is independent of every contributor, may review under the
       // policy, and has not let a claim on this head lapse.
       const change = record.reviewers?.[p.partKey!];
-      const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors)
+      const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors, single)
         && mayAssess(change.actor, policy, this.owner) ? change.actor : null;
       // pickReviewer passes over every contributor and every model of a
       // contributor's family, the routed reviewer included, and asks the
@@ -3095,7 +3117,7 @@ export class Ledger extends DurableObject<Env> {
         precision: this.reviewPrecision(at),
       });
       if (pick && !pick.reviewer) {
-        this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name one of another family than every contributor, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
+        this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name ${single ? independentReviewerText(single) : "one of another family than every contributor"}, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
         continue;
       }
       const reviewer = named ?? pick!.reviewer!.actor;
@@ -3103,7 +3125,7 @@ export class Ledger extends DurableObject<Env> {
       // part's routing, so plan show and the plan page name the reviewer
       // asked and why, and later rounds ask that reviewer first.
       const routed = route?.reviewer?.actor ?? null;
-      const why = routed ? independenceRefusal(routed, contributors) : null;
+      const why = routed ? independenceRefusal(routed, contributors, single) : null;
       if (routed && why && !sameActor(routed, reviewer)) {
         (record.reviewers ??= {})[p.partKey!] = { actor: reviewer, from: routed, reason: why, at };
         this.savePlanRecord(id, record);
@@ -3113,7 +3135,7 @@ export class Ledger extends DurableObject<Env> {
       const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
       const brief = reviewBrief({
         need, item: p, events: this.briefEvents(p.id),
-        plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
+        plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null, singleFamily: single,
       });
       const briefHash = briefFingerprint(brief);
       const topTier = this.gateIsTier(p, need, reviewer);
@@ -3285,7 +3307,7 @@ export class Ledger extends DurableObject<Env> {
       item, head,
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
-      events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, tier,
+      events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, singleFamily: singleFamily(policy), tier,
       criteria, request: row.id as number,
     };
   }
@@ -3341,6 +3363,13 @@ export class Ledger extends DurableObject<Env> {
       if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
         throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
       }
+      // Under single-family mode even a named reviewer is one of the
+      // company's models (t394): the mode says no other company's model
+      // touches the project, a wanted second opinion included.
+      const single = singleFamily(this.project().policy);
+      if (single && actorFamily(reviewer) !== single) {
+        throw new RuleError("single_family", `${reviewer} is not one of ${single}'s models, and this project runs in single-family mode (${single}): name one of ${single}'s models with --reviewer, or return to cross-family review with atelier init --cross-family`, 409);
+      }
     }
     const policy = this.project().policy;
     const at = new Date().toISOString();
@@ -3393,7 +3422,8 @@ export class Ledger extends DurableObject<Env> {
         precision: this.reviewPrecision(at),
       });
       if (!pick.reviewer) {
-        throw new RuleError("no_reviewer", `no reviewer of another family than every contributor is in the pool: ${pick.unpicked}. Name one with atelier land ID --reviewer H/M, or add a model with atelier models add`, 409);
+        const single = singleFamily(policy);
+        throw new RuleError("no_reviewer", `${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} is in the pool: ${pick.unpicked}. Name one with atelier land ID --reviewer H/M, or add a model with atelier models add`, 409);
       }
       chosen = pick.reviewer.actor;
     }
@@ -3430,7 +3460,8 @@ export class Ledger extends DurableObject<Env> {
   // asked of a tier model that gives the tier review too (gateServesTier in
   // src/review/tier.ts), so no separate tier request is needed.
   private gateIsTier(item: Item, need: ReviewRequired, reviewer: string): boolean {
-    return need.changeClass === "protected" && gateServesTier(this.project().policy.reviewTier, reviewer, contributorsOf(item));
+    const policy = this.project().policy;
+    return need.changeClass === "protected" && gateServesTier(policy.reviewTier, reviewer, contributorsOf(item), singleFamily(policy));
   }
 
   // Asks the project's top review tier (src/review/tier.ts) for a separate
@@ -3524,8 +3555,8 @@ export class Ledger extends DurableObject<Env> {
     const wanted = last.wanted === 1;
     const contributors = contributorsOf(item);
     if (contributors.some((c) => sameActor(c, reviewer))) return;
-    if (!wanted && independenceRefusal(reviewer, contributors)) return;
     const policy = this.project().policy;
+    if (!wanted && independenceRefusal(reviewer, contributors, singleFamily(policy))) return;
     const need = reviewNeeded({
       item, part: false, policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
