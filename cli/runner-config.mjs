@@ -25,6 +25,11 @@ const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const PLACEHOLDERS = ["model", "brief_file", "workspace", "plan_file", "diff_file", "verdict_file"];
 // The name of a Keychain entry, as the model pool records one.
 const KEYCHAIN_ENTRY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+// The file an agent token may be read from (tokens, t346): a path with
+// folders, each a plain name, under the user's Atelier config directory,
+// written as ~/.config/atelier/NAME or relative to that directory. Its
+// resolution against the directory is the runner's (tokenFile in runner.mjs).
+const TOKEN_FILE = /^(~\/\.config\/atelier\/)?(?:[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/)*[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // A provider whose balance the usage report asks for (cli/usage.mjs).
 const PROVIDER = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
 // The name of an environment variable a harness entry passes on (runner.mjs harnessEnv).
@@ -70,6 +75,34 @@ export function parseConfig(json) {
         else balances[provider.toLowerCase()] = name;
       }
     }
+  }
+  // Optional (t346): for each model this runner reviews as, where that
+  // model's own agent token is stored, so its verdicts are recorded by the
+  // model itself and not by the owner token the runner holds: the name of a
+  // Keychain entry (read as `keychain` reads a key, by that exact name), or
+  // the path of a file under the user's Atelier config directory (a value
+  // with a "/"), readable by the user alone. The token itself is refused
+  // here, as a key is, and is never echoed.
+  let tokens;
+  if (value.tokens !== undefined) {
+    if (!value.tokens || typeof value.tokens !== "object" || Array.isArray(value.tokens)) errors.push("tokens must map a model id to the name of its agent token's Keychain entry or the path of its file");
+    else {
+      tokens = {};
+      for (const [model, where] of Object.entries(value.tokens)) {
+        if (!MODEL.test(model) || redactKeys(model) !== model) errors.push("tokens has a key that is not a model id");
+        else if (typeof where !== "string" || !where.trim() || /^atl_/i.test(where) || redactKeys(where) !== where || !(KEYCHAIN_ENTRY.test(where) || TOKEN_FILE.test(where))) errors.push(`tokens.${model} must name a Keychain entry or a token file under ~/.config/atelier/, never the token itself`);
+        else tokens[model] = where;
+      }
+    }
+  }
+  // Optional (t346): until every reviewer has its token, the owner may let
+  // the owner token record the reviews of models `tokens` leaves out, as
+  // every runner did before t346; the task page keeps saying the owner
+  // recorded them. Off by default: a model without a token is refused.
+  let ownerRecordsReviews;
+  if (value.ownerRecordsReviews !== undefined) {
+    if (typeof value.ownerRecordsReviews !== "boolean") errors.push("ownerRecordsReviews must be true or false");
+    else ownerRecordsReviews = value.ownerRecordsReviews;
   }
   const seen = new Set();
   // Optional: the jobs this runner takes, named exactly (DEFAULT_JOBS): with
@@ -120,7 +153,8 @@ export function parseConfig(json) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
-  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(jobs !== undefined ? { jobs } : {}) };
+  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}),
+    ...(ownerRecordsReviews !== undefined ? { ownerRecordsReviews } : {}), ...(jobs !== undefined ? { jobs } : {}) };
 }
 
 export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {

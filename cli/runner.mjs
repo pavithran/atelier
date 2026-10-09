@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
@@ -249,6 +250,49 @@ export function ownerTokens(base = process.env) {
   const tokens = [base.ATELIER_TOKEN?.trim()];
   try { tokens.push(readSecret("API_TOKEN", { env: { ...base, ATELIER_TOKEN: "" } })); } catch { /* A store that cannot be read gives the CLI no token either. */ }
   return tokens.filter(Boolean);
+}
+
+// Where a reviewer's own agent token is read from (t346): the runner config's
+// `tokens` names, per model, a Keychain entry (read by that exact name, as a
+// model's key is) or a file under the user's Atelier config directory
+// (ATELIER_CONFIG_DIR, else ~/.config/atelier), written there by the owner
+// after `atelier token issue`. A file must be the user's alone (mode 0600):
+// a wider one is refused, as the credentials store refuses its own. Returns
+// the token, or null when the entry or file holds none; throws when it
+// cannot be read. The value goes to the caller alone, never to a log.
+export function tokenFile(where, env = process.env, home = homedir()) {
+  const dir = env.ATELIER_CONFIG_DIR ?? join(home, ".config", "atelier");
+  return resolve(dir, where.replace(/^~\/\.config\/atelier\//, ""));
+}
+export function readAgentToken(where, deps = {}) {
+  const env = deps.env ?? process.env;
+  if (!where.includes("/")) return (deps.readSecret ?? readSecret)(where, { env: { ...env, [`ATELIER_${where}`]: "" } });
+  const file = tokenFile(where, env, deps.home);
+  if (!existsSync(file)) return null;
+  if (process.platform !== "win32" && (statSync(file).mode & 0o077)) throw new Error(`${file} is readable by other users; run: chmod 600 ${file}`);
+  const first = readFileSync(file, "utf8").split(/\r?\n/)[0].trim();
+  return first || null;
+}
+
+// The token a review job records its verdict with (t346): the reviewing
+// model's own agent token, so the ledger shows the reviewer itself as the
+// recorder and the gate counts the review as proved, never the owner token
+// the runner holds for its builds. `tokens` in the runner config says where
+// each model's is; a model it leaves out is refused, naming the entry to add,
+// unless the config opts into the owner-recorded path (ownerRecordsReviews),
+// the migration until every reviewer's token is issued. Returns {token}, or
+// {owner: true} for the opted-in fallback, or {refused: reason}.
+export function reviewToken(config, model, actor, deps = {}) {
+  const where = config.tokens?.[model];
+  if (where === undefined) {
+    if (config.ownerRecordsReviews === true) return { owner: true };
+    return { refused: `no agent token for ${actor}: the runner config names none under tokens["${model}"] (atelier token issue --as ${actor}, then name the Keychain entry or token file there), so its reviews would be recorded by the owner token; set ownerRecordsReviews to allow that meanwhile` };
+  }
+  let token;
+  try { token = readAgentToken(where, deps); }
+  catch (error) { return { refused: `the agent token for ${actor} could not be read from ${where}: ${error.message}` }; }
+  if (!token) return { refused: `the agent token for ${actor} is missing: ${where.includes("/") ? `the file ${where}` : `the Keychain entry ${where}`} holds none (atelier token issue --as ${actor}, then store it there)` };
+  return { token };
 }
 
 // A review job clones the part's fork read-only with an Artifacts read token,
@@ -627,9 +671,9 @@ export function jobOf(task) {
 // reviewer the brief and the diff, reads the verdict and posts it. A harness
 // that writes no valid verdict releases the request, so another reviewer may
 // take it.
-export async function runReview(assignment, config, name, io) {
+export async function runReview(assignment, config, name, runnerIO) {
   const { project, item, agent, model, actor } = assignment;
-  let brief, diffFile, workspace, verdictFile, claimedRequest = false, released = false;
+  let brief, diffFile, workspace, verdictFile, claimedRequest = false, released = false, io = runnerIO;
   const release = async (reason) => {
     released = true;
     try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason]); }
@@ -639,6 +683,15 @@ export async function runReview(assignment, config, name, io) {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    // The reviewer's own token (reviewToken, t346) goes on every CLI call of
+    // this job — the claim, the read tokens, the verdict and a release — and
+    // nowhere else: not into the harness's environment, not into a log. A
+    // model without one is refused for this process (skipped), not retried
+    // every poll, and the reason names the token to store.
+    const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}) });
+    if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
+    if (credential.token) io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
+    else io.log(`reviewing as ${actor} with the owner token (ownerRecordsReviews): the ledger will say the owner recorded this review`);
     // Claim the request; the server returns the part, the brief's inputs and a
     // read token for the fork, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
@@ -1238,7 +1291,12 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     removeFile: (file) => rmSync(file, { force: true }),
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     workspacePath, log: line, stopped: () => controller.signal.aborted,
-    cli: (argv, cwd) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
+    // `options.token` (a review job's, t346) is the Atelier token this one
+    // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
+    // child's environment, which wins over the owner's stored token; it is
+    // never an argument, which any local user could read.
+    cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
+      ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...((argv[0] === "release" || argv[0] === "review-release") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
