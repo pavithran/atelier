@@ -29,7 +29,7 @@ a rule the server enforces, not a convention.
    revokes the old token.
 2. **Every agent in its own fork.** The project's main branch is copied into
    an Artifacts repository, the *baseline*. Each task works in a fork of the
-   baseline, its *workspace*, so many agents work concurrently without
+   baseline, its *workspace*, so multiple agents work concurrently without
    touching each other's files.
 3. **Checks observed, not reported.** A check that Atelier ran itself, in a
    clean clone of exactly the head it reads from Artifacts, is *Observed*.
@@ -57,7 +57,7 @@ ranks the things a person must decide above the things an agent must fix.
 
 Atelier sits on Git: every baseline and workspace is a Git repository, and a
 merge is a Git merge. What Git and a forge leave open is everything around
-the commit when many agents work at once, and that is what Atelier adds.
+the commit when multiple agents work at once, and that is what Atelier adds.
 
 | The question | With Git and a forge alone | With Atelier |
 | --- | --- | --- |
