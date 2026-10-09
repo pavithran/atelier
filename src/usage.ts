@@ -94,6 +94,10 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "approvals [--all]", about: "Lists the approvals that stand, each with its kind, revision and expiry. `--all` adds the used, withdrawn and expired ones." },
     { form: "approvals withdraw ID [--note T]", about: "The project owner withdraws an approval no ship has used, so none can use it." },
   ], [
+    { form: 'decide "text" --quote "owner\'s words" [--project P]', about: "The project owner records a standing decision for the project, dated, with the owner's own words it rests on: another company reviews everywhere, the review bar, a spend limit, no overrides. Only the owner's token records one. Every review brief of the project and `atelier guide --role orchestrate` carry the decisions that stand, marked as decisions a reviewer must not overrule." },
+    { form: "decisions [--all] [--project P]", about: "Lists the project's standing decisions, oldest first, each with its id, date, text and the owner's words. `--all` adds the withdrawn ones with their notes." },
+    { form: 'decisions withdraw ID --note "why"', about: "The project owner withdraws a standing decision with a note saying why. It stops appearing in the briefs, the guide and the plain list; `--all` still shows it, withdrawn." },
+  ], [
     { form: "ship [--dry-run] [--push]", about: "Run by the project owner in the registered checkout, clean and at the baseline's head: composes the ship order from the project's ControlPlane ship policy and adapter, or from `docs/atelier/ship.json`, and refuses before running anything when a protected step has no approval at that revision, naming the command that approves it. It then runs the steps in order and stops at the first that fails, recording each step's command, exit status, duration and redacted output tail on the ledger. It pushes only with `--push`, which needs no approval since ship is owner-only and runs at one exact revision, and never forces a push. `--dry-run` prints the steps and which approvals are present or missing, and runs nothing." },
   ]] },
   { name: "Plans", lines: [[
@@ -141,7 +145,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "ops COMMAND [ARGS...]", aside: "portfolio operations, run by the private atelier-ops toolkit when installed", about: "Hands everything after `ops` to the private `atelier-ops` toolkit, named by `ATELIER_OPS` or found on `PATH`. Without one it says so and exits 2." },
   ]] },
   { name: "Docs", lines: [[
-    { form: "guide [--role build|review|plan|orchestrate]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `atelier adopt` inserts the plain guide." },
+    { form: "guide [--role build|review|plan|orchestrate] [--project P]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `--role orchestrate` for a project ends with the owner's standing decisions (`atelier decide`), read from the server. `atelier adopt` inserts the plain guide." },
   ]] },
   { name: "Tokens", gap: true, lines: [[
     { form: "token issue --as H/M [--project P]... [--days N] [--label TEXT]", about: "The project owner issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them." },
@@ -477,6 +481,21 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     },
     example: "atelier approvals --all --project demo",
   },
+  decide: {
+    flags: {
+      "--quote TEXT": "the owner's own words the decision rests on; required, at most 2000 characters",
+      "--project NAME": "the project the decision is for; this checkout's or workspace's project unless given",
+    },
+    example: 'atelier decide "Every change is reviewed by a model of another company" --quote "another company reviews everywhere" --project demo',
+  },
+  decisions: {
+    flags: {
+      "--all": "adds the withdrawn decisions, each with its note",
+      "--note TEXT": "with withdraw, why; required, kept with the decision",
+      "--project NAME": "the project; this checkout's or workspace's project unless given",
+    },
+    example: "atelier decisions --project demo",
+  },
   ship: {
     flags: {
       "--dry-run": "composes the ship order and checks its approvals, running nothing",
@@ -706,7 +725,11 @@ dispatch ID\`. Judge each review finding against the code before acting, and
 record every verdict with \`atelier finding\`. Land one task at a time with
 \`atelier land ID\`. Feed what you learn back: \`atelier run-report\` for a run
 that ended without a result, \`atelier new "Lesson: …"\` for a rule worth
-keeping, and a task on the atelier project for a missing feature.
+keeping, and a task on the atelier project for a missing feature. When the
+owner settles a question for good (who reviews, the review bar, a spend
+limit, no overrides), record it with \`atelier decide "text" --quote "the
+owner's words"\`: every review brief and this guide carry the decisions that
+stand, and \`atelier decisions\` lists them.
 `,
 };
 

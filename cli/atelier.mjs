@@ -45,6 +45,7 @@ export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
+import { decisionLines, decisionsSection } from "../src/decisions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
 
 const HOME = homedir();
@@ -53,6 +54,8 @@ const CONFIG = join(CONFIG_DIR, "config.json");
 const CACHE = process.env.ATELIER_CACHE ?? join(HOME, "Library", "Caches", "ai-projects", "cloudflare-git");
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
 const CLI_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+// The one line --version prints, wherever it stands, ops included.
+const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
 
 // ── plumbing ───────────────────────────────────────────────────────────────
 
@@ -219,8 +222,9 @@ function recordTokenExpiry(dir, expiresAt) {
 // handoff to the actor true, the project true). `false` refuses it with the
 // general message; a string is the message for that flag. A flag outside
 // the command's row is refused before the command runs. --project and --as
-// belong to every row, since project() and actor() read them, and --help
-// anywhere prints usage. The commands in REST take `--` and the words after it.
+// belong to every row, since project() and actor() read them, and --help and
+// --version anywhere print usage and the version. The commands in REST take
+// `--` and the words after it.
 // test/command-help.test.mjs holds this table to the help in src/usage.ts.
 export const COMMON = { project: false, as: false };
 export const FLAGS = {
@@ -278,6 +282,8 @@ export const FLAGS = {
   "notes-remote": { off: true },
   approve: { head: false, note: false, expires: false },
   approvals: { all: true, note: false },
+  decide: { quote: '--quote needs the owner\'s words: atelier decide "text" --quote "what the owner said"' },
+  decisions: { all: true, note: '--note needs text: atelier decisions withdraw ID --note "why"' },
   ship: { "dry-run": true, push: true },
   dispatch:{ to: false, agent: false, model: false, note: false, job: false, head: false, "overlap-ok": true },
   undispatch: {},
@@ -298,15 +304,19 @@ export const FLAGS = {
 const REST = new Set(["check"]);
 // The flags each plan subcommand takes; "" is a new plan's.
 const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: ["resolve", "to"], stop: ["note"], post: [] };
-const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
+// version is a switch too, so --version=… is refused as a value it does not
+// take, instead of slipping through as a string that answers anyway.
+const SWITCHES = new Set(["version", ...Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
 
 export function parseArgs(argv, switches = SWITCHES) {
   const out = { _: [], multi: {}, bare: [], problems: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
-    // Help is read before any flag, so a word after --help is not its value.
+    // Help and the version are read before any flag, so a word after either
+    // is never its value.
     if (a === "-h" || a === "--help") { out.help = true; continue; }
+    if (a === "--version") { out.version = true; continue; }
     if (!a.startsWith("--")) { out._.push(a); continue; }
     const eq = a.indexOf("=");
     const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
@@ -347,9 +357,10 @@ const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPat
 // Portfolio operations (surveys, devices and shipping, backups, Observatory,
 // the findings ledger) live in a private toolkit, not in this public command.
 // `atelier ops ...` hands everything after `ops` to it before this command
-// parses or reads anything, so no argument is changed on the way, and exits
-// as it exits. The toolkit is the program ATELIER_OPS names, or atelier-ops on
-// PATH; only an executable file counts.
+// parses anything, so no argument is changed on the way, and it exits as the
+// toolkit exits; only --version is read here first, like every other command,
+// so it never reaches the toolkit. The toolkit is the program ATELIER_OPS
+// names, or atelier-ops on PATH; only an executable file counts.
 const runnable = (path) => {
   try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
 };
@@ -378,7 +389,14 @@ function runOps(argv) {
   }
   process.exit(r.status ?? 1);
 }
-if (isMain && process.argv[2] === "ops") runOps(process.argv.slice(3));
+if (isMain && process.argv[2] === "ops") {
+  const opsArgs = process.argv.slice(3);
+  // --version stands before any parsing, so only the words up to a `--` are
+  // read: an exact --version there is answered, like every other command.
+  const version = opsArgs.indexOf("--version"), end = opsArgs.indexOf("--");
+  if (version !== -1 && (end === -1 || version < end)) { console.log(VERSION_LINE); process.exit(0); }
+  runOps(opsArgs);
+}
 
 const args = parseArgs(process.argv.slice(2));
 const cfg = isMain ? loadConfig() : {};
@@ -501,6 +519,15 @@ export function unregisteredMessage(here, projects) {
   const like = names.find((n) => n.toLowerCase() === basename(here).toLowerCase());
   if (like) lines.push(`${like}, named like this folder, is registered at ${projects[like].path}; run the command there, or pass --project ${like}.`);
   return lines.join("\n");
+}
+
+// The decisions as `atelier decisions` lists them: each as the briefs and
+// the guide say it (decisionLines), and a withdrawn one with when and why.
+export function formatDecisions(decisions) {
+  return decisions.map((d) => {
+    const [line] = decisionLines([d]);
+    return d.withdrawn ? `${line} Withdrawn ${d.withdrawn.at.slice(0, 10)}: ${d.withdrawn.note}` : line;
+  }).join("\n");
 }
 
 // Edit distance between two names: how many characters to insert, drop or
@@ -3078,6 +3105,38 @@ const commands = {
     console.log(formatApprovals(shown));
   },
 
+  // The project owner records a standing decision for the project
+  // (src/decisions.ts), with the owner's own words it rests on. The server
+  // takes it from the owner's token alone.
+  async decide() {
+    const text = args._[1];
+    if (args._.length !== 2 || !text?.trim()) die(COMMAND_USAGE.decide);
+    if (typeof args.quote !== "string" || !args.quote.trim()) die(`a decision needs the owner's words: atelier decide "text" --quote "what the owner said"`);
+    const name = project();
+    const d = await call("POST", `${P(name)}/decisions`, { text, quote: args.quote }, OWNER);
+    console.log(`${d.id}: recorded ${d.at.slice(0, 10)} for ${name}. Every review brief of ${name} and atelier guide --role orchestrate --project ${name} carry it. To withdraw it: atelier decisions withdraw ${d.id} --note "why"`);
+  },
+
+  async decisions() {
+    const [, sub, id] = args._;
+    const name = project();
+    if (sub === "withdraw") {
+      if (!id || args._.length !== 3) die(COMMAND_USAGE.decisions);
+      if (typeof args.note !== "string" || !args.note.trim()) die(`withdrawing a decision needs a note saying why: atelier decisions withdraw ${id} --note "why"`);
+      const d = await call("POST", `${P(name)}/decisions/${encodeURIComponent(id)}/withdraw`, { note: args.note }, OWNER);
+      return console.log(`${d.id}: withdrawn ${d.withdrawn.at.slice(0, 10)}; it no longer appears in ${name}'s review briefs or its orchestrator's guide. atelier decisions --all still lists it.`);
+    }
+    if (sub !== undefined || args.note !== undefined) die(COMMAND_USAGE.decisions);
+    const { decisions } = await call("GET", `${P(name)}/decisions`, undefined, OWNER);
+    const shown = args.all ? decisions : decisions.filter((d) => d.status === "standing");
+    if (!shown.length) {
+      return console.log(args.all || !decisions.length
+        ? `No standing decision is recorded for ${name}. The owner records one with: atelier decide "text" --quote "the owner's words"`
+        : `No decision stands for ${name}; atelier decisions --all lists the withdrawn ones.`);
+    }
+    console.log(formatDecisions(shown));
+  },
+
   // The project owner runs the project's ship order in its registered
   // checkout (cli/ship.mjs): each protected step only with an approval at the
   // revision shipped, each step recorded on the ledger.
@@ -3446,11 +3505,20 @@ const commands = {
     spawnSync("open", [`${server()}/home`]);
   },
 
-  guide() {
+  async guide() {
     if (args.role === undefined) { process.stdout.write(guideText()); return; }
     const role = args.role;
     if (!ROLES.includes(role)) die(`--role needs one of ${ROLES.join(", ")}: atelier guide --role build|review|plan|orchestrate`);
-    process.stdout.write(roleOverride(role) ?? rolePrompt(role));
+    const text = roleOverride(role) ?? rolePrompt(role);
+    // The orchestrator's guide for a project ends with the owner's standing
+    // decisions (src/decisions.ts), read from the server: the project is the
+    // one --project names, else this workspace's or registered checkout's.
+    // Outside any project, or for another role, the text stands alone and no
+    // server is contacted.
+    const name = role === "orchestrate" ? args.project ?? wsConfig("project") ?? registeredHere().name : null;
+    if (!name) { process.stdout.write(text); return; }
+    const { decisions } = await call("GET", `${P(name)}/decisions`, undefined, OWNER);
+    process.stdout.write(`${text}\n${decisionsSection(decisions.filter((d) => d.status === "standing"))}\n`);
   },
 
   help() {
@@ -3459,13 +3527,16 @@ const commands = {
 };
 
 if (isMain) {
-  if (process.argv[2] === "--version") {
-    console.log(`atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`);
-    process.exit(0);
-  }
   const cmd = args._[0] ?? "help";
   const fn = commands[cmd];
   if (!fn) die(`unknown command "${cmd}"; try atelier help`);
+  // --version anywhere prints the CLI version and route level, the same for
+  // every command, and --help/-h anywhere prints the command's usage, or the
+  // general help. Both exit before any server contact.
+  if (args.version) {
+    console.log(VERSION_LINE);
+    process.exit(0);
+  }
   // --help/-h anywhere prints the command's usage, or the general help, and
   // exits before any server contact.
   if (args.help) {
