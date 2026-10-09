@@ -14,7 +14,7 @@ import { DEFAULT_THRESHOLDS, type UsageReport } from "../src/usage/report.ts";
 const TOKEN = "usage-test-token";
 const TOPIC = "usage-notification-test-secret";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
-const AT = "2026-10-05T21:00:00.000Z";
+const AT = "2027-02-01T21:00:00.000Z";
 const NOW = Date.parse(AT);
 const LATER = new Date(NOW + 4 * 86_400_000).toISOString();
 const at = (ms: number) => new Date(ms).toISOString();
@@ -110,7 +110,7 @@ it("an alert fires once per crossing through the notification topic, and again o
       expect(request.headers.get("Click")).toBe("https://atelier.test/usage");
       expect(request.headers.get("Tags")).toBe("warning");
       expect(decodeTitle(request.headers.get("Title")!)).toBe("Atelier: codex: weekly window 85% used");
-      expect(await request.text()).toBe("codex on home:studio has used 85% of its weekly window, past 80%; it resets at 2026-10-09T21:00:00.000Z.");
+      expect(await request.text()).toBe("codex on home:studio has used 85% of its weekly window, past 80%; it resets at 2027-02-05T21:00:00.000Z.");
       expect(L.usageAlerts()).toEqual([{ key: "codex/home:studio/window:weekly", since: AT }]);
       // Still over on the next reports: nothing more is sent.
       expect(put(90, NOW + 3_600_000).alerts).toEqual([]);
@@ -191,14 +191,14 @@ it("the page shows one table per tool, marks stale reports and figures past a th
   expect(html).toContain("Last 5 hours");
   expect(html).toContain("Last 7 days");
   // Windows: percent, reset time, and the threshold tag only where it is past.
-  expect(html).toContain("81% used · resets 2026-10-09 21:00 UTC");
+  expect(html).toContain("81% used · resets 2027-02-05 21:00 UTC");
   expect(html).toContain('<span class="tag bad">past 80%</span>');
-  expect(html).toContain("12% used · reset at 2026-10-05 20:59 UTC");
+  expect(html).toContain("12% used · reset at 2027-02-01 20:59 UTC");
   expect(html).toContain("40% used");
   expect(html.match(/past 80%/g)?.length).toBe(1);
   // Each row says who reported it and when; the old report is stale.
-  expect(html).toContain("home:studio · 2026-10-05 21:00 UTC");
-  expect(html).toContain("home:mac · 2026-10-05 17:00 UTC");
+  expect(html).toContain("home:studio · 2027-02-01 21:00 UTC");
+  expect(html).toContain("home:mac · 2027-02-01 17:00 UTC");
   expect(html.match(/<span class="tag ask">stale<\/span>/g)?.length).toBe(1);
   expect(html).toContain("1 report is stale now");
   // Models over the spans, with cost where the tool records it, and the day's spend past its threshold.
@@ -220,7 +220,7 @@ it("the page shows one table per tool, marks stale reports and figures past a th
   expect(html.match(/<span class="tag bad">below 10<\/span>/g)?.length).toBe(1);
   expect(html).toContain("zcode records no cost");
   expect(html).toContain("1 alert in force");
-  expect(html).toContain("codex on home:studio: weekly window past its threshold, since 2026-10-05 21:00 UTC");
+  expect(html).toContain("codex on home:studio: weekly window past its threshold, since 2027-02-01 21:00 UTC");
   expect(html).toContain("USAGE_WEEKLY_PERCENT");
   expect(html).toContain("Claude's plan limits and Gemini's spend have no record");
 
