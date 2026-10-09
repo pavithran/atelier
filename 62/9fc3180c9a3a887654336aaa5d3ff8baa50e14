@@ -1,0 +1,52 @@
+atelier atelier/t401 "Lesson: platform limits local tests miss need a remote smoke check"
+accepted head 26e9881a4a6d24d9a349a0572faca6ba537825f3
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — antigravity/gemini-3.1-pro 2026-10-09T22:51:07.587Z
+OBSERVED pass npm run types && npm run typecheck — antigravity/gemini-3.1-pro 2026-10-09T22:51:10.805Z
+REVIEW approve by codex/gpt-6-astra at 26e9881a4a6d24d9a349a0572faca6ba537825f3, recorded by codex/gpt-6-astra
+2026-10-09T19:42:27.350Z pavi item.created
+2026-10-09T19:45:51.395Z pavi item.dispatched
+2026-10-09T19:46:18.687Z antigravity/gemini-3.1-pro item.claimed
+2026-10-09T19:46:26.949Z antigravity/gemini-3.1-pro fork.created
+2026-10-09T20:00:38.113Z antigravity/gemini-3.1-pro push.observed
+2026-10-09T20:06:44.595Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T20:06:49.737Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T20:06:50.742Z antigravity/gemini-3.1-pro item.submitted
+2026-10-09T20:18:32.691Z pavi land.lease
+2026-10-09T20:18:38.478Z pavi land.merge
+2026-10-09T20:18:57.842Z pavi land.regenerate
+2026-10-09T20:19:02.015Z antigravity/gemini-3.1-pro push.observed
+2026-10-09T20:19:02.278Z pavi land.push
+2026-10-09T20:26:13.033Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T20:26:16.329Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T20:26:16.898Z pavi land.check
+2026-10-09T20:26:20.689Z pavi review.requested
+2026-10-09T20:26:20.689Z pavi review.requested
+2026-10-09T20:26:39.493Z opencode/deepseek-v4-pro review.claimed
+2026-10-09T20:26:47.272Z codex/gpt-6-astra review.claimed
+2026-10-09T20:28:00.043Z opencode/deepseek-v4-pro review.approved
+2026-10-09T20:28:03.821Z codex/gpt-6-astra review.rejected
+2026-10-09T20:28:07.832Z pavi land.review
+2026-10-09T20:28:17.727Z pavi review.finding
+2026-10-09T20:28:19.050Z pavi review.finding
+2026-10-09T20:28:20.791Z pavi item.released
+2026-10-09T20:28:20.791Z pavi item.dispatched
+2026-10-09T20:53:12.775Z antigravity/gemini-3.1-pro item.claimed
+2026-10-09T21:03:25.796Z antigravity/gemini-3.1-pro push.observed
+2026-10-09T21:09:12.248Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T21:09:16.477Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T22:45:09.470Z pavi land.lease
+2026-10-09T22:45:17.157Z pavi land.merge
+2026-10-09T22:45:31.122Z pavi land.regenerate
+2026-10-09T22:45:34.293Z antigravity/gemini-3.1-pro push.observed
+2026-10-09T22:45:34.979Z pavi land.push
+2026-10-09T22:51:08.414Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T22:51:11.029Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-09T22:51:11.551Z pavi land.check
+2026-10-09T22:51:14.339Z antigravity/gemini-3.1-pro item.submitted
+2026-10-09T22:51:14.383Z pavi land.submit
+2026-10-09T22:51:14.585Z pavi review.requested
+2026-10-09T22:51:17.651Z codex/gpt-6-astra review.claimed
+2026-10-09T22:52:07.089Z codex/gpt-6-astra review.approved
+2026-10-09T22:52:15.194Z pavi land.review
+2026-10-09T22:52:16.045Z pavi item.accepted
+2026-10-09T22:52:16.078Z pavi land.accept
