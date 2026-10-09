@@ -1,0 +1,28 @@
+atelier atelier/t393 "Review bar B becomes Atelier's default"
+accepted head 54caabbe4035b6c5b40e7e33ec6d5a2babc843fc
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-09T19:23:35.670Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-09T19:23:41.040Z
+REVIEW approve by codex/gpt-6-astra at 54caabbe4035b6c5b40e7e33ec6d5a2babc843fc, recorded by codex/gpt-6-astra
+2026-10-09T17:59:59.218Z pavi item.created
+2026-10-09T18:00:07.692Z pavi item.dispatched
+2026-10-09T18:00:11.491Z opencode/deepseek-v4-pro item.claimed
+2026-10-09T18:00:18.230Z opencode/deepseek-v4-pro fork.created
+2026-10-09T18:16:28.673Z opencode/deepseek-v4-pro push.observed
+2026-10-09T18:22:46.575Z opencode/deepseek-v4-pro evidence.observed
+2026-10-09T18:22:50.198Z opencode/deepseek-v4-pro evidence.observed
+2026-10-09T18:22:50.953Z opencode/deepseek-v4-pro item.submitted
+2026-10-09T19:16:18.228Z pavi land.lease
+2026-10-09T19:16:25.065Z pavi land.merge
+2026-10-09T19:16:38.466Z pavi land.regenerate
+2026-10-09T19:16:42.219Z opencode/deepseek-v4-pro push.observed
+2026-10-09T19:16:42.410Z pavi land.push
+2026-10-09T19:23:37.151Z opencode/deepseek-v4-pro evidence.observed
+2026-10-09T19:23:41.496Z opencode/deepseek-v4-pro evidence.observed
+2026-10-09T19:23:42.247Z pavi land.check
+2026-10-09T19:23:50.481Z pavi review.requested
+2026-10-09T19:23:55.731Z codex/gpt-6-astra review.claimed
+2026-10-09T19:23:56.816Z codex/gpt-6-astra review.diff
+2026-10-09T19:25:16.188Z codex/gpt-6-astra review.approved
+2026-10-09T19:25:21.958Z pavi land.review
+2026-10-09T19:25:25.138Z pavi item.accepted
+2026-10-09T19:25:25.323Z pavi land.accept
