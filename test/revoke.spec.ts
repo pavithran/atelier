@@ -1,7 +1,13 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
+import { setRetryBaseMs } from "../src/transient.ts";
+
+// These tests inject transient Artifacts failures; the retry backoff would
+// otherwise spend seconds waiting (and time out under load). Milliseconds do.
+beforeAll(() => setRetryBaseMs(1));
+afterAll(() => setRetryBaseMs());
 
 // A handoff, release or abandon must not leave the old holder a working
 // write token it is no longer meant to have. These tests drive the Worker's
