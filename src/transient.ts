@@ -35,12 +35,25 @@ export function retryableByRuntime(err: unknown): boolean {
 // How long the caller is asked to wait before it retries a 503, in seconds.
 export const RETRY_AFTER = 2;
 
+// The backoff's first delay ceiling, in milliseconds. Production keeps
+// BASE_RETRY_MS; a test that injects transient failures lowers it with
+// setRetryBaseMs so that the backoff takes milliseconds, not seconds. The
+// setting lives in the module, which each spec file loads afresh.
+export const BASE_RETRY_MS = 250;
+let retryBaseMs = BASE_RETRY_MS;
+
+// For tests only: set the first delay ceiling of every withRetry that is not
+// given its own `baseMs`; no argument restores the production delay.
+export function setRetryBaseMs(ms: number = BASE_RETRY_MS): void {
+  retryBaseMs = ms;
+}
+
 // Runs one step against Artifacts, retrying a failure `permanent` does not
 // claim, with exponential backoff and jitter so that many callers failing
 // together do not retry together. The last failure is thrown as it is.
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  { attempts = 4, baseMs = 250, permanent = () => false, sleep = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms)), onRetry }:
+  { attempts = 4, baseMs = retryBaseMs, permanent = () => false, sleep = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms)), onRetry }:
   { attempts?: number; baseMs?: number; permanent?: (err: unknown) => boolean; sleep?: (ms: number) => Promise<void>; onRetry?: (err: unknown, attempt: number) => void } = {},
 ): Promise<T> {
   for (let attempt = 1; ; attempt++) {
