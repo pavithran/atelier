@@ -1,0 +1,28 @@
+atelier atelier/t366 "test/revoke.spec.ts fails under load"
+accepted head bdc1f2b6a37e6c801d4e3b3342563c73f0b5d5b7
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-09T14:50:22.887Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-09T14:50:26.509Z
+REVIEW approve by antigravity/gemini-3.1-pro at bdc1f2b6a37e6c801d4e3b3342563c73f0b5d5b7, recorded by antigravity/gemini-3.1-pro
+2026-10-09T14:13:01.421Z pavi item.created
+2026-10-09T14:13:17.408Z pavi item.dispatched
+2026-10-09T14:29:34.716Z pavi item.edited
+2026-10-09T14:29:34.716Z pavi item.criteria_changed
+2026-10-09T14:29:40.637Z pavi item.undispatched
+2026-10-09T14:29:41.230Z claude-code/sonnet-5.5 item.claimed
+2026-10-09T14:29:49.252Z claude-code/sonnet-5.5 fork.created
+2026-10-09T14:45:23.455Z pavi land.lease
+2026-10-09T14:45:30.263Z pavi land.merge
+2026-10-09T14:45:40.604Z pavi land.regenerate
+2026-10-09T14:45:43.574Z claude-code/sonnet-5.5 push.observed
+2026-10-09T14:45:43.726Z pavi land.push
+2026-10-09T14:50:23.668Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T14:50:26.800Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T14:50:27.344Z pavi land.check
+2026-10-09T14:50:29.718Z claude-code/sonnet-5.5 item.submitted
+2026-10-09T14:50:29.770Z pavi land.submit
+2026-10-09T14:50:29.984Z pavi review.requested
+2026-10-09T14:50:43.208Z antigravity/gemini-3.1-pro review.claimed
+2026-10-09T14:54:37.786Z antigravity/gemini-3.1-pro review.approved
+2026-10-09T14:54:47.398Z pavi land.review
+2026-10-09T14:54:48.173Z pavi item.accepted
+2026-10-09T14:54:48.222Z pavi land.accept
