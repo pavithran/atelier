@@ -5,7 +5,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
+  assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX, changeClass, evidenceAt,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -36,6 +36,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { frontier, sensitive, suggestReviewer, type SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -3330,12 +3331,12 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
     // retry with a different name never silently keeps the wrong reviewer.
-    if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
+    if (wanted && reviewer === null && !records) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
       if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
@@ -3370,17 +3371,34 @@ export class Ledger extends DurableObject<Env> {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
         const standing = dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : null;
+        if (records && !standing) throw new RuleError("no_reviewer", "The standing review request names no model; cannot verify independence", 409);
+        if (records && standing) {
+          const refusal = independenceRefusal(standing, contributorsOf(item));
+          const entry = pool.find((m) => sameActor(`${m.harness}/${m.id}`, standing));
+          const paths = evidenceAt(policy, this.evidenceFor(id), item.head).changedPaths ?? [];
+          const strict = sensitive({ ...item, scope: [...item.scope, ...paths] }) || changeClass(paths, policy) === "protected";
+          if (refusal || !entry || (strict && !frontier(entry))) {
+            throw new RuleError("no_reviewer", refusal ?? "The standing reviewer is outside the eligible pool or required frontier tier", 409);
+          }
+        }
         if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
           throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
-        return { needed: true, requested: false, reason: need.reason, at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
+        const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
+        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
       }
       if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
       return { needed: false, reason: need.reason };
     }
     let chosen: string;
+    let choiceReason = "";
     if (reviewer !== null) {
       chosen = reviewer;
+    } else if (records) {
+      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, project: this.project().name, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected" },
+        need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
+      chosen = pick.actor;
+      choiceReason = pick.reasons.join(" ");
     } else {
       const pick = pickReviewer({
         item, pool, policy, allowPaid: false,
@@ -3398,12 +3416,13 @@ export class Ledger extends DurableObject<Env> {
       chosen = pick.reviewer.actor;
     }
     const slash = chosen.indexOf("/");
-    const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
+    const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, chosen);
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
-    return { needed: true, requested: true, reason: need.reason, at, head: need.head, reviewer: chosen };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen };
   }
 
   // When the newest review.requested event for a head was recorded, so a

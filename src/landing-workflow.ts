@@ -57,6 +57,7 @@
 // know. The verdict is judged by src/landing-verdict.ts, which the CLI's
 // landing uses too.
 
+import { suggestionRecords } from "./models/suggestion-records.ts";
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
@@ -516,9 +517,15 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string): Promise<void> {
     const ask = await step.do("request the review", RETRIES, async () => {
-      const pool = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).models();
+      const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
+      const pool = await index.models();
+      const records = p.reviewer === null ? await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))) : undefined;
       try {
-        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null);
+        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, true, false, records);
+        if (r.needed && r.reviewer) {
+          const current = await L.landingWorkflowOf(p.item);
+          await L.setLandingWorkflowStage(p.item, p.instance, "review", current?.round ?? 0, `Reviewer: ${r.reviewer}. ${r.reason}`);
+        }
         return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));
