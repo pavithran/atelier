@@ -221,10 +221,13 @@ last segment. The gateway is authenticated, so each call also carries a
 with AI Gateway · Run on the account), which opencode reads from the
 runner's environment. A `cf-aig-metadata` header, a JSON object of at most
 five entries, says whose call it is; the runner sets it per run as
-`CF_AIG_METADATA`, so the config reads it from the environment and every
-call of one run carries the same task, role and runner
-(`bin/orchestrate/run-agent.sh` sets the same variable for a hand
-dispatch):
+`CF_AIG_METADATA`, and every call of one run carries the same task, role
+and runner (`bin/orchestrate/run-agent.sh` sets the same variable for a hand
+dispatch). opencode substitutes `{env:VAR}` into the config's raw text before
+parsing it, so the JSON cannot go into a JSON string as it is: the opencode
+adapter sets `CF_AIG_METADATA_ESCAPED`, the same object escaped for a JSON
+string, and the configs `atelier runner setup` writes read that
+(docs/runners.md, "What setup writes"):
 
 ```json
 {
@@ -234,7 +237,7 @@ dispatch):
         "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
         "headers": {
           "cf-aig-authorization": "Bearer {env:CF_AIG_TOKEN}",
-          "cf-aig-metadata": "{env:CF_AIG_METADATA}"
+          "cf-aig-metadata": "{env:CF_AIG_METADATA_ESCAPED}"
         }
       }
     }

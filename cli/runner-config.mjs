@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { redactKeys } from "../src/models/pool.ts";
 import { isOwnerSecretName } from "./credentials.mjs";
@@ -36,7 +37,24 @@ const PROVIDER = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
 // The name of an environment variable a harness entry passes on (runner.mjs harnessEnv).
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
-export function parseConfig(json) {
+// The harness adapters Atelier ships (bin/harness/, cli/harness/adapter.mjs),
+// which an entry runs when it gives no command of its own. Each is started by
+// this Node with every placeholder, so the one command builds, plans and
+// reviews; opencode's also names the folder of the provider configs `atelier
+// runner setup` wrote beside the runner config.
+const ADAPTERS = { "claude-code": "atelier-claude.mjs", codex: "atelier-codex.mjs", opencode: "atelier-opencode.mjs", antigravity: "atelier-agy.mjs" };
+const BIN = fileURLToPath(new URL("../bin/harness/", import.meta.url));
+export function defaultCommand(agent, configDir = defaultConfigDir()) {
+  const adapter = ADAPTERS[agent];
+  if (!adapter) return null;
+  return [process.execPath, join(BIN, adapter), ...(agent === "opencode" ? ["--providers", join(configDir, "opencode")] : []),
+    "{model}", "{brief_file}", "{workspace}", "{plan_file}", "{diff_file}", "{verdict_file}"];
+}
+export const defaultConfigDir = () => process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier");
+
+// `configDir` is the folder the config was read from, where `runner setup`
+// keeps the opencode provider configs a default command names.
+export function parseConfig(json, { configDir } = {}) {
   const agents = [], errors = [];
   let value;
   try { value = typeof json === "string" ? JSON.parse(json) : json; }
@@ -122,7 +140,7 @@ export function parseConfig(json) {
       }
     }
   }
-  for (const [i, entry] of value.agents.entries()) {
+  for (let [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
     const start = errors.length;
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) { bad("expected an object"); continue; }
@@ -132,6 +150,12 @@ export function parseConfig(json) {
     if (!Array.isArray(entry.models) || !entry.models.length ||
         entry.models.some((m) => typeof m !== "string" || !MODEL.test(m)) ||
         new Set(entry.models).size !== entry.models.length) bad("models must be distinct claimable model ids");
+    // No command: the adapter Atelier ships for the harness, where it ships one.
+    if (entry.command === undefined && HARNESSES.includes(entry.agent)) {
+      const command = defaultCommand(entry.agent, configDir);
+      if (command) entry = { ...entry, command };
+      else bad(`Atelier ships no adapter for ${entry.agent}; give its command`);
+    }
     if (!Array.isArray(entry.command) || !entry.command.length ||
         entry.command.some((s) => typeof s !== "string" || s.includes("\0")) || !entry.command[0]?.trim()) {
       bad("command must be an argv array with an executable and no NUL characters");
@@ -158,8 +182,8 @@ export function parseConfig(json) {
     ...(jobs !== undefined ? { jobs } : {}) };
 }
 
-export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {
-  const config = parseConfig(readFileSync(path, "utf8"));
+export function readConfig(path = join(defaultConfigDir(), "runner.json")) {
+  const config = parseConfig(readFileSync(path, "utf8"), { configDir: dirname(resolve(path)) });
   if (config.errors.length) throw new Error(config.errors.join("; "));
   return config;
 }
