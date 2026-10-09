@@ -33,7 +33,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   { name: "Setup", lines: [[
     { form: "login --server URL", about: "Stores this server's address and the owner's token, asking for the token when none is stored for it. A token the server refuses is not stored." },
     { form: "login --store", about: "Names the token store in use and whether it holds a token. It never prints the token." },
-    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--single-family COMPANY] [--cross-family] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--single-family COMPANY` has the project build and review with one company's models alone (anthropic, openai, google and the other families a model's name is recognised by): dispatch, routing and the landing pick only that company's models, a review counts when the reviewer is a different model of it from every contributor, and the project page, `atelier status`, every review brief and each merge's provenance note say so; `--cross-family` returns to the default, where a protected change needs approval from a model of another company than every contributor. Either switch is recorded with who made it and when. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--core` records the project's core files: the queue holds a dispatch whose scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted, outside the dispatch's own plan) until that item merges or is abandoned; unset, nothing is held. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. `--review-bar` records what may block a review, which every review brief states; unset, the brief states the default bar (correctness, security or data-loss defects only). `--review-tier` names the top review tier, which reviews every protected change: the gate's cross-family review goes to a tier model first and then serves both, and only a gate reviewer outside the tier gets a separate tier review beside it; unset, none does. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
+    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--single-family COMPANY] [--cross-family] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--single-family COMPANY` has the project build and review with one company's models alone (anthropic, openai, google and the other families a model's name is recognised by): dispatch, routing and the landing pick only that company's models, a review counts when the reviewer is a different model of it from every contributor, and the project page, `atelier status`, every review brief and each merge's provenance note say so; `--cross-family` returns to the default, where a protected change needs approval from a model of another company than every contributor. Either switch is recorded with who made it and when. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--core` records the project's core files: the queue holds a dispatch whose scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted, outside the dispatch's own plan) until that item merges or is abandoned; unset, nothing is held. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. `--review-bar` records what may block a review, which every review brief states; unset, the brief states the default bar, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page, and treats anything else as a follow-up. `--review-tier` names the top review tier, which reviews every protected change: the gate's cross-family review goes to a tier model first and then serves both, and only a gate reviewer outside the tier gets a separate tier review beside it; unset, none does. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
     { form: "sync", about: "Refreshes the stored policy from the project's ControlPlane files. For a baseline built with `--history-since`, it also carries commits made in the checkout outside Atelier to the baseline." },
     { form: "publish", about: "Pushes the registered branch to the baseline with a write token. It is refused for a baseline that holds only part of the history; `sync` does that job." },
   ], [
@@ -94,6 +94,10 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "approvals [--all]", about: "Lists the approvals that stand, each with its kind, revision and expiry. `--all` adds the used, withdrawn and expired ones." },
     { form: "approvals withdraw ID [--note T]", about: "The project owner withdraws an approval no ship has used, so none can use it." },
   ], [
+    { form: 'decide "text" --quote "owner\'s words" [--project P]', about: "The project owner records a standing decision for the project, dated, with the owner's own words it rests on: another company reviews everywhere, the review bar, a spend limit, no overrides. Only the owner's token records one. Every review brief of the project and `atelier guide --role orchestrate` carry the decisions that stand, marked as decisions a reviewer must not overrule." },
+    { form: "decisions [--all] [--project P]", about: "Lists the project's standing decisions, oldest first, each with its id, date, text and the owner's words. `--all` adds the withdrawn ones with their notes." },
+    { form: 'decisions withdraw ID --note "why"', about: "The project owner withdraws a standing decision with a note saying why. It stops appearing in the briefs, the guide and the plain list; `--all` still shows it, withdrawn." },
+  ], [
     { form: "ship [--dry-run] [--push]", about: "Run by the project owner in the registered checkout, clean and at the baseline's head: composes the ship order from the project's ControlPlane ship policy and adapter, or from `docs/atelier/ship.json`, and refuses before running anything when a protected step has no approval at that revision, naming the command that approves it. It then runs the steps in order and stops at the first that fails, recording each step's command, exit status, duration and redacted output tail on the ledger. It pushes only with `--push`, which needs no approval since ship is owner-only and runs at one exact revision, and never forces a push. `--dry-run` prints the steps and which approvals are present or missing, and runs nothing." },
   ]] },
   { name: "Plans", lines: [[
@@ -141,7 +145,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "ops COMMAND [ARGS...]", aside: "portfolio operations, run by the private atelier-ops toolkit when installed", about: "Hands everything after `ops` to the private `atelier-ops` toolkit, named by `ATELIER_OPS` or found on `PATH`. Without one it says so and exits 2." },
   ]] },
   { name: "Docs", lines: [[
-    { form: "guide [--role build|review|plan|orchestrate]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `atelier adopt` inserts the plain guide." },
+    { form: "guide [--role build|review|plan|orchestrate] [--project P]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `--role orchestrate` for a project ends with the owner's standing decisions (`atelier decide`), read from the server. `atelier adopt` inserts the plain guide." },
   ]] },
   { name: "Tokens", gap: true, lines: [[
     { form: "token issue --as H/M [--project P]... [--days N] [--label TEXT]", about: "The project owner issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them." },
@@ -219,7 +223,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--reset": "rebuilds the policy from the defaults and the options given",
       "--history-since YYYY-MM-DD": "builds the baseline from the commits since that day only, for a project too large for Artifacts",
       "--regenerate CMD": "the command that regenerates the project's generated fixtures, run by atelier land in a task's workspace after it merges main; --regenerate \"\" clears it",
-      "--review-bar TEXT": "what may block a review, stated in every review brief (at most 1000 characters); --review-bar \"\" restores the default: correctness, security or data-loss defects only",
+      "--review-bar TEXT": "what may block a review, stated in every review brief (at most 1000 characters); --review-bar \"\" restores the default: a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up",
       "--review-tier H/M,H/M": "the top review tier: a protected change's gate review goes first to one of these of another family than every contributor, and serves as the tier review too; when the gate's reviewer is outside the tier, one of these that did not build the change reviews it beside, whatever its family: its rejection sends the change back, its approval never satisfies the gate, and a landing never waits for it; --review-tier \"\" clears it",
       "--single-family COMPANY": "runs the project on one company's models alone (anthropic, openai, google, zai, deepseek, qwen and the other families a model's name is recognised by): dispatch, routing and the landing pick only that company's models, and a review counts when the reviewer is a different model of it from every contributor; the mode is shown on the project page, in atelier status, in every review brief and in each merge's provenance note, and recorded with who set it and when",
       "--cross-family": "returns to the default, where a protected change needs approval from a model of another company than every contributor; recorded with who made the switch and when",
@@ -374,7 +378,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   land: {
     flags: {
-      "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise the server picks a model of another family than every contributor, when the gate needs a review",
+      "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise, when the gate needs a review, the server suggests a model of another company than every contributor from the pool and the models' records, and the landing prints which and why",
       "--no-review": "skips waiting: the task is left submitted for the owner to settle the review by hand",
       "--wait": "queues for the landing lease while another task's landing holds it, saying whose landing it waits behind and which landings are queued ahead; the server hands the lease to the waiting landings in the order they queued, so it starts when its turn comes (three hours at most)",
       "--dry-run": "prints the steps and the refusals without changing anything",
@@ -479,6 +483,21 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     },
     example: "atelier approvals --all --project demo",
   },
+  decide: {
+    flags: {
+      "--quote TEXT": "the owner's own words the decision rests on; required, at most 2000 characters",
+      "--project NAME": "the project the decision is for; this checkout's or workspace's project unless given",
+    },
+    example: 'atelier decide "Every change is reviewed by a model of another company" --quote "another company reviews everywhere" --project demo',
+  },
+  decisions: {
+    flags: {
+      "--all": "adds the withdrawn decisions, each with its note",
+      "--note TEXT": "with withdraw, why; required, kept with the decision",
+      "--project NAME": "the project; this checkout's or workspace's project unless given",
+    },
+    example: "atelier decisions --project demo",
+  },
   ship: {
     flags: {
       "--dry-run": "composes the ship order and checks its approvals, running nothing",
@@ -515,7 +534,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   dispatch: {
     flags: {
       "--to home|cloud|any": "the kind of runner; any unless given",
-      "--agent A": "the agent the runner must run",
+      "--agent A": "the agent the runner must run; unless given, the server suggests a builder from the model pool and the models' records and prints which and why",
       "--model M": "the model the runner must use",
       "--note TEXT": "a note the agent reads with the task",
       "--job merge-main": "sends the task to its builder to merge main into its workspace and resolve the conflicts of a landing that stopped on them",
@@ -708,7 +727,11 @@ dispatch ID\`. Judge each review finding against the code before acting, and
 record every verdict with \`atelier finding\`. Land one task at a time with
 \`atelier land ID\`. Feed what you learn back: \`atelier run-report\` for a run
 that ended without a result, \`atelier new "Lesson: …"\` for a rule worth
-keeping, and a task on the atelier project for a missing feature.
+keeping, and a task on the atelier project for a missing feature. When the
+owner settles a question for good (who reviews, the review bar, a spend
+limit, no overrides), record it with \`atelier decide "text" --quote "the
+owner's words"\`: every review brief and this guide carry the decisions that
+stand, and \`atelier decisions\` lists them.
 `,
 };
 

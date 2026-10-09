@@ -29,7 +29,12 @@ function call(method: string, path: string, actor: string, body?: unknown, heade
   }), { ...testEnv, ...over } as typeof env);
 }
 
-const codexBody = (weekly: number) => ({ windows: [{ name: "weekly", usedPercent: weekly, resetsAt: LATER, at: AT }, { name: "5-hour", usedPercent: 12, resetsAt: at(NOW + 3_600_000), at: AT }], models: [], balances: [], notes: [] });
+// The route stamps a report with the real clock, and a window whose reset has
+// passed by that clock raises no alert, so the reports the route judges reset
+// four days from now, however long after AT the test runs; the page test
+// renders LATER against the fixed clock and pins its text.
+const AHEAD = new Date(Date.now() + 4 * 86_400_000).toISOString();
+const codexBody = (weekly: number) => ({ windows: [{ name: "weekly", usedPercent: weekly, resetsAt: AHEAD, at: AT }, { name: "5-hour", usedPercent: 12, resetsAt: at(NOW + 3_600_000), at: AT }], models: [], balances: [], notes: [] });
 const report = (over: Partial<UsageReport> = {}): UsageReport => ({ tool: "codex", runner: "home:studio", at: AT, windows: [], models: [], balances: [], notes: [], ...over });
 const span = (requests: number, tokens: number, cost: number | null = null) => ({ requests, tokens, cost });
 
@@ -49,7 +54,7 @@ it("a runner reports a tool under its name, as it reports a model's status, and 
   const posted = await call("POST", "/usage/Codex", "owner", codexBody(10), { "x-atelier-runner": "home:routes" });
   expect(posted.status).toBe(200);
   const answer = (await posted.json()) as { report: UsageReport; alerts: string[] };
-  expect(answer.report).toMatchObject({ tool: "codex", runner: "home:routes", windows: [{ name: "weekly", usedPercent: 10, resetsAt: LATER }, { name: "5-hour", usedPercent: 12 }] });
+  expect(answer.report).toMatchObject({ tool: "codex", runner: "home:routes", windows: [{ name: "weekly", usedPercent: 10, resetsAt: AHEAD }, { name: "5-hour", usedPercent: 12 }] });
   expect(answer.alerts).toEqual([]);
   // A second report from the same runner replaces the first; another runner's stands beside it.
   await call("POST", "/usage/codex", "owner", codexBody(20), { "x-atelier-runner": "home:routes" });

@@ -814,6 +814,9 @@ export async function runReview(assignment, config, name, runnerIO) {
       // Under single-family mode the brief says the review is by a different
       // model of the one company, not a cross-company one (t394).
       singleFamily: claimed.singleFamily ?? null,
+      // The owner's standing decisions (src/decisions.ts), as the claim
+      // carries them; an older server sends none, and the brief says so.
+      decisions: claimed.decisions ?? null,
     });
     brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
