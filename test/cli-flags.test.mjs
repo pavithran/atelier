@@ -42,6 +42,33 @@ test("parseArgs: a switch keeps the next word as a positional, a text flag takes
   assert.deepEqual(parseArgs(["models", "add", "--help", "m1"])._, ["models", "add", "m1"]);
 });
 
+// t360: --version parses like --help, wherever it stands, and never takes a
+// value or lands in the flag table's way.
+test("parseArgs: --version is read before any flag, wherever it stands", () => {
+  assert.equal(parseArgs(["ls", "--version"]).version, true);
+  assert.deepEqual(parseArgs(["ls", "--version"]).bare, []);
+  assert.deepEqual(parseArgs(["ls", "--version"]).multi, {});
+  // A word after --version is never its value: --all is still a switch.
+  assert.equal(parseArgs(["ls", "--version", "--all"]).all, true);
+  assert.deepEqual(parseArgs(["ls", "--version", "--all"])._, ["ls"]);
+  assert.equal(parseArgs(["--version", "ls"]).version, true);
+  assert.deepEqual(parseArgs(["--version", "ls"])._, ["ls"]);
+  // After -- it is a word for the command, like any flag.
+  const rest = parseArgs(["check", "--", "--version"]);
+  assert.equal(rest.version, undefined);
+  assert.deepEqual(rest.rest, ["--version"]);
+});
+
+// t360: --version=… is refused as a value the flag does not take, never a
+// string that slips through and answers anyway.
+test("parseArgs: --version= is a problem, not a version", () => {
+  const parsed = parseArgs(["ls", "--version=x"]);
+  assert.equal(parsed.version, false);
+  assert.deepEqual(parsed.multi.version, [false]);
+  assert.match(parsed.problems[0], /^--version takes no value/);
+  assert.equal(parseArgs(["ls", "--version="]).version, false);
+});
+
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-flags-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -275,6 +302,15 @@ test("dispatch with no --agent asks the server to suggest a builder and prints t
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(f.requests().at(-1).body, { to: "home", suggest: true });
   assert.equal(r.stdout, "Builder: claude-code/opus-5.5. Eligible pool models ranked by recorded successful and failed outcomes. Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since.\nt3 is waiting for a home runner, claude-code with opus-5.5.\n");
+});
+
+// t360: --version answers after any command, before any request.
+test("--version after a command prints the version and contacts no server", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.checkout, ["ls", "--version"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^atelier \d+\.\d+\.\d+ \(route level \d+\)\n$/);
+  assert.deepEqual(f.requests(), []);
 });
 
 test("a flag that needs a value refuses a bare one before any request", (t) => {

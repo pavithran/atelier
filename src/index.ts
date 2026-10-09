@@ -1116,6 +1116,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const { apply, ...selection } = cleanServed(body);
     return json({ project, ...selection, ...(await L.annotateServed(selection, actor, apply)) });
   }
+  // Standing decisions (src/decisions.ts): GET lists every one with its
+  // status, for the owner and for an agent token (agentRoute); POST records
+  // one and POST decisions/ID/withdraw withdraws one, for the owner alone.
+  if (parts[2] === "decisions") {
+    if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor), 201);
+    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note));
+    throw new RuleError("not_found", "no such route", 404);
+  }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
   if (parts[2] === "actions") {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
