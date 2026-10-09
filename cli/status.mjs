@@ -1,6 +1,9 @@
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
-// and inbox holds the entries the Decisions page lists for it. With `waiting` —
+// and inbox holds the entries the Decisions page lists for it. The waiting
+// list splits into the lead developer's own decisions, under "Waiting for
+// you", and what the orchestrator and runners handle, under their own heading
+// (isOwnCall in src/rules.ts). With `waiting` —
 // the runner queue and the runner offers as the server holds them — the
 // waiting section also names each open review request and its reviewer, and
 // says of any queued job no live runner offers that it can never be claimed,
@@ -14,6 +17,7 @@
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
 import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
+import { isOwnCall } from "../src/rules.ts";
 import { jobsLine } from "./runner.mjs";
 
 // An item as `ls --json` and `status --json` print it: what the text listings
@@ -115,6 +119,18 @@ function nextCommand(entry, project) {
   return null;
 }
 
+// The lines for one group of decisions: each entry's id, kind and title, its
+// reason, and the command that answers it where there is one.
+function decisionLines(entries, project) {
+  const lines = [];
+  for (const x of entries) {
+    lines.push(`    ${x.itemId}  ${x.kind}  ${x.title}`, `      ${x.reason}`);
+    const next = nextCommand(x, project);
+    if (next) lines.push(`      next: ${next}`);
+  }
+  return lines;
+}
+
 function runnerOf(d) {
   return `${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}`;
 }
@@ -209,6 +225,10 @@ export function formatStatus(views, waiting = {}) {
     // stands under no heading, so it stays among the decisions and the
     // server's word is not lost.
     const decisions = mine.filter((x) => x.kind !== "overlap" || !overlapOther(x));
+    // The lead developer's own decisions wait on the human; the rest the
+    // orchestrator and runners handle, so they are listed apart.
+    const own = decisions.filter((x) => isOwnCall(x.kind));
+    const handled = decisions.filter((x) => !isOwnCall(x.kind));
     const overlaps = overlapPairs(mine);
     const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
     const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
@@ -224,14 +244,8 @@ export function formatStatus(views, waiting = {}) {
       // would otherwise read against the heading printed under it.
       lines.push(overlaps.length ? "  Nothing waiting on you." : "  Nothing waiting.");
     }
-    if (decisions.length) {
-      lines.push("  Waiting for you");
-      for (const x of decisions) {
-        lines.push(`    ${x.itemId}  ${x.kind}  ${x.title}`, `      ${x.reason}`);
-        const next = nextCommand(x, v.name);
-        if (next) lines.push(`      next: ${next}`);
-      }
-    }
+    if (own.length) lines.push("  Waiting for you", ...decisionLines(own, v.name));
+    if (handled.length) lines.push("  Handled by the orchestrator", ...decisionLines(handled, v.name));
     if (overlaps.length) {
       lines.push("  Overlapping scopes");
       for (const [a, b] of overlaps) lines.push(`    ${a} and ${b} name overlapping paths`);

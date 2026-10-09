@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
@@ -68,7 +69,7 @@ async function submitted(L: L, head = H1) {
   await L.submit("t1", OPUS);
 }
 
-const review = (by: string, head = H1): Review => ({ itemId: "t1", by, head, approve: true, note: "Looks right.", at: new Date().toISOString() });
+const review = (by: string, head = H1): Review => ({ itemId: "t1", by, head, criteria: NO_CRITERIA, approve: true, note: "Looks right.", at: new Date().toISOString() });
 
 const call = (name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/${path}`, {
   method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
@@ -78,7 +79,7 @@ it("an approval the owner token recorded in a model's name is not the independen
   const name = "provenance-owner-token";
   const L = await setup(name);
   await submitted(L);
-  const res = await call(name, "review", GPT, { approve: true, note: "Looks right.", head: H1 }, artifacts(() => H1, { [H1]: { parents: [H0], message: "Build it" } }));
+  const res = await call(name, "review", GPT, { approve: true, note: "Looks right.", head: H1, criteria: NO_CRITERIA }, artifacts(() => H1, { [H1]: { parents: [H0], message: "Build it" } }));
   expect(res.status, await res.clone().text()).toBe(200);
   const d = await L.detail("t1") as unknown as Detail;
   expect(d.reviews.at(-1)).toMatchObject({ by: GPT, recordedBy: "owner", proved: false, claimed: false });

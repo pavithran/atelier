@@ -1,4 +1,5 @@
 import {expect,it} from 'vitest';
+import { NO_CRITERIA } from "../src/criteria.ts";
 import {renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
 import type {ProjectRecord} from '../src/ledger';
@@ -12,6 +13,21 @@ it('review puts revision-bound actions before the diff and escapes untrusted tas
  expect(html.indexOf('Approve revision')).toBeLessThan(html.indexOf('id="changes"'));
  expect(html).toContain('name="note" required');
 });
+it('a check Atelier ran reads as a runner in a clean clone or a Cloudflare container, never as the agent\'s machine',()=>{
+ const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+ const d=detail();
+ // The decision brief's wording comes from src/brief.ts, not the page's own check rows.
+ const outsideBrief=(h:string)=>h.slice(0,h.indexOf('id="brief"'))+h.slice(h.indexOf('id="changes"'));
+ const local=renderItem(project,d,'PAVI',diff);
+ expect(local).toContain('Runner, clean clone');
+ expect(local).toContain('on a runner, in a clean clone');
+ expect(outsideBrief(local)).not.toMatch(/agent(&#39;|')s machine/i);
+ d.evidence[0].where='sandbox';
+ const cloud=renderItem(project,d,'PAVI',diff);
+ expect(cloud).toContain('Cloudflare container');
+ expect(cloud).not.toContain('Runner, clean clone');
+ expect(outsideBrief(cloud)).not.toMatch(/agent(&#39;|')s machine/i);
+});
 it('merged tasks show completion without actionable approval or a misleading closed gate',()=>{
  const d=detail();d.item.state='merged';d.item.acceptedHead=head;
  const html=renderItem(project,d,'PAVI',null);
@@ -19,11 +35,11 @@ it('merged tasks show completion without actionable approval or a misleading clo
 });
 it('acceptance renders only after an independent approval and passing evidence; the owner\'s approval leaves the override instead',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
- const d=detail();d.reviews=[{itemId:'t1',head,approve:true,by:'pavi',note:'approved',at:time}];
+ const d=detail();d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'pavi',note:'approved',at:time}];
  const own=renderItem(project,d,'PAVI',diff);
  expect(own).not.toContain('Accept revision');expect(own).toContain('Waiting for an independent review');expect(own).toContain('Your own approval does not count as that review.');
  expect(own).toContain('Accept without an independent review');expect(own).toContain('action="/ui/example/t1/override"');expect(own).toContain('<textarea name="note" required rows="3" maxlength="500">');
- d.reviews.push({itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'another family',at:time});d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
+ d.reviews.push({itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'another family',at:time});d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  const independent=renderItem(project,d,'PAVI',diff);
  expect(independent).toContain('Accept revision');expect(independent).not.toContain('Accept without an independent review');
  d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
@@ -46,7 +62,7 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   const d=detail();
   // A revision outside the protected paths, sent back by the owner's own review: approving it is the owner's move.
   d.gate={ready:false,needsAssessor:false,blockers:['rejected by pavi: tighten'],outOfScope:[]};
-  d.reviews=[{itemId:'t1',head,approve:false,by:'pavi',note:'tighten',at:time}];
+  d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'pavi',note:'tighten',at:time}];
   d.evidence[0].changedPaths=['docs/a.md'];
   const html=renderItem(project,d,'PAVI',diff);
   expect(html).toContain('<button class="primary">Approve revision</button>');
@@ -88,7 +104,7 @@ it('approval and acceptance require visible changes at the recorded revision',()
  for(const diff of ['unavailable' as const,null,{head:'c'.repeat(40),base:'b'.repeat(40),files:[],truncated:false}]){
   const html=renderItem(project,d,'PAVI',diff);
   expect(html).not.toContain('Approve revision');expect(html).toContain('Reload this task');
-  d.reviews=[{itemId:'t1',head,approve:true,by:'pavi',note:'approved',at:time}];
+  d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'pavi',note:'approved',at:time}];
   expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
  }
 });
@@ -257,7 +273,7 @@ it('pages call a project by its title and link it by its name',()=>{
 it('the brief renders above the diff, escapes a hostile summary, and tags the verdict',()=>{
  const d=detail();
  d.evidence[0].where='sandbox';
- d.reviews=[{itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'',at:time}];
+ d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'',at:time}];
  d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  d.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'<img src=x onerror=alert(1)> done'}}];
  const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
@@ -298,7 +314,7 @@ it('a project with no required checks says so instead of counting zero of zero',
  expect(html).toContain('This project requires no checks.');expect(html).not.toContain('0 of 0');
 });
 it('banner, brief heading and tag name one ask for a protected revision with a rejection',()=>{
- const d=detail();d.reviews=[{itemId:'t1',head,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
+ const d=detail();d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
  const html=renderItem(project,d,'PAVI',null);
  const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
  expect(html).toContain('Waiting for an independent review');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
@@ -308,7 +324,7 @@ it('a claimed task shows the same ask in its banner and its brief',()=>{
  const failing=detail();failing.item.state='claimed';failing.evidence[0].passed=false;
  const f=renderItem(project,failing,'PAVI',null);
  expect(f).toContain('Checks need attention');expect(brief(f)).toContain('Send t1 back');expect(brief(f)).toContain('<span class="tag bad">send back</span>');
- const rejected=detail();rejected.item.state='claimed';rejected.reviews=[{itemId:'t1',head,approve:false,by:'codex/gpt-5.5',note:'no',at:time}];
+ const rejected=detail();rejected.item.state='claimed';rejected.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'codex/gpt-5.5',note:'no',at:time}];
  const r=renderItem(project,rejected,'PAVI',null);
  expect(r).toContain('Changes requested');expect(brief(r)).toContain('Send t1 back');expect(brief(r)).not.toContain('not been submitted');
  const idle=detail();idle.item.state='claimed';
@@ -597,6 +613,42 @@ it('a selected decision marks the desk and carries a back link; without one, the
  expect(rest).not.toContain('class="desk has-selection"');
  expect(rest).not.toContain('class="review-back"');
 });
+it('Decisions lists the lead developer\'s own calls under Needs your attention and the orchestrator\'s apart',()=>{
+  const entries=[
+    {project:'example',itemId:'t1',title:'Accept me',kind:'accept' as const,reason:'r',weight:100},
+    {project:'example',itemId:'t2',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+    {project:'example',itemId:'t3',title:'Stale me',kind:'stale' as const,reason:'r',weight:50},
+  ];
+  const html=renderInbox(entries,[project],'PAVI');
+  const needs=html.indexOf('Needs your attention');
+  const handled=html.indexOf('Handled by the orchestrator');
+  expect(needs).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(needs).toBeLessThan(handled);
+  expect(html.indexOf('Accept me')).toBeLessThan(handled);
+  expect(html.indexOf('Merge me')).toBeGreaterThan(handled);
+  expect(html.indexOf('Stale me')).toBeGreaterThan(handled);
+  expect(html).toContain('1 decision needs your attention.');
+});
+it('Decisions lists a task that has both an own call and a handled one under each list with its own kind, the handled row linking to the task page',()=>{
+  const entries=[
+    {project:'example',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:100},
+    {project:'example',itemId:'t1',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+  ];
+  const html=renderInbox(entries,[project],'PAVI');
+  const needs=html.indexOf('Needs your attention');
+  const handled=html.indexOf('Handled by the orchestrator');
+  expect(needs).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(needs).toBeLessThan(handled);
+  const ownSection=html.slice(needs,handled);
+  const handledSection=html.slice(handled);
+  expect(ownSection).toContain('Review required');
+  expect(ownSection).not.toContain('Ready to merge');
+  expect(ownSection).toContain('href="/decisions?project=example&task=t1#review"');
+  expect(handledSection).toContain('Ready to merge');
+  expect(handledSection).not.toContain('Review required');
+  expect(handledSection).toContain('href="/p/example/t1"');
+  expect(handledSection).not.toContain('aria-current');
+});
 it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
  const {renderMainPreview}=await import('../src/ui');
  expect(renderMainPreview(undefined)).toBe('');
@@ -711,6 +763,34 @@ it('the front door and the login link follow a showcase only while its project i
  expect((await go('/')).status).toBe(404);
  expect(await (await go('/login')).text()).not.toContain('See the public showcase');
  expect((await go('/showcase')).status).toBe(404);
+});
+
+function mergedShowcaseStory(){
+ return buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
+  ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','pavi','item.accepted'),ev(3,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
+}
+it('the showcase labels its two-week figures and sets the all-time merges beside them',async()=>{
+ const {renderShowcase}=await import('../src/ui');
+ const s=mergedShowcaseStory();
+ const card={project:{name:'example',repo:'example',policy:{checks:[],protected:[]},createdAt:''},mode:'named' as const,story:s};
+ const html=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[{...card,allTimeMerged:215}]);
+ expect(html).toContain(`<b>${s.tally.merges}</b>merged, last two weeks`);
+ expect(html).toContain('<b>215</b>merged, all time');
+ expect(html).toContain('all time, 215 merged across 1 project.');
+ const unset=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[card]);
+ expect(unset).not.toContain('merged, all time');
+ expect(unset).not.toContain('all time, ');
+});
+it('the showcase names the owner\'s zone in its legend, and UTC when none is set',async()=>{
+ const {renderShowcase}=await import('../src/ui');
+ const {setTimeZone}=await import('../src/time');
+ const s=mergedShowcaseStory();
+ try{
+  setTimeZone('America/New_York');
+  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in New York time');
+  setTimeZone(undefined);
+  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in UTC');
+ }finally{setTimeZone(undefined);}
 });
 
 // ── the comparison of one project with itself ──
@@ -1028,6 +1108,43 @@ it('Home draws a card per project with what waits, what runs, its two-week graph
  expect(quiet).toContain('Nothing merged yet.');
  expect(renderHome([],'PAVI',now,'pavi')).toContain('Start with one project');
 });
+it('Home lists what the orchestrator handles apart from what waits on the lead developer',async()=>{
+  const {renderHome}=await import('../src/ui');
+  const titled={...project,name:'cloudflare-git',title:'Atelier'};
+  const items=[{...detail().item,id:'t1',state:'submitted' as const},{...detail().item,id:'t2',state:'accepted' as const}];
+  const waiting=[
+    {project:'cloudflare-git',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:80},
+    {project:'cloudflare-git',itemId:'t2',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+  ];
+  const html=renderHome([{project:titled,items,waiting}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
+  const yours=html.indexOf('<h3>Waiting on you</h3>');
+  const handled=html.indexOf('<h3>Handled by the orchestrator</h3>');
+  expect(yours).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(yours).toBeLessThan(handled);
+  expect(html.indexOf('Assess me')).toBeLessThan(handled);
+  expect(html.indexOf('Merge me')).toBeGreaterThan(handled);
+  expect(html).toContain('<b>1</b>waiting on you');
+});
+it('Home lists a task that has both an own call and a handled one under each list with its own kind',async()=>{
+  const {renderHome}=await import('../src/ui');
+  const titled={...project,name:'cloudflare-git',title:'Atelier'};
+  const items=[{...detail().item,id:'t1',state:'submitted' as const}];
+  const waiting=[
+    {project:'cloudflare-git',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:100},
+    {project:'cloudflare-git',itemId:'t1',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
+  ];
+  const html=renderHome([{project:titled,items,waiting}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
+  const yours=html.indexOf('<h3>Waiting on you</h3>');
+  const handled=html.indexOf('<h3>Handled by the orchestrator</h3>');
+  expect(yours).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
+  expect(yours).toBeLessThan(handled);
+  const ownSection=html.slice(yours,handled);
+  const handledSection=html.slice(handled);
+  expect(ownSection).toContain('Review required');
+  expect(ownSection).not.toContain('Ready to merge');
+  expect(handledSection).toContain('Ready to merge');
+  expect(handledSection).not.toContain('Review required');
+});
 it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
  const {renderHistory}=await import('../src/ui');
  const at=(d:number,h:number)=>`2026-10-0${d}T${String(h).padStart(2,'0')}:00:00.000Z`;
@@ -1301,12 +1418,25 @@ it('a commit page marks the Log tab current and its crumb names the commit',()=>
 it('each review on the task page says who recorded it (t215)',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.reviews=[
-  {itemId:'t1',head,approve:true,by:'claude-code/opus-5.5',note:'own token',at:time,recordedBy:'claude-code/opus-5.5',proved:true,claimed:false},
-  {itemId:'t1',head,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the owner',at:time,recordedBy:'pavi',proved:false,claimed:false},
-  {itemId:'t1',head,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
+  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'own token',at:time,recordedBy:'claude-code/opus-5.5',proved:true,claimed:false},
+  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the owner',at:time,recordedBy:'pavi',proved:false,claimed:false},
+  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
  ];
  const html=renderItem(project,d,'PAVI',diff);
  expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded by claude-code/opus-5.5 with its own token');
  expect(html).toContain('recorded by the project owner with the owner token</p>');
  expect(html).toContain('recorded by the project owner with the owner token, answering a review request it claimed');
+});
+it('a merged task shows its change as it landed, with no merge preview or conflict warning',()=>{
+ const d=detail();d.item={...d.item,state:'merged',owner:null,acceptedHead:head};
+ const file={path:'src/a.ts',status:'modified' as const,added:1,removed:1,hunks:[{oldStart:1,oldLines:1,newStart:1,newLines:1,lines:[{op:'-' as const,text:'a'},{op:'+' as const,text:'a2'}]}]};
+ // A preview that would conflict, as one read against today's main would: it is not shown.
+ const main={head:'c'.repeat(40),ahead:12,aheadCapped:false,merge:{clean:false,conflicts:[{path:'src/a.ts',reason:'both changed'}],both:['src/a.ts'],ours:60,theirs:1}};
+ const html=renderItem(project,d,'PAVI',{head:'m'.repeat(40),base:'f'.repeat(40),files:[file],truncated:false,main,merged:{commit:'m'.repeat(40),from:'first-parent'}});
+ expect(html).toContain('changed by the merge');expect(html).toContain('against its first parent');
+ expect(html).toContain('src/a.ts');
+ expect(html).not.toContain('Merging now would stop at');expect(html).not.toContain('both changed');
+ expect(html).not.toContain('differ from main');
+ const ff=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false,merged:{commit:head,from:'fork-point'}});
+ expect(ff).toContain("the task's fork point");expect(ff).not.toContain('No workspace yet');
 });

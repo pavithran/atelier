@@ -16,6 +16,7 @@
 // line, and a branch whose head is the integration head holds nothing beyond
 // what was recorded.
 
+import { criteriaOf } from "../criteria.ts";
 import {
   contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval, unprovedBlocker, unprovedReview,
   type Evidence, type Gate, type Item, type ItemState, type ProjectPolicy, type Review,
@@ -55,11 +56,18 @@ export interface Part {
   owner: string | null;
   pushActors?: readonly string[];    // holders and recorded push contributors
   integration?: Integration | null;  // recorded when the part became integrated
+  // The task's acceptance criteria and the approved part's, which a review of
+  // the part is bound to (src/criteria.ts).
+  accept?: readonly string[];
+  partAccept?: readonly string[] | null;
 }
 
 export interface Integration {
   head: string;         // the part's head that was merged, the one reviewed
   mergeCommit: string;  // the merge commit on the plan's branch
+  // The criteria binding the part was integrated under, the one its review
+  // judged. An integration recorded before reviews were bound has none.
+  criteria?: string;
 }
 
 // One commit of a log, as Artifacts and `git log --format='%H %P'` list it.
@@ -83,16 +91,22 @@ export function baseRepoOf(item: { kind?: string | null }, baselineRepo: string,
 }
 
 // The reviews that let a part's head into the plan. Reviews count as gate()
-// counts them: the latest from each reviewer at that head, from the project
-// owner or an assessor. One approval is needed, from a model of another
+// counts them: the latest from each reviewer standing for that head and
+// criteria binding, from the project owner or an assessor. One approval is needed, from a model of another
 // family than every one of the part's builders, as gate() asks of a
 // protected change (independentApproval), whatever paths the part changes,
 // because the orchestrator reviews every part. The owner's approval is not
 // that review, and a part takes no override: the owner's override is
 // recorded with an acceptance, which parts do not take. A counting rejection
 // at that head blocks, as it does in gate(), the owner's included.
-function reviewBlockers(part: Part, head: string, reviews: Review[], policy: ProjectPolicy, owner: string): string[] {
-  const counting = countingReviews(reviews.filter((r) => r.itemId === part.id), head, policy, owner);
+// `criteria` null is an integration recorded before reviews were bound: it was
+// let in under the rule of its day, the reviews at its head, and since an
+// integrated part's criteria cannot change, those reviews still stand for it.
+function reviewBlockers(part: Part, head: string, criteria: string | null, reviews: Review[], policy: ProjectPolicy, owner: string): string[] {
+  const own = reviews.filter((r) => r.itemId === part.id);
+  const counting = criteria === null
+    ? countingReviews(own.filter((r) => !r.withdrawn).map((r) => ({ ...r, criteria: "" })), { head, criteria: "" }, policy, owner)
+    : countingReviews(own, { head, criteria }, policy, owner);
   const contributors = contributorsOf(part);
   const approved = counting.some((r) => independentApproval(r, "protected", contributors, owner));
   const blockers = approved ? [] : [`${named(part)} has no approval from another model family at ${short(head)}`];
@@ -104,7 +118,8 @@ function reviewBlockers(part: Part, head: string, reviews: Review[], policy: Pro
 
 // Why a part may not be integrated now; empty when it may. It must be
 // submitted, every part it depends on must have landed, and its head must
-// carry an approval from another family. The review is read only for a
+// carry an approval from another family, bound to the part's acceptance
+// criteria as they are now, the task's and the approved plan's. The review is read only for a
 // submitted part, since an earlier state has no settled head to approve.
 export function integrationBlockers(part: Part, parts: readonly Part[], reviews: Review[], policy: ProjectPolicy, owner = DEFAULT_OWNER): string[] {
   const blockers: string[] = [];
@@ -116,7 +131,7 @@ export function integrationBlockers(part: Part, parts: readonly Part[], reviews:
     else if (!landed(dep.state)) blockers.push(`${named(part)} waits for ${named(dep)}, which is ${dep.state}`);
   }
   if (submitted && !part.head) blockers.push(`${named(part)} has no verified head`);
-  if (submitted && part.head) blockers.push(...reviewBlockers(part, part.head, reviews, policy, owner));
+  if (submitted && part.head) blockers.push(...reviewBlockers(part, part.head, criteriaOf(part), reviews, policy, owner));
   return blockers;
 }
 
@@ -266,7 +281,8 @@ export interface PlanGateInput {
 //   a part abandoned after it was integrated blocks, because its changes are
 //     on the branch although the plan gave it up;
 //   each integrated part has an approval from another family at the head that
-//     was integrated, and no counting rejection there;
+//     was integrated, bound to the criteria it was integrated under, and no
+//     counting rejection there;
 //   at least one part is integrated, or the plan brings nothing to main;
 //   the plan's head is its integration head, so the branch holds the recorded
 //     integrations and nothing pushed beside them.
@@ -299,7 +315,7 @@ export function planGate(input: PlanGateInput): Gate {
       continue;
     }
     if (!part.integration) blockers.push(`${named(part)} is integrated, but no integration is recorded`);
-    else blockers.push(...reviewBlockers(part, part.integration.head, reviews, policy, owner));
+    else blockers.push(...reviewBlockers(part, part.integration.head, part.integration.criteria ?? null, reviews, policy, owner));
   }
   if (!parts.some((part) => part.state === "integrated")) blockers.push("no part is integrated; the plan brings nothing to main");
   if (plan.head && !atIntegration) {

@@ -50,7 +50,7 @@ async function submitted(L: Ledger, actor: string, paths = ["src/x.ts"]): Promis
 // `reviewer` rejects a seeded task with one blocking finding per verdict, and the owner judges each.
 async function judged(L: Ledger, reviewer: string, verdicts: ("confirmed" | "fixed" | "refuted")[], builder = SEEDER) {
   const { id, head } = await submitted(L, builder);
-  await L.addReview({ itemId: id, by: reviewer, head, approve: false, note: "blocking", at: new Date().toISOString(),
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: reviewer, head, approve: false, note: "blocking", at: new Date().toISOString(),
     findings: verdicts.map((_, i) => ({ file: "src/x.ts", line: i + 1, severity: "blocking", text: `finding ${i + 1}` })) });
   for (const [i, v] of verdicts.entries()) await L.addFinding(id, "owner", head, i + 1, v, "");
 }

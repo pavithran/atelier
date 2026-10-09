@@ -1,6 +1,6 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, measureWorkspace, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
@@ -36,6 +36,7 @@ import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
+import { errorLine, RETRY_AFTER, retryableByRuntime, withRetry } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
@@ -152,6 +153,7 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
         project: record, mode,
         story: buildStory(p.name, items, events, owner, events.length >= STORY_EVENTS, title, { redact: true, ownerLabel: ownerName(env) || "The owner", anon }),
         pulse: buildPulse(events, owner, new Date(), events.length >= STORY_EVENTS),
+        allTimeMerged: items.filter((i) => i.state === "merged").length,
       };
     } catch { return null; /* left out; the page says a project could not be read */ }
   }));
@@ -316,8 +318,9 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentT
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+// A 503 is a failure a retry can cure, and says when to retry (t349).
 const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...(status === 503 ? { "retry-after": String(RETRY_AFTER) } : {}) } });
 
 // A page that carries the live script was rendered with the request's nonce;
 // the policy names the same nonce, and no other script runs (src/live.ts).
@@ -419,6 +422,23 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
   throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
 }
 
+// One step of a request against Artifacts, retried with backoff when it
+// fails for a reason a retry may cure (t349): a hundred claims at once each
+// fork and mint, and Artifacts can refuse some of them for a moment. A
+// RuleError, or a failure `permanent` names, is thrown at once. A step that
+// still fails is logged with its code and message and answered as a 503,
+// which tells the caller to retry after RETRY_AFTER seconds.
+async function artifactsStep<T>(step: string, fn: () => Promise<T>, permanent: (err: unknown) => boolean = () => false): Promise<T> {
+  const settled = (err: unknown) => !!parseRuleError(err) || permanent(err);
+  try {
+    return await withRetry(fn, { permanent: settled, onRetry: (err, attempt) => console.warn(errorLine(`${step} (attempt ${attempt}, retrying)`, err)) });
+  } catch (err) {
+    if (settled(err)) throw err;
+    console.error(errorLine(step, err));
+    throw new RuleError("artifacts_unavailable", `Artifacts could not ${step} just now; nothing was given out, so try again`, 503);
+  }
+}
+
 // Whether the commit `from` holds `target` in its history. Artifacts lists
 // a first-parent chain up to a thousand commits at a time, so every chain is
 // read that way: the head's own, carried past each page from the last
@@ -512,11 +532,15 @@ async function pushedAuthors(env: Env, fork: string, observed: string, item: { h
 // fork's own repository info is never asked: Artifacts can report a branch
 // there that HEAD does not name, and a fork of a master baseline reports
 // main. A record without a branch falls back to the baseline's info, which
-// init set when it created the baseline.
+// init set when it created the baseline. Reading it is a step against
+// Artifacts like any other on a claim (artifactsStep, t349): a transient
+// failure is retried, then answered as a 503.
 async function projectBranch(env: Env, p: ProjectRecord): Promise<string> {
   if (p.branch) return p.branch;
-  using base = await env.ARTIFACTS.get(p.repo);
-  return (await base.info()).defaultBranch;
+  return artifactsStep(`read the branch of ${p.repo}`, async () => {
+    using base = await env.ARTIFACTS.get(p.repo);
+    return (await base.info()).defaultBranch;
+  }, (err) => NOT_FOUND.test(codeOf(err)));
 }
 
 // A branch name as init sends it: one Git would accept for a branch (the
@@ -571,12 +595,18 @@ function parseReviewTier(value: unknown): string[] {
 // A token for one repository. `branch` is the project's branch, from
 // projectBranch, returned with the token so the caller pushes and fetches
 // the branch Atelier reads.
+// A transient failure is retried (artifactsStep). A token whose answer was
+// lost stays unrecorded and unreturned, so its plaintext reaches no one,
+// as a caller's own retry would leave it.
 async function mint(env: Env, repo: string, scope: "read" | "write", branch: string) {
-  using r = await env.ARTIFACTS.get(repo);
-  const info = await r.info();
-  const t = await r.createToken(scope, scope === "write" ? WRITE_TTL : READ_TTL);
-  return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
+  return artifactsStep(`make a ${scope} token for ${repo}`, async () => {
+    using r = await env.ARTIFACTS.get(repo);
+    const info = await r.info();
+    const t = await r.createToken(scope, scope === "write" ? WRITE_TTL : READ_TTL);
+    return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
+  }, (err) => NOT_FOUND.test(codeOf(err)));
 }
+const NOT_FOUND = /NOT_FOUND|not found/i;
 
 // The repository an item forks from and is measured against (docs/orchestrator.md,
 // section 5): a part's is its plan's fork, the integration branch, and any
@@ -600,9 +630,9 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
 // the fork holds nothing of its own, and the move is finished, by recording
 // it when it is the branch's head and by forking again otherwise. A head
 // the search cannot place on the plan's branch within MOVE_BUDGET is taken
-// for the builder's own and kept. The fork's head is read again just before
-// it is deleted, and a head that changed in between, as a push would, is
-// kept. True when the fork was moved: the repository and every token it had
+// for the builder's own and kept. The fork's head is read again before
+// each attempt to delete it, and a head that changed in between, as a push
+// would, is kept. True when the fork was moved: the repository and every token it had
 // are gone. A move that only records the head returns false: the fork and
 // its tokens stand.
 const MOVE_BUDGET = { commits: 500, reads: 5 };
@@ -611,31 +641,53 @@ async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, 
   if (item.head && item.head !== item.base) return false;
   const planFork = (await L.item(item.plan)).fork;
   if (!planFork) return false;
-  const planHead = await headOf(env, planFork);
+  const fork = item.fork;
+  // Every read and change against Artifacts here is a step a transient
+  // failure retries, then answers as a 503 (artifactsStep, t349).
+  const planHead = await artifactsStep(`read the head of ${planFork}`, () => headOf(env, planFork), (err) => NOT_FOUND.test(codeOf(err)));
   if (!planHead || planHead === item.base) return false;
-  const forkHead = async () => {
-    try {
-      return await headOf(env, item.fork!);
-    } catch (err) {
-      if (!/NOT_FOUND|not found/i.test(codeOf(err))) throw err;
-      return null;
-    }
-  };
+  const forkHead = () => artifactsStep(`read the head of ${fork}`, () => headOf(env, fork), (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+    if (!NOT_FOUND.test(codeOf(err))) throw err;
+    return null;
+  });
+  const holds = (from: string, target: string) => artifactsStep(`read the history of ${planFork}`, () => holdsCommit(env, planFork, from, target, MOVE_BUDGET));
   const observed = await forkHead();
   if (observed && observed !== item.base) {
-    const onBranch = (await holdsCommit(env, planFork, planHead, observed, MOVE_BUDGET)).holds === true
-      && (!item.base || (await holdsCommit(env, planFork, observed, item.base, MOVE_BUDGET)).holds === true);
+    const onBranch = (await holds(planHead, observed)).holds === true
+      && (!item.base || (await holds(observed, item.base)).holds === true);
     if (!onBranch) return false;
     if (observed === planHead) {
-      await L.moveFork(item.id, actor, item.fork, item.base, observed, proved);
+      await L.moveFork(item.id, actor, fork, item.base, observed, proved);
       return false;
     }
   }
-  if ((await forkHead()) !== observed) return false;
-  await env.ARTIFACTS.delete(item.fork);
-  using plan = await env.ARTIFACTS.get(planFork);
-  await plan.fork(item.fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
-  const base = await headOf(env, item.fork);
+  // Each attempt at the delete reads the fork's head first, so a push made
+  // while an earlier attempt failed and waited, with a token still live, is
+  // kept rather than deleted. A delete or a fork whose answer was lost is
+  // found done by its retry: the fork already gone, or already made again
+  // under its name. A fork that is gone counts as deleted; one that stands
+  // with a head other than `observed` is kept, and nothing is moved.
+  const deleted = await artifactsStep(`delete ${fork}`, async () => {
+    const now = await headOf(env, fork).catch((err) => {
+      if (!NOT_FOUND.test(codeOf(err))) throw err;
+      return undefined;
+    });
+    if (now === undefined) return true;
+    if (now !== observed) return false;
+    await env.ARTIFACTS.delete(fork);
+    return true;
+  }, (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+    if (!NOT_FOUND.test(codeOf(err))) throw err;
+    return true;
+  });
+  if (!deleted) return false;
+  await artifactsStep(`fork ${planFork} as ${fork}`, async () => {
+    using plan = await env.ARTIFACTS.get(planFork);
+    await plan.fork(fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
+  }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+    if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+  });
+  const base = await artifactsStep(`read the head of ${fork}`, () => headOf(env, fork));
   if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
   await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
   return true;
@@ -695,12 +747,16 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
   if (!repo || !tokenId) return;
+  const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
-    using r = await env.ARTIFACTS.get(repo);
-    await r.revokeToken(tokenId);
+    // A transient failure is retried first (t349); revoking twice is harmless.
+    await withRetry(async () => {
+      using r = await env.ARTIFACTS.get(repo);
+      await r.revokeToken(tokenId);
+    }, { permanent: gone, onRetry: (err, attempt) => console.warn(errorLine(`revoke a write token for ${repo} (attempt ${attempt}, retrying)`, err)) });
   } catch (err) {
-    if (TOKEN_GONE.test(codeOf(err))) return;
-    console.error("Artifacts could not revoke a write token", codeOf(err).trim());
+    if (gone(err)) return;
+    console.error(errorLine(`revoke a write token for ${repo}`, err));
     throw new RuleError("revoke_failed", "the workspace's write token could not be revoked, so nothing was changed; try again", 503);
   }
 }
@@ -1162,15 +1218,28 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       let fork = item.fork, moved = false;
       if (needsFork) {
         // Forks are named after the key, like the baseline, whatever the project is called now.
-        fork = repoName(ref.key, id);
+        const name = fork = repoName(ref.key, id);
         try {
           // A part forks from its plan's fork at its current head, not from the
           // baseline (docs/orchestrator.md, section 5).
-          using base = await env.ARTIFACTS.get(await baseRepo(env, L, item, p.repo));
-          await base.fork(fork, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
-          await L.setFork(id, fork, await headOf(env, fork), actor, !!c.token);
+          const from = await baseRepo(env, L, item, p.repo);
+          // A fork already there under the item's name is one an earlier
+          // attempt made, in this call or in a claim that failed after it
+          // (t349): no fork is recorded for the item, so no token was ever
+          // made for it, and it is taken as this claim's fork.
+          await artifactsStep(`fork ${from} as ${name}`, async () => {
+            using base = await env.ARTIFACTS.get(from);
+            await base.fork(name, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
+          }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+            if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+          });
+          const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
+          await L.setFork(id, name, head, actor, !!c.token);
         } catch (err) {
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          // A give-up that fails is logged, and the claim's own failure is
+          // answered: the claimer still holds an item with no fork, which its
+          // retry forks (t349).
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
           throw err;
         }
       } else {
@@ -1379,6 +1448,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
+        // The criteria binding is the reviewer's own, as given; never the item's.
+        ...(body.criteria !== undefined ? { criteria: String(body.criteria) } : {}),
+        ...(body.request !== undefined ? { request: Number(body.request) } : {}),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
       }, c.url.origin, !!c.token, "api");
@@ -1880,7 +1952,21 @@ async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Pro
   return bytes ? html(renderBlob(w, head, path, viewFile(bytes), ownerName(env), node.type === "symlink")) : notFound("That file");
 }
 
-async function diffFor(env: Env, baselineRepo: string, fork: string | null): Promise<ItemDiff | "unavailable" | null> {
+async function diffFor(env: Env, L: ReturnType<typeof ledger>, baselineRepo: string, item: Item, events: LedgerEvent[]): Promise<ItemDiff | "unavailable" | null> {
+  // A merged item shows its change as it landed, from the merge commit's
+  // first parent (mergedDiff), with no merge preview: main has moved on since
+  // the merge, and neither a diff against main's head nor a conflict with it
+  // says anything about work already merged (t321).
+  const landing = landingOf(item, events);
+  if (landing) {
+    try {
+      return await mergedDiff(env.ARTIFACTS, landing.onPlanBranch ? await baseRepo(env, L, item, baselineRepo) : baselineRepo, item.fork, landing);
+    } catch (err) {
+      console.error("merged diff unavailable", err);
+      return "unavailable";
+    }
+  }
+  const fork = item.fork;
   if (!fork) return null;
   let diff: ItemDiff | null;
   try {
@@ -2105,7 +2191,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "release") await L.release(id, owner, note, false, oldToken);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: expected, approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
+      await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
     } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
     return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
@@ -2265,9 +2351,9 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   let selected: ReviewContext | undefined;
   if (project && task) {
     const L = ledgerOf(env, project);
-    const detail = await L.detail(task);
+    const detail: Detail = await L.detail(task);
     const selectedItem = await L.item(task);
-    selected = {project,detail,diff:await diffFor(env,project.repo,selectedItem.fork)};
+    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,detail.events)};
   }
   // Each waiting decision is drawn as a card with its brief and its thread, which
   // need the task's own record; a dozen cards is enough for one screen of work.
@@ -2334,7 +2420,8 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   if (parts.length === 3) {
     const p = await L.project();
     const item = await L.item(parts[2]);
-    return html(renderItem(p, await L.detail(parts[2]), ownerName(env), await diffFor(env, p.repo, item.fork), live), 200, nonce);
+    const detail: Detail = await L.detail(parts[2]);
+    return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
   }
   return html("Not found.", 404);
 }
@@ -2500,7 +2587,14 @@ export default {
           ? json({ error: rule.code, detail: rule.detail }, rule.status)
           : html(renderError(rule.detail, back, who), rule.status);
       }
-      console.error(err);
+      // An Error logged as an object reaches Workers Logs as a stack with no
+      // message, so the line names the request, the code and the message.
+      console.error(errorLine(`${req.method} ${pathname}`, err));
+      // A Durable Object reset or overloaded says a retry may cure it.
+      if (retryableByRuntime(err)) {
+        const detail = "Atelier was briefly unable to reach its records; try again";
+        return url.pathname.startsWith("/api/") ? json({ error: "unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
+      }
       return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", back, who),500);
     }
   },
