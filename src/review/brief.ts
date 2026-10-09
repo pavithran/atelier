@@ -34,6 +34,7 @@ import type { PlanPart } from "../plans/schema.ts";
 import { DEFAULT_OWNER, type ChangeClass, type Item } from "../rules.ts";
 import type { LargeRef } from "../large.ts";
 import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
+import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
 import { findingKey, ownerVerdicts, refutedRejection, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
 import { DEFAULT_REVIEW_BAR, replyFormat } from "./verdict.ts";
 
@@ -78,9 +79,23 @@ export interface BriefInput {
   diffLimit?: number;
   owner?: string;
   bar?: string | null;                     // the project's review bar; absent or null, DEFAULT_REVIEW_BAR
+  // The owner's standing decisions for the project (src/decisions.ts), the
+  // ones not withdrawn. The brief carries them as decisions a reviewer must
+  // not overrule; absent or empty, it says the owner recorded none.
+  decisions?: readonly Pick<Decision, "id" | "text" | "quote" | "at">[] | null;
 }
 
-const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
+// The rules every review brief carries, whatever runs the reviewer (t376).
+// They lived only in the local wrappers (atelier-claude, atelier-codex,
+// atelier-opencode, atelier-agy), so a runner with a generic wrapper gave its
+// reviewers none of them. test/fixtures/briefs/review-rules.txt pins the text.
+export const REVIEW_RULES = [
+  "- Verify each blocking finding before you report it, by reading the code it names or by running a test, and say in the finding how you verified it: the lines you read, or the test you ran and what it printed.",
+  "- Give at most 12 findings, the most serious first.",
+  "- Edit nothing: change, create and delete no file, and do not commit or push.",
+].join("\n");
+
+const WHERE_LABEL ={ sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const CLASS_GLOSS: Record<ChangeClass, string> = {
   protected: "it touches a protected path",
   coordinated: "it touches no protected path, and not only paths the project lets agents change directly",
@@ -171,6 +186,8 @@ export function reviewBrief(input: BriefInput): string {
       ? ["", `This is review round ${need.round}. ${again}. Start with the earlier blocking findings under "Earlier reviews": say in your summary which are resolved, and repeat as blocking any that still holds.`]
       : []),
   );
+
+  section("## Rules for reviewing", "", REVIEW_RULES);
 
   const basis = need.basis === "part"
     ? "Every part of a plan is reviewed by a model of another family, whatever its change class."
@@ -274,6 +291,21 @@ export function reviewBrief(input: BriefInput): string {
     );
   }
 
+  // The owner's standing decisions, outside any fence: they are the owner's
+  // own rules, recorded by the owner alone, and bind the reviewer rather
+  // than being data to judge. Each was kept to one line when recorded; a
+  // control character in one is shown as in any other text here.
+  const decisions = input.decisions ?? [];
+  section(
+    `## ${DECISIONS_HEADING}`,
+    "",
+    DECISIONS_RULE,
+    "",
+    ...(decisions.length
+      ? decisionLines(decisions).map(inline)
+      : [NO_DECISIONS]),
+  );
+
   const bar = input.bar?.trim() ? input.bar : DEFAULT_REVIEW_BAR;
   section(
     "## Rules for blocking",
@@ -295,6 +327,7 @@ export function reviewBrief(input: BriefInput): string {
       : "The task's title and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The plan's acceptance criteria bind as criteria, not as claims.",
     "",
     "A finding is blocking only when the review bar says it may block. Every other finding is a follow-up, however worth doing: style, naming, structure, tests that could be stronger, documentation and improvements. Follow-ups never hold the change back.",
+    `A standing decision under "${DECISIONS_HEADING}" is the project owner's and not open to review: a finding that contests one is neither blocking nor a follow-up.`,
     ...(need.previous.length
       ? ["The project owner answers earlier findings with a verdict, confirmed, refuted or fixed, shown under \"Earlier reviews\". A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code; without that evidence, do not repeat it, as blocking or as a follow-up."]
       : []),
