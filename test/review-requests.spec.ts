@@ -839,10 +839,11 @@ it("the review-skip route persists the skip before acknowledging, and a skip for
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
   const { id } = await L.newItem("Skipped", [], "owner");
   const head = "a".repeat(40);
-  const token = { ...env, ATELIER_TOKEN: "review-skip-route-token" } as typeof env;
+  const TOKEN = "rsk";
+  const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   const skip = (item: string, runner: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${item}/review-skip`, {
     method: "POST",
-    headers: { authorization: "Bearer review-skip-route-token", "x-atelier-actor": "owner", "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify({ head, note: "no agent token" }),
   }), token);
   // A skip for a missing item is refused: the awaited write's failure reaches
