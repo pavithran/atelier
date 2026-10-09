@@ -17,6 +17,8 @@ import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderIn
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { suggestionRecords } from "./models/suggestion-records.ts";
+import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
@@ -1133,6 +1135,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const { apply, ...selection } = cleanServed(body);
     return json({ project, ...selection, ...(await L.annotateServed(selection, actor, apply)) });
   }
+  // Standing decisions (src/decisions.ts): GET lists every one with its
+  // status, for the owner and for an agent token (agentRoute); POST records
+  // one and POST decisions/ID/withdraw withdraws one, for the owner alone.
+  if (parts[2] === "decisions") {
+    if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor), 201);
+    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note));
+    throw new RuleError("not_found", "no such route", 404);
+  }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
   if (parts[2] === "actions") {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
@@ -1443,6 +1455,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      let suggestion;
+      // atelier dispatch with no --agent asks for the suggestion; a dispatch
+      // that names no agent without asking stays open to any runner's agent.
+      if (body.suggest === true && !body.agent && body.job !== "merge-main") {
+        requireOwner(env, actor);
+        const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
+        suggestion = suggestBuilder({ ...track, item, project: p.name, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        const slash = suggestion.actor.indexOf("/");
+        body.agent = suggestion.actor.slice(0, slash);
+        body.model = suggestion.actor.slice(slash + 1);
+        body.to = suggestion.where;
+      }
       // A merge-main dispatch names the main head its job merges. The owner
       // names none after a landing conflicted, so the head is main's as the
       // baseline holds it now (read as plan refresh reads it, t243): a newer
@@ -1458,7 +1482,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const oldToken = await L.tokenId(id);
       const before = await L.checkDispatch(id, actor, body);
       if (before.owner) await revoke(env, before.fork, oldToken);
-      return json(await L.dispatch(id, actor, body, oldToken));
+      return json({ ...await L.dispatch(id, actor, body, oldToken), ...(suggestion ? { suggestion } : {}) });
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
@@ -1530,7 +1554,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true));
+      const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).

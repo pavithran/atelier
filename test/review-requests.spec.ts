@@ -801,3 +801,31 @@ it("a part's review claim binds the task's criteria and the plan's acceptance it
   expect((await L.reviewRequests(partId)).at(-1)).toMatchObject({ state: "answered" });
   expect((await L.reviewsFor(partId)).at(-1)).toMatchObject({ criteria: claim.criteria, request: claim.request, claimed: true });
 });
+
+// t377: a review claim carries the owner's standing decisions, so the brief
+// the runner builds from it marks them as decisions a reviewer must not
+// overrule; a withdrawn decision is left out, and the ledger's own brief for
+// the request carries the same.
+it("a review claim carries the owner's standing decisions, and the brief marks them as not to be overruled", async () => {
+  const { DECISIONS_RULE, decisionLines } = await import("../src/decisions.ts");
+  const L = await setup("review-decisions");
+  const kept = await L.recordDecision({ text: "Another company reviews every change.", quote: "another company reviews everywhere" }, "owner");
+  const gone = await L.recordDecision({ text: "Spend at most $5 a run.", quote: "five dollars a run" }, "owner");
+  await L.withdrawDecision(gone.id, "owner", "the budget changed");
+  const { partId } = await approved(L);
+  await submitPart(L, partId, "a".repeat(40));
+  const claim = await L.claimReview(partId, await routedReviewer(L, partId), RUNNER) as unknown as ReviewClaim;
+  expect(claim.decisions.map((d) => d.id)).toEqual([kept.id]);
+  const brief = reviewBrief({ need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, owner: claim.owner, bar: claim.reviewBar, decisions: claim.decisions });
+  expect(brief).toContain(`## Standing decisions\n\n${DECISIONS_RULE}\n\n${decisionLines(claim.decisions).join("\n")}\n\n## Rules for blocking`);
+  expect(brief).toContain(`- d1 (${kept.at.slice(0, 10)}): Another company reviews every change. The owner's words: “another company reviews everywhere”`);
+  expect(brief).not.toContain("Spend at most");
+  // Withdrawn later, the decision leaves the next claim too.
+  await L.withdrawDecision(kept.id, "owner", "reviews come from the pool now");
+  const plain = await setup("review-decisions-none");
+  const { partId: other } = await approved(plain);
+  await submitPart(plain, other, "c".repeat(40));
+  const none = await plain.claimReview(other, await routedReviewer(plain, other), RUNNER) as unknown as ReviewClaim;
+  expect(none.decisions).toEqual([]);
+  expect(reviewBrief({ need: none.need!, item: none.item, events: none.events, plan: none.plan, owner: none.owner, decisions: none.decisions })).toContain("The project owner has recorded no standing decision for this project.");
+});
