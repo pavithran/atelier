@@ -257,3 +257,62 @@ test("the review calls reach the server with the model's token in their Authoriz
   assert.equal(harnessEnvs.length, 1);
   assert.ok(!JSON.stringify(harnessEnvs[0]).includes(FAKE), "the harness never sees the token");
 });
+
+// The owner's own credential can never be named as a reviewer's token: not
+// in the config (API_TOKEN, the entry `atelier login` stores to, or any name
+// the credentials store reads from ATELIER_TOKEN), and not by value (an
+// entry or file that holds the owner's token). Either way the job is refused
+// before any claim, and no value is shown.
+const OWNER = "atl_owner_" + "0".repeat(60);
+
+test("parseConfig refuses a tokens entry that names the owner's credential", () => {
+  for (const where of ["API_TOKEN", "api_token", "TOKEN", "token"]) {
+    const result = parseConfig({ agents, jobs: ["review"], tokens: { [model]: where } });
+    assert.match(result.errors.join(" "), /tokens\.glm-5\.3 must not name the owner's token \((API_TOKEN|TOKEN)\): a review is recorded only by the reviewer's own agent token/, where);
+    assert.equal(result.tokens?.[model], undefined, `${where}: the entry is not kept`);
+  }
+  // Another entry name is still taken.
+  assert.deepEqual(parseConfig({ agents, jobs: ["review"], tokens: { [model]: "agent.glm" } }).errors, []);
+});
+
+test("readAgentToken reads no Keychain name from the owner's ATELIER_TOKEN, and reviewToken refuses the owner's name outright", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-owner-token-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // The reviewer's reproduction: a config mapping the model to API_TOKEN,
+  // with the owner's token in the runner's environment and no store. The
+  // real credentials store must answer with nothing, not with ATELIER_TOKEN.
+  const env = { ATELIER_TOKEN: OWNER, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file" };
+  assert.equal(readAgentToken("API_TOKEN", { env }), null);
+  assert.equal(readAgentToken("TOKEN", { env }), null);
+  for (const where of ["API_TOKEN", "TOKEN"]) {
+    const refused = reviewToken({ agents, tokens: { [model]: where } }, model, actor, { env, readSecret: () => { throw new Error("must not be read"); }, ownerTokens: () => [OWNER] });
+    assert.match(refused.refused, new RegExp(`tokens\\["glm-5\\.3"\\] names the owner's token \\(${where}\\): a review must not use the owner's token`));
+    assert.ok(!refused.refused.includes(OWNER));
+    assert.equal("token" in refused, false);
+  }
+  // An entry of another name that holds the owner's value is the owner's too.
+  const same = reviewToken({ agents, tokens: { [model]: "agent.glm" } }, model, actor, { env, readSecret: () => OWNER, ownerTokens: () => [OWNER] });
+  assert.match(same.refused, /the agent token under tokens\["glm-5\.3"\] \(agent\.glm\) is the owner's token: a review must not use the owner's token/);
+  assert.ok(!same.refused.includes(OWNER));
+  assert.equal("token" in same, false);
+});
+
+test("a runner whose reviewer token is the owner's refuses the job before any claim, naming the entry and never the value", async () => {
+  for (const [where, pattern] of [
+    ["agent.glm", /the agent token under tokens\["glm-5\.3"\] \(agent\.glm\) is the owner's token: a review must not use the owner's token/],
+    ["API_TOKEN", /tokens\["glm-5\.3"\] names the owner's token \(API_TOKEN\): a review must not use the owner's token/],
+  ]) {
+    const { io, calls, logs } = fixture({ stored: OWNER });
+    io.env = { ...io.env, ATELIER_TOKEN: OWNER };
+    io.ownerTokens = () => [OWNER];
+    const state = await runReview(assignment, { agents, tokens: { [model]: where } }, "home:studio", io);
+    assert.equal(state.phase, "failed", where);
+    assert.equal(state.skipped, true, "refused for this process, not retried every poll");
+    assert.match(state.reason, pattern);
+    assert.deepEqual(cliCalls(calls), [], "nothing is claimed with the owner's credentials");
+    assert.ok(!calls.some((c) => c.harness), "no harness runs");
+    assert.ok(logs.some((l) => pattern.test(l)), "the refusal is logged with the entry's name");
+    const shown = everything(calls, logs) + state.reason;
+    assert.ok(!shown.includes(OWNER), "the owner's token appears nowhere");
+  }
+});

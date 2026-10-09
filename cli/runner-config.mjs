@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { redactKeys } from "../src/models/pool.ts";
+import { isOwnerSecretName } from "./credentials.mjs";
 
 export const DEFAULT_TASK_TIMEOUT_MS = 45 * 60_000;
 export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
@@ -91,6 +92,10 @@ export function parseConfig(json) {
       for (const [model, where] of Object.entries(value.tokens)) {
         if (!MODEL.test(model) || redactKeys(model) !== model) errors.push("tokens has a key that is not a model id");
         else if (typeof where !== "string" || !where.trim() || /^atl_/i.test(where) || redactKeys(where) !== where || !(KEYCHAIN_ENTRY.test(where) || TOKEN_FILE.test(where))) errors.push(`tokens.${model} must name a Keychain entry or a token file under ~/.config/atelier/, never the token itself`);
+        // The owner's own credential (API_TOKEN, or a name the store reads
+        // from ATELIER_TOKEN) is not a reviewer's token: naming it would have
+        // the owner record the review, which is what `tokens` exists to prevent.
+        else if (isOwnerSecretName(where)) errors.push(`tokens.${model} must not name the owner's token (${where.toUpperCase()}): a review is recorded only by the reviewer's own agent token (atelier token issue --as AGENT/${model}, then store that token under a name of its own)`);
         else tokens[model] = where;
       }
     }

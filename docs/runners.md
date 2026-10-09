@@ -154,7 +154,7 @@ gate counts the review as proved. A verdict the owner token recorded in a
 model's name says so on the page ("recorded by the project owner with the
 owner token"), which undercuts the claim that another company's model
 reviewed the change independently; since 2026-10-08 (t346) a runner never
-records one unless the owner opts in below.
+records one.
 
 `tokens` in the runner config says, per model, where that model's token is
 stored, never the token itself: the name of a Keychain entry (read as
@@ -188,7 +188,12 @@ mkdir -p -m 700 ~/.config/atelier/tokens && (umask 077; cat > ~/.config/atelier/
 `atelier token ls` shows what is issued and when each expires; `atelier
 token revoke ID` ends one, and the runner's next review as that model is
 refused until a new token is stored. A config that carries something shaped
-like a token in `tokens` is refused.
+like a token in `tokens` is refused, and so is one that names the owner's
+own credential there (`API_TOKEN`, the entry `atelier login` stores to, or
+any name the store reads from `ATELIER_TOKEN`); an entry or file of another
+name that turns out to hold the owner's token is refused when the job
+starts, before anything is claimed, with a message naming the entry and
+never the value.
 
 The runner reads a token only when it starts a review job for that model,
 by that exact name, and hands it to the CLI calls of that job alone, through
