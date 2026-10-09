@@ -81,6 +81,27 @@ for (const [name, set] of [["dark", dark], ["light", light]] as const) {
   });
 }
 
+// A status tag paints a translucent tint of its ink (layout.css: .tag.go and
+// its siblings) over whatever row it sits in, an inset or hovered row
+// included, so its text is measured against the composited colour.
+const TAGS = [...layout.matchAll(/\.tag\.([a-z]+)\s*\{\s*color:\s*var\(--([a-z-]+)\);\s*background:\s*rgba\(var\(--([a-z-]+)-rgb\),\s*([.\d]+)\)/g)]
+  .map((m) => ({ name: m[1], ink: m[2], tint: m[3], alpha: Number(m[4]) }));
+const over = (tint: string, alpha: number, ground: string) => {
+  const [a, b] = [rgb(tint), rgb(ground)];
+  return "#" + a.map((c, i) => Math.round(c * alpha + b[i] * (1 - alpha)).toString(16).padStart(2, "0")).join("");
+};
+
+for (const [name, set] of [["dark", dark], ["light", light]] as const) {
+  test(`every status tag meets WCAG AA over every row it sits in, ${name}`, () => {
+    assert.ok(TAGS.length >= 4, "the status tags were not found in layout.css");
+    for (const tag of TAGS) for (const ground of ["shell", "surface", "surface-raised", "inset"]) {
+      const bg = over(set.get(tag.tint)!, tag.alpha, set.get(ground)!);
+      const ratio = contrast(set.get(tag.ink)!, bg);
+      assert.ok(ratio >= 4.5, `${name}: .tag.${tag.name} on --${ground} is ${ratio.toFixed(2)}:1, under 4.5`);
+    }
+  });
+}
+
 test("company colours are painted only inside charts and their legends", () => {
   // Every rule that paints with --c (the company colour a chart sets) or a
   // --m-<family> token, other than the owner's, which is the accent.

@@ -106,8 +106,8 @@
     --wire-offline: #d6d6e0;
 
     /* Observed: a pass Atelier saw, and nothing else */
-    --observed: #17703f;
-    --observed-rgb: 23,112,63;
+    --observed: #166a3c;
+    --observed-rgb: 22,106,60;
     --observed-deep-rgb: 210,236,220;
     --observed-line: #9ccdb0;
 
@@ -120,8 +120,8 @@
     --warning-rgb: 26,82,189;
 
     /* Fault: failures only */
-    --fault: #c0262d;
-    --fault-rgb: 192,38,45;
+    --fault: #b0222a;
+    --fault-rgb: 176,34,42;
 
     /* Accent */
     --music-accent: #1f5fd6;
