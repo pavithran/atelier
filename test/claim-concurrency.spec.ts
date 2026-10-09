@@ -1,6 +1,12 @@
 import { env } from "cloudflare:workers";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { setRetryBaseMs } from "../src/transient.ts";
+
+// These tests inject transient Artifacts failures; the retry backoff would
+// otherwise spend seconds waiting (and time out under load). Milliseconds do.
+beforeAll(() => setRetryBaseMs(1));
+afterAll(() => setRetryBaseMs());
 
 // t339's concurrency proof fired 100 claims of 100 tasks at once on the live
 // server, and 9 answered 500. These tests fire as many claims at once
