@@ -243,6 +243,10 @@ gate, check classes and checks that apply to some paths.
   session. Agent tokens can claim, push, record checks and reports, submit,
   hand off, release and review as themselves; creating tasks, owner
   decisions, project settings and token management need the owner token.
+  A home runner records each review with the reviewing model's own token,
+  named per model in its config (`tokens`, [Runners](docs/runners.md)), so
+  the task page shows the reviewer itself as the recorder; a model without
+  one has its reviews refused, naming the missing token.
 - **Agent instructions.** `atelier guide` prints what an agent needs to
   know; paste it into the project's `AGENTS.md` or `CLAUDE.md`.
 - **Role prompts.** `atelier guide --role build|review|plan|orchestrate`
@@ -493,7 +497,11 @@ lists each harness as an argv array with placeholders:
 
 A harness does not inherit the runner's environment: it gets the toolchain's
 variables and the ones its entry names in `env`, never a variable named
-`ATELIER_*` or one whose name says it holds a token, key or secret. The
+`ATELIER_*` or one whose name says it holds a token, key or secret. A review
+job authenticates with the reviewing model's own agent token, which `tokens`
+in the config locates (a Keychain entry name or a file under
+`~/.config/atelier/`, never the value); without one the review is refused,
+naming the token to store, and never recorded by the owner token. The
 harness leads a process group of its own, and every process left in it is
 ended when the harness ends. No cloud runner ships: a task sent to `cloud`
 waits for a runner named `cloud:NAME`, any program that speaks the queue's

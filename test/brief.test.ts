@@ -358,5 +358,5 @@ test("the reviews line says who recorded each review, as atelier show prints it 
     rev({ by: "antigravity/gemini-3.1-pro", recordedBy: OWNER, proved: false, claimed: false }),
   ];
   const b = briefFor(detail({ reviews }), []);
-  assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved (recorded with its own token), gemini-3.1-pro approved (recorded by the project owner with the owner token)."), b.evidence.join("\n"));
+  assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved (recorded by codex/gpt-5.5 with its own token), gemini-3.1-pro approved (recorded by the project owner with the owner token)."), b.evidence.join("\n"));
 });
