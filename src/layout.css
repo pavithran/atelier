@@ -25,21 +25,22 @@
   --glow: 1;
 }
 @media (prefers-color-scheme: light) {
-  /* The same families, darkened to read as lines on light paper. */
+  /* The same families, darkened to read as lines on light paper, and as
+     AA text on their own bands (test/theme.test.ts). */
   :root {
-    --m-anthropic: #b4461c;
-    --m-openai: #0b7a5c;
+    --m-anthropic: #a5401a;
+    --m-openai: #0a6e53;
     --m-zai: #2f56c9;
-    --m-google: #b0307a;
-    --m-deepseek: #0f7d93;
-    --m-qwen: #4d7a12;
-    --m-minimax: #b04a1f;
-    --m-mistral: #8a5a00;
+    --m-google: #a92e75;
+    --m-deepseek: #0d6a7c;
+    --m-qwen: #446b10;
+    --m-minimax: #a1441c;
+    --m-mistral: #865700;
     --m-meta: #3456a8;
     --m-moonshot: #5f3fa8;
     --m-xai: #a32727;
-    --m-xiaomi: #a35a00;
-    --m-bytedance: #1d7a52;
+    --m-xiaomi: #915000;
+    --m-bytedance: #1a6e4a;
     --m-cohere: #a02a6a;
     --main-line: var(--text);
     --glow: 0;
@@ -62,7 +63,7 @@ a:hover { text-decoration-thickness: 2px; }
 button, input, textarea { font: inherit; }
 button, a, input, textarea, summary { touch-action: manipulation; }
 :is(a, button, summary, input, textarea, pre):focus-visible { outline: 2px solid var(--signal-hot); outline-offset: 4px; }
-button:disabled { opacity: .45; cursor: not-allowed; background: var(--inset); color: var(--text-muted); border-color: var(--line); }
+button:disabled { cursor: not-allowed; background: var(--inset); color: var(--text-dim); border-color: var(--line); }
 svg { flex-shrink: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
@@ -255,10 +256,11 @@ pre.diff span { display: block; padding: 0 14px; white-space: pre; }
 .track-svg .axis { stroke: var(--line-bright); stroke-width: 1.2; }
 .track-svg .now-line { stroke: var(--signal); stroke-width: 2; stroke-linecap: round; }
 /* Bands and threads take the holder's family colour (--c), as the Flow graph's threads do. */
-.span-past { fill: color-mix(in srgb, var(--c, var(--text)) 7%, transparent); }
-.span-now { fill: color-mix(in srgb, var(--c, var(--signal)) 13%, transparent); stroke: color-mix(in srgb, var(--c, var(--signal)) 40%, transparent); stroke-width: 1; }
-.span-label { font: 600 11px var(--font-mono); fill: var(--c, var(--text-dim)); opacity: .72; letter-spacing: .02em; }
-.span-label.now { opacity: 1; }
+.span-past { fill: color-mix(in srgb, var(--c, var(--text)) 6%, transparent); }
+.span-now { fill: color-mix(in srgb, var(--c, var(--signal)) 10%, transparent); stroke: color-mix(in srgb, var(--c, var(--signal)) 40%, transparent); stroke-width: 1; }
+/* Past holders' labels are lighter in weight, not in colour, so each stays AA on its band (test/theme.test.ts). */
+.span-label { font: 500 11px var(--font-mono); fill: var(--c, var(--text-dim)); letter-spacing: .02em; }
+.span-label.now { font-weight: 700; }
 .lane .who strong { color: var(--text-bright); }
 .track-svg .g-thread { stroke-width: 3; }
 .latest { margin: 6px 0 0; }
@@ -567,10 +569,11 @@ main .live-note { margin: 0 0 12px; }
 .g-bead { cursor: default; outline: none; }
 .g-bead:hover > :not(.hit), .g-bead:focus-visible > :not(.hit) { transform: scale(1.6); transform-box: fill-box; transform-origin: center; transition: transform var(--motion-tap, .12s) ease-out; }
 .graph .g-bead:focus-visible circle.hit { stroke: var(--signal); stroke-width: 1.5; }
-/* Pointing at a task lights its thread and lets the others fall back. */
-.graph:has(.g-task:hover) .g-task:not(:hover),
-.graph:has(.g-task:focus-within) .g-task:not(:focus-within) { opacity: .28; }
-.graph .g-task { transition: opacity .15s; }
+/* Pointing at a task lights its thread and lets the others' threads and
+   marks fall back; their labels keep full colour, so they stay legible. */
+.graph:has(.g-task:hover) .g-task:not(:hover) > :not(text, a),
+.graph:has(.g-task:focus-within) .g-task:not(:focus-within) > :not(text, a) { opacity: .28; }
+.graph .g-task > * { transition: opacity .15s; }
 /* A hidden card takes no pointer: it is hidden, not merely transparent. It
    stays visible a moment after the pointer leaves its mark, so the pointer
    can reach the card and its link; the card's own hover then keeps it. */
@@ -579,7 +582,7 @@ main .live-note { margin: 0 0 12px; }
 .g-card rect { fill: var(--shell); stroke: var(--c); stroke-width: 1.2; filter: drop-shadow(0 6px 18px rgba(var(--shadow-rgb), .35)); }
 .graph text.g-card-head { font-size: 11px; fill: var(--c, var(--text-muted)); }
 .graph text.g-card-body { font-size: 12.5px; fill: var(--text); font-family: var(--font-sans); }
-@media (prefers-reduced-motion: reduce) { .g-card { transition: visibility 0s linear .3s; } .graph .g-task, .g-bead > * { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .g-card { transition: visibility 0s linear .3s; } .graph .g-task > *, .g-bead > * { transition: none; } }
 
 /* Glows belong to the dark stage; on paper the lines stand on their own. */
 @media (prefers-color-scheme: light) {

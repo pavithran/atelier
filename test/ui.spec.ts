@@ -39,6 +39,9 @@ it('the task page shows the five steps with the current one marked, read from th
  const failed=[{...detail().evidence[0],passed:false}];
  expect(at({state:'open',owner:null,fork:null,head:null})).toEqual(['Claim:current*','Fork:todo','Prove:todo','Review:todo','Land:todo']);
  expect(at({state:'claimed',head:null})).toEqual(['Claim:done','Fork:current*','Prove:todo','Review:todo','Land:todo']);
+ // A fresh fork records its base as its head (Ledger.setFork): Fork stays current until a push moves the head off the base.
+ expect(at({state:'claimed',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Fork:current*','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'abandoned',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Fork:todo','Prove:todo','Review:todo','Land:todo']);
  expect(at({state:'claimed'})).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
  // Submitted with a failing check is still proving; with every required check observed passing, it is in review.
  expect(at({state:'submitted'},failed)).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);

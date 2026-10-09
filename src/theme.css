@@ -94,8 +94,8 @@
     --text-dim: #5a5a6a;
 
     /* Signal: the one accent */
-    --signal: #1f5fd6;
-    --signal-rgb: 31,95,214;
+    --signal: #1d59c9;
+    --signal-rgb: 29,89,201;
     --signal-hot: #1a52bd;
     --signal-hot-rgb: 26,82,189;
     --signal-bright: #123d8f;
@@ -124,8 +124,8 @@
     --fault-rgb: 176,34,42;
 
     /* Accent */
-    --music-accent: #1f5fd6;
-    --music-accent-rgb: 31,95,214;
+    --music-accent: #1d59c9;
+    --music-accent-rgb: 29,89,201;
     --music-accent-line: #8fb0ee;
     --on-accent: #ffffff;
 

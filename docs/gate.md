@@ -19,8 +19,9 @@ five verbs. They are labels: the commands keep their own names.
 | Land | One landing at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
 
 A task's page shows the five as its progress, the current one marked, read
-from the task's recorded state: open is at Claim; claimed with nothing pushed
-is at Fork; claimed with a head, or submitted without every required check
+from the task's recorded state: open is at Claim; claimed with nothing pushed,
+a fresh fork whose head is still its base among them, is at Fork; claimed with
+a pushed head, or submitted without every required check
 observed passing, is at Prove; submitted with them all passing is at Review;
 accepted is at Land; merged has done all five. What lands is **Proven.
 Reviewed. Recorded.** Git keeps the code. Atelier brings the receipts.
