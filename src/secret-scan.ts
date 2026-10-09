@@ -4,16 +4,42 @@
 // can accidentally push: cloud and model-provider API keys, private key
 // blocks, bearer tokens, and `.env`-style assignments of long secrets.
 //
-// The scanner is pure and returns only `{ file, line }`, so nothing that
-// matches is ever stored or printed; the Ledger keeps the flag, not the key.
+// The scanner is pure and returns only `{ file, line, fingerprint }`, so
+// nothing that matches is ever stored or printed; the Ledger keeps the flag,
+// not the key.
 
 import type { ItemDiff } from "./diff.ts";
 
-// What one matched line is reported as: the file it was added to and the
-// 1-based line number in the new file. The matched text is never kept.
+// What one matched line is reported as: the file it was added to, the 1-based
+// line number in the new file, and a fingerprint of the line (below). The
+// matched text is never kept.
 export interface SecretHit {
   file: string;
   line: number;
+  fingerprint: string;
+}
+
+// A file whose added lines the scan could not read in full (a text file whose
+// diff exceeded the memory budget), with the hash of its content at the head
+// as its fingerprint: a clearance of it holds while the file is unchanged.
+export interface UnscannedFile {
+  file: string;
+  fingerprint: string;
+}
+
+// The fingerprint of a flagged line: the SHA-256, as hex, of the line's text
+// with its leading and trailing whitespace removed. The owner's clearance of
+// a flag is recorded against the file and this fingerprint (clearSecret in
+// src/ledger.ts), so a later push that keeps the identical line in the same
+// file, at the same line number or another, finds the clearance and is not
+// blocked again, while a line that changed in any other way, or the same
+// line in another file, is a new finding and blocks. The fingerprint is a
+// one-way digest, so the flag and the clearance never hold the value; a
+// reader who already has a candidate key could confirm it against the
+// digest, which is the trade made for a clearance that survives a push.
+export async function fingerprint(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text.trim()));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ── patterns ───────────────────────────────────────────────────────────────
@@ -81,16 +107,16 @@ export function scanLine(text: string): boolean {
   return secretAssignment(text);
 }
 
-// Every added line of a diff that holds a key pattern, as file and line. A
-// line is reported once even when several patterns match it.
-export function scanDiff(diff: ItemDiff): SecretHit[] {
+// Every added line of a diff that holds a key pattern, as file, line and
+// fingerprint. A line is reported once even when several patterns match it.
+export async function scanDiff(diff: ItemDiff): Promise<SecretHit[]> {
   const hits: SecretHit[] = [];
   for (const f of diff.files) {
     for (const h of f.hunks) {
       let line = h.newStart;
       for (const op of h.lines) {
         if (op.op === "-") continue; // a removed line is not in the new file
-        if (op.op === "+" && scanLine(op.text)) hits.push({ file: f.path, line });
+        if (op.op === "+" && scanLine(op.text)) hits.push({ file: f.path, line, fingerprint: await fingerprint(op.text) });
         line++;
       }
     }
@@ -102,16 +128,20 @@ export function scanDiff(diff: ItemDiff): SecretHit[] {
 // pattern, and every file whose added lines could not be read in full (a text
 // file whose diff exceeded the memory budget, listed too-large). The caller
 // records both as blocking flags, so a push the scan could not fully read is
-// never passed silently.
+// never passed silently. The scan takes a diff and only a diff: a diff that
+// could not be read is thrown by its reader (fullDiff in src/diff.ts) and
+// never reaches here as "nothing found".
 export interface PushScan {
   hits: SecretHit[];
-  unscanned: string[];
+  unscanned: UnscannedFile[];
 }
 
-export function scanPush(diff: ItemDiff | null): PushScan {
-  if (!diff) return { hits: [], unscanned: [] };
+export async function scanPush(diff: ItemDiff): Promise<PushScan> {
   return {
-    hits: scanDiff(diff),
-    unscanned: diff.files.filter((f) => f.status === "too-large").map((f) => f.path),
+    hits: await scanDiff(diff),
+    // A too-large file's fingerprint is the hash of its content at the head,
+    // which the tree diff carries for it; a file the diff listed without one
+    // is fingerprinted as absent, so no clearance of it ever matches.
+    unscanned: diff.files.filter((f) => f.status === "too-large").map((f) => ({ file: f.path, fingerprint: f.hash ?? "" })),
   };
 }

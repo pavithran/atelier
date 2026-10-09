@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diffLines, SCAN_LIMITS, splitLines, toHunks, treeDiff, type Entry, type FileChange, type ItemDiff, type Reader } from "../src/diff.ts";
-import { scanDiff, scanLine, scanPush, type SecretHit } from "../src/secret-scan.ts";
+import { diffLines, SCAN_LIMITS, splitLines, strictReader, toHunks, treeDiff, type Entry, type FileChange, type ItemDiff, type Reader } from "../src/diff.ts";
+import { fingerprint, scanDiff, scanLine, scanPush, type PushScan } from "../src/secret-scan.ts";
 
 // The secret scanner (t332), driven with obviously fake keys so no real value
 // ever appears in a fixture. It reports file and line, never the value.
@@ -32,13 +32,32 @@ const FAKE = {
   slack: `xoxb-${"e".repeat(24)}`,
 };
 
-test("a known API key on an added line reports its file and line, never the value", () => {
+test("a known API key on an added line reports its file and line, never the value", async () => {
   const d = diff("src/keys.ts", "const key = \"\";\n", `const key = "${FAKE.openai}";\n`);
-  assert.deepEqual(scanDiff(d), [{ file: "src/keys.ts", line: 1 }]);
-  // The value never appears in the result, even when it was the whole match.
-  const serialized = JSON.stringify(scanDiff(d));
+  const hits = await scanDiff(d);
+  assert.deepEqual(hits, [{ file: "src/keys.ts", line: 1, fingerprint: await fingerprint(`const key = "${FAKE.openai}";`) }]);
+  // The value never appears in the result, even when it was the whole match:
+  // the fingerprint is a hex digest of the line, not the line.
+  const serialized = JSON.stringify(hits);
   assert.ok(!serialized.includes("sk-proj-"), serialized);
   assert.ok(!serialized.includes("bbbbbb"), serialized);
+  assert.match(hits[0].fingerprint, /^[0-9a-f]{64}$/);
+});
+
+test("the fingerprint follows the line's content, not its position or its surrounding whitespace", async () => {
+  const line = `const key = "${FAKE.openai}";`;
+  const atTop = await scanDiff(diff("src/keys.ts", "", `${line}\nrest\n`));
+  const moved = await scanDiff(diff("src/keys.ts", "", `one\ntwo\n  ${line}  \n`));
+  assert.equal(atTop[0].line, 1);
+  assert.equal(moved[0].line, 3);
+  assert.equal(atTop[0].fingerprint, moved[0].fingerprint);
+  // One character changed is another fingerprint.
+  const changed = await scanDiff(diff("src/keys.ts", "", `const key = "${FAKE.openai}x";\n`));
+  assert.notEqual(changed[0].fingerprint, atTop[0].fingerprint);
+  // The fingerprint of a line is the same whichever file it is in; the
+  // Ledger matches a clearance by file and fingerprint together.
+  const elsewhere = await scanDiff(diff("src/other.ts", "", `${line}\n`));
+  assert.equal(elsewhere[0].fingerprint, atTop[0].fingerprint);
 });
 
 test("each key family is matched, and a line is reported once", () => {
@@ -72,24 +91,24 @@ test("a .env-style assignment of a long secret is matched, and a short one is no
   assert.ok(!scanLine("PORT=8080"));
 });
 
-test("the line number is the new file's, after removed lines", () => {
+test("the line number is the new file's, after removed lines", async () => {
   const before = "one\nold secret\nthree\n";
   const withSecret = diff("src/a.ts", before, `one\n${FAKE.aws}\nthree\n`);
-  assert.deepEqual(scanDiff(withSecret), [{ file: "src/a.ts", line: 2 }]);
+  assert.deepEqual((await scanDiff(withSecret)).map(({ file, line }) => ({ file, line })), [{ file: "src/a.ts", line: 2 }]);
   const clean = diff("src/a.ts", before, "one\ntwo\nthree\n");
-  assert.deepEqual(scanDiff(clean), []);
+  assert.deepEqual(await scanDiff(clean), []);
 });
 
-test("a push whose added lines hold none of the patterns records no flag", () => {
+test("a push whose added lines hold none of the patterns records no flag", async () => {
   const d = diff("src/app.ts", "let x = 1;\n", "let x = 2;\nconst name = \"atelier\";\nconst color = \"#123456\";\nconst url = \"https://example.com\";\n");
-  assert.deepEqual(scanDiff(d), []);
+  assert.deepEqual(await scanDiff(d), []);
 });
 
-test("only added lines are scanned, not context or removed lines", () => {
+test("only added lines are scanned, not context or removed lines", async () => {
   const before = `keep\n${FAKE.google}\nlast\n`;
   const after = "keep\nlast\n";
   const d = diff("src/k.ts", before, after);
-  assert.deepEqual(scanDiff(d), []); // the key was removed, not added
+  assert.deepEqual(await scanDiff(d), []); // the key was removed, not added
 });
 
 // A tiny content-addressed store for the tree-level scan tests, as the pure
@@ -117,16 +136,17 @@ function store() {
 // The scan as the push routes run it: an uncapped tree diff read with
 // SCAN_LIMITS, then scanPush. The display diff's cuts (60 files, 256 KiB)
 // must not hide a key from the scan.
-async function fullScan(s: ReturnType<typeof store>, base: string, head: string): Promise<{ hits: SecretHit[]; unscanned: string[] }> {
-  const { files, truncated } = await treeDiff(s.reader, base, head, SCAN_LIMITS);
+async function fullScan(s: ReturnType<typeof store>, base: string, head: string): Promise<PushScan> {
+  const { files, truncated } = await treeDiff(strictReader(s.reader), base, head, SCAN_LIMITS);
   return scanPush({ base: "b".repeat(40), head: "a".repeat(40), files, truncated });
 }
+const where = (scan: PushScan) => scan.hits.map(({ file, line }) => ({ file, line }));
 
 test("a fake key in an added file over 256 KiB is found, though the display diff omits it", async () => {
   const s = store();
   const big = "x".repeat(300 * 1024) + `\nconst key = "${FAKE.openai}";\n`;
-  const { hits } = await fullScan(s, s.tree({}), s.tree({ "big.ts": { blob: s.blob(big) } }));
-  assert.deepEqual(hits, [{ file: "big.ts", line: 2 }]);
+  const scan = await fullScan(s, s.tree({}), s.tree({ "big.ts": { blob: s.blob(big) } }));
+  assert.deepEqual(where(scan), [{ file: "big.ts", line: 2 }]);
 });
 
 test("a fake key in the 61st added file is found, though the display diff truncates it", async () => {
@@ -134,15 +154,37 @@ test("a fake key in the 61st added file is found, though the display diff trunca
   const entries: Record<string, { blob: string }> = {};
   for (let i = 0; i < 60; i++) entries[`f${String(i).padStart(2, "0")}.ts`] = { blob: s.blob("export {}\n") };
   entries["f60.ts"] = { blob: s.blob(`const key = "${FAKE.openai}";\n`) };
-  const { hits } = await fullScan(s, s.tree({}), s.tree(entries));
-  assert.deepEqual(hits, [{ file: "f60.ts", line: 1 }]);
+  const scan = await fullScan(s, s.tree({}), s.tree(entries));
+  assert.deepEqual(where(scan), [{ file: "f60.ts", line: 1 }]);
 });
 
 test("a modified file too large to diff is reported unscanned, never passed silently", async () => {
   const s = store();
   const left = Array.from({ length: 6_000 }, (_, i) => `l${i}`).join("\n") + "\n";
   const right = Array.from({ length: 6_000 }, (_, i) => `r${i}`).join("\n") + "\n";
-  const { hits, unscanned } = await fullScan(s, s.tree({ "huge.ts": { blob: s.blob(left) } }), s.tree({ "huge.ts": { blob: s.blob(right) } }));
+  const after = s.blob(right);
+  const { hits, unscanned } = await fullScan(s, s.tree({ "huge.ts": { blob: s.blob(left) } }), s.tree({ "huge.ts": { blob: after } }));
   assert.deepEqual(hits, []);
-  assert.deepEqual(unscanned, ["huge.ts"]);
+  // The file is fingerprinted by its content's hash, so a clearance of it
+  // holds while it is unchanged and no more.
+  assert.deepEqual(unscanned, [{ file: "huge.ts", fingerprint: after }]);
+});
+
+// The scan reads through strictReader: an object the head or base names and
+// neither repository holds throws, so the scan is retried later rather than
+// made from a diff that reads the hole as empty content.
+test("a missing blob fails the scan rather than reading as a file with no added lines", async () => {
+  const s = store();
+  const head = s.tree({ "keys.ts": { blob: "blob-missing" } });
+  await assert.rejects(fullScan(s, s.tree({}), head), /secret scan: blob blob-mis is missing/);
+});
+
+test("a missing tree fails the scan rather than reading as a directory with no changes", async () => {
+  const s = store();
+  const head = s.tree({ src: { tree: "tree-missing" } });
+  await assert.rejects(fullScan(s, s.tree({}), head), /secret scan: tree tree-mis is missing/);
+  // The display diff keeps reading a missing object as nothing, so a page
+  // still renders what can be shown; only the scan path is strict.
+  const { files } = await treeDiff(s.reader, s.tree({}), head, SCAN_LIMITS);
+  assert.deepEqual(files, []);
 });

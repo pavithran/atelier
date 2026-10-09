@@ -1742,7 +1742,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // A standing secret flag (t332) names its file and line, never the value,
   // and offers the one way on: the owner clears it with a reason, which is
   // recorded.
-  const secrets = (item.secret ?? []).filter((f) => f.head === item.head);
+  const secrets = (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared);
   // A scan still pending for the head blocks the same way, with nothing to
   // clear: it completes on the next push event retry or `atelier push`.
   const scanPending = !!item.head && item.secretScan === item.head;

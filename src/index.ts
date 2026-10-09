@@ -632,7 +632,7 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
   const p = await L.project();
   const diff = await fullDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head);
   if (diff.head !== head) throw new Error(`secret scan: ${item.id}'s diff read ${diff.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
-  const scan = scanPush(diff);
+  const scan = await scanPush(diff);
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
 }
 

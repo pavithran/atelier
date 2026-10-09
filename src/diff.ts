@@ -23,6 +23,10 @@ export interface FileChange {
   added: number;
   removed: number;
   hunks: Hunk[];
+  // The hash of the file's content at the head, carried for a file listed
+  // too-large so the secret scan can fingerprint what it could not read
+  // (scanPush in src/secret-scan.ts); absent otherwise.
+  hash?: string;
 }
 
 export interface ItemDiff {
@@ -293,13 +297,14 @@ export async function treeDiff(r: Reader, baseTree: string, headTree: string, li
     if (status === "mode") return { path, status, added: 0, removed: 0, hunks: [] };
     const [before, after] = await Promise.all([l ? r.blob(l.hash) : null, rt ? r.blob(rt.hash) : null]);
     const size = Math.max(before?.length ?? 0, after?.length ?? 0);
-    if (size > limits.blobBytes) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    const tooLarge = { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [], ...(rt ? { hash: rt.hash } : {}) };
+    if (size > limits.blobBytes) return tooLarge;
     if ((before && isBinary(before)) || (after && isBinary(after))) return { path, status: "binary" as FileStatus, added: 0, removed: 0, hunks: [] };
     const a = before ? splitLines(decoder.decode(before)) : [];
     const b = after ? splitLines(decoder.decode(after)) : [];
-    if (a.length + b.length > limits.diffLines) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    if (a.length + b.length > limits.diffLines) return tooLarge;
     const ops = diffLines(a, b);
-    if (!ops) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    if (!ops) return tooLarge;
     return {
       path, status,
       added: ops.filter((o) => o.op === "+").length,
@@ -410,10 +415,34 @@ export async function itemDiff(artifacts: Artifacts, baselineRepo: string, works
   return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
 }
 
+// A reader for the secret scan over any other: a tree or blob the head or
+// base names that neither repository holds is an error, never empty content.
+// The display diff reads a missing object as nothing (changedPage, treeDiff),
+// which shows a reader what can be shown; the scan must not, because a missing
+// blob read as empty is a file with no added lines, and so no findings, and a
+// missing tree is a directory with no changes. Thrown, the scan stays pending
+// and is retried (scanRecorded in src/index.ts).
+export function strictReader(r: Reader): Reader {
+  return {
+    tree: async (h) => {
+      const t = await r.tree(h);
+      if (!t) throw new Error(`secret scan: tree ${h.slice(0, 8)} is missing from the repositories`);
+      return t;
+    },
+    blob: async (h) => {
+      const b = await r.blob(h);
+      if (!b) throw new Error(`secret scan: blob ${h.slice(0, 8)} is missing from the repositories`);
+      return b;
+    },
+  };
+}
+
 // The diff a push's secret scan reads: `itemDiff` without the display limits,
 // so the scan sees every added line of every changed file, not just the first
 // page. A text file the diff cannot hold is listed too-large, and the scan
-// turns that into a blocking flag naming the file left unscanned.
+// turns that into a blocking flag naming the file left unscanned. An object
+// the diff needs and cannot read throws (strictReader), so the scan is never
+// made from a diff with a hole in it.
 //
 // It is bound to `head`, the commit the Ledger recorded, never to the fork's
 // live head: the fork may have moved on since the head was recorded, and a
@@ -429,7 +458,7 @@ export async function fullDiff(artifacts: Artifacts, baselineRepo: string, works
   if (!commit || commit.hash !== head) throw new Error(`secret scan: ${workspaceRepo} did not show the recorded head ${head.slice(0, 8)}${commit ? ` (read ${commit.hash.slice(0, 8)})` : ""}`);
   if (!main) throw new Error(`secret scan: ${baselineRepo} has no commits to diff against`);
   if (main.treeHash === commit.treeHash) return { base: main.hash, head: commit.hash, files: [], truncated: false, baseTree: main.treeHash, headTree: commit.treeHash };
-  const { files, truncated } = await treeDiff(pairReader(fork, baseline), main.treeHash, commit.treeHash, SCAN_LIMITS);
+  const { files, truncated } = await treeDiff(strictReader(pairReader(fork, baseline)), main.treeHash, commit.treeHash, SCAN_LIMITS);
   return { base: main.hash, head: commit.hash, files, truncated, baseTree: main.treeHash, headTree: commit.treeHash };
 }
 

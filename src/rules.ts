@@ -46,11 +46,17 @@ export interface Item {
   partAccept?: string[] | null;
   blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
   // A blocking flag the push scan records (t332): one per file and line whose
-  // added text held a key pattern. Only the file and line are kept, never the
-  // matched value. It stands while it names the current head, and stops the
-  // gate from accepting or merging; the project owner clears it with a reason
-  // (secret.cleared) or a later push that removes the line clears it.
+  // added text held a key pattern. Only the file, line and a fingerprint of
+  // the line are kept, never the matched value. It stands while it names the
+  // current head and is not cleared, and stops the gate from accepting or
+  // merging; the project owner clears it with a reason (secret.cleared) or a
+  // later push that removes the line clears it.
   secret?: SecretFlag[] | null;
+  // Every clearance the owner has recorded on the item (t332): the file and
+  // fingerprint of each line judged safe, with the reason, the head it was
+  // judged at, by whom and when. A later scan that finds a line with the
+  // same fingerprint in the same file records it as cleared, not blocking.
+  secretClearances?: SecretClearance[] | null;
   // The head whose push scan has not completed (t332): recorded in the same
   // write as the head itself, and cleared only by the scan's own result for
   // that exact head (setSecret). While it names the current head the gate
@@ -79,17 +85,36 @@ export interface Block {
 }
 
 // One entry of the secret flag the push scan records: where a key pattern was
-// added, at which head, by whom and when. The matched value is never kept, so
-// only these fields exist (see src/secret-scan.ts). A flag with `unscanned`
-// names a file whose added lines the scan could not read in full; it has no
-// line, so `line` is 0.
+// added, at which head, by whom and when, with the fingerprint of the line
+// (fingerprint in src/secret-scan.ts). The matched value is never kept, so
+// only these fields exist. A flag with `unscanned` names a file whose added
+// lines the scan could not read in full; it has no line, so `line` is 0, and
+// its fingerprint is the hash of the file's content. A flag with `cleared`
+// was matched by a clearance the owner recorded (SecretClearance): it is
+// kept as the record of what the scan found, and does not block.
 export interface SecretFlag {
   file: string;
   line: number;
+  fingerprint: string;
   head: string;
   by: string;
   at: string;
   unscanned?: true;
+  cleared?: true;
+}
+
+// The owner's clearance of one flagged line: the file and fingerprint it is
+// recorded against, the reason, the head the flag stood at, by whom and when.
+// It matches a later finding with the same fingerprint in the same file,
+// whatever its line number, so a line that moves within its file stays
+// cleared; a file renamed, or the line changed in any way, is a new finding.
+export interface SecretClearance {
+  file: string;
+  fingerprint: string;
+  reason: string;
+  head: string | null;
+  by: string;
+  at: string;
 }
 
 // What `atelier new` and `atelier edit` set. A field present replaces the
@@ -1210,7 +1235,7 @@ export interface Gate {
 // be clean until the scan of that exact head has completed.
 export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan">): string[] {
   const flags = (item.secret ?? [])
-    .filter((f) => f.head === item.head)
+    .filter((f) => f.head === item.head && !f.cleared)
     .map((f) => f.unscanned
       ? `secret scan could not read ${f.file} in full; clear it with a reason or push a revision that removes the line`
       : `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
