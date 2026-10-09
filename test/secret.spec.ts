@@ -78,6 +78,30 @@ it("a scan for a superseded head does nothing, and a later empty scan clears the
   expect(kinds(await L.events("t1"))).toContain("secret.resolved");
 });
 
+it("a later push keeping the secret at the same line re-records the flag for the new head, so it still blocks", async () => {
+  const L = await setup("secret-retain");
+  await claimed(L, "secret-retain--t1");
+  await L.setSecret("t1", "atelier/events", H1, [{ file: "src/keys.ts", line: 3 }]);
+  await L.recordPush("t1", A, H2, H2);
+  // The next push keeps the secret at the same file and line: the flag must
+  // move to the new head, not stay naming the old one and so stop blocking.
+  await L.setSecret("t1", "atelier/events", H2, [{ file: "src/keys.ts", line: 3 }]);
+  expect((await L.item("t1")).secret).toMatchObject([{ file: "src/keys.ts", line: 3, head: H2 }]);
+  await L.addEvidence(observed("t1", H2));
+  await L.submit("t1", A);
+  await refusal(L.accept("t1", "owner"), "not_ready", /secret flagged in src\/keys.ts:3/);
+});
+
+it("a file left unscanned is recorded as a blocking flag naming the file", async () => {
+  const L = await setup("secret-unscanned");
+  await claimed(L, "secret-unscanned--t1");
+  const flagged = await L.setSecret("t1", "atelier/events", H1, [], ["big.ts"]);
+  expect(flagged.secret).toMatchObject([{ file: "big.ts", line: 0, head: H1, unscanned: true }]);
+  await L.addEvidence(observed("t1", H1));
+  await L.submit("t1", A);
+  await refusal(L.accept("t1", "owner"), "not_ready", /secret scan could not read big\.ts/);
+});
+
 it("accept and merge are refused while the flag stands, with a message naming it", async () => {
   const L = await setup("secret-gate");
   await claimed(L, "secret-gate--t1");

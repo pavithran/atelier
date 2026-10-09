@@ -1,7 +1,7 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
-import { scanDiff } from "./secret-scan.ts";
+import { fullDiff, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { scanPush } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
@@ -1320,8 +1320,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // patterns, and the flag records only file and line, never the value.
       if (recorded.fork && recorded.head && recorded.head !== item.head) {
         const p = await L.project();
-        const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork);
-        await L.setSecret(id, "atelier/events", recorded.head, diff ? scanDiff(diff) : []);
+        const scan = scanPush(await fullDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork));
+        await L.setSecret(id, "atelier/events", recorded.head, scan.hits, scan.unscanned);
       }
       return json(recorded);
     }
@@ -2472,8 +2472,8 @@ export default {
               // actually moved is scanned, so a duplicate sighting is not.
               if (recorded.fork && recorded.head === current && recorded.head !== item.head) {
                 const p = await L.project();
-                const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork);
-                await L.setSecret(recorded.id, "atelier/events", current, diff ? scanDiff(diff) : []);
+                const scan = scanPush(await fullDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork));
+                await L.setSecret(recorded.id, "atelier/events", current, scan.hits, scan.unscanned);
               }
               if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
             }

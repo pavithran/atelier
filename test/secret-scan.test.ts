@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diffLines, splitLines, toHunks, type FileChange, type ItemDiff } from "../src/diff.ts";
-import { scanDiff, scanLine } from "../src/secret-scan.ts";
+import { diffLines, SCAN_LIMITS, splitLines, toHunks, treeDiff, type Entry, type FileChange, type ItemDiff, type Reader } from "../src/diff.ts";
+import { scanDiff, scanLine, scanPush, type SecretHit } from "../src/secret-scan.ts";
 
 // The secret scanner (t332), driven with obviously fake keys so no real value
 // ever appears in a fixture. It reports file and line, never the value.
@@ -90,4 +90,59 @@ test("only added lines are scanned, not context or removed lines", () => {
   const after = "keep\nlast\n";
   const d = diff("src/k.ts", before, after);
   assert.deepEqual(scanDiff(d), []); // the key was removed, not added
+});
+
+// A tiny content-addressed store for the tree-level scan tests, as the pure
+// diff tests use: blobs and trees by hash, answered through a Reader.
+function store() {
+  const trees = new Map<string, Entry[]>();
+  const blobs = new Map<string, Uint8Array>();
+  let n = 0;
+  const blob = (text: string) => {
+    const h = `blob${n++}`;
+    blobs.set(h, new TextEncoder().encode(text));
+    return h;
+  };
+  const tree = (entries: Record<string, { blob?: string; tree?: string; mode?: string }>) => {
+    const h = `tree${n++}`;
+    trees.set(h, Object.entries(entries).map(([name, e]) => ({
+      name, mode: e.mode ?? (e.tree ? "40000" : "100644"), hash: (e.tree ?? e.blob)!, type: e.tree ? "tree" : "blob",
+    })));
+    return h;
+  };
+  const reader: Reader = { tree: async (h) => trees.get(h) ?? null, blob: async (h) => blobs.get(h) ?? null };
+  return { blob, tree, reader };
+}
+
+// The scan as the push routes run it: an uncapped tree diff read with
+// SCAN_LIMITS, then scanPush. The display diff's cuts (60 files, 256 KiB)
+// must not hide a key from the scan.
+async function fullScan(s: ReturnType<typeof store>, base: string, head: string): Promise<{ hits: SecretHit[]; unscanned: string[] }> {
+  const { files, truncated } = await treeDiff(s.reader, base, head, SCAN_LIMITS);
+  return scanPush({ base: "b".repeat(40), head: "a".repeat(40), files, truncated });
+}
+
+test("a fake key in an added file over 256 KiB is found, though the display diff omits it", async () => {
+  const s = store();
+  const big = "x".repeat(300 * 1024) + `\nconst key = "${FAKE.openai}";\n`;
+  const { hits } = await fullScan(s, s.tree({}), s.tree({ "big.ts": { blob: s.blob(big) } }));
+  assert.deepEqual(hits, [{ file: "big.ts", line: 2 }]);
+});
+
+test("a fake key in the 61st added file is found, though the display diff truncates it", async () => {
+  const s = store();
+  const entries: Record<string, { blob: string }> = {};
+  for (let i = 0; i < 60; i++) entries[`f${String(i).padStart(2, "0")}.ts`] = { blob: s.blob("export {}\n") };
+  entries["f60.ts"] = { blob: s.blob(`const key = "${FAKE.openai}";\n`) };
+  const { hits } = await fullScan(s, s.tree({}), s.tree(entries));
+  assert.deepEqual(hits, [{ file: "f60.ts", line: 1 }]);
+});
+
+test("a modified file too large to diff is reported unscanned, never passed silently", async () => {
+  const s = store();
+  const left = Array.from({ length: 6_000 }, (_, i) => `l${i}`).join("\n") + "\n";
+  const right = Array.from({ length: 6_000 }, (_, i) => `r${i}`).join("\n") + "\n";
+  const { hits, unscanned } = await fullScan(s, s.tree({ "huge.ts": { blob: s.blob(left) } }), s.tree({ "huge.ts": { blob: s.blob(right) } }));
+  assert.deepEqual(hits, []);
+  assert.deepEqual(unscanned, ["huge.ts"]);
 });

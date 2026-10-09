@@ -1673,24 +1673,39 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The secret flag a push scan records or clears (t332). `hits` names the
-  // file and line of every added line that held a key pattern at `head`; an
-  // empty list clears the flag, so a later push that removes the line clears
-  // it. Only the file and line ever reach the Ledger, never the value.
-  setSecret(id: string, actor: string, head: string, hits: SecretHit[]): Item {
+  // file and line of every added line that held a key pattern at `head`, and
+  // `unscanned` names every file whose added lines the scan could not read in
+  // full; an empty list of both clears the flag, so a later push that removes
+  // the line clears it. Only the file and line ever reach the Ledger, never
+  // the value.
+  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: string[] = []): Item {
     const item = this.item(id);
     if (item.head !== head) return item; // a newer push superseded this scan
-    const unchanged = (item.secret?.length ?? 0) === hits.length
-      && hits.every((h, i) => h.file === item.secret![i].file && h.line === item.secret![i].line);
-    if (unchanged) return item;
     const at = new Date().toISOString();
-    if (!hits.length) {
+    const flags: SecretFlag[] = [
+      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, head, by: actor, at })),
+      ...unscanned.map((file): SecretFlag => ({ file, line: 0, head, by: actor, at, unscanned: true })),
+    ];
+    // A re-scan of the same head with the same findings changes nothing. The
+    // comparison includes each flag's head, so a later push that keeps a
+    // secret at the same file and line is re-recorded for its own head — and
+    // keeps blocking — rather than left naming a superseded one.
+    const prev = item.secret ?? [];
+    const unchanged = prev.length === flags.length
+      && flags.every((f, i) => f.file === prev[i].file && f.line === prev[i].line && (f.unscanned ?? false) === (prev[i].unscanned ?? false))
+      && prev.every((f) => f.head === head);
+    if (unchanged) return item;
+    if (!flags.length) {
       this.update(id, { secret: null }, at);
       this.log(id, actor, "secret.resolved", { head }, at);
       return this.item(id);
     }
-    const flags: SecretFlag[] = hits.map((h) => ({ file: h.file, line: h.line, head, by: actor, at }));
     this.update(id, { secret: JSON.stringify(flags) }, at);
-    this.log(id, actor, "secret.flagged", { head, hits: hits.map((h) => ({ file: h.file, line: h.line })) }, at);
+    this.log(id, actor, "secret.flagged", {
+      head,
+      hits: hits.map((h) => ({ file: h.file, line: h.line })),
+      ...(unscanned.length ? { unscanned } : {}),
+    }, at);
     return this.item(id);
   }
 

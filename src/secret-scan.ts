@@ -97,3 +97,21 @@ export function scanDiff(diff: ItemDiff): SecretHit[] {
   }
   return hits;
 }
+
+// The whole result of scanning a push: every added line that held a key
+// pattern, and every file whose added lines could not be read in full (a text
+// file whose diff exceeded the memory budget, listed too-large). The caller
+// records both as blocking flags, so a push the scan could not fully read is
+// never passed silently.
+export interface PushScan {
+  hits: SecretHit[];
+  unscanned: string[];
+}
+
+export function scanPush(diff: ItemDiff | null): PushScan {
+  if (!diff) return { hits: [], unscanned: [] };
+  return {
+    hits: scanDiff(diff),
+    unscanned: diff.files.filter((f) => f.status === "too-large").map((f) => f.path),
+  };
+}

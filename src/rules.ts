@@ -73,13 +73,16 @@ export interface Block {
 
 // One entry of the secret flag the push scan records: where a key pattern was
 // added, at which head, by whom and when. The matched value is never kept, so
-// only these fields exist (see src/secret-scan.ts).
+// only these fields exist (see src/secret-scan.ts). A flag with `unscanned`
+// names a file whose added lines the scan could not read in full; it has no
+// line, so `line` is 0.
 export interface SecretFlag {
   file: string;
   line: number;
   head: string;
   by: string;
   at: string;
+  unscanned?: true;
 }
 
 // What `atelier new` and `atelier edit` set. A field present replaces the
@@ -1199,7 +1202,9 @@ export interface Gate {
 export function secretBlockers(item: Pick<Item, "secret" | "head">): string[] {
   return (item.secret ?? [])
     .filter((f) => f.head === item.head)
-    .map((f) => `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
+    .map((f) => f.unscanned
+      ? `secret scan could not read ${f.file} in full; clear it with a reason or push a revision that removes the line`
+      : `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
 }
 
 // `reviewHeld` says the change's independent review is held outside the
