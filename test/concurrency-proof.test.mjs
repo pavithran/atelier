@@ -17,7 +17,7 @@ const script = resolve("bin/concurrency-proof.mjs");
 // A fake server with the item routes the proof touches, tracking every request
 // so the tests can check exactly what raced. With bareRoot, each fork is a
 // real local bare repository and a push is observed from its actual head.
-async function fakeServer(t, { bareRoot = null } = {}) {
+async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
   const items = new Map();
   let n = 0;
   const requests = [];
@@ -32,7 +32,7 @@ async function fakeServer(t, { bareRoot = null } = {}) {
       try { body = JSON.parse(Buffer.concat(chunks).toString() || "{}"); } catch { body = {}; }
     }
     requests.push({ method, path: url.pathname, actor, body });
-    const send = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
+    let send = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
     if (url.pathname === "/api/config") return send(200, { ownerActor: "owner", ownerName: "Pavi" });
     const m = /^\/api\/projects\/([^/]+)\/items(?:\/([^/]+))?(?:\/([^/]+))?$/.exec(url.pathname);
     if (!m) return send(404, { error: "not_found", detail: "no such route" });
@@ -44,6 +44,15 @@ async function fakeServer(t, { bareRoot = null } = {}) {
     }
     const item = items.get(id);
     if (!item) return send(404, { error: "not_found", detail: `no item ${id}` });
+    if (!verb && method === "GET") return send(200, item);
+    // fault(req) may answer 503 before the request is handled ("before"), or
+    // handle it and then lose the reply as a 503 ("after").
+    const f = fault ? fault({ method, verb, actor, item }) : null;
+    if (f?.when === "before") { res.writeHead(503, { "content-type": "application/json", ...(f.headers ?? {}) }); return res.end(JSON.stringify(f.body ?? { error: "unavailable", detail: "try again" })); }
+    if (f?.when === "after") {
+      const real = send;
+      send = (status, data) => real(503, { error: "artifacts_unavailable", detail: "reply lost" });
+    }
     if (verb === "claim") {
       if (item.owner && item.owner !== actor) {
         return send(409, { error: "owned", detail: `${id} is owned by ${item.owner}; ask for a handoff` });
@@ -101,7 +110,7 @@ test("N agents claim N tasks at once: all succeed, each with its own fork, and t
   assert.match(r.output, /claim spread: 5 requests, 5 ok/);
   assert.match(r.output, /5 distinct forks/);
   assert.match(r.output, /claim race: 5 requests, 1 ok, 4 refused/);
-  assert.match(r.output, /winner sim\/agent-\d/);
+  assert.match(r.output, /holder sim\/agent-\d/);
   assert.match(r.output, /4\/4 refusals name the holder/);
   assert.match(r.output, /pushes: none \(run with --push/);
   assert.match(r.output, /cleanup: 6 requests, 6 ok/);
@@ -186,7 +195,75 @@ test("the report is machine-readable with --json, and its figures match the meas
   assert.equal(report.created, 5);
   assert.equal(report.phases.claimSpread.created, 4);
   assert.equal(report.phases.claimRace.created, 1);
-  assert.equal(report.requests, 18);
+  assert.equal(report.requests, 19);
+  assert.deepEqual(report.outcomes, { firstTry: 19, onRetry: 0, failed: 0, retries: 0, retryLimit: 6 });
+});
+
+test("a retryable 503 is retried with backoff, and the report counts first-try, retried and failed apart", async (t) => {
+  const failedOnce = new Set();
+  const server = await fakeServer(t, {
+    fault: ({ verb, actor }) => {
+      // Every spread claim by agents 0 and 1 gets one Retry-After 503; agent 2's claim always gets 503 unavailable.
+      if (verb !== "claim") return null;
+      if (actor === "sim/agent-2") return { when: "before" };
+      if ((actor === "sim/agent-0" || actor === "sim/agent-1") && !failedOnce.has(actor)) { failedOnce.add(actor); return { when: "before", headers: { "retry-after": "0" }, body: { error: "weird", detail: "x" } }; }
+      return null;
+    },
+  });
+  const r = await run(t, server, ["--agents", "3", "--json", "--retries", "2", "--backoff-ms", "1"]);
+  const report = JSON.parse(r.output);
+  assert.equal(r.code, 1, "a final failure fails the run");
+  assert.ok(report.outcomes.onRetry >= 2, JSON.stringify(report.outcomes));
+  assert.ok(report.outcomes.failed >= 1, JSON.stringify(report.outcomes));
+  assert.equal(report.outcomes.retryLimit, 2);
+  // agent 2 was asked 1 + 2 retries times for its spread claim
+  assert.ok(server.requests().filter((q) => q.actor === "sim/agent-2" && q.path.endsWith("/claim")).length >= 3);
+  assert.equal(report.outcomes.firstTry + report.outcomes.onRetry + report.outcomes.failed, report.requests - report.outcomes.retries);
+});
+
+test("a 503 that is not retryable (no Retry-After, other code) is a final failure at once", async (t) => {
+  const server = await fakeServer(t, { fault: ({ verb }) => (verb === "claim" ? { when: "before", body: { error: "internal", detail: "boom" } } : null) });
+  const r = await run(t, server, ["--agents", "1", "--json", "--backoff-ms", "1"]);
+  const report = JSON.parse(r.output);
+  assert.equal(report.outcomes.retries, 0);
+  assert.ok(report.outcomes.failed >= 1);
+});
+
+test("the race is judged from the server's holder when the winner's reply is lost as a 503", async (t) => {
+  // Every claim is handled but the winning agent's reply is always lost.
+  const server = await fakeServer(t, { fault: ({ verb, item, actor }) => (verb === "claim" && item.title === "concurrency proof race" && (!item.owner || item.owner === actor) ? { when: "after" } : null) });
+  const r = await run(t, server, ["--agents", "6", "--json", "--retries", "1", "--backoff-ms", "1"]);
+  const report = JSON.parse(r.output);
+  const race = server.items().find((i) => i.title === "concurrency proof race");
+  assert.equal(report.phases.claimRace.winners, 0, "no winning reply arrived");
+  assert.equal(report.phases.claimRace.holder, race.firstOwner);
+  assert.equal(report.phases.claimRace.winner, race.firstOwner);
+  assert.equal(report.phases.claimRace.winnerReplied, false);
+  assert.equal(report.phases.claimRace.refused, 5);
+  assert.equal(report.phases.claimRace.namingHolder, 5);
+});
+
+test("cleanup retries until every task is abandoned, and names any it could not abandon", async (t) => {
+  let abandonCalls = 0;
+  const stuck = new Set();
+  const server = await fakeServer(t, {
+    fault: ({ verb, item }) => {
+      if (verb !== "abandon") return null;
+      abandonCalls += 1;
+      if (item.title === "concurrency proof task 0") { stuck.add(item.id); return { when: "before" }; }
+      // task 1 fails 503 on its first two abandons only
+      if (item.title === "concurrency proof task 1" && abandonCalls <= 2) return { when: "before", body: { error: "internal", detail: "x" } };
+      return null;
+    },
+  });
+  const r = await run(t, server, ["--agents", "3", "--retries", "2", "--backoff-ms", "1"]);
+  assert.equal(r.code, 1);
+  const states = Object.fromEntries(server.items().map((i) => [i.title, i.state]));
+  assert.equal(states["concurrency proof task 1"], "abandoned", "retried until it went through");
+  assert.equal(states["concurrency proof task 2"], "abandoned");
+  assert.equal(states["concurrency proof task 0"], "claimed");
+  const id0 = server.items().find((i) => i.title === "concurrency proof task 0").id;
+  assert.match(r.output, new RegExp(`NOT ABANDONED: ${id0}\\b`));
 });
 
 test("--agents above the limit, a missing project, or an insecure server is refused before any request", async (t) => {
