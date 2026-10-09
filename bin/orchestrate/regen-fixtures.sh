@@ -8,7 +8,7 @@ trap 'rm -rf "$D"' EXIT
 mkdir -p test/fixtures/cli
 ATELIER_CONFIG_DIR=$D node cli/atelier.mjs help > test/fixtures/cli/help.txt
 node --input-type=module -e '
-import { COMMAND_USAGE } from "./src/usage.ts";
+import { COMMAND_USAGE } from "./cli/help.mjs";
 import { spawnSync } from "node:child_process";
 const out = {};
 for (const c of Object.keys(COMMAND_USAGE).sort()) out[c] = spawnSync(process.execPath, ["cli/atelier.mjs", c, "--help"], { encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: process.argv[1] } }).stdout;
