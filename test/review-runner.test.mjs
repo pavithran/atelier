@@ -16,7 +16,10 @@ import { BRIEF_LIMITS } from "../src/review/brief.ts";
 
 const H0 = "0".repeat(40), H1 = "a".repeat(40);
 const model = "GLM-5.3-Flash-4_8bit";
-const config = { agents: [{ agent: "opencode", models: [model], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}"] }] };
+// The reviewer's own agent token (t346) is named by the config, as a real
+// runner.json names it, and read from the stand-in store below.
+const FAKE_TOKEN = "atl_" + "f".repeat(64);
+const config = { agents: [{ agent: "opencode", models: [model], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}"] }], tokens: { [model]: "agent.glm" } };
 const assignment = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "opencode", model, actor: `opencode/${model}` };
 
 const claimed = {
@@ -49,9 +52,10 @@ function fixture(options = {}) {
   const io = {
     log: (s) => logs.push(s), stopped: () => false,
     env: {}, ownerTokens: () => [],
+    readSecret: () => FAKE_TOKEN,
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
-    async cli(argv, cwd) {
-      calls.push({ argv, cwd });
+    async cli(argv, cwd, callOptions) {
+      calls.push({ argv, cwd, token: callOptions?.token });
       if (argv[0] === "review-claim") return JSON.stringify(options.claim ?? claimed);
       return "{}";
     },
@@ -101,6 +105,8 @@ test("runReview claims the request, clones read-only, writes the brief and diff,
   assert.ok(posted.includes("--head"));
   assert.ok(posted.includes(H1));
   assert.ok(calls.some((c) => c.removed), "the brief is removed");
+  // Every CLI call of the job authenticates with the reviewer's own token (t346).
+  assert.ok(calls.filter((c) => c.argv).every((c) => c.token === FAKE_TOKEN), "the reviewer's token goes on each call");
 });
 
 test("runReview posts a rejection with its findings, and releases the request when no valid verdict is written", async () => {
@@ -350,8 +356,12 @@ test("an interrupted review releases the request through the real CLI helper", a
   const { io } = fixture();
   const { cli, stopped, ...taskIO } = io;
   const releases = [];
+  // The harness interrupts the runner; a review the runner refuses before the
+  // claim never reaches it, so the queue stops the runner itself after a few
+  // polls, and the assertion below fails instead of the poll loop spinning.
+  let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: async () => {}, queue: async () => [assignment],
+    workspacePath: io.workspacePath, wait: async () => {}, queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
     taskIO: { ...taskIO, async harness() { process.emit("SIGINT"); return { code: 0 }; } },
     async executeChild(argv, options) {
       if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
@@ -383,7 +393,7 @@ function reviewRepos(t) {
 async function serveReview(t, dir, claim) {
   const reviewer = { agent: "codex", models: ["gpt-6-astra"], command: ["reviewer", "{brief_file}", "{diff_file}", "{verdict_file}", "{model}"] };
   const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ agents: [reviewer], jobs: ["review"] }));
+  writeFileSync(path, JSON.stringify({ agents: [reviewer], jobs: ["review"], tokens: { "gpt-6-astra": "agent.gpt-6-astra" } }));
   const args = { _: ["runner"], multi: {}, name: "home:studio", config: path, once: true };
   const task = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" };
   const previous = process.exitCode;
@@ -391,6 +401,7 @@ async function serveReview(t, dir, claim) {
   const seen = {}, posted = [];
   await runRunner(args, {
     workspacePath: () => join(dir, "t21"), wait: async () => {}, queue: async () => [task],
+    taskIO: { readSecret: () => FAKE_TOKEN },
     async executeChild(argv, options) {
       if (argv[0] === "git") return execute(argv, options);
       if (argv[0] === "reviewer") {
