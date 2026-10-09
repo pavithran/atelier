@@ -107,6 +107,36 @@ test("a .env-style assignment whose value carries base64 padding is matched", ()
   assert.ok(!scanLine("PORT==8080"));
 });
 
+test("every .env form that parses to a long secret is matched", async () => {
+  // Each line is checked against Node's own .env parser first, so the test
+  // proves a real assignment of the secret and not a near miss.
+  const { parseEnv } = await import("node:util");
+  const padded = ["Zm9v", "YmFy".repeat(12), "=="].join("");
+  const forms = [
+    `SERVICE_SECRET=${padded}`,
+    `export SERVICE_SECRET=${padded}`,
+    `export\tSERVICE_SECRET=${padded}`,
+    `SERVICE_SECRET=${padded} # rotated monthly`,
+    `SERVICE_SECRET=${padded}#nospace`,
+    `SERVICE_SECRET = ${padded}`,
+    `SERVICE_SECRET="${padded}" # quoted, then a comment`,
+    `SERVICE_SECRET='${padded}'`,
+    `SERVICE_SECRET=\`${padded}\``,
+    `export SERVICE_SECRET="${padded}"   # both`,
+    `  SERVICE_SECRET=${padded}  `,
+  ];
+  let checked = 0;
+  for (const line of forms) {
+    const parsed = parseEnv(line) as Record<string, string>;
+    if (parsed.SERVICE_SECRET !== padded) continue; // not a form Node reads as this value
+    checked++;
+    assert.ok(scanLine(line), `missed: ${line.replace(padded, "<secret>")}`);
+  }
+  assert.ok(checked >= 10, `only ${checked} forms parsed as the secret`);
+  assert.ok(!scanLine("export NODE_ENV=production # default"));
+  assert.ok(!scanLine("API_KEY=your_key_here # fill in"));
+});
+
 test("a .env-style assignment of a long secret is matched, and a short one is not", () => {
   assert.ok(scanLine(`OPENAI_API_KEY=${FAKE.openai}`));
   assert.ok(scanLine(`SECRET=${"x".repeat(32)}`));

@@ -86,18 +86,21 @@ const LONG_VALUE = 40;
 // as `API_KEY=your_key_here` is not taken for a secret.
 const SHORT_SECRET = 24;
 
-// A `.env`-style assignment: `NAME=value` on its own line, with optional
-// quotes, and base64 padding (one or two trailing `=`) allowed. The value must be token-shaped, so `URL=https://…` (a colon),
-// `COLOR=#fff` (too short, a hash) and `PORT=8080` (too short) never match.
+// A `.env`-style assignment: `NAME=value` on its own line, in every form a
+// .env parser reads: an optional `export ` prefix, spaces around the `=`, the
+// value bare or in single, double or back quotes, base64 padding (one or two
+// trailing `=`), and a trailing `# comment`. The value must be token-shaped,
+// so `URL=https://…` (a colon), `COLOR=#fff` (too short, a hash) and
+// `PORT=8080` (too short) never match.
 // A value shorter than LONG_VALUE counts only when the name is itself a
 // secret name, and any value counts once it is at least SHORT_SECRET, so
 // `OPENAI_API_KEY=sk-…` matches and `API_KEY=your_key_here` does not.
-const ASSIGNMENT = new RegExp(`^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*["']?([A-Za-z0-9+/_-]{${SHORT_SECRET},}={0,2})["']?\\s*$`);
+const ASSIGNMENT = new RegExp(`^\\s*(?:export\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(["'\`]?)([A-Za-z0-9+/_-]{${SHORT_SECRET},}={0,2})\\2\\s*(?:#.*)?$`);
 
 function secretAssignment(text: string): boolean {
   const m = ASSIGNMENT.exec(text);
   if (!m) return false;
-  const value = m[2];
+  const value = m[3];
   if (value.length >= LONG_VALUE) return true;
   return m[1].split("_").some((segment) => SECRET_SEGMENTS.has(segment.toLowerCase()));
 }
