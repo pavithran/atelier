@@ -902,7 +902,25 @@ export class Ledger extends DurableObject<Env> {
   // long text if sent apart (itemText): a title too long with no brief, as
   // an older CLI sends, becomes the brief with a short title derived from
   // it. The item answers with `derived` set then, so the CLI can say so.
-  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item & { derived?: true } {
+  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item & { derived?: true; revert?: { itemId: string; mergeCommit: string } } {
+    if (fields.revertOf !== undefined) {
+      const original = this.item(fields.revertOf);
+      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`);
+      // A plan part's event names the whole plan's merge; reverting that
+      // would silently undo its siblings too. Ask for the plan explicitly.
+      if (original.kind === "part") throw new RuleError("revert_part", "revert the merged plan, not one of its parts");
+      const mergeCommit = this.events(original.id).find((e) => e.kind === "item.merged")?.data.mergeCommit;
+      if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`);
+      return this.ctx.storage.transactionSync(() => {
+        const revert = { itemId: original.id, mergeCommit };
+        const item = this.newItem(shortTitle(`Revert ${original.id}: ${original.title}`), original.scope, actor, {
+          brief: `Undo ${original.id} by reverting its recorded merge commit ${mergeCommit} with git revert -m1. Resolve conflicts in this workspace, then run the normal checks and independent review.`,
+        });
+        this.log(item.id, actor, "item.reverts", revert, item.createdAt);
+        this.log(original.id, actor, "item.revert_requested", { itemId: item.id, mergeCommit }, item.createdAt);
+        return { ...item, revert };
+      });
+    }
     const text = itemText(title, fields.brief);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -930,6 +948,7 @@ export class Ledger extends DurableObject<Env> {
   // under a landing lease, cannot change, and nothing is written then.
   editItem(id: string, actor: string, fields: ItemFields): Item & { criteriaChange?: CriteriaChange } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
+    if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
     const set = fieldColumns(fields);
