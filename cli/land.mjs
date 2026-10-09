@@ -8,7 +8,7 @@ import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
-import { sameActor } from "../src/rules.ts";
+import { contributorsOf, sameActor } from "../src/rules.ts";
 import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -249,6 +249,14 @@ export async function runLand(io) {
     return d;
   };
   const d0 = await preflight();
+  // A reviewer who contributed to the task can never review it, whatever the
+  // change class, so the ledger's answer is known before the lease is taken
+  // or a check runs (t354). Same-family contributors are left to the server:
+  // only a protected change refuses them, and the class is not known yet.
+  if (reviewer !== undefined) {
+    const contributed = contributorsOf(d0.item).find((c) => sameActor(c, reviewer));
+    if (contributed) die(`${reviewer} contributed to ${id} (as ${contributed}) and cannot review it; name another reviewer with --reviewer H/M, of another family than every contributor.`);
+  }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
   if (dryRun) {
@@ -529,7 +537,7 @@ export async function runLand(io) {
         await record("review", Date.now() - t0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) });
       } else {
         const head = ask.head, since = ask.at;
-        print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${ask.reason}. Waiting for the verdict…`);
+        print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}. Waiting for the verdict…`);
         // While no runner has claimed the request, the landing says what the
         // runners are busy with and what waits ahead in the queue, once and
         // again when that changes, so a long wait is explained rather than
@@ -1019,7 +1027,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
     if (status.status === "errored" || status.status === "terminated") {
       die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}`);
     }
-    const key = `${stage}:${round}`;
+    const key = `${stage}:${round}:${stage === "review" ? detail ?? "" : ""}`;
     if (key !== said) {
       said = key;
       const what = {
@@ -1027,7 +1035,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
         workspace: "holds the lease and waits for this machine to merge main and push",
         conflict: `is paused on conflicts in ${(files ?? []).join(", ") || "the merge of main"}`,
         checks: checksMode === "local" ? "reads the observed results of the checks this machine ran" : "runs the required checks in a Cloudflare container",
-        review: "waits for the review verdict",
+        review: `waits for the review verdict${detail ? `. ${detail}` : ""}`,
         merge: "has accepted the reviewed head and waits for the merge",
         done: "is done",
         failed: `failed: ${detail ?? ""}`,

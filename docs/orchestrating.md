@@ -8,6 +8,28 @@ model families, and records what went wrong and what prevents it. The rules
 Atelier enforces are in the README and on the `/how` page; this document is
 about working within them well.
 
+## The standing rules
+
+`atelier guide --role orchestrate` prints these for any agent that runs a
+project, whatever its company; each is explained in the sections below.
+
+- Use builders from several companies, chosen by tier, and not one company's
+  models alone.
+- Every protected or coordinated change is reviewed by a model from another
+  company than every agent that worked on it.
+- Never override a review, a check or a block, except on the owner's own
+  confirmation. Ask, and cite the owner's words; never infer them.
+- Judge each review finding against the code before acting, and record every
+  verdict with `atelier finding`.
+- Land one task at a time with `atelier land ID`. Never land two together.
+- Report every run that ended without a result with `atelier run-report`.
+- On a stall (a claimed task with no progress), check whether the agent's
+  process still runs, then `atelier handoff` the task to another model or
+  `atelier release` it. Do not start the same work twice.
+- After a repeated rejection of the same task, stop resending it: judge the
+  findings, then hand it to a builder from another company or ask the owner.
+- Feed what you learn back into Atelier, as the last section says.
+
 ## The shape of the work
 
 A task moves through five hands:
@@ -110,6 +132,9 @@ misread:
   guide loosely.
 - Ask for a test that fails without the fix, and for the agent to confirm it
   does.
+- A change that depends on a platform limit or runtime behaviour local tests
+  cannot reproduce names it in the task, and the project declares a remote
+  smoke check run before and after deploy.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the owner's checkout.
 - Before sending one brief to many projects, pilot it on the project whose
