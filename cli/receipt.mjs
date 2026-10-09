@@ -15,6 +15,7 @@
 // requests and their claims, forks, sandbox runs) are the integration record,
 // not the story; `--json` carries the whole event stream for a machine reader.
 import { stripVTControlCharacters } from "node:util";
+import { DEFAULT_OWNER, recordedText } from "../src/rules.ts";
 
 const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
 const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
@@ -59,7 +60,7 @@ export function receiptJson(project, id, detail) {
 // One line for each event of the story, or null for an event the receipt
 // does not tell (the plumbing named above). A review answers with more lines:
 // each finding of its own, and under a finding the owner's verdict on it.
-function linesFor(e, verdicts, used) {
+function linesFor(e, verdicts, used, owner) {
   const d = e.data ?? {};
   switch (e.kind) {
     case "item.created":
@@ -95,7 +96,12 @@ function linesFor(e, verdicts, used) {
     case "review.approved":
     case "review.rejected": {
       const verdict = e.kind === "review.approved" ? "approved" : "rejected";
-      const out = [`${d.tier ? "tier review " : ""}${verdict} by ${flat(e.actor)} at ${short(d.head)}: ${flat(d.note) || "(no note)"}`];
+      // Who recorded the verdict, as the task page says it (recordedText):
+      // the reviewer itself when its own token proved the event, else the
+      // owner token in the reviewer's name. An event from before the ledger
+      // recorded that says nothing.
+      const recorded = recordedText({ by: e.actor, recordedBy: d.recordedBy, proved: e.proved === true, claimed: d.claimed === true }, owner);
+      const out = [`${d.tier ? "tier review " : ""}${verdict} by ${flat(e.actor)} at ${short(d.head)}${recorded ? ` (${flat(recorded)})` : ""}: ${flat(d.note) || "(no note)"}`];
       (d.findings ?? []).forEach((f, i) => {
         out.push(`${i + 1}. ${flat(f.severity)} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
         const key = findingKey(d.head, e.actor, i + 1, { file: String(f.file ?? ""), text: String(f.text ?? "") });
@@ -138,6 +144,7 @@ export function receiptText(project, id, detail, origin = null) {
   const events = receiptEvents(detail);
   const verdicts = ownerVerdicts(events);
   const used = new Set();
+  const owner = detail.ownerActor ?? DEFAULT_OWNER;
   const cut = events.length >= EVENT_PAGE;
   const lines = [
     `${project}/${id}  ${flat(detail.item.title)}`,
@@ -145,7 +152,7 @@ export function receiptText(project, id, detail, origin = null) {
   ];
   const pad = " ".repeat(22);
   for (const e of events) {
-    const own = linesFor(e, verdicts, used);
+    const own = linesFor(e, verdicts, used, owner);
     if (!own) continue;
     lines.push(...own.map((line, i) => (i ? pad + line : `${at(e.at)}  ${line}`)));
   }
