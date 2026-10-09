@@ -811,6 +811,9 @@ export async function runReview(assignment, config, name, runnerIO) {
       diff: large && claimed.diffRef ? null : diff, diffRef: large ? claimed.diffRef ?? null : null,
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
+      // The owner's standing decisions (src/decisions.ts), as the claim
+      // carries them; an older server sends none, and the brief says so.
+      decisions: claimed.decisions ?? null,
     });
     brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);

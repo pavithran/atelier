@@ -34,6 +34,7 @@ import {
 import { integrationBlockers, nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
+import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -60,8 +61,10 @@ export interface LedgerEvent {
 // What a review claim returns: the part, the head under review, the review
 // need (null when it no longer holds), the plan account for the brief, the
 // part's events for the builder's summary and the owner's verdicts on earlier
-// findings (docs/orchestrator.md, section 4), and the project's review bar,
-// null when it sets none and the brief states the default.
+// findings (docs/orchestrator.md, section 4), the project's review bar,
+// null when it sets none and the brief states the default, and the owner's
+// standing decisions (src/decisions.ts), which the brief carries as
+// decisions a reviewer must not overrule.
 export interface ReviewClaim {
   item: Item;
   head: string;
@@ -70,6 +73,7 @@ export interface ReviewClaim {
   events: LedgerEvent[];
   owner: string;
   reviewBar: string | null;
+  decisions: Decision[];
   tier: boolean;          // the claimed request is a tier review (src/review/tier.ts)
   // The review's diff, kept in R2 by reference when the change is too large
   // for a brief to carry (t284): the claim route stores it and names it here,
@@ -2163,6 +2167,35 @@ export class Ledger extends DurableObject<Env> {
       .map((r) => ({ actor: r.actor as string, at: r.at as string, data: JSON.parse(r.data as string) }));
   }
 
+  // ── standing decisions (src/decisions.ts) ───────────────────────────────
+  // The owner's standing decisions for the project, each a project-level
+  // event: recorded, withdrawn. The standing ones ride on every review claim
+  // and are read for `atelier guide --role orchestrate`.
+
+  private get decisionStore(): DecisionStore {
+    return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
+  }
+
+  recordDecision(body: Record<string, unknown>, actor: string): DecisionView {
+    this.project();
+    return recordDecision(this.decisionStore, actor, body, new Date().toISOString());
+  }
+
+  decisions(): DecisionView[] {
+    this.project();
+    return listDecisions(this.decisionStore);
+  }
+
+  standingDecisions(): Decision[] {
+    this.project();
+    return standingDecisions(this.decisionStore);
+  }
+
+  withdrawDecision(id: string, actor: string, note: unknown): DecisionView {
+    this.project();
+    return withdrawDecision(this.decisionStore, actor, id, note, new Date().toISOString());
+  }
+
   // ── protected actions (src/actions.ts) ──────────────────────────────────
   // Approvals bound to one revision of the main line, and the steps a ship
   // ran. Each is a project-level event: approved, withdrawn, consumed, ran.
@@ -3114,6 +3147,7 @@ export class Ledger extends DurableObject<Env> {
       const brief = reviewBrief({
         need, item: p, events: this.briefEvents(p.id),
         plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
+        decisions: standingDecisions(this.decisionStore),
       });
       const briefHash = briefFingerprint(brief);
       const topTier = this.gateIsTier(p, need, reviewer);
@@ -3286,6 +3320,7 @@ export class Ledger extends DurableObject<Env> {
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
       events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, tier,
+      decisions: standingDecisions(this.decisionStore),
       criteria, request: row.id as number,
     };
   }
