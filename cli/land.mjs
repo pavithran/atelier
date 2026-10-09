@@ -517,11 +517,15 @@ export async function runLand(io) {
       const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
       if (!ask.needed && reviewer) throw new StepError(`the server made no review request for ${reviewer} (${ask.reason}); ${id} stays submitted`);
       if (!ask.needed) {
-        // Say only what the server said: its reason for needed:false, which
-        // is never a claim about protected paths unless it makes one.
-        print(/approval/i.test(String(ask.reason ?? ""))
+        // The server answers a direct or coordinated change only when no
+        // protected path changed (src/review/needed.ts), so those two say so
+        // plainly; any other reason is printed as the server gave it.
+        const why = String(ask.reason ?? "");
+        print(/approval/i.test(why)
           ? "No review request was needed: an independent approval already covers this change."
-          : `No review request was needed: ${String(ask.reason ?? "the server gave no reason").replace(/\.*$/, "")}.`);
+          : /^an? (direct|coordinated) change needs no review/.test(why)
+            ? "No review was needed: this change touched no protected paths."
+            : `No review request was needed: ${(why || "the server gave no reason").replace(/\.*$/, "")}.`);
         await record("review", Date.now() - t0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) });
       } else {
         const head = ask.head, since = ask.at;

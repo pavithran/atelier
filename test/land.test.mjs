@@ -345,11 +345,20 @@ test("without --reviewer a gate that needs no review says why and does not claim
 test("a coordinated change without protected paths says plainly why no review was needed", async (t) => {
   const f = await landFixture(t);
   f.box.review.needed = false;
-  f.box.review.reason = "coordinated change needs no review in a project without an execution policy";
+  f.box.review.reason = "a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed";
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /No review request was needed: coordinated change needs no review in a project without an execution policy\./);
-  assert.doesNotMatch(r.output, /protected path/);
+  assert.match(r.output, /No review was needed: this change touched no protected paths\./);
+  assert.doesNotMatch(r.output, /execution policy/);
+});
+
+test("a direct change says plainly that it touched no protected paths", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  f.box.review.reason = "a direct change needs no review";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /No review was needed: this change touched no protected paths\./);
 });
 
 test("a needed:false answer for failing checks prints the server's reason, never a claim about protected paths (t319)", async (t) => {
