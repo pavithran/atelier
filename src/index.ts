@@ -1498,7 +1498,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!runner) throw new RuleError("bad_runner", "a review skip names its runner in X-Atelier-Runner", 400);
       const head = String(body.head ?? "");
       if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "a review skip names the head it refused as a full commit hash", 400);
-      L.recordReviewSkip(id, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
+      await L.recordReviewSkip(id, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
       return json({ skipped: true });
     }
     // A review request for an item outside a plan (atelier land): the owner
