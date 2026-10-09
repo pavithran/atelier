@@ -2322,6 +2322,14 @@ const commands = {
     const item = await call("POST", `${I(name, id)}/push`, { head, ...(rebasedFrom ? { rebasedFrom } : {}) }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
+    // The push's secret scan (t332), as the answer reports it: a flag names
+    // file and line, never the value; a scan still pending blocks the gate
+    // until a later push, or Atelier's own retry, completes it.
+    if (item.secretScan === item.head) console.log(`${id}: the secret scan of ${short(item.head)} has not completed; acceptance waits for it. Run atelier push again to retry it.`);
+    for (const f of (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared)) {
+      console.log(f.unscanned ? `${id}: the secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; the flag blocks acceptance until the owner clears it or a push removes the line.`
+        : `${id}: a key pattern was added at ${f.file}:${f.line}; the flag blocks acceptance until the owner clears it or a push removes the line.`);
+    }
   },
 
   // Agents: bring the workspace up to date with what has merged since the
