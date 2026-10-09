@@ -20,35 +20,54 @@ checks, reviews and decisions.
 
 Agents sharing a repository overwrite each other's work, report checks that
 never ran, and approve their own changes. Atelier answers each of these with
-a rule the server enforces, not a convention.
+a rule the server enforces, not a convention. A task lives in five steps,
+and each has its rule.
 
-1. **One exact owner per task.** A task (an *item* in the API) has exactly
-   one owner at a time, granted atomically by the project's Durable Object,
-   so a second claimant is refused. The owner holds the only write token for
-   the task's workspace. Ownership moves only by a recorded handoff, which
-   revokes the old token.
-2. **Every agent in its own fork.** The project's main branch is copied into
-   an Artifacts repository, the *baseline*. Each task works in a fork of the
-   baseline, its *workspace*, so many agents work concurrently without
-   touching each other's files.
-3. **Checks observed, not reported.** A check that Atelier ran itself, in a
-   clean clone of exactly the head it reads from Artifacts, is *Observed*.
-   Anything an agent says it did is *Reported*: shown, never counted. A
-   required check with no observed result at the current head is *Pending*.
-   Only Observed passes count.
-4. **Review by another model family.** A change to a protected path needs
-   approval from a model of another family than every recorded contributor.
-   The project owner's approval is not that review; without one, the owner
-   can accept only by recording an override with its reason.
-5. **Plans split by a planner and integrated on a plan branch.** A goal too
-   large for one task goes to a planner model, which splits it into parts.
-   Once the owner approves the split, runners build each part, a model of
-   another family reviews it, and an integrator merges it onto the plan's own
-   branch.
-6. **The project owner accepts and merges.** The project owner is the person
-   the project belongs to; in the API they act as a reserved actor, `owner`
-   unless the deployment names another. Work reaches the project only when
-   the owner accepts it through the gate and merges it.
+### Claim
+
+**One holder per task.** A task (an *item* in the API) has exactly one owner
+at a time, granted atomically by the project's Durable Object when an agent
+runs `atelier start`, so a second claimant is refused. Ownership moves only
+by a recorded handoff, which revokes the old token.
+
+### Fork
+
+**Every task its own fork.** The project's main branch is copied into an
+Artifacts repository, the *baseline*. Each task works in a fork of the
+baseline, its *workspace*, and its owner holds the only write token for it,
+so many agents work concurrently without touching each other's files.
+
+### Prove
+
+**Atelier runs the tests.** A check that Atelier ran itself, in a clean
+clone of exactly the head it reads from Artifacts, is *Observed*. Anything
+an agent says it did is *Reported*: shown, never counted. A required check
+with no observed result at the current head is *Pending*. Only Observed
+passes count.
+
+### Review
+
+**Another company reviews.** A change to a protected path needs approval
+from a model of another family than every recorded contributor. The project
+owner's approval is not that review; without one, the owner can accept only
+by recording an override with its reason.
+
+### Land
+
+**One landing at a time, with a receipt.** The project owner is the person
+the project belongs to; in the API they act as a reserved actor, `owner`
+unless the deployment names another. Work reaches the project only when the
+owner accepts one exact head through the gate and it merges, one landing per
+project at a time (`atelier land` holds the project's landing lease), with
+the task's record attached to the merge as a git note: its receipt. A goal
+too large for one task is split by a planner model into parts; each part is
+claimed, forked, proven and reviewed the same way, and an integrator merges
+it onto the plan's own branch, which lands as one task.
+
+**Proven. Reviewed. Recorded.** What lands has every required check observed
+passing at its exact head, an independent review where the change needs
+one, and its whole history in the ledger. Git keeps the code. Atelier brings
+the receipts.
 
 The web inbox answers one question, *what needs the project owner now?*, and
 ranks the things a person must decide above the things an agent must fix.

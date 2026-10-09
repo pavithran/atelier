@@ -33,6 +33,34 @@ it('merged tasks show completion without actionable approval or a misleading clo
  const html=renderItem(project,d,'PAVI',null);
  expect(html).toContain('Merged into the project');expect(html).not.toContain('Approve revision');expect(html).not.toContain('Readiness details');expect(html).not.toContain('Close task without merging');
 });
+it('the task page shows the five steps with the current one marked, read from the task\'s recorded state and its observed checks',()=>{
+ const steps=(html:string)=>{const ol=html.slice(html.indexOf('<ol class="task-steps"'),html.indexOf('</ol>',html.indexOf('<ol class="task-steps"')));return [...ol.matchAll(/<li class="(\w+)"( aria-current="step")?><b>(\w+)<\/b>/g)].map((m)=>`${m[3]}:${m[1]}${m[2]?'*':''}`);};
+ const at=(patch:Partial<Detail['item']>,evidence?:Detail['evidence'])=>{const d=detail();Object.assign(d.item,patch);if(evidence)d.evidence=evidence;return steps(renderItem(project,d,'PAVI',null));};
+ const failed=[{...detail().evidence[0],passed:false}];
+ expect(at({state:'open',owner:null,fork:null,head:null})).toEqual(['Claim:current*','Fork:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'claimed',head:null})).toEqual(['Claim:done','Fork:current*','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'claimed'})).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
+ // Submitted with a failing check is still proving; with every required check observed passing, it is in review.
+ expect(at({state:'submitted'},failed)).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
+ expect(at({state:'submitted'},[])).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
+ expect(at({state:'submitted'})).toEqual(['Claim:done','Fork:done','Prove:done','Review:current*','Land:todo']);
+ expect(at({state:'accepted',acceptedHead:head})).toEqual(['Claim:done','Fork:done','Prove:done','Review:done','Land:current*']);
+ expect(at({state:'merged',acceptedHead:head})).toEqual(['Claim:done','Fork:done','Prove:done','Review:done','Land:done']);
+ // A blocked task stays at the step it was blocked from; a closed one keeps what it reached and marks none.
+ const blocked=detail();blocked.item.state='blocked';blocked.item.blocked={by:'pavi',at:time,reason:'waiting',from:'submitted'};
+ const blockedHtml=renderItem(project,blocked,'PAVI',null);
+ expect(steps(blockedHtml)).toEqual(['Claim:done','Fork:done','Prove:done','Review:current*','Land:todo']);
+ expect(blockedHtml).toContain('<span>Blocked here</span>');
+ const closed=detail();closed.item.state='abandoned';closed.item.head=null;
+ const closedHtml=renderItem(project,closed,'PAVI',null);
+ expect(steps(closedHtml)).toEqual(['Claim:done','Fork:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(closedHtml).toContain('Closed without landing');
+ expect(closedHtml).not.toContain('aria-current="step"');
+ // Labels only: the commands and routes on the page keep their names.
+ const live=renderItem(project,detail(),'PAVI',null);
+ expect(live).toContain('action="/ui/example/t1/block"');
+ expect(live.indexOf('class="task-steps"')).toBeLessThan(live.indexOf('id="review"'));
+});
 it('acceptance renders only after an independent approval and passing evidence; the owner\'s approval leaves the override instead',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'pavi',note:'approved',at:time}];
@@ -462,7 +490,7 @@ it('the showcase draws a named project that has work, and survives a cache that 
   expect(body).toContain('Drawn project');
   expect(body).toContain('>t1<');
   expect(body).toContain('The owner made 0 decisions.');
-  expect(body).toContain('the owner decides');
+  expect(body).toContain('Proven. Reviewed. Recorded.');
  }finally{(caches.default as {put:unknown}).put=put;}
 });
 
@@ -1376,8 +1404,8 @@ it('the error page keeps the owner\'s name, highlights nothing, and says Go back
 
 it('one line about Atelier serves both the rail and the sign-in headline',()=>{
  const rail=renderProject(project,[],[],'PAVI');
- expect(rail).toContain('<p>Many agents, one owner per task.</p>');
- expect(renderLogin()).toContain('<h1>Many agents,<br>one owner per task.</h1>');
+ expect(rail).toContain('<p>Git keeps the code. Atelier brings the receipts.</p>');
+ expect(renderLogin()).toContain('<h1>Git keeps the code.<br>Atelier brings the receipts.</h1>');
 });
 
 it('Plans draws each plan as one unit with its parts, their state and why each went to its agent',()=>{

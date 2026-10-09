@@ -5,7 +5,7 @@ import how from "../src/how.css";
 import layout from "../src/layout.css";
 import { escapeText, renderLogin, renderShowcase } from "../src/ui";
 import { HELP_FORMS, guideText } from "../src/usage.ts";
-import { LOOP, ORCHESTRATOR, RULES, USING_WELL, USING_WELL_DOC } from "../src/how-data.ts";
+import { LOOP, ORCHESTRATOR, RULES, STEPS, TAGLINE, TAKEAWAYS, USING_WELL, USING_WELL_DOC } from "../src/how-data.ts";
 import { REPO_URL } from "../src/ui";
 import { PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_LABEL, PLAN_FLOW_RETURNS } from "../src/diagrams.ts";
 
@@ -158,8 +158,24 @@ it("lists every rule, and every contents link has its section", async () => {
   const { body } = await page();
   for (const rule of RULES) expect(body).toContain(`<h3>${escapeText(rule.title)}</h3>`);
   const links = [...body.matchAll(/<a href="#([a-z-]+)"/g)].map((m) => m[1]);
-  expect(links).toEqual(["terms", "where-it-runs", "the-loop", "rules", "the-orchestrator", "using-atelier-well", "commands"]);
+  expect(links).toEqual(["terms", "where-it-runs", "the-loop", "claim", "fork", "prove", "review", "land", "proven-reviewed-recorded", "the-orchestrator", "using-atelier-well", "commands"]);
   for (const id of links) expect(body).toContain(`<section id="${id}" class="how-section">`);
+});
+
+it("heads a section with each of the five verbs, lists each rule under its verb, and sums them up in the three takeaways", async () => {
+  const { body } = await page();
+  const section = (id: string) => { const from = body.indexOf(`<section id="${id}" class="how-section">`); return body.slice(from, body.indexOf("</section>", from)); };
+  for (const s of STEPS) {
+    const text = section(s.verb.toLowerCase());
+    expect(text).toContain(`<h2>${s.verb}</h2>`);
+    expect(text).toContain(`<strong>${escapeText(s.line)}</strong>`);
+    for (const rule of RULES.filter((r) => r.verb === s.verb)) expect(text, rule.title).toContain(`<h3>${escapeText(rule.title)}</h3>`);
+  }
+  const summary = section("proven-reviewed-recorded");
+  expect(summary).toContain(`<h2>${TAKEAWAYS}</h2>`);
+  expect(summary).toContain(TAGLINE);
+  expect(summary).toContain("Limits of enforcement");
+  expect(body).toContain(`<strong>${TAKEAWAYS}</strong> ${TAGLINE}`);
 });
 
 it("has a Using Atelier well section in the contents, linking to docs/using-atelier.md on GitHub, with each point of the data", async () => {

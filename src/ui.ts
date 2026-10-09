@@ -39,8 +39,9 @@ import type { PartRoute } from "./plans/route.ts";
 export interface Live { nonce: string; refresh?: number }
 import {
   bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
+  type Evidence, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
+import { STEPS, TAGLINE, TAKEAWAYS, type Verb } from "./how-data.ts";
 
 // What a page calls a project: its title when it has one, else its name. Links,
 // forms and commands always use the name.
@@ -99,9 +100,8 @@ const ACCOUNT: [string, string][] = [
   ["Usage", "/usage"],
 ];
 
-// One line about Atelier, used here and as the sign-in page's headline, so
-// the two never say different things.
-const TAGLINE = "Many agents, one owner per task.";
+// One line about Atelier (src/how-data.ts), used here and as the sign-in
+// page's headline, so the two never say different things.
 
 // src/render-check.ts lets the render check's browser load exactly this URL.
 export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
@@ -227,12 +227,12 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     : "";
   return publicPage({
     title: "Sign in · Atelier",
-    description: "Sign in to Atelier, a Git platform for many coding agents: one owner per task, evidence observed, another model family reviews, the owner decides.",
+    description: `Sign in to Atelier, a Git platform for many coding agents: claim, fork, prove, review, land. ${TAKEAWAYS}`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
     mainClass: "login-page",
     main: `<section class="login${graph ? " over-graph" : ""}">${graph}
-  <h1>Many agents,<br>one owner per task.</h1>
+  <h1>${TAGLINE.split(". ").map(e).join(".<br>")}</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
     <h2>Sign in to Atelier</h2>
@@ -563,18 +563,18 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
   ${importedBlock(imported.get(s.project), owner, s.title, s.project)}
 </section>`).join("");
   const yours = who === "You" ? "your" : `${who}'s`;
-  const journey = [
-    ["Planned", `${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope.`, `${plural(t.planned, "task")} planned`, "var(--main-line)"],
-    ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
-    ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
-    ["Checked", "The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
-    ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
-    ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
-    ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
-  ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
+  // The five steps of src/how-data.ts, each said for this owner and counted.
+  const said: Record<Verb, [text: string, count: string]> = {
+    Claim: [`${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope. One agent claims it, and a second claim is refused.`, `${plural(t.planned, "task")} planned, ${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`],
+    Fork: [`The task gets its own fork in Cloudflare Artifacts, and nobody else can write there. The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`],
+    Prove: ["The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`],
+    Review: [`Changes to protected files need an approval from a model of another family than every contributor; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`],
+    Land: [`${cap(who)} ${who === "You" ? "accept" : "accepts"} one revision on the diff, the evidence and the reviews. It merges into main on ${yours} machine, one landing at a time, with its whole history attached as a git note.`, `${plural(t.accepts, "acceptance")}, ${t.merges} merged`],
+  };
+  const journey = STEPS.map((s) => `<li><h3>${e(s.verb)}</h3><p><span class="motto">${e(s.line)}</span> ${e(said[s.verb][0])}</p><span class="n">${e(said[s.verb][1])}</span></li>`).join("");
   const moments = `<section aria-label="Latest moves"><h2>${many ? "Latest moves across projects" : "Latest moves"}</h2><ol class="moments">${momentsList.map((m) =>
     `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(shortStamp(m.at))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>`;
-  const journeySection = `<section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol></section>`;
+  const journeySection = `<section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol><p class="takeaways">${e(TAKEAWAYS)}</p><p class="meta">${e(TAGLINE)}</p></section>`;
   return { stages, moments, journey: journeySection, shown };
 }
 
@@ -685,7 +685,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   </figure>`).join("");
   return publicPage({
     title: "Atelier · public showcase",
-    description: "Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.",
+    description: `Atelier: several coding agents on one codebase. Claim, fork, prove, review, land. ${TAKEAWAYS} A Git platform on Cloudflare Workers and Artifacts.`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
     mainClass: "page-width flow",
@@ -693,7 +693,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>A Git platform for many coding agents</h1>
-      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
+      <p class="lead"><strong>${e(TAKEAWAYS)}</strong> ${e(TAGLINE)} Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
       <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
     ${tallyBlock(total, who)}
   </header>
@@ -1603,12 +1603,52 @@ function taskText(item: Item): string {
 </div>`;
 }
 
+// Where a task stands among the five steps, read from its recorded state and
+// the required checks at its head, never from what an agent said. A step
+// before the current one is done; a merged task has done all five, and a
+// closed or blocked one keeps the steps it reached, with a note saying so.
+export type StepState = "done" | "current" | "todo";
+export interface TaskProgress { steps: { verb: Verb; line: string; state: StepState }[]; note: string | null }
+
+export function taskProgress(item: Pick<Item, "state" | "head" | "fork" | "blocked">, checks: { grade: string; passed: boolean | null }[]): TaskProgress {
+  // Every required check observed passing at the head; with none required, a pushed head is proven.
+  const proven = item.head !== null && checks.every((c) => c.grade === "observed" && c.passed === true);
+  const reached = (state: ItemState): number => {
+    switch (state) {
+      case "open": return 0;
+      case "claimed": return item.head === null ? 1 : 2;
+      case "submitted": return proven ? 3 : 2;
+      case "accepted": case "integrated": return 4;
+      case "merged": return STEPS.length;
+      case "blocked": return reached(item.blocked?.from ?? "claimed");
+      // Closed without landing: the steps its record shows it passed.
+      case "abandoned": return item.head === null ? (item.fork ? 1 : 0) : proven ? 3 : 2;
+    }
+  };
+  const at = reached(item.state);
+  const closed = item.state === "abandoned";
+  const note = item.state === "blocked" ? `Blocked at ${STEPS[at]?.verb ?? "Land"}` : closed ? "Closed without landing" : item.state === "merged" ? "Landed" : null;
+  return {
+    steps: STEPS.map((s, i) => ({ verb: s.verb, line: s.line, state: i < at ? "done" : i === at && !closed ? "current" : "todo" })),
+    note,
+  };
+}
+
+function progressBlock(item: Item, checks: { grade: string; passed: boolean | null }[]): string {
+  const { steps, note } = taskProgress(item, checks);
+  return `<ol class="task-steps" aria-label="Progress: claim, fork, prove, review, land">${steps.map((s) =>
+    `<li class="${s.state}"${s.state === "current" ? ' aria-current="step"' : ""}><b>${e(s.verb)}</b><span>${s.state === "current" ? (item.state === "blocked" ? "Blocked here" : "Now") : s.state === "done" ? "Done" : e(s.line)}</span></li>`).join("")}</ol>
+  ${note && item.state !== "blocked" ? `<p class="meta task-steps-note">${e(note)}</p>` : ""}`;
+}
+
 // A task's page sits inside its project's area: the project's tab bar above
-// the review sheet, the area reached from Home.
+// the review sheet, the area reached from Home. The five steps sit above
+// the sheet, the task's current one marked.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
   <nav class="breadcrumbs"><a href="/home">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   ${projectTabs(p, "Tasks")}
+  ${progressBlock(d.item, evidenceAt(d.policy, d.evidence, d.item.head).checks)}
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true, full: true })}</article>
 </div>`, "Home", ownerName, 0, true, live);
 }
