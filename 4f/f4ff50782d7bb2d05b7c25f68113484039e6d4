@@ -1,0 +1,59 @@
+atelier atelier/t372 "The orchestrator guide carries the standing rules"
+accepted head ec060e89c1463e6fbdc1890c84c642466e485800
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-09T19:32:30.776Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-09T19:32:34.848Z
+REVIEW approve by codex/gpt-6-astra at ec060e89c1463e6fbdc1890c84c642466e485800, recorded by codex/gpt-6-astra
+REVIEW approve by opencode/deepseek-v4-pro at ec060e89c1463e6fbdc1890c84c642466e485800, recorded by opencode/deepseek-v4-pro
+2026-10-09T16:38:13.495Z pavi item.created
+2026-10-09T16:38:36.614Z pavi item.dispatched
+2026-10-09T16:38:39.187Z claude-code/sonnet-5.5 item.claimed
+2026-10-09T16:38:44.718Z claude-code/sonnet-5.5 fork.created
+2026-10-09T16:45:39.394Z claude-code/sonnet-5.5 push.observed
+2026-10-09T16:51:11.198Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T16:51:18.114Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T16:51:19.528Z claude-code/sonnet-5.5 item.submitted
+2026-10-09T17:03:13.557Z pavi land.lease
+2026-10-09T17:03:22.546Z pavi land.merge
+2026-10-09T17:03:36.095Z pavi land.regenerate
+2026-10-09T17:03:38.997Z claude-code/sonnet-5.5 push.observed
+2026-10-09T17:03:39.186Z pavi land.push
+2026-10-09T17:08:42.038Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T17:08:44.803Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T17:08:45.408Z pavi land.check
+2026-10-09T17:08:49.737Z pavi review.requested
+2026-10-09T17:08:49.737Z pavi review.requested
+2026-10-09T17:08:50.819Z opencode/glm-5.3 review.claimed
+2026-10-09T17:09:15.010Z antigravity/gemini-3.1-pro review.claimed
+2026-10-09T17:11:14.154Z opencode/glm-5.3 review.released
+2026-10-09T17:11:45.497Z opencode/glm-5.3 review.claimed
+2026-10-09T17:12:58.454Z antigravity/gemini-3.1-pro review.approved
+2026-10-09T17:14:02.572Z opencode/glm-5.3 review.released
+2026-10-09T17:14:30.420Z opencode/glm-5.3 review.claimed
+2026-10-09T17:20:48.033Z opencode/glm-5.3 review.released
+2026-10-09T17:21:18.854Z opencode/glm-5.3 review.claimed
+2026-10-09T17:22:28.028Z opencode/glm-5.3 review.released
+2026-10-09T18:09:36.373Z pavi land.review
+2026-10-09T18:10:20.304Z opencode/glm-5.3 review.claimed
+2026-10-09T18:11:39.086Z opencode/glm-5.3 review.released
+2026-10-09T18:11:49.387Z opencode/glm-5.3 review.claimed
+2026-10-09T18:13:14.176Z opencode/glm-5.3 review.released
+2026-10-09T18:13:41.660Z opencode/glm-5.3 review.claimed
+2026-10-09T18:17:34.929Z opencode/glm-5.3 review.approved
+2026-10-09T18:59:10.591Z pavi land.lease
+2026-10-09T18:59:27.879Z pavi land.merge
+2026-10-09T19:26:18.060Z pavi land.merge
+2026-10-09T19:26:30.118Z pavi land.regenerate
+2026-10-09T19:26:33.325Z claude-code/sonnet-5.5 push.observed
+2026-10-09T19:26:33.465Z pavi land.push
+2026-10-09T19:32:31.353Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T19:32:35.137Z claude-code/sonnet-5.5 evidence.observed
+2026-10-09T19:32:35.905Z pavi land.check
+2026-10-09T19:32:48.425Z pavi review.requested
+2026-10-09T19:32:48.425Z pavi review.requested
+2026-10-09T19:32:54.023Z opencode/deepseek-v4-pro review.claimed
+2026-10-09T19:32:54.777Z codex/gpt-6-astra review.claimed
+2026-10-09T19:34:10.225Z codex/gpt-6-astra review.approved
+2026-10-09T19:35:47.165Z opencode/deepseek-v4-pro review.approved
+2026-10-09T19:35:50.741Z pavi land.review
+2026-10-09T19:35:51.559Z pavi item.accepted
+2026-10-09T19:35:51.649Z pavi land.accept
