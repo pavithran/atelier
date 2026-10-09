@@ -22,6 +22,7 @@ else if (!process.argv.includes('push')) process.exit(2);
 `, { mode: 0o755 });
   const preload = join(dir, "fetch.mjs");
   writeFileSync(preload, `import { appendFileSync } from 'node:fs';
+let policy = { checks: [], protected: ['manual/**'] };
 globalThis.fetch = async (url, options) => {
   appendFileSync(process.env.TEST_CALLS, JSON.stringify({ url, ...options }) + '\\n');
   if (process.env.TEST_REFUSE) return Response.json({ error: 'live_work', detail: 'live work' }, { status: 409 });
@@ -30,8 +31,9 @@ globalThis.fetch = async (url, options) => {
     const from = decodeURIComponent(renamed[1]), to = JSON.parse(options.body).to;
     return Response.json({ from, to, key: from, names: [from, to], project: { name: to, repo: from, policy: { checks: [], protected: [] } } });
   }
+  if (options.method === 'PUT') policy = { ...policy, ...JSON.parse(options.body) };
   return Response.json(options.method === 'DELETE' ? { removed: true } : {
-    project: { repo: 'weblog', policy: { checks: [], protected: ['manual/**'], ...(process.env.TEST_APPROVED ? { approval: process.env.TEST_APPROVED } : {}) } },
+    project: { repo: 'weblog', policy: { ...policy, ...(process.env.TEST_APPROVED ? { approval: process.env.TEST_APPROVED } : {}) } },
     remote: 'https://git.test/weblog', token: 'test-token',
     baseline: { remote: 'https://git.test/weblog', token: 'test-token' }
   });
@@ -65,6 +67,13 @@ test("CLI init records the ship order's commands and approval kinds with the pol
   const put = JSON.parse(calls().find((c) => c.method === "PUT").body);
   assert.deepEqual(put.shipRuns, ["bin/deploy.sh"], "the command the deploy step runs, and not the URL the verify step requests");
   assert.deepEqual(put.shipKinds, ["deploy"], "push needs an approval only with --push, so it is not a kind the order needs");
+}));
+
+test("CLI init lists check input files among the protected paths", () => fixture(({ command }) => {
+  const result = command(["init", "--protect", "src/rules.ts", "--check", "npm test"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Protected:.*package\.json/m);
+  assert.match(result.stdout, /^Protected:.*src\/rules\.ts/m);
 }));
 
 test("CLI init sends the core files given with --core, clears them with --core \"\" or --reset, and keeps them otherwise", () => fixture(({ command, calls }) => {

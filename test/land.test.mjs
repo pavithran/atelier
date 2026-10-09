@@ -204,7 +204,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/evidence")) answer = item ? { ...detail(item), evidence: [] } : {};
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
-      if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: "the gate counts an independent approval already" };
+      if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
       else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: "a protected change needs an independent review", at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
@@ -338,8 +338,37 @@ test("without --reviewer a gate that needs no review says why and does not claim
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.deepEqual(f.posts("/review-request").at(-1).body, {});
-  assert.match(r.output, /No review was requested: the gate counts an independent approval already\./);
+  assert.match(r.output, /No review request was needed: an independent approval already covers this change\./);
   assert.doesNotMatch(r.output, /accepting/);
+});
+
+test("a coordinated change without protected paths says plainly why no review was needed", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  f.box.review.reason = "a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /No review was needed: this change touched no protected paths\./);
+  assert.doesNotMatch(r.output, /execution policy/);
+});
+
+test("a direct change says plainly that it touched no protected paths", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  f.box.review.reason = "a direct change needs no review";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /No review was needed: this change touched no protected paths\./);
+});
+
+test("a needed:false answer for failing checks prints the server's reason, never a claim about protected paths (t319)", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  f.box.review.reason = "npm test failed at 1a2b3c4d; the builder fixes that before a review";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /No review request was needed: npm test failed at 1a2b3c4d; the builder fixes that before a review\./);
+  assert.doesNotMatch(r.output, /protected path|touched no/);
 });
 
 test("--no-review leaves the task submitted, accepts and merges nothing, and releases the lease", async (t) => {
@@ -1429,6 +1458,9 @@ test("land without --workflow never reaches the landing Workflow, and --dry-run 
   const f = await landFixture(t);
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
+  assert.doesNotMatch(r.output, /Merge it with: atelier merge t1/);
+  assert.equal((r.output.match(/The project branch was not pushed to its own remotes\. Nothing was deployed\./g) ?? []).length, 1);
+  assert.match(r.output, /t1 landed: merged as [0-9a-f]{8}\.\n/);
   assert.ok(f.box.requests.every((x) => !x.path.includes("landing-workflow")));
   assert.equal(f.box.states.t1, "merged");
   const both = await f.run(f.checkout, "land", "t2", "--workflow", "--dry-run");

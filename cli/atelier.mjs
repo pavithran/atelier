@@ -22,7 +22,8 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
-import { assertEligible, checkApplies, pathCollisions, recordedText } from "../src/rules.ts";
+import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText } from "../src/rules.ts";
+import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
@@ -51,6 +52,7 @@ const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atel
 const CONFIG = join(CONFIG_DIR, "config.json");
 const CACHE = process.env.ATELIER_CACHE ?? join(HOME, "Library", "Caches", "ai-projects", "cloudflare-git");
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
+const CLI_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 // ── plumbing ───────────────────────────────────────────────────────────────
 
@@ -2034,7 +2036,8 @@ const commands = {
     if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
     console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
     if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
-    console.log(`Protected:  ${pol.protected.join(", ")}`);
+    const checkInputs = checkFiles(pol.checks ?? []);
+    console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
     console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
@@ -3449,6 +3452,10 @@ const commands = {
 };
 
 if (isMain) {
+  if (process.argv[2] === "--version") {
+    console.log(`atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`);
+    process.exit(0);
+  }
   const cmd = args._[0] ?? "help";
   const fn = commands[cmd];
   if (!fn) die(`unknown command "${cmd}"; try atelier help`);

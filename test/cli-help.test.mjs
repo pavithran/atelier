@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 
@@ -20,6 +21,13 @@ function run(args) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test("--version prints the CLI version and route level", () => {
+  const r = run(["--version"]);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, new RegExp(`^atelier \\d+\\.\\d+\\.\\d+ \\(route level ${ROUTE_LEVEL}\\)\\n$`));
+  assert.equal(r.stderr, "");
+});
 
 test("models --help prints the usage and exits 0 without contacting the server", () => {
   const r = run(["models", "--help"]);
