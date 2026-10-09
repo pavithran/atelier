@@ -1,0 +1,24 @@
+atelier atelier/t415 "A usage test stops failing once its fixed reset time passed"
+accepted head 2808c90f2d44d3da4118ca9b486323eb85db5b3d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-09T21:25:27.166Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-09T21:25:33.643Z
+REVIEW approve by codex/gpt-6-astra at 2808c90f2d44d3da4118ca9b486323eb85db5b3d, recorded by codex/gpt-6-astra
+2026-10-09T21:16:59.364Z pavi item.created
+2026-10-09T21:17:03.515Z claude-code/opus-5.5 item.claimed
+2026-10-09T21:17:13.698Z claude-code/opus-5.5 fork.created
+2026-10-09T21:18:05.395Z pavi land.lease
+2026-10-09T21:18:11.970Z pavi land.merge
+2026-10-09T21:18:45.426Z pavi land.regenerate
+2026-10-09T21:18:48.415Z claude-code/opus-5.5 push.observed
+2026-10-09T21:18:49.156Z pavi land.push
+2026-10-09T21:25:27.721Z claude-code/opus-5.5 evidence.observed
+2026-10-09T21:25:34.092Z claude-code/opus-5.5 evidence.observed
+2026-10-09T21:25:34.945Z pavi land.check
+2026-10-09T21:25:37.562Z claude-code/opus-5.5 item.submitted
+2026-10-09T21:25:37.590Z pavi land.submit
+2026-10-09T21:25:37.880Z pavi review.requested
+2026-10-09T21:25:40.055Z codex/gpt-6-astra review.claimed
+2026-10-09T21:27:22.671Z codex/gpt-6-astra review.approved
+2026-10-09T21:27:23.757Z pavi land.review
+2026-10-09T21:27:24.607Z pavi item.accepted
+2026-10-09T21:27:24.634Z pavi land.accept
