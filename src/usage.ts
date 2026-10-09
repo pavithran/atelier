@@ -33,7 +33,7 @@ export const HELP_GROUPS: HelpGroup[] = [
   { name: "Setup", lines: [[
     { form: "login --server URL", about: "Stores this server's address and the owner's token, asking for the token when none is stored for it. A token the server refuses is not stored." },
     { form: "login --store", about: "Names the token store in use and whether it holds a token. It never prints the token." },
-    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--core` records the project's core files: the queue holds a dispatch whose scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted, outside the dispatch's own plan) until that item merges or is abandoned; unset, nothing is held. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. `--review-bar` records what may block a review, which every review brief states; unset, the brief states the default bar (correctness, security or data-loss defects only). `--review-tier` names the top review tier, which reviews every protected change: the gate's cross-family review goes to a tier model first and then serves both, and only a gate reviewer outside the tier gets a separate tier review beside it; unset, none does. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
+    { form: "init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--reset] [--history-since YYYY-MM-DD]", about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--core` records the project's core files: the queue holds a dispatch whose scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted, outside the dispatch's own plan) until that item merges or is abandoned; unset, nothing is held. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. `--review-bar` records what may block a review, which every review brief states; unset, the brief states the default bar, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page, and treats anything else as a follow-up. `--review-tier` names the top review tier, which reviews every protected change: the gate's cross-family review goes to a tier model first and then serves both, and only a gate reviewer outside the tier gets a separate tier review beside it; unset, none does. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only." },
     { form: "sync", about: "Refreshes the stored policy from the project's ControlPlane files. For a baseline built with `--history-since`, it also carries commits made in the checkout outside Atelier to the baseline." },
     { form: "publish", about: "Pushes the registered branch to the baseline with a write token. It is refused for a baseline that holds only part of the history; `sync` does that job." },
   ], [
@@ -223,7 +223,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--reset": "rebuilds the policy from the defaults and the options given",
       "--history-since YYYY-MM-DD": "builds the baseline from the commits since that day only, for a project too large for Artifacts",
       "--regenerate CMD": "the command that regenerates the project's generated fixtures, run by atelier land in a task's workspace after it merges main; --regenerate \"\" clears it",
-      "--review-bar TEXT": "what may block a review, stated in every review brief (at most 1000 characters); --review-bar \"\" restores the default: correctness, security or data-loss defects only",
+      "--review-bar TEXT": "what may block a review, stated in every review brief (at most 1000 characters); --review-bar \"\" restores the default: a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up",
       "--review-tier H/M,H/M": "the top review tier: a protected change's gate review goes first to one of these of another family than every contributor, and serves as the tier review too; when the gate's reviewer is outside the tier, one of these that did not build the change reviews it beside, whatever its family: its rejection sends the change back, its approval never satisfies the gate, and a landing never waits for it; --review-tier \"\" clears it",
       "--name NAME": "the project's name; the checkout folder's name unless given",
       "--rename-local": "with --name, changes only this machine's name for the registered checkout",
@@ -721,15 +721,33 @@ You run Atelier for a project: you file tasks, dispatch them to agents, judge
 their reviews and land their work for the owner. Start with \`atelier status\`
 and \`atelier ls --project NAME\` to see where the work stands. File a task
 with \`atelier new "title" --scope GLOB\` and dispatch it with \`atelier
-dispatch ID\`. Judge each review finding against the code before acting, and
-record every verdict with \`atelier finding\`. Land one task at a time with
-\`atelier land ID\`. Feed what you learn back: \`atelier run-report\` for a run
-that ended without a result, \`atelier new "Lesson: …"\` for a rule worth
-keeping, and a task on the atelier project for a missing feature. When the
-owner settles a question for good (who reviews, the review bar, a spend
-limit, no overrides), record it with \`atelier decide "text" --quote "the
-owner's words"\`: every review brief and this guide carry the decisions that
-stand, and \`atelier decisions\` lists them.
+dispatch ID\`.
+
+Standing rules:
+
+- Use builders from several companies, chosen by tier, and not one company's
+  models alone.
+- Every protected or coordinated change is reviewed by a model from another
+  company than every agent that worked on it.
+- Never override a review, a check or a block, except on the owner's own
+  confirmation. Ask, and cite the owner's words; never infer them.
+- Judge each review finding against the code before acting, and record every
+  verdict with \`atelier finding\`.
+- Land one task at a time with \`atelier land ID\`. Never land two together.
+- Report every run that ended without a result with \`atelier run-report\`.
+- On a stall (a claimed task with no progress), check whether the agent's
+  process still runs, then \`atelier handoff\` the task to another model or
+  \`atelier release\` it. Do not start the same work twice.
+- After a repeated rejection of the same task, stop resending it: judge the
+  findings, then hand it to a builder from another company or ask the owner.
+- Feed what you learn back: \`atelier new "Lesson: …"\` for a rule worth
+  keeping, and a task on the atelier project for a missing feature.
+- When the owner settles a question for good (who reviews, the review bar, a
+  spend limit, no overrides), record it with \`atelier decide "text" --quote
+  "the owner's words"\`: every review brief and this guide carry the decisions
+  that stand, and \`atelier decisions\` lists them.
+
+The detail, with the reasons, is in docs/orchestrating.md.
 `,
 };
 
