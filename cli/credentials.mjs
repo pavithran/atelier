@@ -27,6 +27,17 @@ import { join } from "node:path";
 const ENV_NAMES = { API_TOKEN: "ATELIER_TOKEN" };
 export const envNameFor = (name) => ENV_NAMES[name] ?? `ATELIER_${name}`;
 
+// The owner's credential, by every name this store reads it under: API_TOKEN
+// (the entry `atelier login` writes), and any name whose environment variable
+// is the owner's ATELIER_TOKEN. A runner's reviewer token (runner.mjs,
+// t346) may never be one of these, so the names are refused in its config
+// and at read time, case-insensitively.
+export const OWNER_SECRET = "API_TOKEN";
+export function isOwnerSecretName(name) {
+  const upper = String(name).toUpperCase();
+  return upper === OWNER_SECRET || envNameFor(upper) === envNameFor(OWNER_SECRET);
+}
+
 // What a store may be handed: one line of printable text.
 function assertValue(value) {
   if (typeof value !== "string" || !value || /[\u0000-\u001f\u007f]/.test(value)) {

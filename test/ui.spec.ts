@@ -1423,7 +1423,7 @@ it('each review on the task page says who recorded it (t215)',()=>{
   {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
  ];
  const html=renderItem(project,d,'PAVI',diff);
- expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded with its own token');
+ expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded by claude-code/opus-5.5 with its own token');
  expect(html).toContain('recorded by the project owner with the owner token</p>');
  expect(html).toContain('recorded by the project owner with the owner token, answering a review request it claimed');
 });

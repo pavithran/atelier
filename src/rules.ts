@@ -664,11 +664,13 @@ export function unprovedReview(r: Review): boolean {
   return r.proved === false && !r.claimed;
 }
 
-// Who recorded a review, in words, for the task page and the brief
-// `atelier show` prints; null for a review that does not say.
+// Who recorded a review, in words, for the task page, the receipt and the
+// brief `atelier show` prints; null for a review that does not say. A review
+// the reviewer's own token proved names the reviewer itself as the recorder
+// (t346), so a runner's verdict reads as the model's, not the owner's.
 export function recordedText(r: Review, owner = DEFAULT_OWNER): string | null {
   if (r.recordedBy === undefined) return null;
-  if (r.proved) return "recorded with its own token";
+  if (r.proved) return `recorded by ${r.recordedBy ?? r.by} with its own token`;
   const who = r.recordedBy === owner ? "the project owner" : r.recordedBy;
   if (sameActor(r.by, owner)) return `recorded by ${who}`;
   return `recorded by ${who} with the owner token${r.claimed ? ", answering a review request it claimed" : ""}`;

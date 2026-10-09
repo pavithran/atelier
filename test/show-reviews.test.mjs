@@ -46,7 +46,7 @@ test("formatReviews prints each review at each head, newest first, whole and fla
   assert.ok(lines[2].length > 120, "the note is printed whole, past the brief's 120-character clip");
   assert.equal(lines[3], "    blocking src/parser.ts:42 The loop exits before the final row is read, so a file without a trailing newline drops its last row");
   assert.equal(lines[4], "    follow-up src/parser.ts `rows` could be named `lines`");
-  assert.match(lines[5], /^  claude-code\/opus-5\.5 approved at 11111111 \(2026-10-06 09:15 UTC; recorded with its own token\)\.$/);
+  assert.match(lines[5], /^  claude-code\/opus-5\.5 approved at 11111111 \(2026-10-06 09:15 UTC; recorded by claude-code\/opus-5\.5 with its own token\)\.$/);
   assert.equal(lines[6], "    Note: Round one looks sound");
   assert.equal(lines[7], "    follow-up README.md The examples could name the new flag");
   assert.equal(lines.length, 8);
@@ -64,7 +64,7 @@ test("formatReviews prints each review at each head, newest first, whole and fla
 
 test("formatReviews labels a tier review as one", () => {
   const text = formatReviews([{ itemId: "t1", by: "claude-code/sonnet-5.5", head: HEAD_A, approve: true, note: "Tier: fine", at: "2026-10-07T14:03:00.000Z", tier: true, recordedBy: "claude-code/sonnet-5.5", proved: true, claimed: true }], "owner");
-  assert.match(text.split("\n")[1], /^  Tier review: claude-code\/sonnet-5\.5 approved at 11111111 \(2026-10-07 14:03 UTC; recorded with its own token\)\.$/);
+  assert.match(text.split("\n")[1], /^  Tier review: claude-code\/sonnet-5\.5 approved at 11111111 \(2026-10-07 14:03 UTC; recorded by claude-code\/sonnet-5\.5 with its own token\)\.$/);
 });
 
 test("formatReviews labels a gate review by a tier model as the gate review, top tier", () => {
