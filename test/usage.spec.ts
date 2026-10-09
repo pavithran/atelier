@@ -30,6 +30,13 @@ function call(method: string, path: string, actor: string, body?: unknown, heade
 }
 
 const codexBody = (weekly: number) => ({ windows: [{ name: "weekly", usedPercent: weekly, resetsAt: LATER, at: AT }, { name: "5-hour", usedPercent: 12, resetsAt: at(NOW + 3_600_000), at: AT }], models: [], balances: [], notes: [] });
+// A report whose weekly window resets four days after the real clock, for a
+// route that judges alerts against the time it arrives.
+const liveCodexBody = (weekly: number) => {
+  const body = codexBody(weekly);
+  body.windows[0] = { ...body.windows[0], resetsAt: new Date(Date.now() + 4 * 86_400_000).toISOString() };
+  return body;
+};
 const report = (over: Partial<UsageReport> = {}): UsageReport => ({ tool: "codex", runner: "home:studio", at: AT, windows: [], models: [], balances: [], notes: [], ...over });
 const span = (requests: number, tokens: number, cost: number | null = null) => ({ requests, tokens, cost });
 
@@ -90,9 +97,9 @@ it("the thresholds are owner settings with defaults, and off turns one off", asy
   expect(await read({})).toEqual({ weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 });
   expect(await read({ USAGE_WEEKLY_PERCENT: "50", USAGE_DAILY_SPEND: "off", USAGE_BALANCE_FLOOR: "lots" })).toEqual({ weeklyPercent: 50, windowPercent: 90, dailySpend: null, balanceFloor: 10 });
   // A report is judged against the settings in force when it arrives.
-  const over = await call("POST", "/usage/codex", "owner", codexBody(55), { "x-atelier-runner": "home:settings" }, { USAGE_WEEKLY_PERCENT: "50" } as Partial<typeof env>);
+  const over = await call("POST", "/usage/codex", "owner", liveCodexBody(55), { "x-atelier-runner": "home:settings" }, { USAGE_WEEKLY_PERCENT: "50" } as Partial<typeof env>);
   expect(((await over.json()) as { alerts: string[] }).alerts).toEqual(["codex: weekly window 55% used"]);
-  const under = await call("POST", "/usage/codex", "owner", codexBody(55), { "x-atelier-runner": "home:settings-off" }, { USAGE_WEEKLY_PERCENT: "off" } as Partial<typeof env>);
+  const under = await call("POST", "/usage/codex", "owner", liveCodexBody(55), { "x-atelier-runner": "home:settings-off" }, { USAGE_WEEKLY_PERCENT: "off" } as Partial<typeof env>);
   expect(((await under.json()) as { alerts: string[] }).alerts).toEqual([]);
 });
 
