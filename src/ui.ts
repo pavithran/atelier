@@ -1613,19 +1613,22 @@ function taskText(item: Item): string {
 export type StepState = "done" | "current" | "todo";
 export interface TaskProgress { steps: { verb: Verb; line: string; state: StepState }[]; note: string | null }
 
-export function taskProgress(item: Pick<Item, "state" | "head" | "fork" | "blocked">, checks: { grade: string; passed: boolean | null }[]): TaskProgress {
+export function taskProgress(item: Pick<Item, "state" | "head" | "base" | "fork" | "blocked">, checks: { grade: string; passed: boolean | null }[]): TaskProgress {
+  // A fresh fork records its base as its head (Ledger.setFork), so the work
+  // is pushed only once the head has moved off the base.
+  const pushed = item.head !== null && item.head !== item.base;
   // Every required check observed passing at the head; with none required, a pushed head is proven.
-  const proven = item.head !== null && checks.every((c) => c.grade === "observed" && c.passed === true);
+  const proven = pushed && checks.every((c) => c.grade === "observed" && c.passed === true);
   const reached = (state: ItemState): number => {
     switch (state) {
       case "open": return 0;
-      case "claimed": return item.head === null ? 1 : 2;
+      case "claimed": return pushed ? 2 : 1;
       case "submitted": return proven ? 3 : 2;
       case "accepted": case "integrated": return 4;
       case "merged": return STEPS.length;
       case "blocked": return reached(item.blocked?.from ?? "claimed");
       // Closed without landing: the steps its record shows it passed.
-      case "abandoned": return item.head === null ? (item.fork ? 1 : 0) : proven ? 3 : 2;
+      case "abandoned": return !pushed ? (item.fork ? 1 : 0) : proven ? 3 : 2;
     }
   };
   const at = reached(item.state);
