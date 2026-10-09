@@ -721,15 +721,33 @@ You run Atelier for a project: you file tasks, dispatch them to agents, judge
 their reviews and land their work for the owner. Start with \`atelier status\`
 and \`atelier ls --project NAME\` to see where the work stands. File a task
 with \`atelier new "title" --scope GLOB\` and dispatch it with \`atelier
-dispatch ID\`. Judge each review finding against the code before acting, and
-record every verdict with \`atelier finding\`. Land one task at a time with
-\`atelier land ID\`. Feed what you learn back: \`atelier run-report\` for a run
-that ended without a result, \`atelier new "Lesson: …"\` for a rule worth
-keeping, and a task on the atelier project for a missing feature. When the
-owner settles a question for good (who reviews, the review bar, a spend
-limit, no overrides), record it with \`atelier decide "text" --quote "the
-owner's words"\`: every review brief and this guide carry the decisions that
-stand, and \`atelier decisions\` lists them.
+dispatch ID\`.
+
+Standing rules:
+
+- Use builders from several companies, chosen by tier, and not one company's
+  models alone.
+- Every protected or coordinated change is reviewed by a model from another
+  company than every agent that worked on it.
+- Never override a review, a check or a block, except on the owner's own
+  confirmation. Ask, and cite the owner's words; never infer them.
+- Judge each review finding against the code before acting, and record every
+  verdict with \`atelier finding\`.
+- Land one task at a time with \`atelier land ID\`. Never land two together.
+- Report every run that ended without a result with \`atelier run-report\`.
+- On a stall (a claimed task with no progress), check whether the agent's
+  process still runs, then \`atelier handoff\` the task to another model or
+  \`atelier release\` it. Do not start the same work twice.
+- After a repeated rejection of the same task, stop resending it: judge the
+  findings, then hand it to a builder from another company or ask the owner.
+- Feed what you learn back: \`atelier new "Lesson: …"\` for a rule worth
+  keeping, and a task on the atelier project for a missing feature.
+- When the owner settles a question for good (who reviews, the review bar, a
+  spend limit, no overrides), record it with \`atelier decide "text" --quote
+  "the owner's words"\`: every review brief and this guide carry the decisions
+  that stand, and \`atelier decisions\` lists them.
+
+The detail, with the reasons, is in docs/orchestrating.md.
 `,
 };
 
