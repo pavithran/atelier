@@ -31,6 +31,10 @@ export interface Item {
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
+  // The owner's standing permission for an override from the command line
+  // (t371): given on the task's page under the owner's own sign-in, for one
+  // head and a quarter of an hour. Read with confirmationAt.
+  overrideConfirmation?: OverrideConfirmation | null;
   // The owner's framing of the task, from ControlPlane's work item: what the
   // task is not to do, what tells its holder to stop and ask, and the gate it
   // goes to next. Each is optional; the brief and the task page show them.
@@ -154,6 +158,46 @@ export interface ReviewOverride {
   by: string;
   reason: string;
   at: string;
+  // When the owner confirmed the override from a signed-in page (t371): the
+  // time of the page's own override form, or of the standing permission an
+  // `atelier accept --override-review` then used.
+  confirmedAt?: string;
+}
+
+// The owner's permission for an override made with the owner token (t371).
+// An agent session acting with that token recorded every override on ourAI,
+// so an override now needs the owner's own word, given where only the owner
+// can give it: the task's page, reached through Cloudflare Access or the
+// owner's own sign-in, never through the token the agents hold. The page's
+// own override form carries that word itself; the command line needs this
+// permission, given on the page, which names one head and lasts
+// OVERRIDE_CONFIRMATION_MS from when it was given.
+export interface OverrideConfirmation {
+  head: string;
+  by: string;
+  at: string;
+  until: string;
+}
+
+export const OVERRIDE_CONFIRMATION_MS = 15 * 60 * 1000;
+
+// The permission that stands at the item's head and has not run out, or null.
+export function confirmationAt(item: Pick<Item, "head" | "overrideConfirmation">, now: number, owner = DEFAULT_OWNER): OverrideConfirmation | null {
+  const c = item.overrideConfirmation;
+  return c && item.head && c.head === item.head && c.by === owner && Date.parse(c.until) > now ? c : null;
+}
+
+// How the owner confirms an override from the command line: the refusal every
+// unconfirmed override gets, naming the page and the button.
+export function overrideConfirmationHint(project: string, id: string, origin = ""): string {
+  return `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} signed in as the owner, press "Allow an override from the command line", then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes; the owner token alone does not confirm it`;
+}
+
+// The merged items that went in on the owner's override: those whose override
+// stands at the head that was merged. The project page and `atelier status`
+// count them and link each (t371).
+export function mergedByOverride<T extends Pick<Item, "state" | "head" | "acceptedHead" | "reviewOverride">>(items: T[]): T[] {
+  return items.filter((i) => i.state === "merged" && !!i.reviewOverride && !!i.reviewOverride.reason.trim() && i.reviewOverride.head === (i.acceptedHead ?? i.head));
 }
 
 // Observed: Atelier ran it itself, in a clean clone, at the exact head.
@@ -319,6 +363,10 @@ export interface ProjectPolicy {
   coreFiles?: string[];
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
+  // Overrides of the independent review are refused in this project, with
+  // or without the owner's confirmation (`atelier init --no-override`, t371):
+  // every change gets its review from another family, or does not land.
+  noOverride?: boolean;
 }
 
 // Reject malformed policy at the boundary instead of silently widening access.
@@ -895,6 +943,21 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
 
 export const OVERRIDE_REASON_MAX = 500;
 
+// The refusal a project that forbids overrides gives every override, and
+// every permission for one, before the reason is read (t371).
+export const OVERRIDE_FORBIDDEN = "this project forbids overrides of the independent review (atelier init --no-override): the change needs an approval from a model of another family than every contributor, or it does not land";
+
+export function assertOverridesAllowed(policy: Pick<ProjectPolicy, "noOverride">): void {
+  if (policy.noOverride) throw new RuleError("override_forbidden", OVERRIDE_FORBIDDEN, 403);
+}
+
+// What the inbox, the page and the brief offer beside a missing independent
+// review: the override, where the project allows it, or the word that it does not.
+export function overrideOffer(policy: Pick<ProjectPolicy, "noOverride">, offered: boolean): string {
+  if (policy.noOverride) return " This project forbids overrides of that review.";
+  return offered ? " If no reviewer qualifies, you can accept with an override and say why." : "";
+}
+
 // The reason an override records: text, control characters as spaces,
 // trimmed. A missing, blank or over-long reason is refused, not cut or
 // filled in, because it is the record of why the owner overrode the review.
@@ -913,6 +976,7 @@ export function overrideReason(value: unknown): string {
 export function reviewOverrideFor(
   item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner: string, reason: unknown, at: string,
 ): { override: ReviewOverride; waived: string; contributors: string[] } {
+  assertOverridesAllowed(policy);
   const text = overrideReason(reason);
   const g = gate({ ...item, reviewOverride: null }, policy, evidence, reviews, owner);
   if (!item.head || !g.needsAssessor) {
@@ -1386,7 +1450,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`, weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer who qualifies${policy.noOverride ? "; this project forbids overrides" : ", or accept with an override and its reason"}`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
@@ -1516,7 +1580,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   // when the missing review is all that blocks, since it waives nothing else.
   if (item.state === "submitted" && g.needsAssessor) {
     const need = g.requirement ? `${g.requirement}.` : "This task changes protected files and needs an approval from a model of another family than every contributor.";
-    const override = g.blockers.length === 1 ? " If no reviewer qualifies, you can accept with an override and say why." : "";
+    const override = overrideOffer(policy, g.blockers.length === 1);
     return { title: "Waiting for an independent review", detail: `${need} Your own approval does not count as that review.${override}`, action: "review", tone: "ask", passed };
   }
   if (item.state === "submitted" && g.ready) {

@@ -1,7 +1,7 @@
 atelier — one owner per task, observed evidence, the project owner decides.
 
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
-Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--reset] [--history-since YYYY-MM-DD] · sync · publish
+Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--no-override] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--reset] [--history-since YYYY-MM-DD] · sync · publish
            notes-remote [REMOTE | --off]
 Items      new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] · edit ID [--title TEXT] [--brief TEXT] [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]
            ls [--all] [--json] · show ID [--reviews] [--json] · receipt ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--json] (with a project: where it stands, as text) · open
