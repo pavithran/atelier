@@ -697,17 +697,18 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // Whether one review is the independent review a change needs. The project
 // owner's approval never is: the owner decides by accepting, and the
 // decision is not also the second opinion. A reviewer must be a
-// harness/model actor that is not any contributor under another spelling.
-// A protected change, in every project, needs a model of a recognised family
+// harness/model actor running a different model from every contributor,
+// regardless of harness, spelling or profile. A protected change, in every
+// project, needs a model of a recognised family
 // that no contributor shares (familyRefusal); a coordinated change in a
-// governed project needs any other agent. In a protected change, a review
+// governed project needs a different model. In a protected change, a review
 // the owner token recorded in a model's name counts only when it answers a
 // review request that model claimed for that head (unprovedReview). A tier
 // review's approval never is: the tier reviews beside the gate, not for it.
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
-  if (contributors.some((actor) => sameActor(r.by, actor))) return false;
+  if (contributors.some((actor) => modelKey(r.by) === modelKey(actor))) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
 }
 
@@ -1278,9 +1279,9 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
   // A protected change needs an independent review in every project, and a
   // coordinated one does under an execution policy, unless the review is
-  // held outside the item (reviewHeld). Families and agents are
-  // compared by modelKey and sameActor, so a contributor's model under
-  // another letter case, profile or registered name is never independent of
+  // held outside the item (reviewHeld). Models are compared by modelKey,
+  // and protected reviews must also pass familyRefusal, so a contributor's
+  // model under another harness, case, profile or name is never independent of
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
