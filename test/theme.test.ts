@@ -81,6 +81,19 @@ for (const [name, set] of [["dark", dark], ["light", light]] as const) {
   });
 }
 
+test("company colours are painted only inside charts and their legends", () => {
+  // Every rule that paints with --c (the company colour a chart sets) or a
+  // --m-<family> token, other than the owner's, which is the accent.
+  const CHARTS = /^(\.span-(past|now|label)|\.tally-bar|\.legend-line|\.(graph|track-svg) |\.g-|\.moments \.dot$)/;
+  for (const [file, css] of [["src/layout.css", layout], ["src/how.css", how]] as const) {
+    for (const [, selectors, body] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/var\(--c\b|var\(--m-(?!owner)/.test(body)) continue;
+      for (const sel of selectors.split(",").map((s) => s.trim()))
+        assert.match(sel, CHARTS, `${file}: ${sel} paints a company colour outside a chart`);
+    }
+  }
+});
+
 test("no copper or brown is left in the page styles; only the agents' chart colours carry another hue", () => {
   for (const [file, css] of [["src/theme.css", theme], ["src/layout.css", layout], ["src/how.css", how]] as const) {
     for (const line of css.split("\n")) {

@@ -777,6 +777,11 @@ it('Flow offers time and family filters that keep each other, and the showcase h
  // Company colours stay inside charts: the filters carry none.
  const filters=html.split('aria-label="Filters"')[1].split('</nav>')[0];
  expect(filters).not.toContain('--m-');
+ // Nor does Latest moves: a Claude claim's dot is neutral, the owner's the accent (astra finding 1).
+ const claude=buildStory('p',[{id:'t1',title:'T',state:'claimed'}] as never,[{seq:2,itemId:'t1',at:'2026-10-04T10:01:00Z',actor:'claude-code/opus-5.5',kind:'item.claimed',data:{}},evs[1]] as never,'pavi');
+ const moves=renderFlow([claude],claude.tally,'pavi','PAVI',false,new Map()).split('aria-label="Latest moves"')[1].split('</section>')[0];
+ expect(moves).toContain('<span class="dot" style="--c:var(--text-muted)">');
+ expect(moves).not.toMatch(/--m-(?!owner)/);
  // Replay is the scrubber the live script adds, not a second control beside it (finding 6).
  expect(html).not.toContain('class="replay"');
  expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).not.toContain('class="replay"');
@@ -1176,7 +1181,7 @@ it('Home lists a task that has both an own call and a handled one under each lis
   expect(handledSection).toContain('Ready to merge');
   expect(handledSection).not.toContain('Review required');
 });
-it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
+it('History is a timeline of merges by day, each naming the model that held the task, and closures apart',async()=>{
  const {renderHistory}=await import('../src/ui');
  const at=(d:number,h:number)=>`2026-10-0${d}T${String(h).padStart(2,'0')}:00:00.000Z`;
  const base={...detail().item,owner:null,acceptedHead:head};
@@ -1202,8 +1207,9 @@ it('History is a timeline of merges by day, each marked with the family that hel
  expect(html.indexOf('href="/p/example/t1"')).toBeLessThan(html.indexOf('href="/p/example/t2"'));
  expect(html).toContain('Merged &lt;b&gt;one&lt;/b&gt;');expect(html).not.toContain('<b>one</b>');
  expect(html).toContain('Example &lt;i&gt;x&lt;/i&gt; · t1 · opus-5.5 · merged as cccccccc');
- expect(html).toContain('style="--c:var(--m-anthropic)" title="merged while held by claude-code/opus-5.5"');
- expect(html).toContain('style="--c:var(--m-zai)"');
+ // A timeline is not a chart: its marks carry no company colour; the row names the model.
+ expect(html).toContain('<i class="family-mark" title="merged while held by claude-code/opus-5.5"></i>');
+ expect(html.split('<main')[1]).not.toContain('--m-');
  expect(html).toContain('class="merge-row closed"');expect(html).toContain('class="family-mark unknown"');
  expect(html).toContain('closed without merging');expect(html).toContain('<span class="tag ">Closed</span>');
  expect(html).toContain('href="/p/example/t1"');expect(html).not.toContain('href="/p/example/t4"');

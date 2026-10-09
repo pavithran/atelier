@@ -419,8 +419,10 @@ function restingGraph(s: Story, owner: string): string {
 </div>`;
 }
 
+// Latest moves is a list, not a chart, so its dots carry no company colour:
+// red for a catch, the accent for the owner, neutral for everything else.
 const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
-  m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : `var(--m-${vendorFor(m.actor, owner)})`;
+  m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : "var(--text-muted)";
 
 // A page's numbers count only the projects whose threads it draws, so the
 // headline and the picture agree. Callers' totals are not used.
@@ -740,7 +742,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
       ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked by ${e(m.status.by ?? "a runner")} ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
       : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
     const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
-    return `<li class="model" style="--c:var(--m-${m.family})">
+    return `<li class="model">
   <div class="model-head"><strong class="mono">${e(m.id)}</strong>${m.family === "other" ? tag("family not recognised", "ask") : `<span class="meta">${e(m.family)}</span>`}</div>
   <p class="meta">${how}</p>
   ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
@@ -1561,23 +1563,22 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
   const entries = buildTimeline(views.map((v) => ({ project: v.project, items: v.items, events: v.events ?? [] })), owner);
   const merged = entries.filter((x) => x.ending === "merged").length, closed = entries.length - merged;
   const projects = new Set(entries.map((x) => x.project.name)).size;
-  const vendors = [...new Set(entries.map((x) => x.vendor).filter((v): v is Vendor => v !== null))];
   const days = byDay(entries).map(({ day, entries: list }) => `<li class="timeline-day"><h2>${e(`${weekdayOf(list[0].at)} ${keyLabel(day, true)}`)}</h2><ol>${list.map((x) => {
     const model = x.holder ? splitActor(x.holder).model || x.holder : null;
     const mark = x.vendor
-      ? `<i class="family-mark" style="--c:var(--m-${x.vendor})" title="${e(`${x.ending} while held by ${x.holder}`)}"></i>`
+      ? `<i class="family-mark" title="${e(`${x.ending} while held by ${x.holder}`)}"></i>`
       : '<i class="family-mark unknown" title="who held it is not in the record read"></i>';
     const detail = [titleOf(x.project), x.item.id, model ?? "holder not in the record read", x.ending === "merged" ? (x.commit ? `merged as ${x.commit.slice(0, 8)}` : "merged") : "closed without merging"];
     return `<li class="merge-row ${x.ending}"><a href="${href("p", x.project.name, x.item.id)}">${mark}<time datetime="${e(x.at)}">${e(clock(x.at))}</time><span><strong>${e(x.item.title)}</strong><span class="meta">${detail.map(e).join(" · ")}</span></span>${tag(x.ending === "merged" ? "Merged" : "Closed", x.ending === "merged" ? "go" : "")}</a></li>`;
   }).join("")}</ol></li>`).join("");
   const lead = entries.length
-    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each mark is the family of the agent that held the task when it ended. The same work, move by move, is on <a href="/flow">Flow</a>.`
+    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each row names the model that held the task when it ended. The same work, move by move, is on <a href="/flow">Flow</a>.`
     : "Finished work, with its evidence intact. The work in motion is on <a href=\"/flow\">Flow</a>.";
   const capKey = closed ? '<li><i class="cap-key"></i>closed without merging</li>' : "";
   return page("History", `<div class="page-width">
   <header><h1>History</h1><p class="lead">${lead}</p></header>
   ${views.some((v) => v.unavailable) ? '<p class="error">Some project history is unavailable. Refresh to retry.</p>' : ""}
-  ${entries.length ? familyLegend(vendors, "You", capKey) : ""}
+  ${entries.length ? familyLegend([], "You", capKey) : ""}
   <ol class="merge-timeline">${days}</ol>
   ${!entries.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
 </div>`, "Home", ownerName);

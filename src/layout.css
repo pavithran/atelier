@@ -259,7 +259,7 @@ pre.diff span { display: block; padding: 0 14px; white-space: pre; }
 .span-now { fill: color-mix(in srgb, var(--c, var(--signal)) 13%, transparent); stroke: color-mix(in srgb, var(--c, var(--signal)) 40%, transparent); stroke-width: 1; }
 .span-label { font: 600 11px var(--font-mono); fill: var(--c, var(--text-dim)); opacity: .72; letter-spacing: .02em; }
 .span-label.now { opacity: 1; }
-.lane .who strong { color: var(--c, var(--text-bright)); }
+.lane .who strong { color: var(--text-bright); }
 .track-svg .g-thread { stroke-width: 3; }
 .latest { margin: 6px 0 0; }
 .latest strong { color: var(--text); font-weight: 600; }
@@ -606,10 +606,10 @@ main .live-note { margin: 0 0 12px; }
 .repo-tree .entry > a, .repo-tree .entry > span:first-child { display: block; padding: 9px 14px; font: 14px/1.4 var(--font-mono); color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
 .repo-tree li.dir .entry > a { color: var(--signal); }
 .repo-tree .entry > a:hover { background: var(--inset); }
-/* A stripe per entry and per commit: the family of the agent the commit names, with the name in words beside it. */
+/* A stripe per entry and per commit an agent named, with the name in words beside it; company colours stay inside charts, so the stripe is neutral. */
 .repo-tree .entry { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .repo-tree li.striped { grid-template-columns: 4px minmax(0, 1fr) auto; padding-left: 10px; }
-.stripe { display: block; width: 4px; height: 22px; border-radius: 2px; background: var(--c, transparent); }
+.stripe { display: block; width: 4px; height: 22px; border-radius: 2px; background: var(--text-dim); }
 .stripe.none { background: var(--line); }
 .repo-tree .touch { padding-right: 14px; white-space: nowrap; }
 .repo-tree .touch a { color: var(--text-muted); }
@@ -623,7 +623,7 @@ main .live-note { margin: 0 0 12px; }
 .repo-log .msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 720px) { .repo-log li { grid-template-columns: 4px 76px minmax(0, 1fr); } .repo-log li .meta { grid-column: 3; } }
 .pager { display: flex; gap: var(--space-lg); margin-top: 16px; }
-.commit-head { border-left: 4px solid var(--c, var(--line)); padding-left: 16px; }
+.commit-head { border-left: 4px solid var(--line-bright); padding-left: 16px; }
 .commit-head h2 { font: 700 26px/1.2 var(--font-display); margin: 0 0 8px; color: var(--text-bright); overflow-wrap: anywhere; }
 .commit-body { white-space: pre-wrap; font: 14px/1.6 var(--font-mono); color: var(--text-muted); margin: 0 0 10px; }
 
@@ -777,7 +777,7 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .timeline-day > ol { list-style: none; margin: 0 0 0 8px; padding: 0; border-left: 2px solid var(--line); }
 .merge-row a { display: grid; grid-template-columns: 20px 72px minmax(0, 1fr) auto; gap: 14px; align-items: baseline; padding: 12px 10px 12px 0; margin-left: -11px; color: var(--text); text-decoration: none; border-radius: var(--radius-small); }
 .merge-row a:hover { background: var(--sheet); }
-.family-mark { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--c); justify-self: center; align-self: center; box-shadow: 0 0 6px color-mix(in srgb, var(--c) calc(55% * var(--glow)), transparent); }
+.family-mark { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--signal); justify-self: center; align-self: center; box-shadow: 0 0 6px color-mix(in srgb, var(--signal) calc(55% * var(--glow)), transparent); }
 .family-mark.unknown { background: var(--sheet); border: 2px solid var(--text-dim); box-shadow: none; }
 .merge-row.closed .family-mark { width: 4px; height: 14px; border-radius: 2px; background: var(--text-dim); border: 0; box-shadow: none; }
 .merge-row time { font: 12px/1.5 var(--font-mono); color: var(--text-muted); }
