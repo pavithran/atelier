@@ -1,10 +1,11 @@
 import { test } from "node:test";
+import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import {
-  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, isOwnCall, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
-  type Evidence, type Item, type ProjectPolicy, type Review, type ReviewOverride,
+  type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
 const H1 = "a".repeat(40);
@@ -104,7 +105,7 @@ test("the latest observation at a head wins", () => {
 
 test("protected paths need a model of another family; the project owner's approval is not that review", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
-  const sameModel: Review = { itemId: "t1", by: "other-harness/opus-5.5", head: H1, approve: true, note: "", at: T };
+  const sameModel: Review = { itemId: "t1", by: "other-harness/opus-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T };
   const sameFamily: Review = { ...sameModel, by: "claude-code/sonnet-5.5" };
   const otherModel: Review = { ...sameModel, by: "codex/gpt-5.5" };
   const owner: Review = { ...sameModel, by: "owner" };
@@ -122,7 +123,7 @@ test("protected paths need a model of another family; the project owner's approv
 });
 
 test("a rejection at the head blocks", () => {
-  const no: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, approve: false, note: "breaks iOS", at: T };
+  const no: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: false, note: "breaks iOS", at: T };
   assert.match(gate(item(), policy, [pass()], [no]).blockers.join(), /breaks iOS/);
 });
 
@@ -156,6 +157,13 @@ test("inbox flags live items whose scopes overlap", () => {
   const out = inboxFor("proj", items, policy, [], [], new Date(T));
   assert.deepEqual(out.map((x) => x.kind), ["overlap"]);
   assert.match(out[0].reason, /t2 \(codex\/gpt-5.5\)/);
+});
+
+test("isOwnCall names the lead developer's own decisions, apart from what the orchestrator handles", () => {
+  const own = ["approve-plan", "plan-blocked", "accept", "assess", "ship", "blocked"];
+  const handled = ["merge", "stale", "scope", "failing", "overlap"];
+  for (const kind of own) assert.equal(isOwnCall(kind as InboxEntry["kind"]), true, kind);
+  for (const kind of handled) assert.equal(isOwnCall(kind as InboxEntry["kind"]), false, kind);
 });
 
 test("repo names are safe and stable", () => {
@@ -341,9 +349,9 @@ test("decisions reject stale revisions and retain the latest review from each re
   assert.throws(()=>assertRevision(item(),''),/refresh the task/);
   assert.throws(()=>assertRevision(item(),H2),/changed since/);
   assert.doesNotThrow(()=>assertRevision(item(),H1));
-  const no: Review={itemId:'t1',head:H1,by:'owner',approve:false,note:'Fix it',at:T};
+  const no: Review={itemId:'t1',head:H1,criteria:NO_CRITERIA,by:'owner',approve:false,note:'Fix it',at:T};
   const yes: Review={...no,approve:true,at:'2026-10-03T13:00:00Z'};
-  assert.deepEqual(latestReviews([no,yes],H1),[yes]);
+  assert.deepEqual(latestReviews([no,yes],{head:H1,criteria:NO_CRITERIA}),[yes]);
   assert.equal(gate(item(),policy,[pass()],[no,yes]).ready,true);
   assert.equal(decisionFor(item({state:'merged'}),policy,[],[]).action,'none');
   assert.equal(decisionFor(item(),policy,[pass({passed:false})],[]).title,'Checks need attention');
@@ -385,7 +393,7 @@ const governed: ProjectPolicy = {
     protected_path_patterns: ["docs/secret/**"],
   },
 };
-const review = (by: string, over: Partial<Review> = {}): Review => ({ itemId: "t1", by, head: H1, approve: true, note: "", at: T, ...over });
+const review = (by: string, over: Partial<Review> = {}): Review => ({ itemId: "t1", by, head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, ...over });
 
 test("ControlPlane actor mapping uses harness aliases and listed model families", () => {
   for (const [actor, name] of [
@@ -713,6 +721,18 @@ test("decision 2026-10-06: the inbox and the page name the override and its reas
 // the protected file it aliases.
 const defaults: ProjectPolicy = { checks: ["npm test", "./check.sh"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", "docs/caf\u00e9/**"] };
 
+test("a role prompt override is protected by default, so changing one needs a review", () => {
+  // `.atelier/prompts/**` is in DEFAULT_PROTECTED (src/ledger.ts, asserted in
+  // ledger.spec.ts and routes.spec.ts); this is the guard that keeps an
+  // unvetted role prompt from landing and reaching a runner. The matcher is
+  // what changeClass runs on, so a change to a role prompt is protected even
+  // when the project lists no protected paths of its own.
+  for (const path of [".atelier/prompts/review.md", ".atelier/prompts/build.md", ".atelier/prompts/sub/orchestrate.md"]) {
+    assert.equal(changeClass([path], { checks: [], protected: [".atelier/prompts/**"] }), "protected", path);
+  }
+  assert.equal(changeClass(["src/a.ts"], { checks: [], protected: [".atelier/prompts/**"] }), "coordinated");
+});
+
 test("a path differing from a guarded path only by letter case or Unicode form is protected", () => {
   for (const path of [
     "claude.md", "Claude.MD", "Agents.MD", "agents.md", "Wrangler.jsonc", "WRANGLER.toml",
@@ -784,7 +804,7 @@ test("a merged check never satisfies the head's own check, and is read beside th
   assert.equal(mergedChecksAt(policy, [merged], H1, M0).checks[0].stale, true, "stale once main has moved past the head it merged with");
   assert.equal(mergedChecksAt(policy, [merged], H2, M1).run, false, "a new head retires every merged run");
   assert.deepEqual(mergedChecksAt(policy, [], H1, M1), { checks: [{ claim: "npm test", grade: "pending", passed: null, stale: false }], run: false });
-  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on the agent's machine does not count");
+  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on a runner does not count");
   // The head's own run records main's head too, and is still the head's check.
   const own = pass({ mainHead: M0 });
   assert.deepEqual(evidenceAt(policy, [own], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "runner", mainHead: M0 }]);
@@ -814,7 +834,7 @@ test("a failing merged check blocks only when main moved after the head's own ch
   // While the head's own check is pending or failing, that check is the blocker.
   assert.deepEqual(gate(item(), policy, [failing], []).blockers.filter((b) => b.includes("merge")), []);
   assert.deepEqual(gate(item(), policy, [own, pass({ passed: false, mainHead: M0, at: "2026-10-03T12:30:00.000Z" }), failing], []).blockers.filter((b) => b.includes("merge")), []);
-  // Under sandboxOnly, a merged run on the agent's machine neither blocks nor counts.
+  // Under sandboxOnly, a merged run on a runner neither blocks nor counts.
   const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
   assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), failing], []).ready, true);
   assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), { ...failing, where: "sandbox" }], []).ready, false);
@@ -872,4 +892,59 @@ test("two scopes overlap within a set of globs when some path all three could na
   assert.equal(scopesOverlapWithin(["src/**"], ["src/ui/**"], ["cli/runner.mjs"]), null);
   assert.equal(scopesOverlapWithin(["cli/**"], [], ["src/ledger.ts", "cli/runner.mjs"]), "cli/runner.mjs");
   assert.equal(scopesOverlapWithin(["src/**"], ["src/**"], []), null);
+});
+
+// t326: a review counts only while its head and its criteria binding are the
+// item's own and it is not withdrawn, approval and rejection alike, and every
+// rule the gate held before still holds.
+test("a review counts only for the head and the acceptance criteria it was bound to, approval and rejection alike", () => {
+  const accept = ["The parser reads nested lists"];
+  const task = item({ accept });
+  const bound = criteriaHash(accept);
+  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const yes = (over: Partial<Review> = {}) => review("codex/gpt-6", { criteria: bound, ...over });
+  // Matching head and criteria: the approval satisfies the gate.
+  assert.equal(gate(task, policy, touching, [yes()]).ready, true);
+  // Wrong head, or criteria the task no longer has (other text, the empty
+  // list), or withdrawn: it satisfies nothing.
+  for (const r of [yes({ head: H2 }), yes({ criteria: NO_CRITERIA }), yes({ criteria: criteriaHash(["The parser reads lists"]) }), yes({ withdrawn: { at: T, reason: "the acceptance criteria changed" } })]) {
+    const g = gate(task, policy, touching, [r]);
+    assert.equal(g.ready, false);
+    assert.equal(g.needsAssessor, true);
+  }
+  // A rejection blocks only when it is bound the same way.
+  const no = (over: Partial<Review> = {}) => review("zcode/glm-5.3", { criteria: bound, approve: false, note: "unsafe", ...over });
+  assert.match(gate(task, policy, touching, [yes(), no()]).blockers.join(), /rejected by zcode\/glm-5.3: unsafe/);
+  for (const r of [no({ head: H2 }), no({ criteria: NO_CRITERIA }), no({ withdrawn: { at: T, reason: "x" } })]) assert.equal(gate(task, policy, touching, [yes(), r]).ready, true);
+  assert.equal(decisionFor(task, policy, touching, [yes(), no({ criteria: NO_CRITERIA })]).action, "accept");
+  // The latest standing review per reviewer decides: an approval bound to old
+  // criteria after a bound rejection does not lift it.
+  assert.equal(gate(task, policy, touching, [no({ by: "codex/gpt-6" }), yes({ criteria: NO_CRITERIA, at: "2026-10-04" })]).ready, false);
+  // Binding takes nothing away from the rules before it: a contributor, the
+  // project owner, an owner-recorded approval no claim backs, a tier
+  // approval, a contributor's family, and under a role policy a reviewer
+  // without the assessor role do not count.
+  assert.equal(gate(task, policy, touching, [yes({ by: "claude-code/opus-5.5" })]).ready, false);
+  assert.equal(gate(task, policy, touching, [yes({ by: "owner" })]).ready, false);
+  assert.equal(gate(task, policy, touching, [yes({ proved: false, claimed: false, recordedBy: "owner" })]).ready, false);
+  assert.equal(gate(task, policy, touching, [yes({ tier: true })]).ready, false);
+  assert.equal(gate(task, policy, touching, [yes({ by: "anthropic/sonnet-5.5" })]).ready, false);
+  const g = gate(item({ accept, owner: "zcode/glm-5.3" }), governed, [pass({ changedPaths: ["docs/secret/a.md"] })], [review("gemini-cli/gemini-3", { criteria: bound })]);
+  assert.equal(g.ready, false, "gemini has no available assessor role");
+});
+
+test("reviews recorded before reviews were bound stay visible but neither satisfy nor block, with or without criteria", () => {
+  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const legacy = (over: Partial<Review>): Review => { const { criteria: _c, ...r } = review("codex/gpt-6", over); return r; };
+  for (const accept of [undefined, [], ["It parses"]]) {
+    const task = item(accept === undefined ? {} : { accept });
+    const approval = legacy({}), rejection = legacy({ by: "zcode/glm-5.3", approve: false, note: "old" });
+    const g = gate(task, policy, touching, [approval, rejection]);
+    assert.equal(g.ready, false);
+    assert.equal(g.needsAssessor, true, "the old approval does not satisfy");
+    assert.ok(!g.blockers.some((b) => /rejected by/.test(b)), "the old rejection does not block");
+    assert.equal(approval.criteria, undefined, "nothing stamps it");
+    // A fresh review bound to the criteria as they are satisfies the gate.
+    assert.equal(gate(task, policy, touching, [approval, rejection, review("codex/gpt-6", { criteria: criteriaHash(accept) })]).ready, true);
+  }
 });

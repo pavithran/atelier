@@ -3,6 +3,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
 import type { LargeRef } from "./large.ts";
+import { criteriaOf } from "./criteria.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -39,6 +40,10 @@ export interface Item {
   // What the change must do to be done, numbered in the review brief as a
   // plan part's acceptance criteria are; a change that fails one blocks.
   accept?: string[];
+  // A part's acceptance criteria from the approved plan, fixed when the part
+  // was made; a review of the part is bound to them beside `accept`
+  // (criteriaOf in src/criteria.ts). Null or absent for any other item.
+  partAccept?: string[] | null;
   blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
   // A plan, or a part of one (docs/orchestrator.md). An ordinary task
   // carries none of these four fields.
@@ -64,6 +69,8 @@ export interface Block {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
+  // Creation only: the ledger resolves this task's recorded merge itself.
+  revertOf?: string;
   nonGoals?: string[];
   stopWhen?: string[];
   nextGate?: string | null;
@@ -171,6 +178,35 @@ export interface Review {
   // the tier review too (gateServesTier in src/review/tier.ts). It counts for
   // the gate as any review does.
   topTier?: boolean;
+  // The binding of the acceptance criteria the reviewer was given
+  // (src/criteria.ts): the hash its review claim captured, or that the
+  // reviewer read with the task. A review counts only while it is the
+  // item's binding now (standingReview). A review recorded before reviews
+  // were bound has none, and never counts.
+  criteria?: string;
+  // The review request it answered, when the reviewer named the one it
+  // claimed (the runner does).
+  request?: number;
+  // Set when the item's criteria changed after the review was recorded. The
+  // review stays in the record, and never counts again, even if the
+  // criteria return to what it judged.
+  withdrawn?: { at: string; reason: string };
+}
+
+// What a review is bound to: the head it read and the binding of the
+// criteria it judged. An item's own is its head and criteriaOf(item).
+export interface ReviewBinding {
+  head: string | null;
+  criteria: string;
+}
+
+export const bindingOf = (item: Pick<Item, "head" | "accept" | "partAccept">): ReviewBinding => ({ head: item.head, criteria: criteriaOf(item) });
+
+// Whether a review stands for this binding: of its head and its criteria,
+// and not withdrawn. A review with no binding (recorded before reviews were
+// bound) stands for nothing, so it neither satisfies nor blocks a gate.
+export function standingReview(r: Review, at: ReviewBinding): boolean {
+  return !!at.head && r.head === at.head && r.criteria === at.criteria && !r.withdrawn;
 }
 
 export type ChangeClass = "direct" | "coordinated" | "protected";
@@ -566,8 +602,8 @@ export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): 
   return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
 }
 
-export function countingReviews(reviews: Review[], head: string | null, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
-  return latestReviews(reviews, head).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
+export function countingReviews(reviews: Review[], at: ReviewBinding, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
+  return latestReviews(reviews, at).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
 }
 
 export function measuredPaths(value: unknown): string[] | null {
@@ -772,6 +808,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
+  if (input.revertOf !== undefined) {
+    if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
+    out.revertOf = input.revertOf;
+  }
   if (input.nonGoals !== undefined) out.nonGoals = list(input.nonGoals, "nonGoals");
   if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
   if (input.accept !== undefined) {
@@ -1132,7 +1172,7 @@ export interface Gate {
 export interface GateOptions { reviewHeld?: boolean }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {
-  reviews = countingReviews(reviews, item.head, policy, owner);
+  reviews = countingReviews(reviews, bindingOf(item), policy, owner);
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
   if (!item.head) blockers.push("no verified push");
@@ -1195,6 +1235,23 @@ export interface InboxEntry {
   kind: "accept" | "assess" | "merge" | "ship" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
+}
+
+// The inbox kinds that are the lead developer's own decisions — the calls only
+// the human makes: approve a plan, accept, override or assess, approve a
+// protected action, a block marked as a decision. Everything else the waiting
+// list holds (merging, a stale claim, an out-of-scope change, failing checks,
+// overlapping work) is what the orchestrator and the runners handle, and the
+// waiting lists on Home, Decisions and `atelier status` split on this line
+// (src/ui.ts, cli/status.mjs).
+export const OWN_CALL_KINDS: ReadonlySet<InboxEntry["kind"]> = new Set([
+  "approve-plan", "plan-blocked", "accept", "assess", "ship", "blocked",
+]);
+
+// Whether an inbox entry is the lead developer's own decision, not work the
+// orchestrator or the runners handle.
+export function isOwnCall(kind: InboxEntry["kind"]): boolean {
+  return OWN_CALL_KINDS.has(kind);
 }
 
 // The weights of a plan's own entries, which the Ledger adds beside
@@ -1312,14 +1369,32 @@ export function assertRevision(item: Item, expected: string): void {
   if (expected !== item.head) throw new RuleError("stale_head", "this task changed since you opened it; refresh and review the new revision");
 }
 
+// A review's criteria binding, checked against the item's now. A review that
+// names none, or another, is refused before anything is recorded: the
+// reviewer reads the task's criteria again (atelier show prints their
+// binding) and judges the change against them. The binding is never filled
+// in from the item, which would say the reviewer judged criteria it was not
+// given.
+export function assertCriteria(item: Item, expected: unknown): void {
+  const refresh = `refresh: read ${item.id}'s acceptance criteria and their binding with atelier show ${item.id}, judge the change against them, and review again with --criteria BINDING`;
+  if (typeof expected !== "string" || !expected) {
+    throw new RuleError("criteria_unbound", `the review names no binding of the acceptance criteria it judged, so it cannot stand for ${item.id}'s criteria; ${refresh}`, 409);
+  }
+  const now = criteriaOf(item);
+  if (expected !== now) {
+    throw new RuleError("stale_criteria", `${item.id}'s acceptance criteria changed since this review read them (bound to ${expected.slice(0, 12)}, now ${now.slice(0, 12)}); ${refresh}`, 409);
+  }
+}
+
 export function assertLive(item: Item): void {
   assertNotBlocked(item);
   if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
 }
 
-export function latestReviews(reviews: Review[], head: string | null): Review[] {
+// The latest standing review from each reviewer for a binding.
+export function latestReviews(reviews: Review[], at: ReviewBinding): Review[] {
   const latest = new Map<string, Review>();
-  for (const r of reviews.filter((r) => r.head === head).sort((a, b) => a.at.localeCompare(b.at))) latest.set(r.by, r);
+  for (const r of reviews.filter((r) => standingReview(r, at)).sort((a, b) => a.at.localeCompare(b.at))) latest.set(r.by, r);
   return [...latest.values()];
 }
 
@@ -1365,7 +1440,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
       : "Required checks passed for this revision. Accept it to prepare the local merge.";
     return { title: "Ready to accept", detail, action: "accept", tone: "go", passed };
   }
-  if (countingReviews(reviews, item.head, policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
+  if (countingReviews(reviews, bindingOf(item), policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
   return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The task owner is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
 }
 

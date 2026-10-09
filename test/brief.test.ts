@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import { briefFor, cleanSummary } from "../src/brief.ts";
 import { gate, inboxFor, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
@@ -19,7 +20,7 @@ const pass = (over: Partial<Evidence> = {}): Evidence => ({
   itemId: "t21", claim: "npm test", grade: "observed", head: H1, passed: true,
   by: "owner", at: T, changedPaths: ["src/a.ts"], where: "sandbox", ...over,
 });
-const rev = (over: Partial<Review> = {}): Review => ({ itemId: "t21", by: "codex/gpt-5.5", head: H1, approve: true, note: "", at: T, ...over });
+const rev = (over: Partial<Review> = {}): Review => ({ itemId: "t21", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, ...over });
 const submitted = (seq: number, head: string, summary?: string, actor = "claude-code/opus-5.5"): LedgerEvent =>
   ({ seq, itemId: "t21", at: T, actor, kind: "item.submitted", data: { head, ...(summary ? { summary } : {}) } });
 
@@ -54,7 +55,7 @@ test("send back: a required check failed at this head, and where it ran is named
   const b = briefFor(detail({ evidence: [pass({ passed: false, where: "runner" })] }), []);
   assert.equal(b.recommendation.verdict, "send back");
   assert.match(b.recommendation.reason, /`npm test` failed/);
-  assert.equal(b.evidence[0], "Required checks at this revision: 1 failed on the agent's machine.");
+  assert.equal(b.evidence[0], "Required checks at this revision: 1 failed on a runner, in a clean clone.");
 });
 
 test("the decided sentence follows the recommendation", () => {
@@ -279,7 +280,7 @@ test("scope flags, reports and where checks ran appear, capped at five lines", (
   });
   const b = briefFor(d, []);
   assert.equal(b.evidence.length, 5);
-  assert.equal(b.evidence[0], "Required checks at this revision: 1 passed in a Cloudflare container, 1 passed on the agent's machine.");
+  assert.equal(b.evidence[0], "Required checks at this revision: 1 passed in a Cloudflare container, 1 passed on a runner, in a clean clone.");
   assert.ok(b.evidence.some((l) => l.startsWith("Changes outside the task's scope: AGENTS.md, x/1, x/2")));
   const calm = briefFor(detail({ evidence: [pass(), { itemId: "t21", claim: "ok", grade: "reported", head: H1, passed: null, by: "a", at: T }] }), []);
   assert.equal(calm.evidence.at(-1), "1 report recorded, not verified.");

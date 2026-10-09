@@ -1,6 +1,10 @@
 // Reading a reviewer's reply. The brief asks for VERDICT, SUMMARY and FINDING
 // lines, and REPLY_FORMAT below is the only statement of that format, so the
-// brief and this parser cannot drift apart. Models wrap their answers in
+// brief and this parser cannot drift apart. A change with acceptance
+// criteria is asked for one CRITERION line per criterion as well
+// (replyFormat), and parseVerdict, told how many criteria there are, refuses
+// an approval that misses one or declares one unmet: a criterion is proved,
+// not waved through. Models wrap their answers in
 // prose, in code fences or in JSON, including the design's verdict-file
 // shape {approve, summary, findings[{path, line?, severity, note}]}, and all
 // of these are read. Nothing is guessed: a reply that states no verdict,
@@ -31,18 +35,57 @@ export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2
 // bin/orchestrate/review.sh reads this one as its default.
 export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to. A claim in a commit message that the code does not support is a correctness defect. Decisions the project owner made are not defects; everything else is a follow-up.";
 
-export const REPLY_FORMAT = [
+const FORMAT_EXAMPLES = [
   "End your reply with these lines, each at the start of its own line:",
   "",
   "VERDICT: APPROVE",
   "SUMMARY: One sentence on what you checked and what you found.",
   "FINDING: follow-up src/example.ts:12 What is wrong, and why it matters.",
-  "",
+];
+
+const FORMAT_RULES = [
   "The VERDICT line says APPROVE or REJECT and nothing else. Do not write APPROVE, APPROVED, REJECT or REJECTED in capitals anywhere else in your reply: a reply that says both is not read as a verdict.",
   "Write one FINDING line for each finding: its severity (blocking or follow-up), the file, then a colon and the line number when the finding has one, then the finding itself, all on one line.",
   "REJECT needs at least one blocking finding, and APPROVE allows none.",
-  "Prose around these lines is allowed and is not read, apart from the rule on APPROVE and REJECT above.",
-].join("\n");
+];
+
+const FORMAT_END = "Prose around these lines is allowed and is not read, apart from the rule on APPROVE and REJECT above.";
+
+export const REPLY_FORMAT = [...FORMAT_EXAMPLES, "", ...FORMAT_RULES, FORMAT_END].join("\n");
+
+// The format a change with acceptance criteria is asked for: the same lines,
+// and one CRITERION line per criterion, each saying met or unmet and how it
+// was proved. The reply numbers the criteria across every list the brief
+// carries, while each list in the brief keeps its own numbers from 1, as the
+// criteria binding stores it (src/criteria.ts): when the brief carries the
+// task's own criteria and the plan's for the part, `own` says how many are
+// the task's and the format states the mapping — the task's keep the numbers
+// its list carries, and the plan's follow after them. A criterion is proved
+// by experiment, not by reading, so the reviewer is sent to break the
+// change and watch a test fail before calling a criterion met. parseVerdict
+// takes the same count of criteria and refuses an approval that misses a
+// criterion's line or declares one unmet, so the ask and the reading of the
+// answer cannot drift apart either. A count of zero or less, or not a whole
+// number, is the format with no criteria.
+export function replyFormat(criteria: number, own = 0): string {
+  const count = Number.isSafeInteger(criteria) && criteria > 0 ? criteria : 0;
+  if (!count) return REPLY_FORMAT;
+  const mine = Number.isSafeInteger(own) && own > 0 ? own : 0;
+  // How the reply numbers the criteria: as the brief's one list numbers them
+  // when there is only one, and across both lists when the task's own
+  // criteria and the plan's are carried together.
+  const numbering = mine && mine < count
+    ? `numbered across both lists above: the task's own acceptance criteria keep the numbers its list carries, 1 to ${mine}, and the plan's acceptance criteria for this part follow as criteria ${mine + 1} to ${count}, though the plan's list above numbers them from 1`
+    : "numbered as the brief numbers them";
+  return [
+    ...FORMAT_EXAMPLES,
+    "CRITERION 1: met — What you did to prove criterion 1 met, and what you saw.",
+    "",
+    ...FORMAT_RULES,
+    `Write one CRITERION line for each of the ${count} acceptance criteria, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
+    FORMAT_END,
+  ].join("\n");
+}
 
 // The severities the brief names, and the design's verdict-file names for
 // the same two classes: blocker is blocking; should and nit are follow-ups.
@@ -63,22 +106,27 @@ function refuse(message: string): never {
   throw new Refusal(message);
 }
 
-export function parseVerdict(text: unknown): ParsedVerdict {
+// `criteria` is how many acceptance criteria the brief numbered, as
+// reviewBrief counts them; a reply to that brief must prove each with a
+// CRITERION line, and an approval that misses one or declares one unmet is
+// refused. Without criteria (the default) CRITERION lines are not read.
+export function parseVerdict(text: unknown, criteria = 0): ParsedVerdict {
   try {
-    return { ok: true, ...read(text) };
+    return { ok: true, ...read(text, criteria) };
   } catch (err) {
     if (err instanceof Refusal) return { ok: false, error: err.message };
     throw err;
   }
 }
 
-function read(raw: unknown): Statement {
+function read(raw: unknown, asked: number): Statement {
   if (typeof raw !== "string") refuse("the reply is not text");
   const reply = normalise(raw);
   if (reply.length > VERDICT_LIMITS.reply) refuse(`the reply is ${reply.length} characters, over the ${VERDICT_LIMITS.reply} a verdict needs`);
+  const criteria = Number.isSafeInteger(asked) && asked > 0 ? asked : 0;
 
   const json = jsonStatements(reply);
-  const lines = lineStatements(reply);
+  const lines = lineStatements(reply, criteria);
   const verdicts = new Set([...json.map((s) => s.verdict), ...lines.verdicts]);
   if (!verdicts.size) refuse("the reply states no verdict: it has no VERDICT line and no JSON verdict");
   // Lowercase approve and reject are ordinary words in a review of code that
@@ -97,6 +145,22 @@ function read(raw: unknown): Statement {
   const blocking = findings.filter((f) => f.severity === "blocking").length;
   if (verdict === "reject" && !blocking) refuse("a rejection must name at least one blocking finding (correctness, security or data loss); every other finding is a follow-up");
   if (verdict === "approve" && blocking) refuse(`an approval cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`);
+  // An approval proves every acceptance criterion: one CRITERION line each,
+  // each met. A missing line leaves the criterion unproved, and a line that
+  // says unmet is a correctness fault the approval cannot carry, as a
+  // blocking finding is below. A rejection needs no criterion lines: its
+  // blocking findings say what they say.
+  if (verdict === "approve" && criteria) {
+    const missing: number[] = [];
+    const unmet: number[] = [];
+    for (let n = 1; n <= criteria; n++) {
+      const met = lines.criteria.get(n);
+      if (met === undefined) missing.push(n);
+      else if (!met) unmet.push(n);
+    }
+    if (missing.length) refuse(`an approval needs a CRITERION line for each of the ${criteria} acceptance criteria: ${missing.length === 1 ? "criterion" : "criteria"} ${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} none`);
+    if (unmet.length) refuse(`an approval cannot declare ${unmet.length === 1 ? "criterion" : "criteria"} ${unmet.join(", ")} unmet; an unmet criterion is a correctness fault, so reject with a blocking finding`);
+  }
   return { verdict, summary, findings };
 }
 
@@ -269,11 +333,26 @@ const FINDING_COLON = new RegExp(`^finding${E}\\s*:`, "i");
 const findingHead = (line: string) => FINDING_COLON.test(line) || /^FINDING\s/.test(line);
 const FINDING_LINE = new RegExp(`^finding${E}\\s*:?\\s*${E}\\s*\\[?([a-z_-]+)\\]?${E}\\s*:?\\s+(\\S+)\\s+(.+)$`, "i");
 const SUMMARY_LINE = new RegExp(`^summary${E}\\s*:\\s*${E}\\s*(.*?)\\s*${E}\\s*$`, "i");
+// A CRITERION line starts with "criterion" and its number, bracketed or not,
+// colon or not, in any case; "Criteria:" is a heading and "criterion" in
+// prose carries no number. The head recognises the number in every form the
+// line parser reads, so a line that declares a criterion met or unmet is
+// never mistaken for prose. Only a reply asked for criteria (replyFormat)
+// has its CRITERION lines read; elsewhere they are prose.
+const CRITERION_HEAD = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?\\d`, "i");
+const criterionHead = (line: string) => CRITERION_HEAD.test(line);
+// The met or unmet word ends at anything but a letter or digit, so an
+// underscore closes formatting (**, __, backticks) rather than extending the
+// word, as a \b would read it. The closing formatting around the word, and
+// the separator after it, are consumed before the proof is taken, so neither
+// markers nor a bare dash can stand in as the proof.
+const CRITERION_LINE = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(unmet|not met|met)(?![a-z0-9])\\]?${E}\\s*(?:[-–—:]\\s*)?${E}\\s*(.*?)\\s*$`, "i");
 
-function lineStatements(reply: string): { verdicts: Statement["verdict"][]; findings: Finding[]; summary: string[] } {
+function lineStatements(reply: string, criteria: number): { verdicts: Statement["verdict"][]; findings: Finding[]; summary: string[]; criteria: Map<number, boolean> } {
   const verdicts: Statement["verdict"][] = [];
   const findings: Finding[] = [];
   const summary: string[] = [];
+  const met = new Map<number, boolean>();
   reply.split("\n").forEach((raw, i) => {
     const line = raw.replace(DECORATION, "");
     const at = `line ${i + 1}`;
@@ -284,12 +363,35 @@ function lineStatements(reply: string): { verdicts: Statement["verdict"][]; find
     // "Verdict:" must be the verdict alone, or the reply is refused.
     else if (VERDICT_HEAD.test(line) && !VERDICT_TITLE.test(line)) refuse(`${at}: a VERDICT line says APPROVE or REJECT and nothing else`);
     else if (findingHead(line)) findings.push(findingLine(line, at));
+    else if (criteria && criterionHead(line)) {
+      const c = criterionLine(line, at, criteria);
+      // The same criterion proved twice must be proved one way.
+      if (met.has(c.n) && met.get(c.n) !== c.met) refuse(`the reply proves criterion ${c.n} both met and unmet`);
+      met.set(c.n, c.met);
+    }
     else {
       const s = SUMMARY_LINE.exec(line);
       if (s && plain(s[1])) summary.push(plain(s[1]));
     }
   });
-  return { verdicts, findings, summary };
+  return { verdicts, findings, summary, criteria: met };
+}
+
+// One CRITERION line: the criterion's number as the brief numbers it, met or
+// unmet, then how it was proved — the proof is the point of the line, so a
+// line without one is refused rather than read as a bare met. The pattern
+// takes an empty proof so the refusal can name the missing proof, not the
+// line's shape. It consumes the closing formatting around the met or unmet
+// (**, __, backticks) and the separator before the proof, and the check
+// counts none of the markers, separators or whitespace left in what it takes
+// as proof either, so only the proof's words are.
+function criterionLine(line: string, at: string, of: number): { n: number; met: boolean } {
+  const m = CRITERION_LINE.exec(line);
+  if (!m) refuse(`${at}: a CRITERION line gives the criterion's number, met or unmet, and how it was proved`);
+  const n = Number(m[1]);
+  if (n < 1 || n > of) refuse(`${at}: CRITERION ${n} is not one of the ${of} acceptance criteria the brief numbers`);
+  if (!plain(m[3]).replace(/[*_`\s:–—-]/g, "")) refuse(`${at}: a CRITERION line ends with how the criterion was proved`);
+  return { n, met: m[2].toLowerCase() === "met" };
 }
 
 function findingLine(line: string, at: string): Finding {

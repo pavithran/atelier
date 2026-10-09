@@ -6,12 +6,13 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertClaimAllowed, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
+import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
@@ -30,7 +31,7 @@ import {
   addedPart, maxJobsOf, mergeMainKey, mergeMainPart, mergeMainScope, planWithAdded, routesOf,
   type PlanRecord, type PlanRefresh,
 } from "./plans/state.ts";
-import { nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
+import { integrationBlockers, nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
@@ -76,6 +77,27 @@ export interface ReviewClaim {
   // when nothing was stored — the diff was small, or Artifacts could not be
   // read, or the bucket behind the LARGE binding does not exist yet.
   diffRef?: LargeRef | null;
+  // The binding of the acceptance criteria this claim's brief carries: the
+  // task's and, for a part, the approved plan's (src/criteria.ts). The
+  // reviewer names it, and the request it claimed, when it records its
+  // verdict, so a verdict on criteria that changed meanwhile is refused.
+  criteria: string;
+  request: number;
+}
+
+// What a change of a task's acceptance criteria took back (Ledger.editItem):
+// the bindings before and after (src/criteria.ts), how many reviews and open
+// or claimed review requests it withdrew, whether it withdrew an acceptance
+// (the task is claimed again) or an override of the review, and the
+// reviewers asked again at the same head.
+export interface CriteriaChange {
+  from: string;
+  to: string;
+  reviews: number;
+  requests: number;
+  acceptance: boolean;
+  override: boolean;
+  asked: string[];
 }
 
 export interface ProjectRecord {
@@ -144,7 +166,12 @@ export interface ProjectInit {
   approval?: string | null;
 }
 
-export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*"];
+// A project's role prompts (`atelier guide --role`, docs in the README) live
+// under `.atelier/prompts/ROLE.md`, and a runner passes a role's text to the
+// agent it runs. The path is protected in every project, so a change that
+// rewrites a role's instructions — the reviewer's, above all — needs another
+// model family's review before it lands, and never reaches a runner unvetted.
+export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"];
 
 // The steps a landing records (landEvent): taking the lease, merging main,
 // regenerating the project's fixtures, pushing, checking, the review, the
@@ -445,6 +472,9 @@ export class Ledger extends DurableObject<Env> {
     // it all.
     if (!columns.includes("brief")) this.sql.exec(`ALTER TABLE items ADD COLUMN brief TEXT`);
     if (!columns.includes("accept")) this.sql.exec(`ALTER TABLE items ADD COLUMN accept TEXT`);
+    // A part's acceptance criteria from the approved plan (JSON), fixed when
+    // the part is made, which its reviews are bound to beside `accept`.
+    if (!columns.includes("part_accept")) this.sql.exec(`ALTER TABLE items ADD COLUMN part_accept TEXT`);
     this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
@@ -476,7 +506,16 @@ export class Ledger extends DurableObject<Env> {
     // head, not one the owner or a plan asked for; requestReview lets the
     // owner name another reviewer in its place while it is unclaimed.
     if (!requestColumns.includes("carried")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN carried INTEGER`);
+    // The criteria binding (src/criteria.ts) the request asked about when it
+    // was made, and the one its claim captured for the reviewer's brief.
+    if (!requestColumns.includes("criteria")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN criteria TEXT`);
+    // Set on every request of an item, whatever its state, when the item's
+    // criteria change: it asked about criteria the item has left, so it never
+    // again counts as already asked, even if the criteria return to the ones
+    // it recorded, or it recorded none (made before requests did).
+    if (!requestColumns.includes("superseded")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN superseded INTEGER`);
     this.backfillReviewProvenance();
+    this.backfillPartAcceptance();
     // A deploy can change the tick's logic, and a plan waiting on nothing
     // the new logic would read sits idle until something else changes; the
     // ledger ticks its open plans once per deploy (retickDeployed).
@@ -522,6 +561,26 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`UPDATE reviews SET json = ? WHERE id = ?`, JSON.stringify(filled), row.id);
     }
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('review-provenance', ?)`, new Date().toISOString());
+  }
+
+  // Parts made before a part kept its plan's acceptance criteria gain them,
+  // once, from the approved plan they were made from, so their reviews are
+  // bound to the same lists their briefs carry.
+  private backfillPartAcceptance(): void {
+    if (this.sql.exec(`SELECT 1 FROM meta WHERE key = 'part-acceptance'`).toArray().length) return;
+    const plans = new Map<string, Plan | null>();
+    for (const row of this.sql.exec(`SELECT id, plan, part_key FROM items WHERE kind = 'part' AND part_accept IS NULL`).toArray()) {
+      const planId = row.plan as string;
+      if (!plans.has(planId)) {
+        try {
+          const record = this.planRecord(planId);
+          plans.set(planId, record.approval ? planWithAdded(this.approvedPlan(planId, record.approval.hash), record) : null);
+        } catch { plans.set(planId, null); }
+      }
+      const part = plans.get(planId)?.parts.find((p) => p.key === row.part_key);
+      if (part) this.sql.exec(`UPDATE items SET part_accept = ? WHERE id = ?`, JSON.stringify(part.acceptance), row.id);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('part-acceptance', ?)`, new Date().toISOString());
   }
 
   // ── index instance ───────────────────────────────────────────────────────
@@ -843,7 +902,25 @@ export class Ledger extends DurableObject<Env> {
   // long text if sent apart (itemText): a title too long with no brief, as
   // an older CLI sends, becomes the brief with a short title derived from
   // it. The item answers with `derived` set then, so the CLI can say so.
-  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item & { derived?: true } {
+  newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item & { derived?: true; revert?: { itemId: string; mergeCommit: string } } {
+    if (fields.revertOf !== undefined) {
+      const original = this.item(fields.revertOf);
+      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`);
+      // A plan part's event names the whole plan's merge; reverting that
+      // would silently undo its siblings too. Ask for the plan explicitly.
+      if (original.kind === "part") throw new RuleError("revert_part", "revert the merged plan, not one of its parts");
+      const mergeCommit = this.events(original.id).find((e) => e.kind === "item.merged")?.data.mergeCommit;
+      if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`);
+      return this.ctx.storage.transactionSync(() => {
+        const revert = { itemId: original.id, mergeCommit };
+        const item = this.newItem(shortTitle(`Revert ${original.id}: ${original.title}`), original.scope, actor, {
+          brief: `Undo ${original.id} by reverting its recorded merge commit ${mergeCommit} with git revert -m1. Resolve conflicts in this workspace, then run the normal checks and independent review.`,
+        });
+        this.log(item.id, actor, "item.reverts", revert, item.createdAt);
+        this.log(original.id, actor, "item.revert_requested", { itemId: item.id, mergeCommit }, item.createdAt);
+        return { ...item, revert };
+      });
+    }
     const text = itemText(title, fields.brief);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -862,8 +939,16 @@ export class Ledger extends DurableObject<Env> {
   // The project owner changes a task's framing after it was created. A
   // field sent replaces the stored one, a field left out is kept, and the
   // event records only what was sent. A closed task is left as it was.
-  editItem(id: string, actor: string, fields: ItemFields): Item {
+  //
+  // The acceptance criteria are what a review judges, so a change of them
+  // (another stored list, by its text, its order or where its entries break;
+  // a list the same as the stored one changes nothing) takes back what was
+  // decided under the old ones (criteriaChanged), and the answer says what
+  // it took back. The criteria of a part already integrated, or of a task
+  // under a landing lease, cannot change, and nothing is written then.
+  editItem(id: string, actor: string, fields: ItemFields): Item & { criteriaChange?: CriteriaChange } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
+    if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
     const set = fieldColumns(fields);
@@ -874,10 +959,117 @@ export class Ledger extends DurableObject<Env> {
       set.title = title;
     }
     if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --accept, --non-goal, --stop-when or --next-gate", 400);
+    const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
+    if (changing) this.assertCriteriaEditable(item);
     const at = new Date().toISOString();
     this.update(id, set, at);
     this.log(id, actor, "item.edited", { ...fields }, at);
-    return this.item(id);
+    const change = changing ? this.criteriaChanged(item, actor, at) : null;
+    return { ...this.item(id), ...(change ? { criteriaChange: change } : {}) };
+  }
+
+  // Where the acceptance criteria may not change: a part integrated into its
+  // plan's branch was let in by a review of the criteria it has, and a task
+  // being landed is merged under the acceptance those criteria were judged by.
+  private assertCriteriaEditable(item: Item): void {
+    if (item.state === "integrated") {
+      throw new RuleError("integrated", `${item.id} is integrated into its plan's branch under the acceptance criteria its review judged, so they cannot change; nothing was changed`, 409);
+    }
+    const landing = this.landing(item.id);
+    if (landing) {
+      throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so its acceptance criteria cannot change; nothing was changed. Let the merge finish, or cancel it with atelier merge ${item.id} --cancel, then edit them`, 409);
+    }
+    const held = this.projectLanding();
+    if (held && held.item === item.id && this.landingLive(held, new Date().toISOString())) {
+      throw new RuleError("landing_lease", `${held.holder} is landing ${item.id} under the project's landing lease, so its acceptance criteria cannot change; nothing was changed. Let the landing finish, or free the lease with atelier land ${item.id} --release-lease, then edit them`, 409);
+    }
+  }
+
+  // After the criteria of `before` changed: every review bound to its old
+  // criteria is marked withdrawn (kept in the record, never counted again,
+  // even if the criteria return to what it judged), every open or claimed
+  // review request is withdrawn, so a verdict on one answers nothing, and an
+  // acceptance and an override of the review are withdrawn, the task going
+  // back to claimed for its holder to submit again. The head and the checks
+  // stay as they are. A submitted task outside a plan asks each reviewer
+  // whose request was withdrawn again, at the same head, for the new
+  // criteria; a part's plan tick asks its own.
+  private criteriaChanged(before: Item, actor: string, at: string): CriteriaChange {
+    const id = before.id;
+    const from = criteriaOf(before);
+    const to = criteriaOf(this.item(id));
+    const reason = "the acceptance criteria changed";
+    let reviews = 0;
+    // A review recorded before reviews were bound judged criteria the task
+    // had then, never the new ones, so it is withdrawn too (and left unstamped).
+    for (const row of this.sql.exec(`SELECT id, json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray()) {
+      const r = JSON.parse(row.json as string) as Review;
+      if (r.withdrawn || (r.criteria !== undefined && r.criteria !== from)) continue;
+      this.sql.exec(`UPDATE reviews SET json = ? WHERE id = ?`, JSON.stringify({ ...r, withdrawn: { at, reason } }), row.id);
+      reviews++;
+    }
+    const live = this.sql.exec(`SELECT id, head, dispatch, tier, wanted FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id`, id).toArray();
+    for (const r of live) {
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+      this.log(id, actor, "review.withdrawn", { head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null, reason, ...(r.tier === 1 ? { tier: true } : {}) }, at);
+    }
+    this.sql.exec(`UPDATE review_requests SET superseded = 1 WHERE item = ?`, id);
+    const accepted = before.state === "accepted";
+    const overridden = !!before.reviewOverride;
+    if (accepted || overridden) {
+      this.update(id, { ...(accepted ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}) }, at);
+    }
+    this.log(id, actor, "item.criteria_changed", {
+      from, to, head: before.head, withdrawn: { reviews, requests: live.length },
+      ...(accepted ? { acceptanceWithdrawn: true } : {}), ...(overridden ? { overrideWithdrawn: true } : {}),
+    }, at);
+    const asked = this.reaskForCriteria(id, live.filter((r) => r.tier !== 1), at);
+    this.afterPlanChange(id);
+    return { from, to, reviews, requests: live.length, acceptance: accepted, override: overridden, asked };
+  }
+
+  // Asks again, for a submitted task outside a plan, each reviewer whose
+  // gate request a change of criteria withdrew: the same reviewer and
+  // `wanted`, at the same head, where the gate still needs the review, as
+  // reaskReview carries a request when the head moves. Returns who was asked.
+  private reaskForCriteria(id: string, withdrawn: Row[], at: string): string[] {
+    const item = this.item(id);
+    if (item.kind === "part" || item.state !== "submitted" || !item.head) return [];
+    const asked: string[] = [];
+    for (const r of withdrawn) {
+      if (r.head !== item.head) continue;
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      if (!d.agent || !d.model) continue;
+      const reviewer = `${d.agent}/${d.model}`;
+      const wanted = r.wanted === 1;
+      const contributors = contributorsOf(item);
+      if (asked.some((a) => sameActor(a, reviewer)) || contributors.some((c) => sameActor(c, reviewer))) continue;
+      if (!wanted && independenceRefusal(reviewer, contributors)) continue;
+      const need = reviewNeeded({
+        item, part: false, policy: this.project().policy,
+        evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
+        requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, now: new Date(at), owner: this.owner,
+      });
+      if (!need.needed) continue;
+      const dispatch = { ...makeDispatch({ to: "home", agent: d.agent, model: d.model }, ORCHESTRATOR, at), job: "review" as const };
+      const topTier = this.gateIsTier(item, need, reviewer);
+      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
+        id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
+      this.log(id, ORCHESTRATOR, "review.requested", {
+        head: need.head, reviewer, round: need.round, via: "criteria-changed",
+        ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
+      }, at);
+      this.askTierReview(item, need, reviewer, ORCHESTRATOR, at);
+      asked.push(reviewer);
+    }
+    return asked;
+  }
+
+  // The binding of an item's acceptance criteria now (src/criteria.ts),
+  // which a review of it names.
+  criteria(id: string): string {
+    return criteriaOf(this.item(id));
   }
 
   item(id: string): Item {
@@ -943,7 +1135,9 @@ export class Ledger extends DurableObject<Env> {
       return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
     }
     this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null }, at);
-    this.log(id, actor, "item.claimed", runner ? { runner: runner.runner } : {}, at, proved);
+    // The claim records the binding of the criteria the holder takes the
+    // task under (src/criteria.ts), so the record shows what it was asked.
+    this.log(id, actor, "item.claimed", { ...(runner ? { runner: runner.runner } : {}), criteria: criteriaOf(item) }, at, proved);
     return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
   }
 
@@ -1336,13 +1530,25 @@ export class Ledger extends DurableObject<Env> {
     // The holder under another letter case, profile or registered name is still the holder.
     if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
+    // The review is bound to the criteria the reviewer was given, as it names
+    // them; one that names none, or criteria the task no longer has, is
+    // refused here, before anything is recorded or any request answered.
+    assertCriteria(item, r.criteria);
     const at = new Date().toISOString();
     // Who recorded it: the reviewer when its own token proved it, the project
     // owner when the owner token named it. A review answering a request the
-    // reviewer claimed at this head was served through the request flow,
-    // which the gate counts even when the owner token recorded it.
-    const claims = this.sql.exec(`SELECT id, claimedBy, tier, topTier FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed'`, r.itemId, r.head).toArray()
+    // reviewer claimed at this head, for these criteria, was served through
+    // the request flow, which the gate counts even when the owner token
+    // recorded it. A claim the criteria change withdrew is not live, so a
+    // verdict on it never answers the request that replaced it.
+    const claims = this.sql.exec(`SELECT id, claimedBy, tier, topTier FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed' AND criteria = ?`, r.itemId, r.head, r.criteria!).toArray()
       .filter((c) => typeof c.claimedBy === "string" && sameActor(c.claimedBy, r.by));
+    // A reviewer that names the request it claimed answers that one only:
+    // when it is no longer its live claim, the verdict is for a request that
+    // was withdrawn or replaced, and is refused.
+    if (r.request !== undefined && !claims.some((c) => c.id === r.request)) {
+      throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409);
+    }
     const claimed = claims.length > 0;
     // A review answering a tier request this reviewer claimed is a tier
     // review. One whose tier request was withdrawn, when the change was
@@ -1363,11 +1569,11 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
-    else this.answerReviewRequest(r.itemId, r.head, at);
+    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at);
     // A rejection sends the change back for rework, so a tier request at the
     // head no runner has claimed yet is no longer asked for; a claimed one is
     // left to finish, and its findings join the rework.
@@ -2023,7 +2229,9 @@ export class Ledger extends DurableObject<Env> {
     const acceptancePolicy: Record<string, unknown> | null = current
       ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks", "shipRuns"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
       : null;
-    return { item, policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    // `criteria` is the binding of the item's acceptance criteria now, which a
+    // review of it names (src/criteria.ts).
+    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string): InboxEntry[] {
@@ -2263,7 +2471,7 @@ export class Ledger extends DurableObject<Env> {
       }
       const parts = newest.plan.parts.map((p) => ({
         key: p.key,
-        id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn }, { plan: id, key: p.key, dependsOn: p.dependsOn, partKind: p.kind, taskKind: p.taskKind, approval: hash }),
+        id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn, acceptance: p.acceptance }, { plan: id, key: p.key, dependsOn: p.dependsOn, partKind: p.kind, taskKind: p.taskKind, approval: hash }),
       }));
       record.approval = { hash, at, by: actor, allowPaid, limits, deadline, parts, routes, pool };
       record.blocked = null;
@@ -2679,12 +2887,13 @@ export class Ledger extends DurableObject<Env> {
     this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
 
-  private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[] }, data: Record<string, unknown>): string {
+  private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[]; acceptance?: string[] }, data: Record<string, unknown>): string {
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
     this.sql.exec(
-      `INSERT INTO items (id, title, scope, state, created_at, updated_at, kind, plan, part_key, deps) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO items (id, title, scope, state, created_at, updated_at, kind, plan, part_key, deps, part_accept) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
       id, title, JSON.stringify(scope), at, at, plan.kind, plan.plan ?? null, plan.partKey ?? null, plan.deps ? JSON.stringify(plan.deps) : null,
+      plan.acceptance ? JSON.stringify(plan.acceptance) : null,
     );
     this.log(id, actor, "item.created", { title, scope, kind: plan.kind, ...data }, at);
     return id;
@@ -2908,8 +3117,8 @@ export class Ledger extends DurableObject<Env> {
       });
       const briefHash = briefFingerprint(brief);
       const topTier = this.gateIsTier(p, need, reviewer);
-      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, topTier) VALUES (?, ?, ?, ?, 'open', ?)`,
-        p.id, need.head, JSON.stringify(dispatch), briefHash, topTier ? 1 : null);
+      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?)`,
+        p.id, need.head, JSON.stringify(dispatch), briefHash, topTier ? 1 : null, criteriaOf(p));
       this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, ...(topTier ? { topTier: true } : {}) }, at);
       this.askTierReview(p, need, reviewer, ORCHESTRATOR, at);
     }
@@ -3043,8 +3252,17 @@ export class Ledger extends DurableObject<Env> {
     if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403);
     if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
     const at = new Date().toISOString();
-    this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner?.runner ?? null, at, row.id);
-    this.log(itemId, actor, "review.claimed", { head, runner: runner.runner, ...(tier ? { tier: true } : {}) }, at, proved);
+    // A part's claim carries the plan's account of it for the brief; an item
+    // outside a plan has none, and its need is read as the gate reads it.
+    const record = item.plan ? this.planRecord(item.plan) : null;
+    const plan = record?.approval ? planWithAdded(this.approvedPlan(item.plan!, record.approval.hash), record) : null;
+    const part = plan?.parts.find((x) => x.key === item.partKey) ?? null;
+    // The binding of the criteria the brief will carry: the task's, and the
+    // plan's acceptance for this part as the brief gives it. The review this
+    // claim leads to must name it.
+    const criteria = criteriaHash(item.accept, part ? part.acceptance : item.partAccept);
+    this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, criteria = ? WHERE id = ?`, actor, runner?.runner ?? null, at, criteria, row.id);
+    this.log(itemId, actor, "review.claimed", { head, runner: runner.runner, criteria, request: row.id as number, ...(tier ? { tier: true } : {}) }, at, proved);
     // A part's claimed review can lapse (REVIEW_CLAIM_TIMEOUT_MS,
     // reviewNeeded), and when it does, nothing but the alarm ticks the plan
     // unprompted: the alarm is set for the lapse, never later than one
@@ -3055,11 +3273,6 @@ export class Ledger extends DurableObject<Env> {
       const held = await this.ctx.storage.getAlarm();
       if (held === null || lapse < held) await this.ctx.storage.setAlarm(lapse);
     }
-    // A part's claim carries the plan's account of it for the brief; an item
-    // outside a plan has none, and its need is read as the gate reads it.
-    const record = item.plan ? this.planRecord(item.plan) : null;
-    const plan = record?.approval ? planWithAdded(this.approvedPlan(item.plan!, record.approval.hash), record) : null;
-    const part = plan?.parts.find((x) => x.key === item.partKey) ?? null;
     const policy = this.project().policy;
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
@@ -3073,6 +3286,7 @@ export class Ledger extends DurableObject<Env> {
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
       events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, tier,
+      criteria, request: row.id as number,
     };
   }
 
@@ -3186,7 +3400,7 @@ export class Ledger extends DurableObject<Env> {
     const slash = chosen.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, chosen);
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier) VALUES (?, ?, ?, ?, 'open', ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null);
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
     return { needed: true, requested: true, reason: need.reason, at, head: need.head, reviewer: chosen };
@@ -3205,8 +3419,11 @@ export class Ledger extends DurableObject<Env> {
 
   // Marks the gate's request for a head answered when a review is recorded
   // at it; a tier request is answered only by its own review.
-  private answerReviewRequest(itemId: string, head: string, at: string): void {
-    this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL`, itemId, head);
+  // Only requests for the criteria the review judged are answered: a request
+  // made or claimed for other criteria (none stay live once the criteria
+  // change, but a request records them) is not.
+  private answerReviewRequest(itemId: string, head: string, criteria: string, at: string): void {
+    this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL AND (criteria IS NULL OR criteria = ?)`, itemId, head, criteria);
   }
 
   // Whether the gate's request just being made for a protected change is
@@ -3228,8 +3445,14 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
     if (this.gateIsTier(item, need, gateReviewer)) return;
-    if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1`, item.id, need.head).toArray().length) return;
-    if (this.reviewsFor(item.id).some((r) => r.head === need.head && (r.tier || r.topTier))) return;
+    // A request or review for criteria the item no longer has does not count:
+    // the tier is asked again for the new ones. A request superseded by a
+    // change of criteria never counts, even when the criteria return to the
+    // ones it recorded; one made before requests recorded their criteria
+    // counts until the criteria first change, so none is asked twice.
+    const criteria = criteriaOf(item);
+    if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1 AND superseded IS NULL AND (criteria IS NULL OR criteria = ?)`, item.id, need.head, criteria).toArray().length) return;
+    if (this.reviewsFor(item.id).some((r) => r.head === need.head && !r.withdrawn && (r.criteria === undefined || r.criteria === criteria) && (r.tier || r.topTier))) return;
     const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
       .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));
@@ -3237,7 +3460,7 @@ export class Ledger extends DurableObject<Env> {
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier) VALUES (?, ?, ?, ?, 'open', 1)`, item.id, need.head, JSON.stringify(dispatch), null);
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
     this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, tier: true }, at, proved);
   }
 
@@ -3281,16 +3504,20 @@ export class Ledger extends DurableObject<Env> {
   // beside it as askTierReview asks one. A plan's part is left to its tick,
   // which asks the routed reviewer. Nothing is asked while the need is not
   // there yet (checks pending at the new head, say); submit, each piece of
-  // evidence and a review claim ask again. Nothing is carried when the
-  // newest gate request is not one the head moved past, so it is carried
-  // once per move, or when its reviewer may no longer review: a contributor
+  // evidence and a review claim ask again. A request a change of the
+  // criteria withdrew is carried the same way, at the same head. Nothing is
+  // carried when the newest gate request is not one the head moved past or
+  // the criteria change withdrew, so it is carried once per move, or when its reviewer may no longer review: a contributor
   // never, and for a review the gate must count (not `wanted`), only a model
   // of another family than every contributor.
   private reaskReview(itemId: string, at: string): void {
     const item = this.item(itemId);
     if (item.kind === "part" || item.state !== "submitted" || !item.head) return;
-    const last = this.sql.exec(`SELECT head, dispatch, state, wanted, moved FROM review_requests WHERE item = ? AND tier IS NULL ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
-    if (!last || last.state !== "withdrawn" || last.moved !== 1 || last.head === item.head) return;
+    const last = this.sql.exec(`SELECT head, dispatch, state, wanted, moved, superseded FROM review_requests WHERE item = ? AND tier IS NULL ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
+    // A request a change of criteria withdrew is carried too, at the same
+    // head, once the gate needs the review of the new criteria.
+    const carry = last?.state === "withdrawn" && ((last.moved === 1 && last.head !== item.head) || last.superseded === 1);
+    if (!carry) return;
     const d = JSON.parse(last.dispatch as string) as Dispatch;
     if (!d.agent || !d.model) return;
     const reviewer = `${d.agent}/${d.model}`;
@@ -3307,8 +3534,8 @@ export class Ledger extends DurableObject<Env> {
     if (!need.needed) return;
     const dispatch = { ...makeDispatch({ to: "home", agent: d.agent, model: d.model }, ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, reviewer);
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried) VALUES (?, ?, ?, ?, 'open', ?, ?, 1)`,
-      itemId, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null);
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
+      itemId, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
     this.log(itemId, ORCHESTRATOR, "review.requested", {
       head: need.head, reviewer, round: need.round, via: "head-moved", from: last.head as string,
       ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
@@ -3344,6 +3571,7 @@ export class Ledger extends DurableObject<Env> {
     return parts.map((p) => ({
       id: p.id, key: p.partKey!, dependsOn: p.deps ?? [], state: p.state,
       head: p.head, owner: p.owner, pushActors: p.pushActors, integration: this.partIntegration(p.id),
+      accept: p.accept ?? [], partAccept: p.partAccept ?? null,
     }));
   }
 
@@ -3396,13 +3624,21 @@ export class Ledger extends DurableObject<Env> {
     if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
     if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part is integrated`, 409);
     if (!verified) throw new RuleError("unverified_merge", "the merge commit is not on the plan's branch", 409);
+    // The rules the integrate job was dispatched under hold at the record
+    // too: a review withdrawn meanwhile, as when the part's criteria changed
+    // while the integrator merged, no longer lets the part in.
+    const views = this.integrationViews(this.planParts(id));
+    const blockers = integrationBlockers(views.find((v) => v.id === part.id)!, views, this.reviewsFor(part.id), this.project().policy, this.owner);
+    if (blockers.length) throw new RuleError("not_integrable", `part ${partKey} (${part.id}) cannot be integrated now: ${blockers.join("; ")}`, 409);
     const at = new Date().toISOString();
     const merged = addedPart(record, partKey);
     const takes = merged && holdsMain ? merged.mainHead : null;
     this.update(part.id, { state: "integrated" }, at);
     this.withdrawTierRequests(part.id, "the part was integrated; a tier review never holds a landing", at);
-    this.sql.exec(`UPDATE items SET integration = ? WHERE id = ?`, JSON.stringify({ head: part.head, mergeCommit } as Integration), part.id);
-    this.log(part.id, actor, "part.integrated", { head: part.head, mergeCommit, ...(takes ? { mainTaken: takes } : {}) }, at);
+    // The integration records the criteria binding its review was bound to;
+    // an integrated part's criteria cannot change after (editItem).
+    this.sql.exec(`UPDATE items SET integration = ? WHERE id = ?`, JSON.stringify({ head: part.head, mergeCommit, criteria: criteriaOf(part) } as Integration), part.id);
+    this.log(part.id, actor, "part.integrated", { head: part.head, mergeCommit, criteria: criteriaOf(part), ...(takes ? { mainTaken: takes } : {}) }, at);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     record.integrationHead = mergeCommit;
     if (takes) record.mainTaken = takes;
@@ -3628,7 +3864,7 @@ export class Ledger extends DurableObject<Env> {
       pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers: offers !== null ? offers : await this.routingOffers(),
       precision: this.reviewPrecision(at),
     });
-    const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [] },
+    const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [], acceptance: spec.acceptance },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });
     record.added = [...(record.added ?? []), { id: partId, part: spec, route, mainHead, by, at, reason }];
     if (to && route.builder?.actor !== to) record.reroutes[key] = to;
@@ -3822,6 +4058,7 @@ function toItem(r: Row): Item {
     ...(r.plan ? { plan: r.plan as string } : {}),
     ...(r.part_key ? { partKey: r.part_key as string } : {}),
     ...(r.deps ? { deps: JSON.parse(r.deps as string) as string[] } : {}),
+    ...(r.kind === "part" && r.part_accept ? { partAccept: JSON.parse(r.part_accept as string) as string[] } : {}),
   };
 }
 

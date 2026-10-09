@@ -41,7 +41,7 @@ it("the owner annotates the served model of matching events; a dry run writes no
   await L(name).claim("t2", OPUS);
   await L(name).setFork("t2", `${name}--t2`, H0, OPUS);
   await L(name).recordPush("t2", OPUS, H1, H1);
-  await L(name).addReview({ itemId: "t2", by: ZCODE, head: H1, approve: true, note: "fine", at: new Date().toISOString() });
+  await L(name).addReview({ itemId: "t2", criteria: await L(name).criteria("t2"), by: ZCODE, head: H1, approve: true, note: "fine", at: new Date().toISOString() });
   const before = (await L(name).events(undefined, 100)) as unknown as LedgerEvent[];
   const zcodes = before.filter((e) => e.actor === ZCODE).map((e) => e.seq).sort((a, b) => a - b);
   expect(zcodes.length).toBe(4);

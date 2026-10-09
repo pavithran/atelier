@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -96,16 +97,16 @@ it("each model's reliability across projects: the JSON route, the Models page an
   await project("rel-b");
   // rel-a t1: sent back at its first review, approved at the second, merged, then a defect traced to it.
   const t1 = await submitted("rel-a", OPUS, H1);
-  await L("rel-a").addReview({ itemId: t1, by: GPT, head: H1, approve: false, note: "<b>needs a test</b>", at: new Date().toISOString() });
+  await L("rel-a").addReview({ itemId: t1, by: GPT, head: H1, criteria: NO_CRITERIA, approve: false, note: "<b>needs a test</b>", at: new Date().toISOString() });
   await L("rel-a").recordPush(t1, OPUS, H2, H2);
-  await L("rel-a").addReview({ itemId: t1, by: GPT, head: H2, approve: true, note: "good", at: new Date().toISOString() });
+  await L("rel-a").addReview({ itemId: t1, by: GPT, head: H2, criteria: NO_CRITERIA, approve: true, note: "good", at: new Date().toISOString() });
   const t2 = await submitted("rel-a", OPUS, H3);
   const bindings = { ...testEnv, ARTIFACTS: artifacts({ [`rel-a--${t1}`]: H2, [`rel-a--${t2}`]: H3 }) } as typeof env;
   // The owner approves t1 through the API, as the orchestrator does, and t2 on the task page.
-  expect((await call("POST", `/projects/rel-a/items/${t1}/review`, "owner", { approve: true, head: H2, note: "go" }, {}, bindings)).status).toBe(200);
+  expect((await call("POST", `/projects/rel-a/items/${t1}/review`, "owner", { approve: true, head: H2, criteria: NO_CRITERIA, note: "go" }, {}, bindings)).status).toBe(200);
   const cookie = await signIn(TOKEN, testEnv);
   const page = await worker.fetch(new Request(`https://atelier.test/ui/rel-a/${t2}/approve`, {
-    method: "POST", headers: { cookie, origin: "https://atelier.test" }, body: new URLSearchParams({ head: H3, note: "looks right" }), redirect: "manual",
+    method: "POST", headers: { cookie, origin: "https://atelier.test" }, body: new URLSearchParams({ head: H3, criteria: NO_CRITERIA, note: "looks right" }), redirect: "manual",
   }), bindings);
   expect(page.status).toBe(303);
   const vias = ((await L("rel-a").events(undefined, 100)) as unknown as LedgerEvent[]).filter((e) => e.kind === "review.approved").map((e) => [e.itemId, e.actor, e.data.via ?? null]);
@@ -115,7 +116,7 @@ it("each model's reliability across projects: the JSON route, the Models page an
   expect((await call("POST", `/projects/rel-a/items/${t1}/defect`, "owner", { note: "loses the last page" })).status).toBe(201);
   // rel-b: the same model under another harness and a registered alias, approved at its first review.
   const b1 = await submitted("rel-b", "antigravity/claude-opus-5-5", H1);
-  await L("rel-b").addReview({ itemId: b1, by: GPT, head: H1, approve: true, note: "fine", at: new Date().toISOString() });
+  await L("rel-b").addReview({ itemId: b1, by: GPT, head: H1, criteria: NO_CRITERIA, approve: true, note: "fine", at: new Date().toISOString() });
   await call("POST", "/runs", "owner", { actor: "opencode/glm-5.3", role: "review", outcome: "refused", detail: "no model" }, { "x-atelier-runner": "home:studio" });
 
   const answer = await call("GET", "/reliability", "owner");
@@ -157,7 +158,7 @@ it("each model's reliability across projects: the JSON route, the Models page an
 it("the owner records a verdict on one review finding; anyone else, a bad verdict and a missing finding are refused", async () => {
   await project("rel-finding");
   const id = await submitted("rel-finding", OPUS, H1);
-  await L("rel-finding").addReview({ itemId: id, by: GPT, head: H1, approve: false, note: "no", at: new Date().toISOString(), findings: [
+  await L("rel-finding").addReview({ itemId: id, by: GPT, head: H1, criteria: NO_CRITERIA, approve: false, note: "no", at: new Date().toISOString(), findings: [
     { file: "a.ts", line: 1, severity: "blocking", text: "drops rows" },
     { file: "b.ts", line: 2, severity: "follow-up", text: "name it" },
   ] });

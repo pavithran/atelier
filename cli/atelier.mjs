@@ -29,6 +29,7 @@ export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.t
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
 import { runLand } from "./land.mjs";
+import { runRevert } from "./revert.mjs";
 import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLeft, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { pushHistory } from "./push-steps.mjs";
@@ -40,7 +41,7 @@ import { describeStore, promptSecret, readSecret, writeSecret } from "./credenti
 import { checkEnv } from "./check-env.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMAND_USAGE, guideText, helpText } from "../src/usage.ts";
+import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
@@ -229,6 +230,7 @@ export const FLAGS = {
   login: { server: false, store: true },
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
+  revert: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
   // edit takes the same, and --title; one empty value clears the field, so
@@ -248,7 +250,7 @@ export const FLAGS = {
   report: { item: false },
   submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
   diff: {},
-  review: { approve: true, reject: true, note: false, head: false, findings: false },
+  review: { approve: true, reject: true, note: false, head: false, findings: false, criteria: false, request: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
   "read-token": {},
@@ -288,7 +290,7 @@ export const FLAGS = {
   inbox: { json: true },
   status: { json: true },
   open: {},
-  guide: {},
+  guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
   help: {},
 };
 const REST = new Set(["check"]);
@@ -456,6 +458,31 @@ function project() {
   const { here, name } = registeredHere();
   if (name) return name;
   die(unregisteredMessage(here, cfg.projects));
+}
+
+// A project's override for one role's instructions, `.atelier/prompts/ROLE.md`,
+// or null when the project has none. Read from the project's checkout on this
+// machine; a role outside one prints its default text. The project is the one
+// `--project` names, else this folder's workspace or registered checkout, else
+// none.
+function roleOverride(role) {
+  // A `--project` that names no checkout registered on this Mac is a typo, not
+  // a reason to print the default text: every other command that takes
+  // `--project` dies, and the quiet fallback here would hide the typo'd name
+  // and print the default as though the owner's override did not exist.
+  if (args.project && !cfg.projects?.[args.project]) {
+    die(unregisteredMessage(registeredHere().here, cfg.projects));
+  }
+  const name = args.project ?? wsConfig("project") ?? registeredHere().name;
+  const path = name ? cfg.projects?.[name]?.path : null;
+  if (!path) return null;
+  try {
+    const text = readFileSync(join(path, ".atelier", "prompts", `${role}.md`), "utf8");
+    if (!text.trim()) return null;
+    return text.endsWith("\n") ? text : `${text}\n`;
+  } catch {
+    return null;
+  }
 }
 
 // What a command that needs a project says when this folder is neither a
@@ -1154,6 +1181,28 @@ export function formatFields(fields) {
   ].filter(Boolean);
 }
 
+// What `atelier edit` says when the task's acceptance criteria changed
+// (Ledger.editItem): that they did, what that withdrew, and that a fresh
+// review of the new criteria is needed. An edit that leaves them as they
+// were says nothing of them.
+export function criteriaNotice(id, change) {
+  const count = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  const withdrawn = [
+    change.reviews ? count(change.reviews, "review") : null,
+    change.requests ? count(change.requests, "review request") : null,
+    change.acceptance ? "the acceptance" : null,
+    change.override ? "the override of the review" : null,
+  ].filter(Boolean);
+  return [
+    `The acceptance criteria of ${id} changed (binding ${String(change.to).slice(0, 12)}, was ${String(change.from).slice(0, 12)}).`,
+    withdrawn.length
+      ? `Withdrawn: ${withdrawn.join(", ")}. They stay in the record and never count again, even if the criteria change back; ${id} needs a fresh review of the new criteria.`
+      : `No review or review request stood, so nothing was withdrawn; any review of ${id} from now on judges the new criteria.`,
+    ...(change.acceptance ? [`${id} is claimed again: its holder submits it, and it is reviewed and accepted again before it can merge.`] : []),
+    ...(change.asked?.length ? [`Asked again at the same head: ${change.asked.join(", ")}.`] : []),
+  ].join("\n");
+}
+
 // The task an agent starts: its short title, then its whole brief.
 export function formatTask(item) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
@@ -1162,7 +1211,10 @@ export function formatTask(item) {
 
 export function formatBrief(project, id, brief, origin) {
   return [`${project}/${id}  ${flat(brief.title)}`, flat(brief.decided),
-    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief), ...brief.evidence.map(flat),
+    ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief),
+    ...(brief.partAccept ?? []).map((c, i) => `Plan acceptance criterion ${i + 1}: ${flat(c)}`),
+    ...(brief.criteria ? [`Criteria binding: ${brief.criteria} (a review of these criteria names it with --criteria)`] : []),
+    ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
@@ -2048,6 +2100,16 @@ const commands = {
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
   },
 
+  async revert() {
+    if (args._.length !== 2) die(COMMAND_USAGE.revert);
+    const name = project(), as = await actor(OWNER);
+    await runRevert(args._[1], as, {
+      create: (body) => call("POST", `${P(name)}/items`, body, as),
+      claim: (id, who) => claimWorkspace(name, id, who),
+      git, say: console.log,
+    });
+  },
+
   // The title is the words given; with --brief the long text goes apart.
   // One long string alone is sent as the title, as an older CLI sends it:
   // the server keeps it as the brief and derives the short title, and the
@@ -2078,6 +2140,7 @@ const commands = {
       ...formatFields(item),
     ];
     console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
+    if (item.criteriaChange) console.log(criteriaNotice(id, item.criteriaChange));
   },
 
   // The holder or the owner blocks a task with what it is waiting on. The
@@ -2118,7 +2181,23 @@ const commands = {
     // none of their findings. The item's own record holds every review at
     // every head; --reviews prints it in full and --json carries it, so a
     // session can read why a review rejected the task (t173).
-    const d = args.reviews || args.json ? await call("GET", I(name, id), undefined, as) : null;
+    let d = {};
+    try { d = await request("GET", I(name, id), undefined, as); }
+    catch (error) {
+      // Older servers may serve the brief without the detail route. Keep
+      // that brief usable, but do not conceal authentication or server errors.
+      if (!(error instanceof RequestError)) throw error;
+      if (error.code !== 1 || error.message !== "not_found: no such route") die(error.message, error.code);
+    }
+    // Revert requests are historical links, not proof that the undo merged.
+    // Keep them outside the server brief's five-line evidence limit.
+    for (const event of d.events ?? []) {
+      if (event.itemId !== id || !["item.reverts", "item.revert_requested"].includes(event.kind)) continue;
+      const { itemId, mergeCommit } = event.data ?? {};
+      if (!/^t[1-9]\d*$/.test(itemId ?? "") || !/^[a-f0-9]{40,64}$/.test(mergeCommit ?? "")) continue;
+      const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
+      brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
+    }
     if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
     const text = formatBrief(name, id, brief, server());
     console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
@@ -2390,7 +2469,16 @@ const commands = {
       if (typeof args.findings !== "string" || !args.findings.trim()) die("--findings needs a JSON list of findings");
       try { findings = JSON.parse(args.findings); } catch { die("--findings is not valid JSON"); }
     }
-    await call("POST", `${I(name, id)}/review`, { approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head, ...(findings !== undefined ? { findings } : {}) }, as);
+    // The criteria binding is the one the reviewer read, never the task's
+    // now: a verdict without it is refused by the server, with how to refresh.
+    if (args.criteria !== undefined && !/^[a-f0-9]{64}$/.test(String(args.criteria))) die("--criteria needs the 64-digit binding atelier show prints");
+    if (args.request !== undefined && !/^[0-9]+$/.test(String(args.request))) die("--request needs the request number the review claim gave");
+    await call("POST", `${I(name, id)}/review`, {
+      approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head,
+      ...(args.criteria !== undefined ? { criteria: String(args.criteria) } : {}),
+      ...(args.request !== undefined ? { request: Number(args.request) } : {}),
+      ...(findings !== undefined ? { findings } : {}),
+    }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
   },
 
@@ -2741,7 +2829,8 @@ const commands = {
       const d=await call("GET",I(name,id),undefined,OWNER);
       if (d.item.state==="submitted") {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
-        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,approve:true,note:args.note??""},OWNER);
+        // The owner approves here the criteria this command read with the head.
+        if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
         await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
       }
     }
@@ -3348,7 +3437,10 @@ const commands = {
   },
 
   guide() {
-    process.stdout.write(guideText());
+    if (args.role === undefined) { process.stdout.write(guideText()); return; }
+    const role = args.role;
+    if (!ROLES.includes(role)) die(`--role needs one of ${ROLES.join(", ")}: atelier guide --role build|review|plan|orchestrate`);
+    process.stdout.write(roleOverride(role) ?? rolePrompt(role));
   },
 
   help() {

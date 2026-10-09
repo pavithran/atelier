@@ -146,8 +146,9 @@ atelier init --title "My project" --check "npm test"
 `init` creates the baseline in Artifacts, pushes the current branch to it,
 and prints the policy it recorded: the branch, the required checks (each
 shown read-only) and the protected paths. Without `--protect`, those are
-`AGENTS.md`, `CLAUDE.md` and `wrangler.*`, with every file a check executes
-(here `package.json` and `.npmrc`, which decide what `npm test` runs).
+`AGENTS.md`, `CLAUDE.md`, `wrangler.*` and `.atelier/prompts/**`, with every
+file a check executes (here `package.json` and `.npmrc`, which decide what
+`npm test` runs).
 
 **5. File a task and do it as an agent.** `new` prints the task's id, here
 `t1`:
@@ -248,6 +249,18 @@ gate, check classes and checks that apply to some paths.
   one has its reviews refused, naming the missing token.
 - **Agent instructions.** `atelier guide` prints what an agent needs to
   know; paste it into the project's `AGENTS.md` or `CLAUDE.md`.
+- **Role prompts.** `atelier guide --role build|review|plan|orchestrate`
+  prints the instructions for one role alone: what a builder, a reviewer, a
+  planner or a session that runs Atelier for the project needs. A project
+  may override a role's text with `.atelier/prompts/ROLE.md` (for example
+  `.atelier/prompts/build.md`); the command prints that file when the
+  project has one, and a runner passes the same text to the agent it runs,
+  so the role's instructions live with the project and stay in sync between
+  the guide and the briefs. The path is protected by default, so a change
+  that rewrites a role's text needs another model family's review; and a
+  reviewer's runner reads `.atelier/prompts/review.md` from the accepted
+  branch, never from the change under review, so a change cannot author its
+  own reviewer's instructions.
 - **The owner's actor and name.** Set `OWNER_ACTOR` and `OWNER_NAME` as
   secrets or `vars`, and `TIMEZONE` to an IANA zone for the pages' times.
 - **Project policy.** `atelier init` again changes only what it names.
@@ -385,7 +398,13 @@ A plan's part gets its review request automatically on submission. A single
 task gets one when the owner lands it. A runner that offers review jobs
 claims the request with `atelier review-claim ID [--runner home:NAME]`,
 reads the diff, writes a verdict and findings, and records them with
-`atelier review ID --approve|--reject --head SHA --findings JSON`. Every
+`atelier review ID --approve|--reject --head SHA --criteria BINDING
+--request N --findings JSON`. A review is bound to the head and to the
+acceptance criteria its reviewer was given, the task's and a part's from
+the approved plan: the claim names their binding, `atelier show` prints
+it, and a verdict that names none, or criteria the task no longer has, is
+refused. Changing a task's criteria withdraws every review and live review
+request of the old ones, and an acceptance, and they never count again. Every
 review brief states the project's review bar; unset, the default bar blocks
 only for a correctness, security or data-loss defect that the change
 introduces, or fails to fix while claiming to. `atelier init --review-tier
@@ -690,6 +709,51 @@ files inside the Workers runtime against the Ledger Durable Object; `npx tsc
 -p . && npx tsc -p test` type-checks both. `node test/preview.mjs` serves a
 read-only preview of the pages with illustrative content.
 [docs/setup.md](docs/setup.md#local-development) has the details.
+
+### Concurrency proof
+
+`bin/concurrency-proof.mjs` drives N simulated agents (N up to 1,000,
+configurable) against a throwaway project over the CLI's own request protocol
+(the owner token as a bearer header, `x-atelier-actor` naming the agent) and
+reports what the run measured. It proves three things, and asserts each before
+exiting cleanly:
+
+- **claim spread** — N agents claim N tasks at once; all N succeed and each
+  gets its own fork;
+- **claim race** — N agents race for one task; exactly one wins and the other
+  N-1 are refused, each refusal naming the holder;
+- **pushes** — with `--push`, each agent makes a tiny commit and pushes it to
+  its own fork, and the push is observed at that fork's head (without
+  `--push` no push is made and the phase is skipped, so the run stays cheap).
+
+It then abandons every task it created and prints per-phase throughput and
+median and p90 latency, every error, and the cost of the run (wall time and
+request count; the agents are simulated, so the model cost is $0):
+
+```sh
+bin/concurrency-proof.mjs --project throwaway --agents 1000 --push
+```
+
+The tests run it against a stand-in server on localhost
+(`test/concurrency-proof.test.mjs`); the proof is never run against the live
+server. The figures below are one measured run against that stand-in, a single
+Node process on this machine, included because the brief asks for measured
+numbers rather than claims — they are not the live server's latency:
+
+```
+N=1000: claim spread 1000/1000 ok with 1000 distinct forks, median 77.3ms,
+p90 78.1ms; claim race 1 winner, 999 refused each naming the holder, median
+47.8ms, p90 48.6ms; cleanup 1001/1001; ~9172 req/s over 0.436s, 4002 requests.
+```
+
+The request count is every request the run sent — the 1001 that created the
+tasks and the race, the 2000 claims, and the 1001 abandons. With `--push`, the
+proof also reports how many of the git pushes ran at once (its peak live git
+subprocesses): the pushes are concurrent, so all N overlap, and that figure is
+asserted in the tests.
+
+A run against the live server prints the live numbers; this README reports
+only what a run measured.
 
 ## Licence
 

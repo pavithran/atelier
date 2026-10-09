@@ -3,8 +3,9 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, mergedBlockers, modelOf, recordedText, stateLabel, type Review } from "./rules.ts";
+import { bindingOf, DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, mergedBlockers, modelOf, recordedText, stateLabel, type Review } from "./rules.ts";
 import { assertLength } from "./text.ts";
+import { criteriaOf } from "./criteria.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
@@ -18,6 +19,12 @@ export interface Brief {
   nonGoals: string[];
   stopWhen: string[];
   nextGate: string | null;
+  // What a review judges the change against: the task's acceptance criteria,
+  // a part's criteria from the approved plan, and the binding of the two a
+  // review names (src/criteria.ts), which `atelier review --criteria` takes.
+  accept: string[];
+  partAccept: string[] | null;
+  criteria: string;
   evidence: string[];
   recommendation: { verdict: Verdict; reason: string };
 }
@@ -46,7 +53,7 @@ export function submission(events: LedgerEvent[], itemId: string, head: string |
   return last && summary ? { summary, by: last.actor } : null;
 }
 
-const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on the agent's machine" } as const;
+const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 // The project owner is not a model; the gate keeps them apart, and so do these lines.
 const reviewer = (d: Detail, by: string) => (by === (d.ownerActor ?? DEFAULT_OWNER) ? "the project owner" : modelOf(by));
@@ -57,7 +64,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events): Brief {
   const { item, policy, gate } = detail;
   const view = evidenceAt(policy, detail.evidence, item.head);
-  const reviews = countingReviews(detail.reviews, item.head, policy, detail.ownerActor ?? DEFAULT_OWNER);
+  const reviews = countingReviews(detail.reviews, bindingOf(item), policy, detail.ownerActor ?? DEFAULT_OWNER);
   const rejections = reviews.filter((r) => !r.approve);
   const failed = view.checks.filter((c) => c.grade === "observed" && !c.passed);
   const pending = view.checks.filter((c) => c.grade === "pending");
@@ -146,6 +153,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     nonGoals: item.nonGoals ?? [],
     stopWhen: item.stopWhen ?? [],
     nextGate: item.nextGate ?? null,
+    accept: item.accept ?? [],
+    partAccept: item.partAccept ?? null,
+    criteria: criteriaOf(item),
     evidence: lines.map((l) => l.text),
     recommendation,
   };

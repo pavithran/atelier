@@ -77,6 +77,12 @@ function linesFor(e, verdicts, used, owner) {
       const fields = [["nonGoals", "non-goals"], ["stopWhen", "stop-when"], ["nextGate", "next gate"]].filter(([k]) => d[k] !== undefined).map(([, label]) => label);
       return [`framing edited by ${flat(e.actor)}${fields.length ? `: ${fields.join(", ")}` : ""}`];
     }
+    // A change of the acceptance criteria withdraws what judged the old ones (t326).
+    case "item.criteria_changed": {
+      const n = d.withdrawn ?? {}, count = (k, one) => `${k} ${one}${k === 1 ? "" : "s"}`;
+      const gone = [n.reviews ? count(n.reviews, "review") : null, n.requests ? count(n.requests, "review request") : null, d.acceptanceWithdrawn ? "the acceptance" : null, d.overrideWithdrawn ? "the override" : null].filter(Boolean);
+      return [`acceptance criteria changed by ${flat(e.actor)}${gone.length ? `; withdrawn: ${gone.join(", ")}` : ""}`];
+    }
     case "push.observed":
       return [`head ${short(d.head)} pushed by ${flat(e.actor)}, observed in Artifacts${d.rebasedFrom ? `, rebased from ${short(d.rebasedFrom)}` : ""}${d.reportedHead ? ` (the agent named ${short(d.reportedHead)})` : ""}${d.approvalInvalidated ? "; the acceptance at the earlier head no longer stands" : ""}`];
     case "push.unrecorded":

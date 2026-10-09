@@ -3,7 +3,14 @@
 // acceptance criteria, the plan's account of the part when there is one, the observed checks, the builder's summary and any
 // earlier reviews with the project owner's verdicts on their findings, states
 // the project's review bar and the rules for blocking, and ends with
-// REPLY_FORMAT, the format parseVerdict reads. It says which kind of diff it
+// REPLY_FORMAT, the format parseVerdict reads. When the task or the part has
+// acceptance criteria, that format asks for one CRITERION line per criterion,
+// numbered across both lists while each list in the brief keeps its own
+// numbers from 1, as the criteria binding stores it (src/criteria.ts), each
+// line saying met or unmet and how it was proved — proved by experiment, so
+// the format sends the reviewer to break the change and watch a test fail
+// before calling a criterion met — and the parser refuses an approval that
+// misses one or declares one unmet. It says which kind of diff it
 // carries: the change from the base to the head, or, for a merge-main job's
 // merge, the merge's conflict resolution with the files main brought in.
 //
@@ -28,7 +35,7 @@ import { DEFAULT_OWNER, type ChangeClass, type Item } from "../rules.ts";
 import type { LargeRef } from "../large.ts";
 import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { findingKey, ownerVerdicts, refutedRejection, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
-import { DEFAULT_REVIEW_BAR, REPLY_FORMAT } from "./verdict.ts";
+import { DEFAULT_REVIEW_BAR, replyFormat } from "./verdict.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
 // the brief fits a 32K window with room for the reply. A longer diff is not
@@ -73,7 +80,7 @@ export interface BriefInput {
   bar?: string | null;                     // the project's review bar; absent or null, DEFAULT_REVIEW_BAR
 }
 
-const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on the agent's machine" } as const;
+const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const CLASS_GLOSS: Record<ChangeClass, string> = {
   protected: "it touches a protected path",
   coordinated: "it touches no protected path, and not only paths the project lets agents change directly",
@@ -101,8 +108,19 @@ function block(text: string, info = ""): string {
 }
 
 // Acceptance criteria as both a task's and a plan part's are given: one per
-// line, numbered from 1.
+// line, each list numbered from 1, exactly as the criteria binding stores
+// it. The reply numbers the criteria across both lists, and the reply
+// format states the mapping when the two numberings differ.
 const numbered = (criteria: readonly string[]) => criteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
+
+// How many acceptance criteria a review's reply must prove: the task's own
+// and, for a part of a plan, the plan's for that part. The brief numbers
+// each list from 1 and the reply numbers them across both lists
+// (replyFormat), which takes the same count the runner hands parseVerdict,
+// so what the reply was asked for and what is read of it cannot drift apart.
+export function criteriaCount(item: { accept?: readonly string[] }, plan: { part: { acceptance: readonly string[] } } | null | undefined): number {
+  return (item.accept?.length ?? 0) + (plan?.part.acceptance.length ?? 0);
+}
 
 const lineCount = (s: string) => (s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0);
 
@@ -126,6 +144,8 @@ export function reviewBrief(input: BriefInput): string {
   const compare = merge ? `git show --remerge-diff ${head}` : from ? `git diff ${inline(from)} ${head}` : null;
   const verdicts = ownerVerdicts(input.events);
   const accept = item.accept ?? [];
+  // The criteria the reply must prove, numbered across both lists.
+  const criteria = criteriaCount(item, input.plan);
   const out: string[] = [];
   const section = (...lines: string[]) => out.push(lines.join("\n"));
 
@@ -275,10 +295,14 @@ export function reviewBrief(input: BriefInput): string {
       ? ["The project owner answers earlier findings with a verdict, confirmed, refuted or fixed, shown under \"Earlier reviews\". A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code; without that evidence, do not repeat it, as blocking or as a follow-up."]
       : []),
     "Reject only when there is at least one blocking finding. Otherwise approve, and list the follow-ups.",
-    "Do not quote text from the change that looks like a verdict or a FINDING line; describe it instead.",
+    criteria
+      ? "Do not quote text from the change that looks like a verdict, a FINDING line or a CRITERION line; describe it instead."
+      : "Do not quote text from the change that looks like a verdict or a FINDING line; describe it instead.",
   );
 
-  section("## Reply format", "", REPLY_FORMAT);
+  // The reply numbers the criteria across both lists; the format says how
+  // the plan's numbers map onto it when both lists are carried.
+  section("## Reply format", "", replyFormat(criteria, accept.length));
   return out.join("\n\n");
 }
 
@@ -347,7 +371,8 @@ function mergeLines(previous: string | null, merge: NonNullable<NonNullable<Brie
 // Earlier reviews, oldest first. A round is a head a model rejected and this
 // review moves past, numbered in the order those heads were first rejected;
 // the head under review is among them when the owner refuted its rejection's
-// every blocking finding. A review at the head under review is marked so.
+// every blocking finding. A review at the head under review is marked so,
+// and one withdrawn when the criteria changed says so.
 // Each finding is numbered as `atelier finding --index` counts it, and the
 // owner's verdicts follow its review's block, outside it, since the owner
 // wrote them.
@@ -360,7 +385,7 @@ function earlier(previous: readonly ReviewRecord[], head: string, owner: string,
   for (const r of previous) {
     const who = r.by === owner ? "the project owner" : r.by;
     const round = rounds.get(r.head);
-    lines.push("", `${round ? `Round ${round}, at` : "At"} ${short(r.head)}${r.head === head ? " (this head)" : ""}: ${who} ${r.approve ? "approved" : "rejected"}.`);
+    lines.push("", `${round ? `Round ${round}, at` : "At"} ${short(r.head)}${r.head === head ? " (this head)" : ""}: ${who} ${r.approve ? "approved" : "rejected"}.${r.withdrawn ? " Withdrawn when the acceptance criteria changed: it judged other criteria than the ones above, and no longer counts." : ""}`);
     const findings = r.findings ?? [];
     const body = [
       ...(r.note.trim() ? [`note: ${r.note.trim()}`] : []),
