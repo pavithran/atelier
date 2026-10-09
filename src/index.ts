@@ -1,6 +1,7 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { scanDiff } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
@@ -1314,7 +1315,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // more history is read for it.
       const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
       const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
-      return json(await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors));
+      const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors);
+      // The push scan (t332): the added lines at the new head are read for key
+      // patterns, and the flag records only file and line, never the value.
+      if (recorded.fork && recorded.head && recorded.head !== item.head) {
+        const p = await L.project();
+        const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork);
+        await L.setSecret(id, "atelier/events", recorded.head, diff ? scanDiff(diff) : []);
+      }
+      return json(recorded);
     }
     case "evidence": {
       const item = await L.item(id);
@@ -1441,6 +1450,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.block(id, actor, body.reason, !!c.token));
     case "unblock":
       return json(await L.unblock(id, actor, !!c.token));
+    case "clear-secret":
+      requireOwner(env, actor);
+      return json(await L.clearSecret(id, actor, body.reason, !!c.token));
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
@@ -2188,6 +2200,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
     else if (verb === "block") await L.block(id, owner, note);
     else if (verb === "unblock") await L.unblock(id, owner);
+    else if (verb === "clear-secret") await L.clearSecret(id, owner, note);
     else if (verb === "release") await L.release(id, owner, note, false, oldToken);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
@@ -2454,6 +2467,14 @@ export default {
               const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
               const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
               const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors);
+              // The push scan for a push seen on the fork, as recordPush runs
+              // it: file and line only, never the value. Only a head that
+              // actually moved is scanned, so a duplicate sighting is not.
+              if (recorded.fork && recorded.head === current && recorded.head !== item.head) {
+                const p = await L.project();
+                const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork);
+                await L.setSecret(recorded.id, "atelier/events", current, diff ? scanDiff(diff) : []);
+              }
               if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
             }
             break;

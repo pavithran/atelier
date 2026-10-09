@@ -45,6 +45,12 @@ export interface Item {
   // (criteriaOf in src/criteria.ts). Null or absent for any other item.
   partAccept?: string[] | null;
   blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
+  // A blocking flag the push scan records (t332): one per file and line whose
+  // added text held a key pattern. Only the file and line are kept, never the
+  // matched value. It stands while it names the current head, and stops the
+  // gate from accepting or merging; the project owner clears it with a reason
+  // (secret.cleared) or a later push that removes the line clears it.
+  secret?: SecretFlag[] | null;
   // A plan, or a part of one (docs/orchestrator.md). An ordinary task
   // carries none of these four fields.
   kind?: "plan" | "part";
@@ -63,6 +69,17 @@ export interface Block {
   by: string;
   at: string;
   from: ItemState;
+}
+
+// One entry of the secret flag the push scan records: where a key pattern was
+// added, at which head, by whom and when. The matched value is never kept, so
+// only these fields exist (see src/secret-scan.ts).
+export interface SecretFlag {
+  file: string;
+  line: number;
+  head: string;
+  by: string;
+  at: string;
 }
 
 // What `atelier new` and `atelier edit` set. A field present replaces the
@@ -795,6 +812,16 @@ export function blockReason(value: unknown): string {
   return reason;
 }
 
+// The reason a secret flag is cleared with. A missing, blank or over-long
+// reason is refused, because it is the record of why the owner judged the
+// line safe, which a later reader checks against the code.
+export function secretClearReason(value: unknown): string {
+  const reason = line(value);
+  if (!reason) throw new RuleError("secret_reason", "clearing a secret flag needs a reason: what shows the line is not a secret", 400);
+  if (reason.length > REASON_MAX) throw new RuleError("secret_reason", `a clearing reason is at most ${REASON_MAX} characters`, 400);
+  return reason;
+}
+
 // The item fields a request sets, checked at the boundary: each list is
 // strings with something in each, at most FIELD_LIST_MAX of them; the gate is
 // one line or null. A field that is not sent is left out, so the Ledger
@@ -1164,6 +1191,17 @@ export interface Gate {
   overridden?: ReviewOverride;  // set when the owner's override stands in for a missing independent review
 }
 
+// The blockers a standing secret flag raises, one per file and line. The
+// message names the flag, never the matched value, so the owner and the
+// gate's message both show where the key pattern is without printing it.
+// A flag on any other head than the item's current one has been superseded by
+// a later push and stands no longer.
+export function secretBlockers(item: Pick<Item, "secret" | "head">): string[] {
+  return (item.secret ?? [])
+    .filter((f) => f.head === item.head)
+    .map((f) => `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
+}
+
 // `reviewHeld` says the change's independent review is held outside the
 // item, as a plan's is by its integrated parts' reviews (planGate): the
 // item's own contributors are then not compared with any reviewer, and no
@@ -1176,6 +1214,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
   if (!item.head) blockers.push("no verified push");
+  blockers.push(...secretBlockers(item));
   const view = evidenceAt(policy, evidence, item.head);
   for (const c of view.checks) {
     if (c.grade === "pending") blockers.push(`\`${c.claim}\` not yet observed at this head`);

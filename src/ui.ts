@@ -1739,6 +1739,20 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         </form></details>`
     : "";
 
+  // A standing secret flag (t332) names its file and line, never the value,
+  // and offers the one way on: the owner clears it with a reason, which is
+  // recorded.
+  const secrets = (item.secret ?? []).filter((f) => f.head === item.head);
+  const secretBox = secrets.length
+    ? `<div class="notice" role="status"><h3>Secret flagged</h3>
+        <ul>${secrets.map((f) => `<li><code>${e(f.file)}:${f.line}</code></li>`).join("")}</ul>
+        <p class="meta">A key pattern was found in the added lines. Acceptance and merge are refused until it is cleared. Clear it only after checking the line is not a real secret; the reason you give is recorded.</p>
+        <form class="stack" method="post" action="${action("clear-secret")}">${revision}
+          <label>Why is this line not a secret?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>
+          <button class="primary">Clear the flag</button>
+        </form></div>`
+    : "";
+
   // A blocked task shows who blocked it, why, and the one way on; any task
   // that is waiting, in progress or in review offers the block form.
   const blockBox = item.state === "blocked" && item.blocked
@@ -1767,6 +1781,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
+  ${secretBox}
   ${askReview}${merge}${reaccept}
   <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;
