@@ -22,6 +22,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const MAX_AGENTS = 1000;
+const DEFAULT_RETRIES = 6;
+const DEFAULT_BACKOFF_MS = 250;
+const MAX_BACKOFF_MS = 10000;
 
 const HELP = `Usage: bin/concurrency-proof.mjs --project NAME [options]
 
@@ -37,7 +40,12 @@ every task it created.
   --push            make a tiny git commit and push in the push phase;
                     without it no push is made and the phase is skipped
   --scratch DIR     where the --push workspaces go (default .scratch/concurrency-proof)
-  --no-cleanup      leave the created tasks claimed instead of abandoning them
+  --retries N       retry a request answered with a retryable 503 (a Retry-After
+                    header, or artifacts_unavailable / unavailable) up to N times
+                    with exponential backoff (default ${DEFAULT_RETRIES})
+  --backoff-ms MS   the first backoff delay, doubling each retry up to 10s
+                    (default ${DEFAULT_BACKOFF_MS}); a longer Retry-After is honoured up to 10s
+  --no-cleanup  leave the created tasks claimed instead of abandoning them
   --json            print the report as one JSON object instead of prose
   -h, --help        print this
 
@@ -60,7 +68,7 @@ function usageError(message) {
 }
 
 function parseArgs(argv) {
-  const out = { project: null, agents: 10, server: process.env.ATELIER_SERVER, token: process.env.ATELIER_TOKEN, push: false, scratch: join(".scratch", "concurrency-proof"), cleanup: true, json: false };
+  const out = { project: null, agents: 10, server: process.env.ATELIER_SERVER, token: process.env.ATELIER_TOKEN, push: false, scratch: join(".scratch", "concurrency-proof"), cleanup: true, json: false, retries: DEFAULT_RETRIES, backoffMs: DEFAULT_BACKOFF_MS };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => (i + 1 < argv.length ? argv[++i] : usageError(`--${a.slice(2)} needs a value`));
@@ -69,6 +77,8 @@ function parseArgs(argv) {
     else if (a === "--server") out.server = next();
     else if (a === "--token") out.token = next();
     else if (a === "--scratch") out.scratch = next();
+    else if (a === "--retries") out.retries = Number(next());
+    else if (a === "--backoff-ms") out.backoffMs = Number(next());
     else if (a === "--push") out.push = true;
     else if (a === "--no-cleanup") out.cleanup = false;
     else if (a === "--json") out.json = true;
@@ -77,6 +87,8 @@ function parseArgs(argv) {
   }
   if (!out.project) usageError("--project NAME is required (the throwaway project)");
   if (!Number.isInteger(out.agents) || out.agents < 1 || out.agents > MAX_AGENTS) usageError(`--agents must be an integer from 1 to ${MAX_AGENTS}`);
+  if (!Number.isInteger(out.retries) || out.retries < 0) usageError("--retries must be a whole number, 0 or more");
+  if (!Number.isFinite(out.backoffMs) || out.backoffMs < 0) usageError("--backoff-ms must be a number, 0 or more");
   if (!out.server) usageError("no server: pass --server URL or set ATELIER_SERVER");
   if (!out.token) usageError("no owner token: pass --token or set ATELIER_TOKEN");
   return out;
@@ -103,7 +115,47 @@ const base = server().replace(/\/$/, "");
 // CLI does; the server refuses an owner-token request that names no actor.
 const OWNER_ACTOR = process.env.ATELIER_OWNER || "owner";
 
+// A 503 is retryable when the server says so: a Retry-After header, or the
+// error code artifacts_unavailable or unavailable. Anything else is final.
+const RETRYABLE_CODES = new Set(["artifacts_unavailable", "unavailable"]);
+
+// What became of every request: answered at the first try, answered after
+// retries, or ended in a final failure (a refusal the server meant, "owned",
+// is an answer, not a failure). attempts counts every HTTP exchange.
+const tally = { firstTry: 0, retried: 0, failed: 0, attempts: 0, retries: 0 };
+
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+function backoffMs(attempt, retryAfter) {
+  const exp = Math.min(MAX_BACKOFF_MS, cfg.backoffMs * 2 ** attempt);
+  const asked = Number.isFinite(retryAfter) ? Math.min(MAX_BACKOFF_MS, retryAfter * 1000) : 0;
+  return Math.max(exp, asked) * (1 + Math.random() * 0.25);
+}
+
 async function request(method, path, body, actor = OWNER_ACTOR) {
+  for (let n = 0; ; n++) {
+    tally.attempts += 1;
+    try {
+      const data = await attemptOnce(method, path, body, actor);
+      if (n === 0) tally.firstTry += 1; else tally.retried += 1;
+      return data;
+    } catch (err) {
+      if (err.retryable && n < cfg.retries) {
+        tally.retries += 1;
+        await sleep(backoffMs(n, err.retryAfter));
+        continue;
+      }
+      if (err.error === "owned") { if (n === 0) tally.firstTry += 1; else tally.retried += 1; }
+      else {
+        tally.failed += 1;
+        if (err.retryable) err.message += ` (still unavailable after ${n} ${n === 1 ? "retry" : "retries"})`;
+      }
+      throw err;
+    }
+  }
+}
+
+async function attemptOnce(method, path, body, actor) {
   const headers = { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" };
   headers["x-atelier-actor"] = actor;
   let res, text;
@@ -124,6 +176,9 @@ async function request(method, path, body, actor = OWNER_ACTOR) {
     err.status = res.status;
     err.error = data.error ?? String(res.status);
     err.detail = data.detail ?? text.slice(0, 300);
+    const ra = res.headers.get("retry-after");
+    err.retryAfter = ra ? Number(ra) : null;
+    err.retryable = res.status === 503 && (Boolean(ra) || RETRYABLE_CODES.has(err.error));
     throw err;
   }
   return data;
@@ -220,9 +275,15 @@ async function claimRace() {
   const winners = claims.filter((c) => c.ok);
   const refusals = claims.filter((c) => !c.ok && c.error.error === "owned");
   const errors = claims.filter((c) => !c.ok && c.error.error !== "owned");
-  const winnerActor = winners.length === 1 ? (winners[0].value.item?.owner ?? actorOf(claims.indexOf(winners[0]))) : null;
+  // The ledger is the judge: read the holder from the server after the race, so
+  // the result stands even when the winner's own reply never arrived.
+  let holder = null;
+  let holderError = null;
+  try { holder = (await request("GET", I(cfg.project, item.id))).owner ?? null; } catch (error) { holderError = error.message; }
+  const replied = winners.length === 1 ? (winners[0].value.item?.owner ?? actorOf(claims.indexOf(winners[0]))) : null;
+  const winnerActor = holder ?? replied;
   const naming = winnerActor ? refusals.filter((r) => r.error.detail.includes(winnerActor)).length : 0;
-  return { item, claims, winners: winners.length, refusals: refusals.length, namingHolder: naming, errors: errors.length, ms: claims.map((c) => c.ms), winner: winnerActor, errorList: errors.map((c) => c.error.message) };
+  return { item, claims, winners: winners.length, refusals: refusals.length, namingHolder: naming, errors: errors.length, ms: claims.map((c) => c.ms), winner: winnerActor, holder, holderError, winnerReplied: replied !== null, errorList: errors.map((c) => c.error.message) };
 }
 
 // ── phase 3: pushes ─────────────────────────────────────────────────────────
@@ -245,21 +306,40 @@ async function pushes(spread) {
 // ── cleanup ─────────────────────────────────────────────────────────────────
 // Abandon every task the proof created, as the owner.
 async function cleanup(items) {
-  const results = await Promise.all(items.map((item) => timed(() => request("POST", `${I(cfg.project, item.id)}/abandon`, { note: "concurrency proof cleanup" }))));
-  const ok = results.filter((r) => r.ok);
-  return { ok: ok.length, failed: results.length - ok.length, ms: results.map((r) => r.ms), errors: results.filter((r) => !r.ok).map((r) => r.error.message) };
+  const results = [];
+  const lastError = new Map();
+  let pending = items;
+  // Each round abandons what is left. A task whose abandon failed is read back
+  // from the server, since the abandon may have landed though its reply did not.
+  for (let round = 0; pending.length && round <= cfg.retries; round++) {
+    if (round > 0) await sleep(backoffMs(round - 1, null));
+    const batch = await Promise.all(pending.map((item) => timed(() => request("POST", `${I(cfg.project, item.id)}/abandon`, { note: "concurrency proof cleanup" }))));
+    results.push(...batch);
+    const left = [];
+    for (let i = 0; i < pending.length; i++) {
+      if (batch[i].ok) continue;
+      let state = null;
+      try { state = (await request("GET", I(cfg.project, pending[i].id))).state; } catch { /* unreadable: still counted unabandoned */ }
+      if (state === "abandoned") continue;
+      lastError.set(pending[i].id, batch[i].error.message);
+      left.push(pending[i]);
+    }
+    pending = left;
+  }
+  return { ok: items.length - pending.length, failed: pending.length, ms: results.map((r) => r.ms), errors: pending.map((item) => `${item.id}: ${lastError.get(item.id)}`), unabandoned: pending.map((item) => item.id) };
 }
 
 const spread = await claimSpread();
 const race = await claimRace();
 const pushesResult = await pushes(spread);
-const abandoned = cfg.cleanup ? await cleanup([...spread.items, race.item]) : { ok: 0, failed: 0, ms: [], errors: [], skipped: true };
+const abandoned = cfg.cleanup ? await cleanup([...spread.items, race.item]) : { ok: 0, failed: 0, ms: [], errors: [], unabandoned: [], skipped: true };
 
 const wallMs = performance.now() - overallStart;
-// Every request the proof sent, including the N+1 that created the tasks and
-// the one that created the race item, so the reported cost counts the whole run.
+// Every HTTP exchange the proof made, retries and read-backs included, so the
+// reported cost counts the whole run.
 const createdTasks = spread.items.length + 1;
-const totalRequests = createdTasks + spread.claims.length + race.claims.length + (pushesResult.ran ? spread.ok : 0) + (cfg.cleanup ? spread.items.length + 1 : 0);
+const totalRequests = tally.attempts;
+const outcomes = { firstTry: tally.firstTry, onRetry: tally.retried, failed: tally.failed, retries: tally.retries, retryLimit: cfg.retries };
 
 function phaseLine(name, requests, ok, refused, failed, s, errors) {
   const thru = s.n ? (requests / (s.max / 1000)).toFixed(0) : 0;
@@ -277,10 +357,11 @@ if (cfg.json) {
     wallMs: Math.round(wallMs * 1000) / 1000, requests: totalRequests, created: createdTasks,
     phases: {
       claimSpread: { created: spread.items.length, requests: spread.claims.length, ok: spread.ok, distinctForks: spread.distinctForks, failed: spread.failed, ...stats(spread.ms), errors: spread.errors },
-      claimRace: { created: 1, requests: race.claims.length, winner: race.winner, winners: race.winners, refused: race.refusals, namingHolder: race.namingHolder, errors: race.errors, ...stats(race.ms), errorList: race.errorList },
+      claimRace: { created: 1, requests: race.claims.length, holder: race.holder, holderError: race.holderError, winnerReplied: race.winnerReplied, winner: race.winner, winners: race.winners, refused: race.refusals, namingHolder: race.namingHolder, errors: race.errors, ...stats(race.ms), errorList: race.errorList },
       pushes: pushesResult.ran ? { requests: spread.ok, ok: pushesResult.ok, failed: pushesResult.failed, maxConcurrent: pushesResult.maxConcurrent, ...stats(pushesResult.ms), errors: pushesResult.errors } : { requests: 0, ok: 0, failed: 0, skipped: true },
-      cleanup: cfg.cleanup ? { requests: spread.items.length + 1, ok: abandoned.ok, failed: abandoned.failed, ...stats(abandoned.ms), errors: abandoned.errors } : { skipped: true },
+      cleanup: cfg.cleanup ? { requests: spread.items.length + 1, ok: abandoned.ok, failed: abandoned.failed, unabandoned: abandoned.unabandoned, ...stats(abandoned.ms), errors: abandoned.errors } : { skipped: true },
     },
+    outcomes,
     cost: { wallSeconds: Math.round(wallMs / 1000 * 1000) / 1000, requests: totalRequests, pushes: pushesResult.ran ? pushesResult.ok : 0, modelCalls: 0, modelCostUsd: 0 },
   };
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");
@@ -289,19 +370,21 @@ if (cfg.json) {
     `concurrency proof: ${cfg.agents} agents against ${cfg.project} on ${base}`,
     ``,
     phaseLine("claim spread", spread.claims.length, spread.ok, 0, spread.failed, stats(spread.ms), spread.errors) + `, ${spread.distinctForks} distinct forks`,
-    phaseLine("claim race", race.claims.length, race.winners, race.refusals, race.errors, stats(race.ms), race.errorList) + `, winner ${race.winner ?? "none"}, ${race.namingHolder}/${race.refusals} refusals name the holder`,
+    phaseLine("claim race", race.claims.length, race.winners, race.refusals, race.errors, stats(race.ms), race.errorList) + `, holder ${race.holder ?? "none"} (read from the server${race.holderError ? `: ${race.holderError}` : race.winnerReplied ? "" : "; the winner's reply did not arrive"}), ${race.namingHolder}/${race.refusals} refusals name the holder`,
     pushesResult.ran
       ? phaseLine("pushes", spread.ok, pushesResult.ok, 0, pushesResult.failed, stats(pushesResult.ms), pushesResult.errors) + `, ${pushesResult.maxConcurrent} concurrent`
       : `pushes: none (run with --push for tiny pushes)`,
     cfg.cleanup ? phaseLine("cleanup", spread.items.length + 1, abandoned.ok, 0, abandoned.failed, stats(abandoned.ms), abandoned.errors) : `cleanup: skipped (--no-cleanup)`,
+    cfg.cleanup && abandoned.unabandoned.length ? `NOT ABANDONED: ${abandoned.unabandoned.join(", ")} (abandon by hand)` : null,
     ``,
+    `requests: ${outcomes.firstTry} succeeded first try, ${outcomes.onRetry} succeeded on retry, ${outcomes.failed} final failures (${outcomes.retries} retries, limit ${outcomes.retryLimit} per request)`,
     `throughput ${(totalRequests / (wallMs / 1000)).toFixed(0)} req/s over ${(wallMs / 1000).toFixed(3)}s, ${totalRequests} requests`,
     `cost ${(wallMs / 1000).toFixed(3)}s wall, ${totalRequests} requests, ${pushesResult.ran ? pushesResult.ok : 0} pushes, $0.00 model calls (agents simulated)`,
   ];
-  process.stdout.write(lines.join("\n") + "\n");
+  process.stdout.write(lines.filter((l) => l !== null).join("\n") + "\n");
 }
 
 const failures = spread.failed + race.errors + pushesResult.failed + (cfg.cleanup ? abandoned.failed : 0);
-if (failures > 0 || spread.distinctForks !== cfg.agents || race.winners !== 1 || (pushesResult.ran && pushesResult.ok !== spread.ok)) {
+if (failures > 0 || spread.distinctForks !== cfg.agents || !race.holder || race.winners > 1 || (pushesResult.ran && pushesResult.ok !== spread.ok)) {
   process.exit(1);
 }
