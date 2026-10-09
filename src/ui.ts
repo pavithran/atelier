@@ -1745,7 +1745,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   const secrets = (item.secret ?? []).filter((f) => f.head === item.head);
   const secretBox = secrets.length
     ? `<div class="notice" role="status"><h3>Secret flagged</h3>
-        <ul>${secrets.map((f) => `<li><code>${e(f.file)}:${f.line}</code></li>`).join("")}</ul>
+        <ul>${secrets.map((f) => `<li><code>${e(f.file)}${f.unscanned ? "" : `:${f.line}`}</code></li>`).join("")}</ul>
         <p class="meta">A key pattern was found in the added lines. Acceptance and merge are refused until it is cleared. Clear it only after checking the line is not a real secret; the reason you give is recorded.</p>
         <form class="stack" method="post" action="${action("clear-secret")}">${revision}
           <label>Why is this line not a secret?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>

@@ -49,6 +49,12 @@ export const LIMITS = {
   context: 3,
 };
 
+// The limits a push's secret scan diffs with: every changed file, whatever its
+// size or count, so a key behind the display diff's cut is still found. Only
+// a text file whose edit exceeds the Myers budget is left unscanned, and the
+// scan records that file as a blocking flag rather than pass it silently.
+export const SCAN_LIMITS: typeof LIMITS = { files: Infinity, blobBytes: Infinity, diffLines: Infinity, treeReads: Infinity, context: LIMITS.context };
+
 // ── line diff ──────────────────────────────────────────────────────────────
 
 // Myers' O(ND) shortest edit script, returned as a full sequence of kept,
@@ -401,6 +407,20 @@ export async function itemDiff(artifacts: Artifacts, baselineRepo: string, works
   if (!m) return null;
   if (m.mainTree === m.headTree) return { base: m.main, head: m.head, files: [], truncated: false, baseTree: m.mainTree, headTree: m.headTree };
   const { files, truncated } = await treeDiff(pairReader(fork, baseline), m.mainTree, m.headTree);
+  return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
+}
+
+// The diff a push's secret scan reads: `itemDiff` without the display limits,
+// so the scan sees every added line of every changed file, not just the first
+// page. A text file the diff cannot hold is listed too-large, and the scan
+// turns that into a blocking flag naming the file left unscanned.
+export async function fullDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
+  using fork = await artifacts.get(workspaceRepo);
+  using baseline = await artifacts.get(baselineRepo);
+  const m = await againstMain(fork, baseline);
+  if (!m) return null;
+  if (m.mainTree === m.headTree) return { base: m.main, head: m.head, files: [], truncated: false, baseTree: m.mainTree, headTree: m.headTree };
+  const { files, truncated } = await treeDiff(pairReader(fork, baseline), m.mainTree, m.headTree, SCAN_LIMITS);
   return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
 }
 

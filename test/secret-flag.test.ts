@@ -45,6 +45,16 @@ test("secretBlockers names each standing flag and ignores a cleared or absent on
   assert.deepEqual(secretBlockers(item({})), []);
 });
 
+test("a flag naming a file left unscanned blocks, naming the file without a line", () => {
+  const unscanned: SecretFlag = { file: "big.ts", line: 0, head: H1, by: "atelier/events", at: T, unscanned: true };
+  assert.deepEqual(secretBlockers(item({ secret: [unscanned] })), [
+    "secret scan could not read big.ts in full; clear it with a reason or push a revision that removes the line",
+  ]);
+  const g = gate(item({ secret: [unscanned] }), policy, passing, []);
+  assert.equal(g.ready, false);
+  assert.ok(g.blockers.some((b) => b.includes("big.ts")));
+});
+
 test("a clearing reason is required, trimmed and at most 500 characters", () => {
   assert.equal(secretClearReason("  this is a fake key in a test fixture \u0007\n"), "this is a fake key in a test fixture");
   assert.equal(secretClearReason("x".repeat(500)).length, 500);
