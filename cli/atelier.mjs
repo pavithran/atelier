@@ -2299,7 +2299,7 @@ const commands = {
     // file and line, never the value; a scan still pending blocks the gate
     // until a later push, or Atelier's own retry, completes it.
     if (item.secretScan === item.head) console.log(`${id}: the secret scan of ${short(item.head)} has not completed; acceptance waits for it. Run atelier push again to retry it.`);
-    for (const f of (item.secret ?? []).filter((f) => f.head === item.head)) {
+    for (const f of (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared)) {
       console.log(f.unscanned ? `${id}: the secret scan could not read ${f.file} in full; the flag blocks acceptance until the owner clears it or a push removes the line.`
         : `${id}: a key pattern was added at ${f.file}:${f.line}; the flag blocks acceptance until the owner clears it or a push removes the line.`);
     }

@@ -11,7 +11,7 @@ const H2 = "b".repeat(40);
 const T = "2026-10-03T12:00:00.000Z";
 const A = "claude-code/opus-5.5";
 const policy: ProjectPolicy = { checks: [], protected: [] };
-const flag: SecretFlag = { file: "src/keys.ts", line: 12, head: H1, by: "atelier/events", at: T };
+const flag: SecretFlag = { file: "src/keys.ts", line: 12, fingerprint: "f".repeat(64), head: H1, by: "atelier/events", at: T };
 
 function item(over: Partial<Item> = {}): Item {
   return {
@@ -40,13 +40,19 @@ test("secretBlockers names each standing flag and ignores a cleared or absent on
   assert.deepEqual(secretBlockers(item({ secret: [flag] })), [
     "secret flagged in src/keys.ts:12; clear it with a reason or push a revision that removes the line",
   ]);
+  // A flag a clearance matched is kept on the item as a record, not a blocker.
+  assert.deepEqual(secretBlockers(item({ secret: [{ ...flag, cleared: true }] })), []);
+  assert.equal(gate(item({ secret: [{ ...flag, cleared: true }] }), policy, passing, []).ready, true);
+  assert.deepEqual(secretBlockers(item({ secret: [{ ...flag, cleared: true }, { ...flag, line: 30, fingerprint: "e".repeat(64) }] })), [
+    "secret flagged in src/keys.ts:30; clear it with a reason or push a revision that removes the line",
+  ]);
   assert.deepEqual(secretBlockers(item({ secret: [] })), []);
   assert.deepEqual(secretBlockers(item({ secret: null })), []);
   assert.deepEqual(secretBlockers(item({})), []);
 });
 
 test("a flag naming a file left unscanned blocks, naming the file without a line", () => {
-  const unscanned: SecretFlag = { file: "big.ts", line: 0, head: H1, by: "atelier/events", at: T, unscanned: true };
+  const unscanned: SecretFlag = { file: "big.ts", line: 0, fingerprint: "b".repeat(40), head: H1, by: "atelier/events", at: T, unscanned: true };
   assert.deepEqual(secretBlockers(item({ secret: [unscanned] })), [
     "secret scan could not read big.ts in full; clear it with a reason or push a revision that removes the line",
   ]);

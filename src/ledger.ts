@@ -9,7 +9,7 @@ import {
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
-  type Block, type SecretFlag, type ItemFields,
+  type Block, type SecretFlag, type SecretClearance, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
@@ -20,7 +20,7 @@ import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, live
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
-import type { SecretHit } from "./secret-scan.ts";
+import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
@@ -483,6 +483,10 @@ export class Ledger extends DurableObject<Env> {
     // The head whose push scan is pending (t332): written with the head a
     // push records, cleared by that head's own scan result. Null otherwise.
     if (!columns.includes("secret_scan")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret_scan TEXT`);
+    // The clearances the owner has recorded (t332): a JSON array of file,
+    // fingerprint, reason, head, by and at, one per flagged line judged
+    // safe, never removed. Null until the first clearance.
+    if (!columns.includes("secret_cleared")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret_cleared TEXT`);
     this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
@@ -1685,11 +1689,19 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The secret flag a push scan records or clears (t332). `hits` names the
-  // file and line of every added line that held a key pattern at `head`, and
-  // `unscanned` names every file whose added lines the scan could not read in
-  // full; an empty list of both clears the flag, so a later push that removes
-  // the line clears it. Only the file and line ever reach the Ledger, never
-  // the value.
+  // file, line and fingerprint of every added line that held a key pattern
+  // at `head`, and `unscanned` names every file whose added lines the scan
+  // could not read in full, with the hash of its content; an empty list of
+  // both clears the flag, so a later push that removes the line clears it.
+  // Only the file, line and fingerprint ever reach the Ledger, never the
+  // value.
+  //
+  // A finding whose file and fingerprint the owner has cleared before
+  // (clearSecret) is recorded as cleared: it is kept, so the record shows the
+  // scan found it, and it does not block. The match is by content, not line
+  // number, so a push that keeps the cleared line where it was, or moves it
+  // within its file, is not blocked again; a line changed in any way, or the
+  // same line in another file, is a new finding and blocks.
   //
   // The result is applied only if `head`, the head it scanned, is still the
   // item's recorded head: the read and the write happen in one synchronous
@@ -1697,13 +1709,15 @@ export class Ledger extends DurableObject<Env> {
   // result for any other head is dropped, and the newer head's own pending
   // scan stands. The scan pending for `head` is cleared in the same write as
   // the flags, whether the findings changed or not.
-  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: string[] = []): Item {
+  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[] = []): Item {
     const item = this.item(id);
     if (item.head !== head) return item; // a newer push superseded this scan
     const at = new Date().toISOString();
+    const clearances = item.secretClearances ?? [];
+    const cleared = (file: string, fingerprint: string) => !!fingerprint && clearances.some((c) => c.file === file && c.fingerprint === fingerprint);
     const flags: SecretFlag[] = [
-      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, head, by: actor, at })),
-      ...unscanned.map((file): SecretFlag => ({ file, line: 0, head, by: actor, at, unscanned: true })),
+      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, fingerprint: h.fingerprint, head, by: actor, at, ...(cleared(h.file, h.fingerprint) ? { cleared: true as const } : {}) })),
+      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, head, by: actor, at, unscanned: true, ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
     ];
     const done: Record<string, string | null> = item.secretScan === head ? { secret_scan: null } : {};
     // A re-scan of the same head with the same findings changes nothing but
@@ -1712,9 +1726,9 @@ export class Ledger extends DurableObject<Env> {
     // its own head — and keeps blocking — rather than left naming a
     // superseded one.
     const prev = item.secret ?? [];
-    const unchanged = prev.length === flags.length
-      && flags.every((f, i) => f.file === prev[i].file && f.line === prev[i].line && (f.unscanned ?? false) === (prev[i].unscanned ?? false))
-      && prev.every((f) => f.head === head);
+    const same = (f: SecretFlag, p: SecretFlag) => f.file === p.file && f.line === p.line && f.fingerprint === p.fingerprint
+      && (f.unscanned ?? false) === (p.unscanned ?? false) && (f.cleared ?? false) === (p.cleared ?? false);
+    const unchanged = prev.length === flags.length && flags.every((f, i) => same(f, prev[i])) && prev.every((f) => f.head === head);
     if (unchanged) {
       if ("secret_scan" in done) this.update(id, done, at);
       return this.item(id);
@@ -1725,17 +1739,26 @@ export class Ledger extends DurableObject<Env> {
       return this.item(id);
     }
     this.update(id, { secret: JSON.stringify(flags), ...done }, at);
+    const where = (f: SecretFlag) => ({ file: f.file, line: f.line });
+    const standing = flags.filter((f) => !f.cleared), held = flags.filter((f) => f.cleared);
     this.log(id, actor, "secret.flagged", {
       head,
-      hits: hits.map((h) => ({ file: h.file, line: h.line })),
-      ...(unscanned.length ? { unscanned } : {}),
+      hits: standing.filter((f) => !f.unscanned).map(where),
+      ...(standing.some((f) => f.unscanned) ? { unscanned: standing.filter((f) => f.unscanned).map((f) => f.file) } : {}),
+      // What a clearance recorded before matched: found again, not blocking.
+      ...(held.length ? { cleared: held.map(where) } : {}),
     }, at);
     return this.item(id);
   }
 
-  // The project owner clears a standing secret flag, recording the reason:
-  // the record of why the owner judged the line safe, which a later reader
-  // checks against the code (secret.cleared).
+  // The project owner clears the standing secret flags, recording the reason:
+  // the record of why the owner judged each line safe, which a later reader
+  // checks against the code (secret.cleared). The clearance is kept against
+  // the file and fingerprint of each line (secretClearances), with the head
+  // it was made at, so a later scan that finds the identical line in the
+  // same file records it as cleared rather than blocking the push again; the
+  // flags themselves stay on the item, marked cleared, as the record of what
+  // the scan found.
   clearSecret(id: string, actor: string, reason: unknown, proved = false): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner clears a secret flag", 403);
     const text = secretClearReason(reason);
@@ -1747,10 +1770,17 @@ export class Ledger extends DurableObject<Env> {
     if (item.head && item.secretScan === item.head) {
       throw new RuleError("secret_pending", `${id}'s secret scan for ${item.head.slice(0, 8)} has not completed, so there is no flag to clear yet; it runs again on the next push or retry`, 409);
     }
-    if (!item.secret?.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409);
+    const standing = (item.secret ?? []).filter((f) => !f.cleared);
+    if (!standing.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409);
     const at = new Date().toISOString();
-    this.update(id, { secret: null }, at);
-    this.log(id, actor, "secret.cleared", { reason: text, head: item.head }, at, proved);
+    const clearances = [...(item.secretClearances ?? [])];
+    for (const f of standing) {
+      if (!f.fingerprint || clearances.some((c) => c.file === f.file && c.fingerprint === f.fingerprint)) continue;
+      clearances.push({ file: f.file, fingerprint: f.fingerprint, reason: text, head: item.head, by: actor, at } satisfies SecretClearance);
+    }
+    const flags = (item.secret ?? []).map((f): SecretFlag => (f.cleared ? f : { ...f, cleared: true }));
+    this.update(id, { secret: JSON.stringify(flags), secret_cleared: JSON.stringify(clearances) }, at);
+    this.log(id, actor, "secret.cleared", { reason: text, head: item.head, flags: standing.map((f) => ({ file: f.file, line: f.line })) }, at, proved);
     return this.item(id);
   }
 
@@ -4150,6 +4180,8 @@ function toItem(r: Row): Item {
     // Only an item whose push scan has not completed carries the head it is
     // pending for; the scan's own result clears it.
     ...(r.secret_scan ? { secretScan: r.secret_scan as string } : {}),
+    // Only an item whose owner has cleared a flag carries the clearances.
+    ...(r.secret_cleared ? { secretClearances: JSON.parse(r.secret_cleared as string) as SecretClearance[] } : {}),
     // Only a plan and its parts carry these.
     ...(r.kind === "plan" || r.kind === "part" ? { kind: r.kind } : {}),
     ...(r.plan ? { plan: r.plan as string } : {}),
