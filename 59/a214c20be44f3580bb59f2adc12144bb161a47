@@ -1,0 +1,27 @@
+atelier atelier/t376 "Briefs carry the agent rules every harness needs"
+accepted head d3681d27f09e5a4f934d244db41eae43e0531729
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-09T18:25:43.258Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-09T18:25:47.147Z
+REVIEW approve by antigravity/gemini-3.1-pro at d3681d27f09e5a4f934d244db41eae43e0531729, recorded by antigravity/gemini-3.1-pro
+2026-10-09T16:50:50.358Z pavi item.created
+2026-10-09T16:52:11.143Z pavi item.dispatched
+2026-10-09T16:52:21.107Z claude-code/opus-5.5 item.claimed
+2026-10-09T16:52:28.523Z claude-code/opus-5.5 fork.created
+2026-10-09T17:06:12.161Z claude-code/opus-5.5 push.observed
+2026-10-09T17:10:59.682Z claude-code/opus-5.5 evidence.observed
+2026-10-09T17:11:02.851Z claude-code/opus-5.5 evidence.observed
+2026-10-09T17:11:03.488Z claude-code/opus-5.5 item.submitted
+2026-10-09T18:19:47.701Z pavi land.lease
+2026-10-09T18:19:52.466Z pavi land.merge
+2026-10-09T18:20:05.341Z pavi land.regenerate
+2026-10-09T18:20:09.203Z claude-code/opus-5.5 push.observed
+2026-10-09T18:20:09.388Z pavi land.push
+2026-10-09T18:25:44.328Z claude-code/opus-5.5 evidence.observed
+2026-10-09T18:25:47.504Z claude-code/opus-5.5 evidence.observed
+2026-10-09T18:25:48.130Z pavi land.check
+2026-10-09T18:25:58.949Z pavi review.requested
+2026-10-09T18:26:13.475Z antigravity/gemini-3.1-pro review.claimed
+2026-10-09T18:30:44.769Z antigravity/gemini-3.1-pro review.approved
+2026-10-09T18:30:48.266Z pavi land.review
+2026-10-09T18:30:48.835Z pavi item.accepted
+2026-10-09T18:30:48.885Z pavi land.accept
