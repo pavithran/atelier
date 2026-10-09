@@ -103,11 +103,11 @@ it("a later push keeping the secret at the same line re-records the flag for the
 it("a file left unscanned is recorded as a blocking flag naming the file", async () => {
   const L = await setup("secret-unscanned");
   await claimed(L, "secret-unscanned--t1");
-  const flagged = await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "b".repeat(40) }]);
+  const flagged = await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "b".repeat(40), reason: "binary content" }]);
   expect(flagged.secret).toMatchObject([{ file: "big.ts", line: 0, fingerprint: "b".repeat(40), head: H1, unscanned: true }]);
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
-  await refusal(L.accept("t1", "owner"), "not_ready", /secret scan could not read big\.ts/);
+  await refusal(L.accept("t1", "owner"), "not_ready", /secret scan could not read big\.ts in full \(binary content\)/);
 });
 
 it("accept and merge are refused while the flag stands, with a message naming it", async () => {
@@ -235,18 +235,18 @@ it("a cleared line stays cleared through a later push that keeps it, moved or no
 it("a cleared unscanned file stays cleared while its content is unchanged", async () => {
   const L = await setup("secret-clearance-unscanned");
   await claimed(L, "secret-clearance-unscanned--t1");
-  await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "b".repeat(40) }]);
+  await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "b".repeat(40), reason: "binary content" }]);
   await L.clearSecret("t1", "owner", "a generated table, read by hand");
   await L.recordPush("t1", A, H2, H2);
-  expect((await L.setSecret("t1", "atelier/events", H2, [], [{ file: "big.ts", fingerprint: "b".repeat(40) }])).secret).toMatchObject([{ file: "big.ts", cleared: true }]);
+  expect((await L.setSecret("t1", "atelier/events", H2, [], [{ file: "big.ts", fingerprint: "b".repeat(40), reason: "binary content" }])).secret).toMatchObject([{ file: "big.ts", cleared: true }]);
   await L.addEvidence(observed("t1", H2));
   await L.submit("t1", A);
   await L.accept("t1", "owner");
   // The file changed: its new content was not read, so it blocks again.
   await L.recordPush("t1", A, H1, H1);
-  expect((await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "c".repeat(40) }])).secret).toMatchObject([{ file: "big.ts", unscanned: true }]);
+  expect((await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "c".repeat(40), reason: "binary content" }])).secret).toMatchObject([{ file: "big.ts", unscanned: true }]);
   await L.addEvidence(observed("t1", H1));
-  await refusal(L.accept("t1", "owner"), "not_ready", /secret scan could not read big\.ts/);
+  await refusal(L.accept("t1", "owner"), "not_ready", /secret scan could not read big\.ts in full \(binary content\)/);
 });
 
 it("the flag, the clearance and the events never hold the value, only file, line and a digest", async () => {

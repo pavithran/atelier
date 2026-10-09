@@ -1,7 +1,7 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { fullDiff, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
-import { scanPush } from "./secret-scan.ts";
+import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
@@ -618,10 +618,10 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
 }
 
 // The push's secret scan (t332), run for the head the Ledger recorded with a
-// scan pending: the diff of that exact commit against the repository the item
-// is measured against, read by commit id (fullDiff), and its findings
-// recorded against that head alone (setSecret, which drops them if the head
-// has moved on). A scan that cannot be read throws, and the pending mark
+// scan pending: every object that exact commit changes against the repository
+// the item is measured against, read by commit id (scanCommit), and its
+// findings recorded against that head alone (setSecret, which drops them if
+// the head has moved on). A scan that cannot be read throws, and the pending mark
 // stands, so the gate keeps refusing until a retry of the push event or of
 // `atelier push` completes it; nothing is cleared or recorded for a head
 // other than the one scanned. Returns the item as the scan left it, or as it
@@ -630,9 +630,8 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
   if (!item.fork || !item.head || item.secretScan !== item.head) return item;
   const head = item.head;
   const p = await L.project();
-  const diff = await fullDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head);
-  if (diff.head !== head) throw new Error(`secret scan: ${item.id}'s diff read ${diff.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
-  const scan = await scanPush(diff);
+  const scan = await scanCommit(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head);
+  if (scan.head !== head) throw new Error(`secret scan: ${item.id}'s scan read ${scan.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
 }
 
