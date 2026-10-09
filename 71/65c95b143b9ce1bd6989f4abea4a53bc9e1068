@@ -1,0 +1,27 @@
+atelier atelier/t364 "Concurrency proof reads the race holder from item.owner"
+accepted head 9c22c31be0a3141144b62597a98679c5cdfd1f8d
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/haiku-5.5 2026-10-09T15:08:33.061Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/haiku-5.5 2026-10-09T15:08:36.978Z
+REVIEW approve by antigravity/gemini-3.1-pro at 9c22c31be0a3141144b62597a98679c5cdfd1f8d, recorded by antigravity/gemini-3.1-pro
+2026-10-09T14:06:22.577Z pavi item.created
+2026-10-09T14:06:25.889Z pavi item.dispatched
+2026-10-09T14:13:26.735Z claude-code/haiku-5.5 item.claimed
+2026-10-09T14:13:42.166Z claude-code/haiku-5.5 fork.created
+2026-10-09T14:26:59.148Z claude-code/haiku-5.5 push.observed
+2026-10-09T14:33:27.298Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T14:33:30.889Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T14:33:31.878Z claude-code/haiku-5.5 item.submitted
+2026-10-09T15:02:37.008Z pavi land.lease
+2026-10-09T15:02:44.271Z pavi land.merge
+2026-10-09T15:03:12.082Z pavi land.regenerate
+2026-10-09T15:03:15.658Z claude-code/haiku-5.5 push.observed
+2026-10-09T15:03:15.819Z pavi land.push
+2026-10-09T15:08:34.226Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T15:08:37.330Z claude-code/haiku-5.5 evidence.observed
+2026-10-09T15:08:37.894Z pavi land.check
+2026-10-09T15:08:43.224Z pavi review.requested
+2026-10-09T15:08:51.773Z antigravity/gemini-3.1-pro review.claimed
+2026-10-09T15:12:16.582Z antigravity/gemini-3.1-pro review.approved
+2026-10-09T15:12:30.215Z pavi land.review
+2026-10-09T15:12:30.466Z pavi item.accepted
+2026-10-09T15:12:30.496Z pavi land.accept
