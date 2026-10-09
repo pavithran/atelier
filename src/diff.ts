@@ -414,14 +414,23 @@ export async function itemDiff(artifacts: Artifacts, baselineRepo: string, works
 // so the scan sees every added line of every changed file, not just the first
 // page. A text file the diff cannot hold is listed too-large, and the scan
 // turns that into a blocking flag naming the file left unscanned.
-export async function fullDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
+//
+// It is bound to `head`, the commit the Ledger recorded, never to the fork's
+// live head: the fork may have moved on since the head was recorded, and a
+// diff of the newer head would be applied to the older one's record. The
+// commit is read by its id, and the diff is made only when the commit read
+// is that one; a fork that cannot show it (a reader that answers with the
+// live head, a commit not reachable) throws, so the scan stays pending and
+// is retried rather than clearing or recording anything for the wrong head.
+export async function fullDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, head: string): Promise<ItemDiff> {
   using fork = await artifacts.get(workspaceRepo);
   using baseline = await artifacts.get(baselineRepo);
-  const m = await againstMain(fork, baseline);
-  if (!m) return null;
-  if (m.mainTree === m.headTree) return { base: m.main, head: m.head, files: [], truncated: false, baseTree: m.mainTree, headTree: m.headTree };
-  const { files, truncated } = await treeDiff(pairReader(fork, baseline), m.mainTree, m.headTree, SCAN_LIMITS);
-  return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
+  const [[commit], [main]] = await Promise.all([fork.log({ ref: head, limit: 1 }), baseline.log({ limit: 1 })]);
+  if (!commit || commit.hash !== head) throw new Error(`secret scan: ${workspaceRepo} did not show the recorded head ${head.slice(0, 8)}${commit ? ` (read ${commit.hash.slice(0, 8)})` : ""}`);
+  if (!main) throw new Error(`secret scan: ${baselineRepo} has no commits to diff against`);
+  if (main.treeHash === commit.treeHash) return { base: main.hash, head: commit.hash, files: [], truncated: false, baseTree: main.treeHash, headTree: commit.treeHash };
+  const { files, truncated } = await treeDiff(pairReader(fork, baseline), main.treeHash, commit.treeHash, SCAN_LIMITS);
+  return { base: main.hash, head: commit.hash, files, truncated, baseTree: main.treeHash, headTree: commit.treeHash };
 }
 
 // ── merged items ───────────────────────────────────────────────────────────

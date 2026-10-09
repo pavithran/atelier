@@ -51,6 +51,13 @@ export interface Item {
   // gate from accepting or merging; the project owner clears it with a reason
   // (secret.cleared) or a later push that removes the line clears it.
   secret?: SecretFlag[] | null;
+  // The head whose push scan has not completed (t332): recorded in the same
+  // write as the head itself, and cleared only by the scan's own result for
+  // that exact head (setSecret). While it names the current head the gate
+  // refuses to accept or merge, as a flag does, so a scan that failed or has
+  // not run yet never passes a push silently; a retry of the push event or of
+  // `atelier push` runs it again. Absent once the scan has completed.
+  secretScan?: string | null;
   // A plan, or a part of one (docs/orchestrator.md). An ordinary task
   // carries none of these four fields.
   kind?: "plan" | "part";
@@ -1198,13 +1205,19 @@ export interface Gate {
 // message names the flag, never the matched value, so the owner and the
 // gate's message both show where the key pattern is without printing it.
 // A flag on any other head than the item's current one has been superseded by
-// a later push and stands no longer.
-export function secretBlockers(item: Pick<Item, "secret" | "head">): string[] {
-  return (item.secret ?? [])
+// a later push and stands no longer. A scan still pending for the current
+// head blocks the same way, with its own message: the push is not known to
+// be clean until the scan of that exact head has completed.
+export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan">): string[] {
+  const flags = (item.secret ?? [])
     .filter((f) => f.head === item.head)
     .map((f) => f.unscanned
       ? `secret scan could not read ${f.file} in full; clear it with a reason or push a revision that removes the line`
       : `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
+  if (item.head && item.secretScan === item.head) {
+    flags.push(`secret scan pending for ${item.head.slice(0, 8)}; it is retried until it completes, and atelier push runs it again`);
+  }
+  return flags;
 }
 
 // `reviewHeld` says the change's independent review is held outside the

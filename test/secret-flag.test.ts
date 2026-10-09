@@ -64,3 +64,18 @@ test("a clearing reason is required, trimmed and at most 500 characters", () => 
   assert.throws(() => secretClearReason(42), /secret_reason/);
   assert.throws(() => secretClearReason("x".repeat(501)), /secret_reason/);
 });
+
+test("a scan pending for the current head blocks the gate with its own message, and one for another head does not", () => {
+  const pending = item({ secretScan: H1 });
+  assert.deepEqual(secretBlockers(pending), [
+    `secret scan pending for ${H1.slice(0, 8)}; it is retried until it completes, and atelier push runs it again`,
+  ]);
+  const g = gate(pending, policy, passing, []);
+  assert.equal(g.ready, false);
+  assert.ok(g.blockers.some((b) => b.startsWith("secret scan pending")), g.blockers.join("; "));
+  // A pending mark left for a superseded head is not the current head's.
+  assert.deepEqual(secretBlockers(item({ secretScan: H2 })), []);
+  assert.deepEqual(secretBlockers(item({ secretScan: null })), []);
+  // A flag and a pending scan at the same head both stand.
+  assert.equal(secretBlockers(item({ secret: [flag], secretScan: H1 })).length, 2);
+});

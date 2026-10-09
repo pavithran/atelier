@@ -480,6 +480,9 @@ export class Ledger extends DurableObject<Env> {
     // file and line, one entry per key pattern the added lines hold, never
     // the value. Null when none stands.
     if (!columns.includes("secret")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret TEXT`);
+    // The head whose push scan is pending (t332): written with the head a
+    // push records, cleared by that head's own scan result. Null otherwise.
+    if (!columns.includes("secret_scan")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret_scan TEXT`);
     this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
@@ -1379,7 +1382,13 @@ export class Ledger extends DurableObject<Env> {
   // name another actor than the holder are recorded with the push, which
   // makes each a contributor (pushActors) and credits its commit to it in
   // the reliability record.
-  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = []): Item {
+  //
+  // `scan` says the caller runs the push's secret scan (t332) on the head
+  // recorded: the head is then written with its scan pending, in the same
+  // write, so the gate blocks until the scan of that exact head completes
+  // (setSecret), whatever happens to the scan in between. The Worker's push
+  // paths pass it; the Ledger's own tests, which run no scan, do not.
+  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = [], scan = false): Item {
     const item = this.item(id);
     if (item.state !== "accepted") assertLive(item);
     assertOwner(item, actor);
@@ -1402,6 +1411,7 @@ export class Ledger extends DurableObject<Env> {
       head: observedHead, last_push_at: now,
       state: item.state === "submitted" ? "submitted" : "claimed",
       ...(reopened ? { accepted_head: null } : {}),
+      ...(scan ? { secret_scan: observedHead } : {}),
     }, now);
     this.log(id, actor, "push.observed", {
       head: observedHead,
@@ -1424,8 +1434,9 @@ export class Ledger extends DurableObject<Env> {
   // head the Worker could not place either way (holdsRecorded null, its
   // search having stopped at its budget) is left the same way, with the
   // reason saying so. The queue delivers an event at least once, so the
-  // same sighting is noted once.
-  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = []): Item {
+  // same sighting is noted once. `scan` is as recordPush takes it: the head
+  // recorded is written with its secret scan pending.
+  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
     // While the accepted revision is landing, a push to the fork does not
@@ -1441,7 +1452,8 @@ export class Ledger extends DurableObject<Env> {
     }
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
-      state: item.state === "accepted" ? "submitted" : item.state }, now);
+      state: item.state === "accepted" ? "submitted" : item.state,
+      ...(scan ? { secret_scan: observedHead } : {}) }, now);
     this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted", ...this.otherAuthors(item, authors) }, now);
     return this.item(id);
   }
@@ -1678,6 +1690,13 @@ export class Ledger extends DurableObject<Env> {
   // full; an empty list of both clears the flag, so a later push that removes
   // the line clears it. Only the file and line ever reach the Ledger, never
   // the value.
+  //
+  // The result is applied only if `head`, the head it scanned, is still the
+  // item's recorded head: the read and the write happen in one synchronous
+  // step of the Durable Object, so nothing moves the head between them. A
+  // result for any other head is dropped, and the newer head's own pending
+  // scan stands. The scan pending for `head` is cleared in the same write as
+  // the flags, whether the findings changed or not.
   setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: string[] = []): Item {
     const item = this.item(id);
     if (item.head !== head) return item; // a newer push superseded this scan
@@ -1686,21 +1705,26 @@ export class Ledger extends DurableObject<Env> {
       ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, head, by: actor, at })),
       ...unscanned.map((file): SecretFlag => ({ file, line: 0, head, by: actor, at, unscanned: true })),
     ];
-    // A re-scan of the same head with the same findings changes nothing. The
-    // comparison includes each flag's head, so a later push that keeps a
-    // secret at the same file and line is re-recorded for its own head — and
-    // keeps blocking — rather than left naming a superseded one.
+    const done: Record<string, string | null> = item.secretScan === head ? { secret_scan: null } : {};
+    // A re-scan of the same head with the same findings changes nothing but
+    // the pending mark. The comparison includes each flag's head, so a later
+    // push that keeps a secret at the same file and line is re-recorded for
+    // its own head — and keeps blocking — rather than left naming a
+    // superseded one.
     const prev = item.secret ?? [];
     const unchanged = prev.length === flags.length
       && flags.every((f, i) => f.file === prev[i].file && f.line === prev[i].line && (f.unscanned ?? false) === (prev[i].unscanned ?? false))
       && prev.every((f) => f.head === head);
-    if (unchanged) return item;
+    if (unchanged) {
+      if ("secret_scan" in done) this.update(id, done, at);
+      return this.item(id);
+    }
     if (!flags.length) {
-      this.update(id, { secret: null }, at);
+      this.update(id, { secret: null, ...done }, at);
       this.log(id, actor, "secret.resolved", { head }, at);
       return this.item(id);
     }
-    this.update(id, { secret: JSON.stringify(flags) }, at);
+    this.update(id, { secret: JSON.stringify(flags), ...done }, at);
     this.log(id, actor, "secret.flagged", {
       head,
       hits: hits.map((h) => ({ file: h.file, line: h.line })),
@@ -1716,6 +1740,13 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner clears a secret flag", 403);
     const text = secretClearReason(reason);
     const item = this.item(id);
+    // A scan still pending is not a flag: nothing has been judged yet, so
+    // there is nothing for the owner's reason to answer. It completes on the
+    // next retry of the push event, or when the holder runs atelier push
+    // again; a flag it records can then be cleared.
+    if (item.head && item.secretScan === item.head) {
+      throw new RuleError("secret_pending", `${id}'s secret scan for ${item.head.slice(0, 8)} has not completed, so there is no flag to clear yet; it runs again on the next push or retry`, 409);
+    }
     if (!item.secret?.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409);
     const at = new Date().toISOString();
     this.update(id, { secret: null }, at);
@@ -4116,6 +4147,9 @@ function toItem(r: Row): Item {
     // Only an item whose push scan flagged a secret carries the array; a push
     // that removes the line or a clear clears it.
     ...(r.secret ? { secret: JSON.parse(r.secret as string) as SecretFlag[] } : {}),
+    // Only an item whose push scan has not completed carries the head it is
+    // pending for; the scan's own result clears it.
+    ...(r.secret_scan ? { secretScan: r.secret_scan as string } : {}),
     // Only a plan and its parts carry these.
     ...(r.kind === "plan" || r.kind === "part" ? { kind: r.kind } : {}),
     ...(r.plan ? { plan: r.plan as string } : {}),

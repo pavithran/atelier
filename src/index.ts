@@ -617,6 +617,25 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
   return baseRepoOf(item, baselineRepo, planFork);
 }
 
+// The push's secret scan (t332), run for the head the Ledger recorded with a
+// scan pending: the diff of that exact commit against the repository the item
+// is measured against, read by commit id (fullDiff), and its findings
+// recorded against that head alone (setSecret, which drops them if the head
+// has moved on). A scan that cannot be read throws, and the pending mark
+// stands, so the gate keeps refusing until a retry of the push event or of
+// `atelier push` completes it; nothing is cleared or recorded for a head
+// other than the one scanned. Returns the item as the scan left it, or as it
+// stands when no scan is pending for its head.
+async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item): Promise<Item> {
+  if (!item.fork || !item.head || item.secretScan !== item.head) return item;
+  const head = item.head;
+  const p = await L.project();
+  const diff = await fullDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head);
+  if (diff.head !== head) throw new Error(`secret scan: ${item.id}'s diff read ${diff.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
+  const scan = scanPush(diff);
+  return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
+}
+
 // A part whose fork holds nothing beyond the commit it forked from starts
 // from its plan branch's head when that branch has moved since, so its
 // builder sees every part integrated since (docs/orchestrator.md, section 5).
@@ -1315,15 +1334,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // more history is read for it.
       const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
       const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
-      const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors);
-      // The push scan (t332): the added lines at the new head are read for key
-      // patterns, and the flag records only file and line, never the value.
-      if (recorded.fork && recorded.head && recorded.head !== item.head) {
-        const p = await L.project();
-        const scan = scanPush(await fullDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork));
-        await L.setSecret(id, "atelier/events", recorded.head, scan.hits, scan.unscanned);
+      const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true);
+      // The push scan (t332): the added lines at the recorded head are read
+      // for key patterns, and the flag records only file and line, never the
+      // value. The head was recorded with its scan pending, so a scan that
+      // fails here leaves the gate refusing and the next push, at the same
+      // head or a new one, runs it again; the answer is the item as the scan
+      // left it, or with the scan still pending.
+      try {
+        return json(await scanRecorded(env, L, recorded));
+      } catch (err) {
+        console.error(`secret scan of ${id} deferred: ${err instanceof Error ? err.message : String(err)}`);
+        return json(await L.item(id));
       }
-      return json(recorded);
     }
     case "evidence": {
       const item = await L.item(id);
@@ -2466,15 +2489,15 @@ export default {
               // head that should have moved and did not.
               const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
               const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors);
-              // The push scan for a push seen on the fork, as recordPush runs
-              // it: file and line only, never the value. Only a head that
-              // actually moved is scanned, so a duplicate sighting is not.
-              if (recorded.fork && recorded.head === current && recorded.head !== item.head) {
-                const p = await L.project();
-                const scan = scanPush(await fullDiff(env.ARTIFACTS, await baseRepo(env, L, recorded, p.repo), recorded.fork));
-                await L.setSecret(recorded.id, "atelier/events", current, scan.hits, scan.unscanned);
-              }
+              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors,true);
+              // The push scan for a push seen on the fork, as the push route
+              // runs it: file and line only, never the value. It runs for the
+              // head recorded with its scan pending, which a sighting that
+              // moved the head just wrote and a redelivery after a failed
+              // scan still finds; a scan that throws leaves the event
+              // retried, so no push is acknowledged with its scan pending. A
+              // duplicate sighting of a scanned head runs nothing.
+              if (recorded.head === current) await scanRecorded(env, L, recorded);
               if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
             }
             break;
