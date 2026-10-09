@@ -279,7 +279,7 @@ async function claimRace() {
   // the result stands even when the winner's own reply never arrived.
   let holder = null;
   let holderError = null;
-  try { holder = (await request("GET", I(cfg.project, item.id))).owner ?? null; } catch (error) { holderError = error.message; }
+  try { holder = (await request("GET", I(cfg.project, item.id))).item.owner ?? null; } catch (error) { holderError = error.message; }
   const replied = winners.length === 1 ? (winners[0].value.item?.owner ?? actorOf(claims.indexOf(winners[0]))) : null;
   const winnerActor = holder ?? replied;
   const naming = winnerActor ? refusals.filter((r) => r.error.detail.includes(winnerActor)).length : 0;
@@ -319,7 +319,7 @@ async function cleanup(items) {
     for (let i = 0; i < pending.length; i++) {
       if (batch[i].ok) continue;
       let state = null;
-      try { state = (await request("GET", I(cfg.project, pending[i].id))).state; } catch { /* unreadable: still counted unabandoned */ }
+      try { state = (await request("GET", I(cfg.project, pending[i].id))).item.state; } catch { /* unreadable: still counted unabandoned */ }
       if (state === "abandoned") continue;
       lastError.set(pending[i].id, batch[i].error.message);
       left.push(pending[i]);
